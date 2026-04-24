@@ -1,6 +1,7 @@
 # data_manager/downloaders/st_downloader.py
 
 import os
+import numpy as np
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from data_manager.core import BaseDownloader, ConfigManager
@@ -27,9 +28,12 @@ class StDownloader(BaseDownloader):
             raise FileNotFoundError(f"未找到日历文件 {self.cal_file}，请先运行日历同步脚本！")
             
         df_cal = pd.read_parquet(self.cal_file)
+        start_int = int(start_date)
+        end_int = int(end_date)
+
         # 筛选开市日，并且日期在指定区间内
-        mask = (df_cal['is_open'] == 1) & (df_cal['cal_date'] >= start_date) & (df_cal['cal_date'] <= end_date)
-        return df_cal[mask]['cal_date'].tolist()
+        mask = (df_cal['is_open'] == 1) & (df_cal['cal_date'] >= start_int) & (df_cal['cal_date'] <= end_int)
+        return df_cal[mask]['cal_date'].astype(str).tolist()
 
     def _get_local_dates(self):
         """扫描本地已存的数据，找出所有已经下载过的日期"""
@@ -39,13 +43,15 @@ class StDownloader(BaseDownloader):
                 file_path = os.path.join(self.save_dir, file)
                 try:
                     df = pd.read_parquet(file_path, columns=['trade_date'])
-                    local_dates.update(df['trade_date'].unique().tolist())
+                    local_dates.update(df['trade_date'].astype(str).unique().tolist())
                 except Exception as e:
                     self.logger.warning(f"读取本地文件 {file} 失败: {e}")
         return local_dates
 
     def sync(self, start_date='20160101', target_end_date=None):
         """执行同步任务"""
+        start_date = str(start_date)
+
         # 接口最早支持到 20160101
         if start_date < '20160101':
             self.logger.warning("ST 接口数据最早始于 20160101，已自动修正 start_date。")
@@ -135,6 +141,9 @@ class StDownloader(BaseDownloader):
             df_combined = df_new
             
         # 物理排序：先按日期，再按股票代码，让最终保存的数据极其规整
+        if 'trade_date' in df_combined.columns:
+            df_combined['trade_date'] = pd.to_numeric(df_combined['trade_date'], errors='coerce').astype(np.int32)
+
         df_combined.sort_values(by=['trade_date', 'ts_code'], inplace=True)
         df_combined.to_parquet(file_path, index=False)
         

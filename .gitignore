@@ -1,0 +1,34 @@
+# Local secrets and machine-specific configuration
+config.toml
+.env
+.env.*
+
+# Local data lake and generated outputs
+data/
+output.log
+*.log
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Notebooks and scratch files
+.ipynb_checkpoints/
+test.ipynb
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Rust build artifacts for future factor engine
+target/
+Cargo.lock

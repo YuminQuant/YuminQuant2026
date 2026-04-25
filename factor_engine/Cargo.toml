@@ -1,0 +1,9 @@
+[package]
+name = "yq-factor-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arrow-array = "57.0.0"
+arrow-schema = "57.0.0"
+parquet = { version = "57.0.0", features = ["arrow"] }

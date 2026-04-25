@@ -1,0 +1,9 @@
+# Optional engine-specific config for future use.
+# The MVP reads the project-level ../config.toml and uses [paths].base_data_dir.
+
+[engine]
+stock_calendar_exchange = "SSE"
+future_calendar_exchange = "SHFE"
+
+[storage]
+factor_subdir = "factors"

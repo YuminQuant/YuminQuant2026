@@ -31,3 +31,4 @@ Thumbs.db
 
 # Rust build artifacts
 target/
+factor_engine/target/

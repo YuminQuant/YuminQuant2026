@@ -4,8 +4,8 @@ config.toml
 .env.*
 
 # Local data lake and generated outputs
-data/
-output.log
+/data/
+/output.log
 *.log
 
 # Python caches and environments
@@ -29,6 +29,5 @@ test.ipynb
 .DS_Store
 Thumbs.db
 
-# Rust build artifacts for future factor engine
+# Rust build artifacts
 target/
-Cargo.lock

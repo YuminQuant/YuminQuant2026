@@ -9,7 +9,7 @@ The existing codebase mainly contains:
 - Tushare client and configuration management.
 - Downloaders for calendars, A-shares, ETFs, futures, options, indexes, Hong Kong stocks, US stocks, financial statements, dividends, and analyst reports.
 - Incremental update scripts for keeping local parquet data up to date.
-- Documentation for downloader granularity, update commands, and the planned factor generation module.
+- Documentation for downloader granularity, update commands, and the Rust factor engine scaffold.
 
 The local `data/` directory is intentionally not tracked by Git. It can be large and machine-specific.
 
@@ -20,6 +20,7 @@ YuminQuant/
   data_manager/
     core/                 # Config, logger, Tushare client, downloader base class
     downloader/           # Asset-specific downloader implementations
+  factor_engine/          # Rust factor engine scaffold
   scripts/
     init_*.py             # Historical initialization scripts
     update_incremental.py # Incremental update entry point
@@ -95,23 +96,6 @@ Different downloaders use different request patterns:
 - Static datasets are usually full snapshots.
 
 See [docs/DOWNLOAD_GRANULARITY.md](docs/DOWNLOAD_GRANULARITY.md) for details.
-
-## Factor Engine Plan
-
-The next planned module is a Rust-based factor generation engine:
-
-```text
-Python/Tushare downloaders -> parquet data lake -> Rust factor engine -> parquet factor store
-```
-
-The current design favors:
-
-- One factor per source file.
-- Tags for factor classification.
-- Reusable operators for rolling, time-series, cross-sectional, cleaning, and neutralization logic.
-- A registry and pipeline executor for batch factor production.
-
-See [docs/FACTOR_MODULE_DESIGN.md](docs/FACTOR_MODULE_DESIGN.md) for the current design.
 
 ## Git And Data Safety
 

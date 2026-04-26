@@ -26,6 +26,7 @@ struct PendingFrame {
 #[derive(Clone, Debug)]
 struct MetadataRow {
     factor_id: String,
+    aliases_json: String,
     version: String,
     output_column: String,
     name: String,
@@ -40,6 +41,8 @@ struct MetadataRow {
 #[derive(Clone, Debug)]
 pub struct FactorMetadata {
     pub factor_id: String,
+    pub aliases: Vec<String>,
+    pub aliases_json: String,
     pub version: String,
     pub output_column: String,
     pub name: String,
@@ -107,6 +110,7 @@ impl FactorStorage {
         for spec in specs {
             rows.push(MetadataRow {
                 factor_id: spec.id.clone(),
+                aliases_json: string_list_json(&spec.aliases),
                 version: spec.version.clone(),
                 output_column: spec.output_column(),
                 name: spec.name.clone(),
@@ -249,6 +253,11 @@ fn pending_frame_to_table(
 fn read_metadata_records(path: &Path) -> Result<Vec<FactorMetadata>> {
     let table = read_parquet(path, None)?;
     let factor_id = table.required_utf8("factor_id")?;
+    let aliases = if table.columns.contains_key("aliases_json") {
+        Some(table.required_utf8("aliases_json")?)
+    } else {
+        None
+    };
     let version = table.required_utf8("version")?;
     let output_column = table.required_utf8("output_column")?;
     let name = table.required_utf8("name")?;
@@ -261,9 +270,15 @@ fn read_metadata_records(path: &Path) -> Result<Vec<FactorMetadata>> {
 
     let mut rows = Vec::new();
     for idx in 0..table.len {
+        let aliases_json_value = aliases
+            .as_ref()
+            .and_then(|values| values[idx].clone())
+            .unwrap_or_default();
         let tags_json_value = tags_json[idx].clone().unwrap_or_default();
         let row = FactorMetadata {
             factor_id: factor_id[idx].clone().unwrap_or_default(),
+            aliases: parse_string_list_json(&aliases_json_value),
+            aliases_json: aliases_json_value,
             version: version[idx].clone().unwrap_or_default(),
             output_column: output_column[idx].clone().unwrap_or_default(),
             name: name[idx].clone().unwrap_or_default(),
@@ -317,6 +332,14 @@ fn metadata_rows_to_table(rows: Vec<MetadataRow>) -> Result<Table> {
     table.insert(
         "factor_id",
         ColumnData::Utf8(rows.iter().map(|row| Some(row.factor_id.clone())).collect()),
+    )?;
+    table.insert(
+        "aliases_json",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.aliases_json.clone()))
+                .collect(),
+        ),
     )?;
     table.insert(
         "version",

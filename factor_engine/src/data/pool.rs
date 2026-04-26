@@ -37,6 +37,19 @@ impl DataPool {
                 pool.daily.insert(dataset, table);
                 continue;
             }
+            if matches!(
+                dataset,
+                DatasetId::StockIncome | DatasetId::StockBalanceSheet
+            ) {
+                let table = loader.load_financial(
+                    dataset,
+                    &columns,
+                    context.load_start_date,
+                    context.end_date,
+                )?;
+                pool.daily.insert(dataset, table);
+                continue;
+            }
             match dataset.frequency() {
                 Frequency::Daily => {
                     let table = loader.load_daily(

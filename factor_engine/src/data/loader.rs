@@ -48,6 +48,33 @@ impl MarketDataLoader {
         filter_classification_range(&table, start_date, end_date)
     }
 
+    pub fn load_financial(
+        &self,
+        dataset: DatasetId,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+    ) -> Result<Table> {
+        let columns = with_required_columns(
+            requested_columns,
+            &[
+                "ts_code",
+                "ann_date",
+                "f_ann_date",
+                "end_date",
+                "update_flag",
+            ],
+        );
+        let files = self.catalog.daily_year_files(dataset, start_date, end_date);
+        let mut table = Table::empty();
+        for file in files {
+            let yearly = read_parquet(&file, Some(&columns))?;
+            let filtered = filter_financial_disclosure_range(&yearly, end_date)?;
+            table.append(&filtered)?;
+        }
+        Ok(table)
+    }
+
     pub fn load_minute_by_date(
         &self,
         dataset: DatasetId,
@@ -90,6 +117,18 @@ fn filter_classification_range(table: &Table, start_date: i32, end_date: i32) ->
             };
             let out_date = out_dates[*idx].unwrap_or(99_991_231);
             in_date <= end_date && out_date >= start_date
+        })
+        .collect::<Vec<_>>();
+    table.take(&indices)
+}
+
+fn filter_financial_disclosure_range(table: &Table, end_date: i32) -> Result<Table> {
+    let ann_dates = table.required_i32_date_cast("ann_date")?;
+    let f_ann_dates = table.required_i32_date_cast("f_ann_date")?;
+    let indices = (0..table.len)
+        .filter(|idx| {
+            let disclosure_date = f_ann_dates[*idx].or(ann_dates[*idx]);
+            disclosure_date.is_some_and(|date| date <= end_date)
         })
         .collect::<Vec<_>>();
     table.take(&indices)

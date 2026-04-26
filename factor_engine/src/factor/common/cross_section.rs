@@ -269,6 +269,7 @@ mod tests {
         };
         let spec = FactorSpec {
             id: "test.cross_section".to_string(),
+            aliases: Vec::new(),
             name: "test".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,

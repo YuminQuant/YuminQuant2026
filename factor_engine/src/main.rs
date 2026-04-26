@@ -153,6 +153,7 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         None => None,
     };
     let config_path = flags.get("config").map(PathBuf::from);
+    let profile = flag_enabled(&flags, "profile");
     Ok(RunRequest {
         asset_class,
         frequency,
@@ -164,6 +165,7 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         dry_run,
         factor_batch_size,
         threads,
+        profile,
     })
 }
 
@@ -188,13 +190,25 @@ fn parse_flags(args: &[String]) -> Result<HashMap<String, String>> {
         let key = args[idx].strip_prefix("--").ok_or_else(|| {
             yq_factor_engine::error::err(format!("expected --flag, got {}", args[idx]))
         })?;
-        let value = args
+        if args
             .get(idx + 1)
-            .ok_or_else(|| yq_factor_engine::error::err(format!("missing value for --{key}")))?;
-        flags.insert(key.to_string(), value.clone());
-        idx += 2;
+            .is_some_and(|value| !value.starts_with("--"))
+        {
+            flags.insert(key.to_string(), args[idx + 1].clone());
+            idx += 2;
+        } else {
+            flags.insert(key.to_string(), "true".to_string());
+            idx += 1;
+        }
     }
     Ok(flags)
+}
+
+fn flag_enabled(flags: &HashMap<String, String>, name: &str) -> bool {
+    flags
+        .get(name)
+        .map(|value| value == "true" || value == "1" || value.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false)
 }
 
 fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
@@ -226,6 +240,28 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
             request.columns.join(",")
         );
     }
+    if !report.profiles.is_empty() {
+        println!("profile:");
+        for batch in &report.profiles {
+            println!(
+                "  date_batch={} factor_batch={} dates={}..{} factors={} load_ms={} compute_ms={} write_ms={}",
+                batch.date_batch_index,
+                batch.factor_batch_index,
+                batch.start_date,
+                batch.end_date,
+                batch.factor_count,
+                batch.load_ms,
+                batch.compute_ms,
+                batch.write_ms
+            );
+            for factor in &batch.factors {
+                println!(
+                    "    {} rows={} non_null={}",
+                    factor.factor_id, factor.row_count, factor.non_null_count
+                );
+            }
+        }
+    }
 }
 
 fn print_help() {
@@ -242,17 +278,31 @@ fn print_help() {
     println!("  --tags tag[,tag...]");
     println!("  --factor-batch-size N (default 64)");
     println!("  --threads N");
+    println!("  --profile");
     println!("  --config D:/path/to/config.toml");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_yyyymmdd;
+    use super::{flag_enabled, parse_flags, parse_yyyymmdd};
 
     #[test]
     fn parse_yyyymmdd_rejects_non_eight_digit_input() {
         assert_eq!(parse_yyyymmdd("20260424", "end-date").unwrap(), 20260424);
         assert!(parse_yyyymmdd("2026424", "end-date").is_err());
         assert!(parse_yyyymmdd("2026-04-24", "end-date").is_err());
+    }
+
+    #[test]
+    fn parse_flags_supports_boolean_flags() {
+        let flags = parse_flags(&[
+            "--profile".to_string(),
+            "--asset".to_string(),
+            "stock".to_string(),
+        ])
+        .expect("flags");
+
+        assert!(flag_enabled(&flags, "profile"));
+        assert_eq!(flags.get("asset").map(String::as_str), Some("stock"));
     }
 }

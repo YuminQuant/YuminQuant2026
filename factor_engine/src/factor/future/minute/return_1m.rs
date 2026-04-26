@@ -17,7 +17,8 @@ pub fn create() -> Box<dyn Factor> {
 impl Factor for FutureMinuteReturn1m {
     fn spec(&self) -> FactorSpec {
         FactorSpec {
-            id: "future.minute_1m.pv.return_1m".to_string(),
+            id: "return_1m".to_string(),
+            aliases: vec!["future.minute_1m.pv.return_1m".to_string()],
             name: "Future one-minute return".to_string(),
             asset_class: AssetClass::Future,
             frequency: Frequency::Minute1,

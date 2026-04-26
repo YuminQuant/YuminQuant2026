@@ -62,7 +62,8 @@ fn main() {
     output.push_str("pub fn factor_map() -> HashMap<String, Box<dyn Factor>> {\n");
     output.push_str("    let mut factors = HashMap::new();\n");
     output.push_str("    for factor in all_factors() {\n");
-    output.push_str("        factors.insert(factor.spec().id.clone(), factor);\n");
+    output.push_str("        let key = factor.spec().registry_key();\n");
+    output.push_str("        factors.insert(key, factor);\n");
     output.push_str("    }\n");
     output.push_str("    factors\n");
     output.push_str("}\n");

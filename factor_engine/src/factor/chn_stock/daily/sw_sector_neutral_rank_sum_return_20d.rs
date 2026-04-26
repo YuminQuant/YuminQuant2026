@@ -17,7 +17,8 @@ pub fn create() -> Box<dyn Factor> {
 impl Factor for StockDailySwSectorNeutralRankSumReturn20d {
     fn spec(&self) -> FactorSpec {
         FactorSpec {
-            id: "stock.daily.pv.sw_sector_neutral_rank_sum_return_20d".to_string(),
+            id: "sw_sector_neutral_rank_sum_return_20d".to_string(),
+            aliases: vec!["stock.daily.pv.sw_sector_neutral_rank_sum_return_20d".to_string()],
             name: "Stock SW sector-neutral ranked 20-day summed return".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
@@ -57,11 +58,11 @@ impl Factor for StockDailySwSectorNeutralRankSumReturn20d {
             .column("close")?
             .ts(|values| ts_pctchg(values, 1))?
             .ts(|values| ts_sum(values, 20, 20))?
-            .cs(|values| cs_pctrank(values, true))?;
-        // .cs_by_group(
-        //     |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),
-        //     cs_neutralize,
-        // )?;
+            .cs(|values| cs_pctrank(values, true))?
+            .cs_by_group(
+                |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),
+                cs_neutralize,
+            )?;
 
         Ok(factor.to_factor_series(self.spec()))
     }

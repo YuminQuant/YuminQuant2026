@@ -1,10 +1,14 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
-use crate::core::{AssetClass, DataRequest, FactorContext, FactorSeries, FactorSpec, Frequency};
+use crate::core::{
+    factor_registry_key, AssetClass, DataRequest, FactorContext, FactorSeries, FactorSpec,
+    Frequency,
+};
 use crate::data::{DataCatalog, DataPool, MarketDataLoader};
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
@@ -26,6 +30,7 @@ pub struct RunRequest {
     pub dry_run: bool,
     pub factor_batch_size: usize,
     pub threads: Option<usize>,
+    pub profile: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -41,7 +46,28 @@ pub struct RunReport {
     pub execution_batch_count: usize,
     pub selected_factor_ids: Vec<String>,
     pub loaded_requests: Vec<DataRequest>,
+    pub profiles: Vec<BatchProfile>,
     pub status_message: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BatchProfile {
+    pub date_batch_index: usize,
+    pub factor_batch_index: usize,
+    pub start_date: i32,
+    pub end_date: i32,
+    pub factor_count: usize,
+    pub load_ms: u128,
+    pub compute_ms: u128,
+    pub write_ms: u128,
+    pub factors: Vec<FactorProfile>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FactorProfile {
+    pub factor_id: String,
+    pub row_count: usize,
+    pub non_null_count: usize,
 }
 
 pub struct Engine {
@@ -95,7 +121,12 @@ impl Engine {
         let mut factors = Vec::new();
         let mut stale_ids = Vec::new();
         for metadata in &selected_metadata {
-            if let Some(factor) = registry.remove(&metadata.factor_id) {
+            let key = factor_registry_key(
+                &metadata.asset_class,
+                &metadata.frequency,
+                &metadata.factor_id,
+            );
+            if let Some(factor) = registry.remove(&key) {
                 factors.push(factor);
             } else {
                 stale_ids.push(metadata.factor_id.clone());
@@ -192,6 +223,7 @@ impl Engine {
                 execution_batch_count,
                 selected_factor_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
                 loaded_requests,
+                profiles: Vec::new(),
                 status_message: None,
             });
         }
@@ -202,8 +234,9 @@ impl Engine {
         let storage = FactorStorage::new(self.config.factor_root.clone());
         let thread_pool = build_thread_pool(request.threads)?;
         let mut output_paths = BTreeSet::new();
+        let mut profiles = Vec::new();
 
-        for date_batch in &date_batches {
+        for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
             let batch_start_date = *date_batch
                 .first()
                 .expect("date batches are never empty after split");
@@ -220,22 +253,53 @@ impl Engine {
                 target_dates: date_batch.clone(),
             };
 
-            for range in &factor_ranges {
+            for (factor_batch_index, range) in factor_ranges.iter().enumerate() {
                 let batch_specs = specs[range.clone()].to_vec();
                 let batch_requests = merge_requests(
                     batch_specs
                         .iter()
                         .flat_map(|spec| spec.dependencies.clone()),
                 );
+                let load_started = Instant::now();
                 let pool = DataPool::load(&loader, &batch_requests, &context)?;
+                let load_ms = load_started.elapsed().as_millis();
+                let compute_started = Instant::now();
                 let results = compute_factor_batch(
                     &factors[range.clone()],
                     &context,
                     &pool,
                     thread_pool.as_ref(),
                 )?;
+                let compute_ms = compute_started.elapsed().as_millis();
+                let factor_profiles = results
+                    .iter()
+                    .map(|series| FactorProfile {
+                        factor_id: series.spec.id.clone(),
+                        row_count: series.values.len(),
+                        non_null_count: series
+                            .values
+                            .iter()
+                            .filter(|item| item.value.is_some())
+                            .count(),
+                    })
+                    .collect::<Vec<_>>();
+                let write_started = Instant::now();
                 let written_paths = storage.write_results(&results)?;
+                let write_ms = write_started.elapsed().as_millis();
                 output_paths.extend(written_paths);
+                if request.profile {
+                    profiles.push(BatchProfile {
+                        date_batch_index: date_batch_index + 1,
+                        factor_batch_index: factor_batch_index + 1,
+                        start_date: batch_start_date,
+                        end_date: batch_end_date,
+                        factor_count: batch_specs.len(),
+                        load_ms,
+                        compute_ms,
+                        write_ms,
+                        factors: factor_profiles,
+                    });
+                }
             }
         }
 
@@ -251,6 +315,7 @@ impl Engine {
             execution_batch_count,
             selected_factor_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
             loaded_requests,
+            profiles,
             status_message: None,
         })
     }
@@ -292,10 +357,11 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
         let mut selected = Vec::new();
         let mut missing = Vec::new();
         for factor_id_or_name in factor_ids {
-            if let Some(row) = base
-                .iter()
-                .find(|row| row.factor_id == *factor_id_or_name || row.name == *factor_id_or_name)
-            {
+            if let Some(row) = base.iter().find(|row| {
+                row.factor_id == *factor_id_or_name
+                    || row.name == *factor_id_or_name
+                    || row.aliases.iter().any(|alias| alias == factor_id_or_name)
+            }) {
                 selected.push(row.clone());
             } else {
                 missing.push(factor_id_or_name.clone());
@@ -332,6 +398,7 @@ fn empty_report(request: &RunRequest, message: String) -> RunReport {
         execution_batch_count: 0,
         selected_factor_ids: Vec::new(),
         loaded_requests: Vec::new(),
+        profiles: Vec::new(),
         status_message: Some(message),
     }
 }
@@ -443,7 +510,13 @@ pub fn available_specs() -> Vec<FactorSpec> {
 
 #[cfg(test)]
 mod tests {
-    use super::{factor_batch_ranges, split_dates_by_year, validate_date_value};
+    use crate::core::{AssetClass, Frequency};
+    use crate::storage::FactorMetadata;
+
+    use super::{
+        factor_batch_ranges, select_metadata, split_dates_by_year, validate_date_value, RunRequest,
+        SelectionResult,
+    };
 
     #[test]
     fn validates_eight_digit_dates() {
@@ -474,5 +547,61 @@ mod tests {
         assert_eq!(factor_batch_ranges(63, 64), vec![0..63]);
         assert_eq!(factor_batch_ranges(65, 64), vec![0..64, 64..65]);
         assert_eq!(factor_batch_ranges(3, 0), vec![0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn selection_matches_short_id_and_legacy_alias_inside_asset_frequency() {
+        let request = RunRequest {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20260105,
+            end_date: 20260105,
+            factor_ids: Some(vec!["stock.daily.pv.return_1d".to_string()]),
+            tags: None,
+            config_path: None,
+            dry_run: false,
+            factor_batch_size: 64,
+            threads: None,
+            profile: false,
+        };
+        let metadata = vec![
+            metadata_row("return_1d", "stock", "daily", &["stock.daily.pv.return_1d"]),
+            metadata_row(
+                "return_1d",
+                "future",
+                "daily",
+                &["future.daily.pv.return_1d"],
+            ),
+        ];
+
+        let SelectionResult::Selected(selected) = select_metadata(&request, &metadata) else {
+            panic!("expected selected");
+        };
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].asset_class, "stock");
+        assert_eq!(selected[0].factor_id, "return_1d");
+    }
+
+    fn metadata_row(
+        factor_id: &str,
+        asset_class: &str,
+        frequency: &str,
+        aliases: &[&str],
+    ) -> FactorMetadata {
+        FactorMetadata {
+            factor_id: factor_id.to_string(),
+            aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
+            aliases_json: String::new(),
+            version: "0.1.0".to_string(),
+            output_column: factor_id.to_string(),
+            name: factor_id.to_string(),
+            asset_class: asset_class.to_string(),
+            frequency: frequency.to_string(),
+            tags: Vec::new(),
+            tags_json: String::new(),
+            dependencies_json: String::new(),
+            description: String::new(),
+            updated_at: String::new(),
+        }
     }
 }

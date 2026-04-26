@@ -61,6 +61,9 @@ impl Display for Frequency {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum DatasetId {
     StockDailyPv,
+    StockDailyBasic,
+    StockIncome,
+    StockBalanceSheet,
     StockMinute1m,
     StockSwClassification,
     FutureDaily,
@@ -70,18 +73,24 @@ pub enum DatasetId {
 impl DatasetId {
     pub fn asset_class(self) -> AssetClass {
         match self {
-            Self::StockDailyPv | Self::StockMinute1m | Self::StockSwClassification => {
-                AssetClass::Stock
-            }
+            Self::StockDailyPv
+            | Self::StockDailyBasic
+            | Self::StockIncome
+            | Self::StockBalanceSheet
+            | Self::StockMinute1m
+            | Self::StockSwClassification => AssetClass::Stock,
             Self::FutureDaily | Self::FutureMinute1m => AssetClass::Future,
         }
     }
 
     pub fn frequency(self) -> Frequency {
         match self {
-            Self::StockDailyPv | Self::StockSwClassification | Self::FutureDaily => {
-                Frequency::Daily
-            }
+            Self::StockDailyPv
+            | Self::StockDailyBasic
+            | Self::StockIncome
+            | Self::StockBalanceSheet
+            | Self::StockSwClassification
+            | Self::FutureDaily => Frequency::Daily,
             Self::StockMinute1m | Self::FutureMinute1m => Frequency::Minute1,
         }
     }
@@ -89,6 +98,9 @@ impl DatasetId {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::StockDailyPv => "stock.daily.pv",
+            Self::StockDailyBasic => "stock.daily.basic",
+            Self::StockIncome => "stock.income",
+            Self::StockBalanceSheet => "stock.balancesheet",
             Self::StockMinute1m => "stock.minute.1m",
             Self::StockSwClassification => "stock.sw_classification",
             Self::FutureDaily => "future.daily",
@@ -120,6 +132,7 @@ pub struct Lookback {
 #[derive(Clone, Debug)]
 pub struct FactorSpec {
     pub id: String,
+    pub aliases: Vec<String>,
     pub name: String,
     pub asset_class: AssetClass,
     pub frequency: Frequency,
@@ -134,6 +147,14 @@ impl FactorSpec {
     pub fn output_column(&self) -> String {
         self.id.replace('.', "__").replace('-', "_")
     }
+
+    pub fn registry_key(&self) -> String {
+        factor_registry_key(self.asset_class.as_str(), self.frequency.as_str(), &self.id)
+    }
+}
+
+pub fn factor_registry_key(asset_class: &str, frequency: &str, factor_id: &str) -> String {
+    format!("{asset_class}|{frequency}|{factor_id}")
 }
 
 #[derive(Clone, Debug)]

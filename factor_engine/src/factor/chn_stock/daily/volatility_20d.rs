@@ -18,7 +18,8 @@ pub fn create() -> Box<dyn Factor> {
 impl Factor for StockDailyVolatility20d {
     fn spec(&self) -> FactorSpec {
         FactorSpec {
-            id: "stock.daily.pv.volatility_20d".to_string(),
+            id: "volatility_20d".to_string(),
+            aliases: vec!["stock.daily.pv.volatility_20d".to_string()],
             name: "Stock 20-day return volatility".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,

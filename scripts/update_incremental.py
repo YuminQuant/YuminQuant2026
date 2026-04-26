@@ -76,6 +76,13 @@ def iter_calendar_dates(start_date, end_date):
         current += timedelta(days=1)
 
 
+FINANCIAL_STATEMENT_SUFFIXES = {"0331", "0630", "0930", "1231"}
+
+
+def is_financial_statement_period(date):
+    return len(date) == 8 and date[4:] in FINANCIAL_STATEMENT_SUFFIXES
+
+
 def run_task(logger, name, fn):
     logger.info(f">>> 开始任务: {name}")
     fn()
@@ -196,27 +203,17 @@ def update_stock_financial(args, logger):
         IncomeDownloader,
         BalanceSheetDownloader,
         CashFlowDownloader,
-        ForecastDownloader,
-        ExpressDownloader,
     ]
     for date in iter_calendar_dates(start_date, end_date):
+        if not is_financial_statement_period(date):
+            logger.info(f"skip stock_financial {date}: not a financial statement period")
+            continue
         for downloader_cls in financial_downloaders:
             run_task(
                 logger,
                 f"{downloader_cls.__name__}_incremental_{date}",
                 lambda cls=downloader_cls, d=date: cls().sync(mode="incremental", target_date=d),
             )
-
-    run_task(
-        logger,
-        "dividend",
-        lambda: DividendDownloader().sync(start_date=start_date, target_end_date=end_date),
-    )
-    run_task(
-        logger,
-        "analyst_report",
-        lambda: AnalystReportDownloader().sync(start_date=start_date, target_end_date=end_date),
-    )
 
 
 def update_future_static(logger):

@@ -1,7 +1,8 @@
 # YuminQuant Factor Engine MVP
 
-This is the first Rust factor engine scaffold for YuminQuant. It focuses on
-price-volume factors and reads the existing local parquet data lake directly.
+This is the Rust factor engine scaffold for YuminQuant. It reads the existing
+local parquet data lake directly and supports price-volume, valuation, and
+point-in-time financial statement demo factors.
 
 ## Factor Layout
 
@@ -14,6 +15,8 @@ src/factor/
     daily/
       return_1d.rs
       momentum_20d.rs
+      pe_zscore_60d.rs
+      roe_8q.rs
       volume_ratio_20d.rs
       volatility_20d.rs
     minute/
@@ -27,24 +30,35 @@ src/factor/
       return_1m.rs
   registry.rs
 src/operators/
-  ts_mean.rs
-  ts_std_dev.rs
-  ts_zscore.rs
-  ts_corr.rs
+  time_series/
+    ts_mean.rs
+    ts_std_dev.rs
+    ts_zscore.rs
+    ts_corr.rs
+  cross_sectional/
+    cs_rank.rs
+    cs_neutralize.rs
 ```
 
 Each concrete factor file owns its factor expression. Shared math and
-time-series building blocks live under `src/operators/`, for example
-`ts_mean`, `ts_std_dev`, `ts_zscore`, and `ts_corr`. The registry is generated
-at build time by scanning the factor directory.
+time-series/cross-sectional building blocks live under `src/operators/`. The
+registry is generated at build time by scanning the factor directory.
 
 ## Design Decisions
 
 - Source data remains in the Python-managed `data/` directory.
+- Factor IDs and output columns use short snake_case names matching the factor
+  file stem, for example `return_1d` or `roe_8q`. Asset class and frequency are
+  metadata fields, so stock and future can both have `return_1d`.
+- Existing long IDs such as `stock.daily.pv.return_1d` are kept as aliases for
+  CLI selection during migration, but new metadata writes the short ID.
 - Daily data is stored by year in the source lake, so the loader uses the
   trading calendar to compute the warmup start date and only opens the years
   that overlap the requested window.
 - Minute data is loaded by trading day, matching the existing source layout.
+- Financial statement factors use point-in-time disclosure dates. `f_ann_date`
+  is preferred over `ann_date`; records disclosed after the target trading date
+  are ignored.
 - Factor requirements are grouped by dataset and projected columns are loaded
   once per run. This is the memory model intended for large factor batches.
 - Factor outputs are written as wide daily files:
@@ -54,8 +68,9 @@ data/factors/{asset_class}/{frequency}/YYYY/YYYYMMDD.parquet
 ```
 
 Each output file contains key columns plus all factor columns computed or
-previously stored for that date. This avoids producing one file per
-factor/date pair when the factor count grows.
+previously stored for that date. After the short-name migration, old long
+columns are not removed automatically; clear the target output date range before
+regenerating if you want only short columns.
 
 Factor metadata is written to:
 
@@ -75,13 +90,14 @@ From the repository root:
 cargo run --manifest-path factor_engine/Cargo.toml -- metadata
 cargo run --manifest-path factor_engine/Cargo.toml -- list --asset stock --frequency daily
 cargo run --manifest-path factor_engine/Cargo.toml -- plan --asset stock --frequency daily --start-date 20260105 --end-date 20260109
-cargo run --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260105 --end-date 20260109
+cargo run --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260105 --end-date 20260109 --profile
 cargo run --manifest-path factor_engine/Cargo.toml -- run --asset future --frequency minute_1m --start-date 20260424 --end-date 20260424
 ```
 
 Run specific factors:
 
 ```powershell
+cargo run --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260105 --end-date 20260109 --factors return_1d
 cargo run --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260105 --end-date 20260109 --factors stock.daily.pv.return_1d
 ```
 
@@ -100,3 +116,15 @@ python factor_engine\scripts\run_factor_batches.py --asset chn_stock --frequency
 Batch mode computes one group of factors at a time and appends/merges those
 columns into the same per-date wide parquet files. This keeps memory bounded by
 the selected batch instead of keeping every factor result in memory.
+
+Create a factor skeleton:
+
+```powershell
+python factor_engine\scripts\new_factor.py --asset stock --frequency daily --name my_factor
+```
+
+Run the small benchmark suite:
+
+```powershell
+python factor_engine\scripts\benchmark_factor_engine.py
+```

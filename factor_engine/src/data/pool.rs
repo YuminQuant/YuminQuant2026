@@ -28,6 +28,15 @@ impl DataPool {
         let mut pool = Self::default();
         for (dataset, columns) in grouped {
             let columns = columns.into_iter().collect::<Vec<_>>();
+            if dataset == DatasetId::StockSwClassification {
+                let table = loader.load_stock_sw_classification(
+                    &columns,
+                    context.load_start_date,
+                    context.end_date,
+                )?;
+                pool.daily.insert(dataset, table);
+                continue;
+            }
             match dataset.frequency() {
                 Frequency::Daily => {
                     let table = loader.load_daily(

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use yq_factor_engine::config::EngineConfig;
 use yq_factor_engine::core::{AssetClass, Frequency};
+use yq_factor_engine::engine::DEFAULT_FACTOR_BATCH_SIZE;
 use yq_factor_engine::{Engine, Result, RunRequest};
 
 fn main() {
@@ -94,14 +95,18 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         .ok_or_else(|| {
             yq_factor_engine::error::err("missing or invalid --frequency daily|minute_1m")
         })?;
-    let start_date = flags
-        .get("start-date")
-        .ok_or_else(|| yq_factor_engine::error::err("missing --start-date YYYYMMDD"))?
-        .parse::<i32>()?;
-    let end_date = flags
-        .get("end-date")
-        .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?
-        .parse::<i32>()?;
+    let start_date = parse_yyyymmdd(
+        flags
+            .get("start-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --start-date YYYYMMDD"))?,
+        "start-date",
+    )?;
+    let end_date = parse_yyyymmdd(
+        flags
+            .get("end-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?,
+        "end-date",
+    )?;
     let factor_ids = flags.get("factors").map(|value| {
         value
             .split(',')
@@ -123,6 +128,30 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
             "--factors and --tags cannot be used together",
         ));
     }
+    let factor_batch_size = match flags.get("factor-batch-size") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--factor-batch-size must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_FACTOR_BATCH_SIZE,
+    };
+    let threads = match flags.get("threads") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--threads must be greater than 0",
+                ));
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
     let config_path = flags.get("config").map(PathBuf::from);
     Ok(RunRequest {
         asset_class,
@@ -133,7 +162,18 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         tags,
         config_path,
         dry_run,
+        factor_batch_size,
+        threads,
     })
+}
+
+fn parse_yyyymmdd(value: &str, name: &str) -> Result<i32> {
+    if value.len() != 8 || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(yq_factor_engine::error::err(format!(
+            "--{name} must be an 8-digit YYYYMMDD date, got {value}"
+        )));
+    }
+    Ok(value.parse::<i32>()?)
 }
 
 fn engine_from_flags(flags: &HashMap<String, String>) -> Result<Engine> {
@@ -166,7 +206,15 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
     println!("factors: {}", report.factor_count);
     println!("output files: {}", report.output_file_count);
     println!("load_start_date: {}", report.load_start_date);
+    if let (Some(start_date), Some(end_date)) =
+        (report.effective_start_date, report.effective_end_date)
+    {
+        println!("effective date range: {}..{}", start_date, end_date);
+    }
     println!("target dates: {}", report.target_dates.len());
+    println!("date batches: {}", report.date_batch_count);
+    println!("factor batches: {}", report.factor_batch_count);
+    println!("execution batches: {}", report.execution_batch_count);
     println!("selected factors:");
     for factor_id in &report.selected_factor_ids {
         println!("  {}", factor_id);
@@ -192,5 +240,19 @@ fn print_help() {
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
     println!("  --tags tag[,tag...]");
+    println!("  --factor-batch-size N (default 64)");
+    println!("  --threads N");
     println!("  --config D:/path/to/config.toml");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_yyyymmdd;
+
+    #[test]
+    fn parse_yyyymmdd_rejects_non_eight_digit_input() {
+        assert_eq!(parse_yyyymmdd("20260424", "end-date").unwrap(), 20260424);
+        assert!(parse_yyyymmdd("2026424", "end-date").is_err());
+        assert!(parse_yyyymmdd("2026-04-24", "end-date").is_err());
+    }
 }

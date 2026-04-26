@@ -312,6 +312,49 @@ impl Table {
         }
     }
 
+    pub fn required_i32_date_cast(&self, name: &str) -> Result<Vec<Option<i32>>> {
+        match self.columns.get(name) {
+            Some(ColumnData::I32(values)) => Ok(values.clone()),
+            Some(ColumnData::I64(values)) => values
+                .iter()
+                .map(|value| {
+                    value
+                        .map(|value| {
+                            i32::try_from(value).map_err(|_| {
+                                err(format!(
+                                    "date column {} value {} is outside int32 range",
+                                    name, value
+                                ))
+                            })
+                        })
+                        .transpose()
+                })
+                .collect(),
+            Some(ColumnData::Utf8(values)) => values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_deref()
+                        .and_then(normalize_date_text)
+                        .map(|value| {
+                            value.parse::<i32>().map_err(|_| {
+                                err(format!(
+                                    "date column {} value {} cannot be parsed as YYYYMMDD",
+                                    name, value
+                                ))
+                            })
+                        })
+                        .transpose()
+                })
+                .collect(),
+            Some(_) => Err(err(format!(
+                "column {} cannot be cast to YYYYMMDD date",
+                name
+            ))),
+            None => Err(err(format!("missing required column {}", name))),
+        }
+    }
+
     pub fn required_utf8(&self, name: &str) -> Result<&Vec<Option<String>>> {
         match self.columns.get(name) {
             Some(ColumnData::Utf8(values)) => Ok(values),
@@ -335,5 +378,46 @@ impl Table {
             Some(_) => Err(err(format!("column {} cannot be cast to float64", name))),
             None => Err(err(format!("missing required column {}", name))),
         }
+    }
+}
+
+fn normalize_date_text(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "nan" | "none" | "null" | "nat" => None,
+        _ => Some(value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{ColumnData, Table};
+
+    #[test]
+    fn date_cast_treats_common_text_missing_values_as_none() {
+        let table = Table::new(BTreeMap::from([(
+            "date".to_string(),
+            ColumnData::Utf8(vec![
+                Some("20260424".to_string()),
+                Some("".to_string()),
+                Some("nan".to_string()),
+                Some("NaN".to_string()),
+                Some("None".to_string()),
+                Some("null".to_string()),
+                Some("NaT".to_string()),
+                None,
+            ]),
+        )]))
+        .expect("valid table");
+
+        assert_eq!(
+            table.required_i32_date_cast("date").expect("date cast"),
+            vec![Some(20260424), None, None, None, None, None, None, None]
+        );
     }
 }

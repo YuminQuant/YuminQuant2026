@@ -5,11 +5,20 @@ use crate::core::DatasetId;
 #[derive(Clone, Debug)]
 pub struct DataCatalog {
     data_root: PathBuf,
+    stock_sw_classification_path: Option<PathBuf>,
 }
 
 impl DataCatalog {
     pub fn new(data_root: PathBuf) -> Self {
-        Self { data_root }
+        Self {
+            data_root,
+            stock_sw_classification_path: None,
+        }
+    }
+
+    pub fn with_stock_sw_classification_path(mut self, path: PathBuf) -> Self {
+        self.stock_sw_classification_path = Some(path);
+        self
     }
 
     pub fn data_root(&self) -> &Path {
@@ -65,5 +74,9 @@ impl DataCatalog {
             _ => return None,
         };
         path.exists().then_some(path)
+    }
+
+    pub fn stock_sw_classification_file(&self) -> Option<&Path> {
+        self.stock_sw_classification_path.as_deref()
     }
 }

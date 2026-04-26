@@ -8,6 +8,7 @@ pub struct EngineConfig {
     pub project_config_path: PathBuf,
     pub data_root: PathBuf,
     pub factor_root: PathBuf,
+    pub stock_sw_classification_path: PathBuf,
     pub stock_calendar_exchange: String,
     pub future_calendar_exchange: String,
 }
@@ -27,10 +28,20 @@ impl EngineConfig {
             .ok_or_else(|| err("missing [paths].base_data_dir in project config"))?;
         let data_root = PathBuf::from(data_root_value);
         let factor_root = data_root.join("factors");
+        let stock_sw_classification_path =
+            parse_toml_string_value(&content, "stock_sw_classification_path")
+                .map(|value| normalize_data_path(&data_root, &value))
+                .unwrap_or_else(|| {
+                    data_root
+                        .join("index_data")
+                        .join("member_sw")
+                        .join("sw_members.parquet")
+                });
         Ok(Self {
             project_config_path: path,
             data_root,
             factor_root,
+            stock_sw_classification_path,
             stock_calendar_exchange: "SSE".to_string(),
             future_calendar_exchange: "SHFE".to_string(),
         })
@@ -59,6 +70,15 @@ fn normalize_path(path: &Path) -> Result<PathBuf> {
         Ok(path.canonicalize()?)
     } else {
         Ok(path.to_path_buf())
+    }
+}
+
+fn normalize_data_path(data_root: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        data_root.join(path)
     }
 }
 

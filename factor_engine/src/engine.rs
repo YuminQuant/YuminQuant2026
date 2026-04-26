@@ -1,12 +1,18 @@
+use std::collections::BTreeSet;
+use std::ops::Range;
 use std::path::PathBuf;
 
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
-use crate::core::{AssetClass, DataRequest, FactorContext, FactorSpec, Frequency};
+use crate::core::{AssetClass, DataRequest, FactorContext, FactorSeries, FactorSpec, Frequency};
 use crate::data::{DataCatalog, DataPool, MarketDataLoader};
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
+use crate::factor::Factor;
 use crate::storage::{FactorMetadata, FactorStorage};
+use rayon::prelude::*;
+
+pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct RunRequest {
@@ -18,6 +24,8 @@ pub struct RunRequest {
     pub tags: Option<Vec<String>>,
     pub config_path: Option<PathBuf>,
     pub dry_run: bool,
+    pub factor_batch_size: usize,
+    pub threads: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +34,11 @@ pub struct RunReport {
     pub output_file_count: usize,
     pub load_start_date: i32,
     pub target_dates: Vec<i32>,
+    pub effective_start_date: Option<i32>,
+    pub effective_end_date: Option<i32>,
+    pub date_batch_count: usize,
+    pub factor_batch_count: usize,
+    pub execution_batch_count: usize,
     pub selected_factor_ids: Vec<String>,
     pub loaded_requests: Vec<DataRequest>,
     pub status_message: Option<String>,
@@ -66,6 +79,9 @@ impl Engine {
     }
 
     fn execute(&self, request: &RunRequest, dry_run: bool) -> Result<RunReport> {
+        validate_date_value(request.start_date, "start-date")?;
+        validate_date_value(request.end_date, "end-date")?;
+
         let metadata = self.read_metadata()?;
         let selected_metadata = select_metadata(request, &metadata);
         if let SelectionResult::Empty(message) = selected_metadata {
@@ -115,16 +131,51 @@ impl Engine {
             AssetClass::Future => &self.config.future_calendar_exchange,
         };
         let calendar = TradingCalendar::load(&self.config.data_root, calendar_exchange)?;
-        let target_dates = calendar.open_dates_between(request.start_date, request.end_date);
-        let load_start_date = calendar.warmup_start(request.start_date, max_lookback);
-        let context = FactorContext {
-            asset_class: request.asset_class,
-            frequency: request.frequency,
-            start_date: request.start_date,
-            end_date: request.end_date,
-            load_start_date,
-            target_dates: target_dates.clone(),
+        let Some(effective_start_date) = calendar.first_open_on_or_after(request.start_date) else {
+            return Ok(empty_report(
+                request,
+                format!(
+                    "No open trading dates found on or after start_date {}.",
+                    request.start_date
+                ),
+            ));
         };
+        let Some(effective_end_date) = calendar.last_open_on_or_before(request.end_date) else {
+            return Ok(empty_report(
+                request,
+                format!(
+                    "No open trading dates found on or before end_date {}.",
+                    request.end_date
+                ),
+            ));
+        };
+        if effective_start_date > effective_end_date {
+            return Ok(empty_report(
+                request,
+                format!(
+                    "No open trading dates found between {} and {} after calendar alignment.",
+                    request.start_date, request.end_date
+                ),
+            ));
+        }
+
+        let target_dates = calendar.open_dates_between(effective_start_date, effective_end_date);
+        if target_dates.is_empty() {
+            return Ok(empty_report(
+                request,
+                format!(
+                    "No open trading dates found between {} and {}.",
+                    request.start_date, request.end_date
+                ),
+            ));
+        }
+
+        let date_batches = split_dates_by_year(&target_dates);
+        let factor_batch_size = request.factor_batch_size.max(1);
+        let factor_ranges = factor_batch_ranges(factors.len(), factor_batch_size);
+        let factor_batch_count = factor_ranges.len();
+        let execution_batch_count = date_batches.len() * factor_batch_count;
+        let load_start_date = calendar.warmup_start(effective_start_date, max_lookback);
 
         let loaded_requests =
             merge_requests(specs.iter().flat_map(|spec| spec.dependencies.clone()));
@@ -134,33 +185,71 @@ impl Engine {
                 output_file_count: 0,
                 load_start_date,
                 target_dates,
+                effective_start_date: Some(effective_start_date),
+                effective_end_date: Some(effective_end_date),
+                date_batch_count: date_batches.len(),
+                factor_batch_count,
+                execution_batch_count,
                 selected_factor_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
                 loaded_requests,
                 status_message: None,
             });
         }
 
-        let catalog = DataCatalog::new(self.config.data_root.clone());
+        let catalog = DataCatalog::new(self.config.data_root.clone())
+            .with_stock_sw_classification_path(self.config.stock_sw_classification_path.clone());
         let loader = MarketDataLoader::new(catalog);
-        let pool = DataPool::load(&loader, &loaded_requests, &context)?;
-        let mut results = Vec::new();
-        for factor in factors {
-            results.push(factor.compute(&context, &pool)?);
+        let storage = FactorStorage::new(self.config.factor_root.clone());
+        let thread_pool = build_thread_pool(request.threads)?;
+        let mut output_paths = BTreeSet::new();
+
+        for date_batch in &date_batches {
+            let batch_start_date = *date_batch
+                .first()
+                .expect("date batches are never empty after split");
+            let batch_end_date = *date_batch
+                .last()
+                .expect("date batches are never empty after split");
+            let batch_load_start_date = calendar.warmup_start(batch_start_date, max_lookback);
+            let context = FactorContext {
+                asset_class: request.asset_class,
+                frequency: request.frequency,
+                start_date: batch_start_date,
+                end_date: batch_end_date,
+                load_start_date: batch_load_start_date,
+                target_dates: date_batch.clone(),
+            };
+
+            for range in &factor_ranges {
+                let batch_specs = specs[range.clone()].to_vec();
+                let batch_requests = merge_requests(
+                    batch_specs
+                        .iter()
+                        .flat_map(|spec| spec.dependencies.clone()),
+                );
+                let pool = DataPool::load(&loader, &batch_requests, &context)?;
+                let results = compute_factor_batch(
+                    &factors[range.clone()],
+                    &context,
+                    &pool,
+                    thread_pool.as_ref(),
+                )?;
+                let written_paths = storage.write_results(&results)?;
+                output_paths.extend(written_paths);
+            }
         }
 
-        let storage = FactorStorage::new(self.config.factor_root.clone());
-        let output_file_count = storage.write_results(&results)?;
-        let result_specs = results
-            .iter()
-            .map(|series| series.spec.clone())
-            .collect::<Vec<_>>();
-
         Ok(RunReport {
-            factor_count: result_specs.len(),
-            output_file_count,
+            factor_count: specs.len(),
+            output_file_count: output_paths.len(),
             load_start_date,
             target_dates,
-            selected_factor_ids: result_specs.iter().map(|spec| spec.id.clone()).collect(),
+            effective_start_date: Some(effective_start_date),
+            effective_end_date: Some(effective_end_date),
+            date_batch_count: date_batches.len(),
+            factor_batch_count,
+            execution_batch_count,
+            selected_factor_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
             loaded_requests,
             status_message: None,
         })
@@ -236,6 +325,11 @@ fn empty_report(request: &RunRequest, message: String) -> RunReport {
         output_file_count: 0,
         load_start_date: request.start_date,
         target_dates: Vec::new(),
+        effective_start_date: None,
+        effective_end_date: None,
+        date_batch_count: 0,
+        factor_batch_count: 0,
+        execution_batch_count: 0,
         selected_factor_ids: Vec::new(),
         loaded_requests: Vec::new(),
         status_message: Some(message),
@@ -266,9 +360,119 @@ where
     merged
 }
 
+fn validate_date_value(date: i32, name: &str) -> Result<()> {
+    let value = date.to_string();
+    if value.len() != 8 {
+        return Err(err(format!(
+            "--{name} must be an 8-digit YYYYMMDD date, got {date}"
+        )));
+    }
+    Ok(())
+}
+
+fn split_dates_by_year(dates: &[i32]) -> Vec<Vec<i32>> {
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut current_year = None;
+
+    for date in dates {
+        let year = date / 10_000;
+        if current_year.is_some_and(|value| value != year) {
+            batches.push(current);
+            current = Vec::new();
+        }
+        current_year = Some(year);
+        current.push(*date);
+    }
+
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+fn factor_batch_ranges(factor_count: usize, factor_batch_size: usize) -> Vec<Range<usize>> {
+    if factor_count == 0 {
+        return Vec::new();
+    }
+
+    let batch_size = factor_batch_size.max(1);
+    (0..factor_count)
+        .step_by(batch_size)
+        .map(|start| start..(start + batch_size).min(factor_count))
+        .collect()
+}
+
+fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>> {
+    match threads {
+        Some(0) => Err(err("threads must be greater than 0")),
+        Some(threads) => Ok(Some(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()?,
+        )),
+        None => Ok(None),
+    }
+}
+
+fn compute_factor_batch(
+    factors: &[Box<dyn Factor>],
+    context: &FactorContext,
+    pool: &DataPool,
+    thread_pool: Option<&rayon::ThreadPool>,
+) -> Result<Vec<FactorSeries>> {
+    let compute = || {
+        factors
+            .par_iter()
+            .map(|factor| factor.compute(context, pool))
+            .collect::<Vec<_>>()
+    };
+    let results = match thread_pool {
+        Some(thread_pool) => thread_pool.install(compute),
+        None => compute(),
+    };
+    results.into_iter().collect()
+}
+
 pub fn available_specs() -> Vec<FactorSpec> {
     all_factors()
         .into_iter()
         .map(|factor| factor.spec())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{factor_batch_ranges, split_dates_by_year, validate_date_value};
+
+    #[test]
+    fn validates_eight_digit_dates() {
+        assert!(validate_date_value(20260424, "end-date").is_ok());
+        assert!(validate_date_value(2026424, "end-date").is_err());
+    }
+
+    #[test]
+    fn splits_dates_by_natural_year() {
+        let batches = split_dates_by_year(&[20100104, 20100105, 20110104, 20110105, 20120104]);
+
+        assert_eq!(
+            batches,
+            vec![
+                vec![20100104, 20100105],
+                vec![20110104, 20110105],
+                vec![20120104]
+            ]
+        );
+    }
+
+    #[test]
+    fn chunks_factors_by_configured_batch_size() {
+        assert_eq!(
+            factor_batch_ranges(0, 64),
+            Vec::<std::ops::Range<usize>>::new()
+        );
+        assert_eq!(factor_batch_ranges(63, 64), vec![0..63]);
+        assert_eq!(factor_batch_ranges(65, 64), vec![0..64, 64..65]);
+        assert_eq!(factor_batch_ranges(3, 0), vec![0..1, 1..2, 2..3]);
+    }
 }

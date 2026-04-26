@@ -9,7 +9,7 @@ use super::collect_numeric_columns;
 pub struct DailySeries {
     pub ts_code: String,
     pub dates: Vec<i32>,
-    columns: BTreeMap<String, Vec<Option<f64>>>,
+    pub(crate) columns: BTreeMap<String, Vec<Option<f64>>>,
 }
 
 impl DailySeries {

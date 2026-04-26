@@ -57,7 +57,7 @@ impl FactorStorage {
         Self { factor_root }
     }
 
-    pub fn write_results(&self, results: &[FactorSeries]) -> Result<usize> {
+    pub fn write_results(&self, results: &[FactorSeries]) -> Result<Vec<PathBuf>> {
         let mut grouped: BTreeMap<(AssetClass, Frequency, i32), PendingFrame> = BTreeMap::new();
         for series in results {
             let column_name = series.spec.output_column();
@@ -87,13 +87,13 @@ impl FactorStorage {
             }
         }
 
-        let mut written = 0;
+        let mut written = Vec::new();
         for ((asset_class, frequency, trade_date), mut frame) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
             let table = pending_frame_to_table(frequency, trade_date, &frame)?;
             write_parquet(&path, &table)?;
-            written += 1;
+            written.push(path);
         }
         Ok(written)
     }

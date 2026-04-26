@@ -4,7 +4,7 @@ use crate::core::DatasetId;
 use crate::data::catalog::DataCatalog;
 use crate::data::parquet_io::read_parquet;
 use crate::data::table::Table;
-use crate::error::Result;
+use crate::error::{err, Result};
 
 #[derive(Clone, Debug)]
 pub struct MarketDataLoader {
@@ -32,6 +32,20 @@ impl MarketDataLoader {
             table.append(&filtered)?;
         }
         Ok(table)
+    }
+
+    pub fn load_stock_sw_classification(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+    ) -> Result<Table> {
+        let path = self.catalog.stock_sw_classification_file().ok_or_else(|| {
+            err("stock SW classification path is not configured; set stock_sw_classification_path in config.toml")
+        })?;
+        let columns = with_required_columns(requested_columns, &["ts_code", "in_date", "out_date"]);
+        let table = read_parquet(path, Some(&columns))?;
+        filter_classification_range(&table, start_date, end_date)
     }
 
     pub fn load_minute_by_date(
@@ -64,6 +78,21 @@ impl MarketDataLoader {
         }
         Ok(tables)
     }
+}
+
+fn filter_classification_range(table: &Table, start_date: i32, end_date: i32) -> Result<Table> {
+    let in_dates = table.required_i32_date_cast("in_date")?;
+    let out_dates = table.required_i32_date_cast("out_date")?;
+    let indices = (0..table.len)
+        .filter(|idx| {
+            let Some(in_date) = in_dates[*idx] else {
+                return false;
+            };
+            let out_date = out_dates[*idx].unwrap_or(99_991_231);
+            in_date <= end_date && out_date >= start_date
+        })
+        .collect::<Vec<_>>();
+    table.take(&indices)
 }
 
 fn with_required_columns(requested: &[String], required: &[&str]) -> Vec<String> {

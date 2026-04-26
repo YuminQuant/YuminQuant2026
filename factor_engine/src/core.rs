@@ -62,6 +62,7 @@ impl Display for Frequency {
 pub enum DatasetId {
     StockDailyPv,
     StockMinute1m,
+    StockSwClassification,
     FutureDaily,
     FutureMinute1m,
 }
@@ -69,14 +70,18 @@ pub enum DatasetId {
 impl DatasetId {
     pub fn asset_class(self) -> AssetClass {
         match self {
-            Self::StockDailyPv | Self::StockMinute1m => AssetClass::Stock,
+            Self::StockDailyPv | Self::StockMinute1m | Self::StockSwClassification => {
+                AssetClass::Stock
+            }
             Self::FutureDaily | Self::FutureMinute1m => AssetClass::Future,
         }
     }
 
     pub fn frequency(self) -> Frequency {
         match self {
-            Self::StockDailyPv | Self::FutureDaily => Frequency::Daily,
+            Self::StockDailyPv | Self::StockSwClassification | Self::FutureDaily => {
+                Frequency::Daily
+            }
             Self::StockMinute1m | Self::FutureMinute1m => Frequency::Minute1,
         }
     }
@@ -85,6 +90,7 @@ impl DatasetId {
         match self {
             Self::StockDailyPv => "stock.daily.pv",
             Self::StockMinute1m => "stock.minute.1m",
+            Self::StockSwClassification => "stock.sw_classification",
             Self::FutureDaily => "future.daily",
             Self::FutureMinute1m => "future.minute.1m",
         }

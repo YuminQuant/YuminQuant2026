@@ -42,6 +42,21 @@ impl TradingCalendar {
             .collect()
     }
 
+    pub fn first_open_on_or_after(&self, date: i32) -> Option<i32> {
+        let idx = match self.open_dates.binary_search(&date) {
+            Ok(idx) | Err(idx) => idx,
+        };
+        self.open_dates.get(idx).copied()
+    }
+
+    pub fn last_open_on_or_before(&self, date: i32) -> Option<i32> {
+        match self.open_dates.binary_search(&date) {
+            Ok(idx) => self.open_dates.get(idx).copied(),
+            Err(0) => None,
+            Err(idx) => self.open_dates.get(idx - 1).copied(),
+        }
+    }
+
     pub fn warmup_start(&self, start_date: i32, trading_days: usize) -> i32 {
         if self.open_dates.is_empty() || trading_days == 0 {
             return start_date;
@@ -52,5 +67,39 @@ impl TradingCalendar {
         };
         let warmup_idx = first_target_idx.saturating_sub(trading_days);
         self.open_dates[warmup_idx]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TradingCalendar;
+
+    fn calendar() -> TradingCalendar {
+        TradingCalendar {
+            open_dates: vec![20100104, 20100105, 20100106, 20110104],
+        }
+    }
+
+    #[test]
+    fn aligns_to_nearest_open_dates_inside_requested_range() {
+        let calendar = calendar();
+
+        assert_eq!(calendar.first_open_on_or_after(20100101), Some(20100104));
+        assert_eq!(calendar.last_open_on_or_before(20100110), Some(20100106));
+    }
+
+    #[test]
+    fn returns_none_when_no_open_date_can_satisfy_boundary() {
+        let calendar = calendar();
+
+        assert_eq!(calendar.first_open_on_or_after(20120101), None);
+        assert_eq!(calendar.last_open_on_or_before(20091231), None);
+    }
+
+    #[test]
+    fn warmup_can_cross_year_boundary() {
+        let calendar = calendar();
+
+        assert_eq!(calendar.warmup_start(20110104, 2), 20100105);
     }
 }

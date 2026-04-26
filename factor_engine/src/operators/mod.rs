@@ -1,88 +1,8 @@
-mod utils;
+pub mod cross_sectional;
+pub mod time_series;
 
-pub mod ts_argmax;
-pub mod ts_argmin;
-pub mod ts_central_moment;
-pub mod ts_co_kurt_yxxx;
-pub mod ts_co_kurt_yyxx;
-pub mod ts_corr;
-pub mod ts_coskew_yxx;
-pub mod ts_covariance;
-pub mod ts_cv;
-pub mod ts_delay;
-pub mod ts_diff;
-pub mod ts_diff_avg;
-pub mod ts_diff_max;
-pub mod ts_diff_median;
-pub mod ts_diff_min;
-pub mod ts_entropy;
-pub mod ts_ewm;
-pub mod ts_ir;
-pub mod ts_kurt;
-pub mod ts_max;
-pub mod ts_mean;
-pub mod ts_median;
-pub mod ts_min;
-pub mod ts_minmax_cps;
-pub mod ts_minmax_diff;
-pub mod ts_minmax_scale;
-pub mod ts_partial_corr_xy_z;
-pub mod ts_pctchg;
-pub mod ts_pctchg_abs;
-pub mod ts_pctrank;
-pub mod ts_prod;
-pub mod ts_quantile;
-pub mod ts_rank;
-pub mod ts_rankcorr;
-pub mod ts_regression;
-pub mod ts_skew;
-pub mod ts_std_dev;
-pub mod ts_sum;
-pub mod ts_theilsen;
-pub mod ts_variance;
-pub mod ts_zscore;
-
-pub use ts_argmax::ts_argmax;
-pub use ts_argmin::ts_argmin;
-pub use ts_central_moment::ts_central_moment;
-pub use ts_co_kurt_yxxx::ts_co_kurt_yxxx;
-pub use ts_co_kurt_yyxx::ts_co_kurt_yyxx;
-pub use ts_corr::ts_corr;
-pub use ts_coskew_yxx::ts_coskew_yxx;
-pub use ts_covariance::ts_covariance;
-pub use ts_cv::ts_cv;
-pub use ts_delay::ts_delay;
-pub use ts_diff::ts_diff;
-pub use ts_diff_avg::ts_diff_avg;
-pub use ts_diff_max::ts_diff_max;
-pub use ts_diff_median::ts_diff_median;
-pub use ts_diff_min::ts_diff_min;
-pub use ts_entropy::ts_entropy;
-pub use ts_ewm::ts_ewm;
-pub use ts_ir::ts_ir;
-pub use ts_kurt::ts_kurt;
-pub use ts_max::ts_max;
-pub use ts_mean::ts_mean;
-pub use ts_median::ts_median;
-pub use ts_min::ts_min;
-pub use ts_minmax_cps::ts_minmax_cps;
-pub use ts_minmax_diff::ts_minmax_diff;
-pub use ts_minmax_scale::ts_minmax_scale;
-pub use ts_partial_corr_xy_z::ts_partial_corr_xy_z;
-pub use ts_pctchg::{ts_pct_chg, ts_pctchg};
-pub use ts_pctchg_abs::ts_pctchg_abs;
-pub use ts_pctrank::ts_pctrank;
-pub use ts_prod::ts_prod;
-pub use ts_quantile::ts_quantile;
-pub use ts_rank::ts_rank;
-pub use ts_rankcorr::ts_rankcorr;
-pub use ts_regression::ts_regression;
-pub use ts_skew::ts_skew;
-pub use ts_std_dev::ts_std_dev;
-pub use ts_sum::ts_sum;
-pub use ts_theilsen::ts_theilsen;
-pub use ts_variance::ts_variance;
-pub use ts_zscore::ts_zscore;
+pub use cross_sectional::*;
+pub use time_series::*;
 
 #[cfg(test)]
 mod tests {
@@ -205,5 +125,67 @@ mod tests {
                 Some(0.0),
             ]
         );
+    }
+
+    #[test]
+    fn cross_section_rank_is_nan_aware_and_uses_stable_ties() {
+        let values = vec![Some(2.0), None, Some(f64::NAN), Some(1.0), Some(2.0)];
+
+        assert_eq!(
+            cs_rank(&values, true),
+            vec![Some(2.0), None, None, Some(1.0), Some(3.0)]
+        );
+        assert_eq!(
+            cs_pctrank(&values, true),
+            vec![Some(0.5), None, None, Some(0.0), Some(1.0)]
+        );
+        assert_eq!(cs_pctrank(&[Some(1.0)], true), vec![None]);
+    }
+
+    #[test]
+    fn cross_section_stats_skip_missing_values() {
+        let values = vec![Some(1.0), Some(f64::NAN), Some(3.0)];
+
+        assert_eq!(cs_demean(&values), vec![Some(-1.0), None, Some(1.0)]);
+        assert_eq!(cs_zscore(&values), vec![Some(-1.0), None, Some(1.0)]);
+        assert_eq!(cs_minmax_scale(&values), vec![Some(0.0), None, Some(1.0)]);
+        assert_eq!(cs_mean(&values), vec![Some(2.0), Some(2.0), Some(2.0)]);
+        assert_option_close(cs_winsorize95(&values)[2], Some(2.9));
+    }
+
+    #[test]
+    fn cross_section_group_operators_work_with_group_labels() {
+        let values = vec![Some(1.0), Some(2.0), Some(10.0), None];
+        let groups = vec![
+            Some("bank".to_string()),
+            Some("bank".to_string()),
+            Some("tech".to_string()),
+            Some("tech".to_string()),
+        ];
+
+        assert_eq!(
+            cs_neutralize(&values, &groups),
+            vec![Some(-0.5), Some(0.5), Some(0.0), None]
+        );
+        assert_eq!(
+            cs_fill_mean_by_group(&values, &groups),
+            vec![Some(1.0), Some(2.0), Some(10.0), Some(10.0)]
+        );
+        assert_eq!(
+            cs_pctrank_by_group(&values, &groups),
+            vec![Some(0.0), Some(1.0), None, None]
+        );
+    }
+
+    #[test]
+    fn cross_section_regression_residual_uses_pairwise_valid_rows() {
+        let y = vec![Some(2.0), Some(4.0), Some(f64::NAN), Some(8.0)];
+        let x = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
+        let residual = cs_regression_residual(&y, &x);
+
+        assert_option_close(residual[0], Some(0.0));
+        assert_option_close(residual[1], Some(0.0));
+        assert_eq!(residual[2], None);
+        assert_option_close(residual[3], Some(0.0));
     }
 }

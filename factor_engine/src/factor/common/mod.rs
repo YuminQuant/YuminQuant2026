@@ -1,5 +1,7 @@
+pub mod cross_section;
 pub mod daily;
 pub mod minute;
+pub mod panel;
 pub mod vector;
 
 use std::collections::BTreeMap;
@@ -7,8 +9,12 @@ use std::collections::BTreeMap;
 use crate::data::{ColumnData, Table};
 use crate::error::Result;
 
+pub use cross_section::{
+    compute_daily_cross_section, ClassificationLevel, ClassificationMap, DailyCrossSection,
+};
 pub use daily::{compute_daily_by_instrument, DailySeries};
 pub use minute::{compute_minute_by_instrument, MinuteSeries};
+pub use panel::{DailyPanel, PanelColumn};
 
 fn collect_numeric_columns(
     table: &Table,

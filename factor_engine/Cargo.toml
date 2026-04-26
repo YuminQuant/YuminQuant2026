@@ -7,3 +7,4 @@ edition = "2021"
 arrow-array = "57.0.0"
 arrow-schema = "57.0.0"
 parquet = { version = "57.0.0", features = ["arrow"] }
+rayon = "1.10.0"

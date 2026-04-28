@@ -31,6 +31,7 @@ impl Factor for FutureMinuteReturn1m {
                 "One-minute close-to-close return per futures contract within each trading day."
                     .to_string(),
             dependencies: vec![DataRequest::new(DatasetId::FutureMinute1m, &["close"])],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 0 },
         }
     }

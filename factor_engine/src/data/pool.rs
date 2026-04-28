@@ -9,6 +9,7 @@ use crate::error::{err, Result};
 pub struct DataPool {
     daily: HashMap<DatasetId, Table>,
     minute: HashMap<(DatasetId, i32), Table>,
+    intraday_daily_raw: Option<Table>,
 }
 
 impl DataPool {
@@ -65,8 +66,12 @@ impl DataPool {
                     pool.daily.insert(dataset, table);
                 }
                 Frequency::Minute1 => {
-                    let tables =
-                        loader.load_minute_by_date(dataset, &columns, &context.target_dates)?;
+                    let target_dates = if context.frequency == Frequency::Daily {
+                        &context.load_dates
+                    } else {
+                        &context.target_dates
+                    };
+                    let tables = loader.load_minute_by_date(dataset, &columns, target_dates)?;
                     for (date, table) in tables {
                         pool.minute.insert((dataset, date), table);
                     }
@@ -84,5 +89,31 @@ impl DataPool {
 
     pub fn minute(&self, dataset: DatasetId, trade_date: i32) -> Option<&Table> {
         self.minute.get(&(dataset, trade_date))
+    }
+
+    pub fn set_intraday_daily_raw(&mut self, table: Table) {
+        self.intraday_daily_raw = Some(table);
+    }
+
+    pub fn intraday_daily_raw(&self, raw_id: &str) -> Result<&Table> {
+        let table = self
+            .intraday_daily_raw
+            .as_ref()
+            .ok_or_else(|| err("intraday daily raw cache is not loaded"))?;
+        if !table.columns.contains_key(raw_id) {
+            return Err(err(format!(
+                "intraday daily raw cache column not loaded: {raw_id}"
+            )));
+        }
+        Ok(table)
+    }
+
+    #[cfg(test)]
+    pub fn from_minute_tables(minute: HashMap<(DatasetId, i32), Table>) -> Self {
+        Self {
+            daily: HashMap::new(),
+            minute,
+            intraday_daily_raw: None,
+        }
     }
 }

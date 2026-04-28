@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use crate::core::{FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue};
+use crate::core::{
+    FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue, IntradayDailyRawSeries,
+    IntradayDailyRawSpec,
+};
 use crate::data::Table;
 use crate::error::{err, Result};
 
@@ -36,6 +39,31 @@ pub struct DailyPanel {
 }
 
 impl DailyPanel {
+    pub fn from_index(
+        dates: Vec<i32>,
+        instruments: Vec<String>,
+        target_dates: &[i32],
+        present: Vec<bool>,
+    ) -> Result<Self> {
+        let expected_len = dates.len() * instruments.len();
+        if present.len() != expected_len {
+            return Err(err(format!(
+                "daily panel present mask has {} values, expected {}",
+                present.len(),
+                expected_len
+            )));
+        }
+        Ok(Self {
+            index: Arc::new(DailyPanelIndex {
+                dates,
+                instruments,
+                target_dates: target_dates.iter().copied().collect(),
+                present,
+            }),
+            columns: BTreeMap::new(),
+        })
+    }
+
     pub fn from_table(table: &Table, context: &FactorContext) -> Result<Self> {
         let ts_codes = table.required_utf8("ts_code")?;
         let trade_dates = table.required_i32("trade_date")?;
@@ -116,6 +144,10 @@ impl DailyPanel {
 
     pub fn dates(&self) -> &[i32] {
         &self.index.dates
+    }
+
+    pub fn is_target_date(&self, trade_date: i32) -> bool {
+        self.index.target_dates.contains(&trade_date)
     }
 
     pub fn instruments(&self) -> &[String] {
@@ -295,6 +327,32 @@ impl PanelColumn {
         FactorSeries { spec, values }
     }
 
+    pub fn to_intraday_daily_raw_series(
+        &self,
+        spec: IntradayDailyRawSpec,
+    ) -> IntradayDailyRawSeries {
+        let mut values = Vec::new();
+        for (date_idx, trade_date) in self.index.dates.iter().enumerate() {
+            if !self.index.target_dates.contains(trade_date) {
+                continue;
+            }
+            for (instrument_idx, ts_code) in self.index.instruments.iter().enumerate() {
+                let offset = self.index.offset(date_idx, instrument_idx);
+                if !self.index.present[offset] {
+                    continue;
+                }
+                values.push(FactorValue {
+                    key: FactorRowKey::Daily {
+                        trade_date: *trade_date,
+                        ts_code: ts_code.clone(),
+                    },
+                    value: self.values[offset],
+                });
+            }
+        }
+        IntradayDailyRawSeries { spec, values }
+    }
+
     fn with_values(&self, values: Vec<Option<f64>>) -> Self {
         Self {
             index: Arc::clone(&self.index),
@@ -399,6 +457,7 @@ mod tests {
             start_date,
             end_date,
             load_start_date: 20260101,
+            load_dates: target_dates.clone(),
             target_dates,
         }
     }

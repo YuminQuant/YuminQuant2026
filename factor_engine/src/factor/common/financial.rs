@@ -477,6 +477,7 @@ mod tests {
             start_date: *dates.first().unwrap(),
             end_date: *dates.last().unwrap(),
             load_start_date: *dates.first().unwrap(),
+            load_dates: dates.to_vec(),
             target_dates: dates.to_vec(),
         };
         crate::factor::common::DailyPanel::from_table(&table, &context).expect("panel")

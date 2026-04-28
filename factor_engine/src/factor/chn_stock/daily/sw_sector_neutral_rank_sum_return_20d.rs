@@ -43,6 +43,7 @@ impl Factor for StockDailySwSectorNeutralRankSumReturn20d {
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             ],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 20 },
         }
     }

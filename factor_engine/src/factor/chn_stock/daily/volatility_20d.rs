@@ -30,6 +30,7 @@ impl Factor for StockDailyVolatility20d {
             description: "Standard deviation of the latest 20 close-to-close daily returns."
                 .to_string(),
             dependencies: vec![DataRequest::new(DatasetId::StockDailyPv, &["close"])],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 21 },
         }
     }

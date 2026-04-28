@@ -29,6 +29,7 @@ impl Factor for FutureDailyMomentum20d {
                 .collect(),
             description: "Close-to-close percentage change over 20 trading days.".to_string(),
             dependencies: vec![DataRequest::new(DatasetId::FutureDaily, &["close"])],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 20 },
         }
     }

@@ -46,6 +46,7 @@ impl Factor for StockDailyRoe8q {
                     QUARTER_COUNT,
                 ),
             ],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 0 },
         }
     }

@@ -30,6 +30,7 @@ impl Factor for StockMinuteReturn1m {
             description: "One-minute close-to-close return per stock within each trading day."
                 .to_string(),
             dependencies: vec![DataRequest::new(DatasetId::StockMinute1m, &["close"])],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 0 },
         }
     }

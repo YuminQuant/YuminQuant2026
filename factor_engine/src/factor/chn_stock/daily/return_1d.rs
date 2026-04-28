@@ -32,6 +32,7 @@ impl Factor for StockDailyReturn1d {
                 DatasetId::StockDailyPv,
                 &["close", "pre_close"],
             )],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 0 },
         }
     }

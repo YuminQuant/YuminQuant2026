@@ -29,6 +29,7 @@ impl Factor for StockDailyPeZscore60d {
                 .collect(),
             description: "Rolling 60 trading-day z-score of daily PE.".to_string(),
             dependencies: vec![DataRequest::new(DatasetId::StockDailyBasic, &["pe"])],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 60 },
         }
     }

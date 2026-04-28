@@ -134,6 +134,37 @@ impl DataRequest {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntradayDailyRawRequest {
+    pub raw_id: String,
+    pub daily_lookback: usize,
+}
+
+impl IntradayDailyRawRequest {
+    pub fn new(raw_id: &str, daily_lookback: usize) -> Self {
+        Self {
+            raw_id: raw_id.to_string(),
+            daily_lookback,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntradayDailyRawSpec {
+    pub raw_id: String,
+    pub version: String,
+    pub asset_class: AssetClass,
+    pub source_dataset: DatasetId,
+    pub columns: Vec<String>,
+    pub window_days: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct IntradayDailyRawSeries {
+    pub spec: IntradayDailyRawSpec,
+    pub values: Vec<FactorValue>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct Lookback {
     pub trading_days: usize,
@@ -150,6 +181,7 @@ pub struct FactorSpec {
     pub tags: Vec<String>,
     pub description: String,
     pub dependencies: Vec<DataRequest>,
+    pub intraday_raw_dependencies: Vec<IntradayDailyRawRequest>,
     pub lookback: Lookback,
 }
 
@@ -174,6 +206,7 @@ pub struct FactorContext {
     pub start_date: i32,
     pub end_date: i32,
     pub load_start_date: i32,
+    pub load_dates: Vec<i32>,
     pub target_dates: Vec<i32>,
 }
 

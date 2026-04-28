@@ -265,6 +265,7 @@ mod tests {
             start_date: 20260105,
             end_date: 20260105,
             load_start_date: 20260105,
+            load_dates: vec![20260105],
             target_dates: vec![20260105],
         };
         let spec = FactorSpec {
@@ -277,6 +278,7 @@ mod tests {
             tags: Vec::new(),
             description: String::new(),
             dependencies: Vec::new(),
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 0 },
         };
 

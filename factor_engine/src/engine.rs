@@ -1,22 +1,24 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{
-    factor_registry_key, AssetClass, DataRequest, FactorContext, FactorSeries, FactorSpec,
-    Frequency,
+    factor_registry_key, AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries,
+    FactorSpec, Frequency, IntradayDailyRawRequest, IntradayDailyRawSpec,
 };
 use crate::data::{DataCatalog, DataPool, MarketDataLoader};
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
 use crate::factor::Factor;
-use crate::storage::{FactorMetadata, FactorStorage};
+use crate::storage::{FactorMetadata, FactorStorage, IntradayDailyRawStorage};
 use rayon::prelude::*;
 
 pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 64;
+pub const DEFAULT_DATE_BATCH_SIZE: usize = 1;
 
 #[derive(Clone, Debug)]
 pub struct RunRequest {
@@ -31,6 +33,7 @@ pub struct RunRequest {
     pub factor_batch_size: usize,
     pub threads: Option<usize>,
     pub profile: bool,
+    pub refresh_minute_cache: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -41,17 +44,20 @@ pub struct RunReport {
     pub target_dates: Vec<i32>,
     pub effective_start_date: Option<i32>,
     pub effective_end_date: Option<i32>,
+    pub execution_stages: Vec<String>,
     pub date_batch_count: usize,
     pub factor_batch_count: usize,
     pub execution_batch_count: usize,
     pub selected_factor_ids: Vec<String>,
     pub loaded_requests: Vec<DataRequest>,
+    pub loaded_intraday_raw_requests: Vec<IntradayDailyRawRequest>,
     pub profiles: Vec<BatchProfile>,
     pub status_message: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct BatchProfile {
+    pub stage: String,
     pub date_batch_index: usize,
     pub factor_batch_index: usize,
     pub start_date: i32,
@@ -152,6 +158,8 @@ impl Engine {
             .iter()
             .map(|factor| factor.spec())
             .collect::<Vec<_>>();
+        let raw_providers = intraday_raw_provider_map()?;
+        let raw_requirements = resolve_intraday_raw_requirements(&specs, &raw_providers)?;
         let max_lookback = specs
             .iter()
             .map(|spec| spec.lookback.trading_days)
@@ -201,15 +209,62 @@ impl Engine {
             ));
         }
 
-        let date_batches = split_dates_by_year(&target_dates);
         let factor_batch_size = request.factor_batch_size.max(1);
-        let factor_ranges = factor_batch_ranges(factors.len(), factor_batch_size);
-        let factor_batch_count = factor_ranges.len();
-        let execution_batch_count = date_batches.len() * factor_batch_count;
+        let raw_work = build_intraday_raw_work(&raw_requirements, &target_dates, &calendar)?;
+        let execution_groups = execution_groups_for_specs(request.frequency, &specs);
+        let execution_stages = execution_stage_names(&raw_work, &execution_groups);
+        let raw_date_batch_count = raw_work
+            .iter()
+            .map(|work| split_dates_by_chunk(&work.target_dates, DEFAULT_DATE_BATCH_SIZE).len())
+            .sum::<usize>();
+        let raw_factor_batch_count = raw_work.len();
+        let raw_execution_batch_count = raw_date_batch_count;
+        let execution_plans = execution_groups
+            .iter()
+            .map(|group| {
+                let date_batch_count = date_batches_for_stage(&group.stage, &target_dates).len();
+                let factor_batch_count =
+                    factor_batch_ranges(group.factor_indices.len(), factor_batch_size).len();
+                (date_batch_count, factor_batch_count)
+            })
+            .collect::<Vec<_>>();
+        let date_batch_count = raw_date_batch_count
+            + execution_plans
+                .iter()
+                .map(|(date_batch_count, _)| *date_batch_count)
+                .sum::<usize>();
+        let factor_batch_count = raw_factor_batch_count
+            + execution_plans
+                .iter()
+                .map(|(_, factor_batch_count)| *factor_batch_count)
+                .sum::<usize>();
+        let execution_batch_count = raw_execution_batch_count
+            + execution_plans
+                .iter()
+                .map(|(date_batch_count, factor_batch_count)| date_batch_count * factor_batch_count)
+                .sum::<usize>();
         let load_start_date = calendar.warmup_start(effective_start_date, max_lookback);
 
-        let loaded_requests =
-            merge_requests(specs.iter().flat_map(|spec| spec.dependencies.clone()));
+        let raw_source_specs_for_report = raw_requirements
+            .iter()
+            .map(|requirement| &requirement.spec)
+            .collect::<Vec<_>>();
+        let loaded_requests = merge_requests(
+            specs
+                .iter()
+                .flat_map(|spec| spec.dependencies.clone())
+                .chain(raw_source_specs_for_report.iter().map(|spec| DataRequest {
+                    dataset: spec.source_dataset,
+                    columns: spec.columns.clone(),
+                    financial_quarters: None,
+                })),
+        );
+        let loaded_intraday_raw_requests = raw_requirements
+            .iter()
+            .map(|requirement| {
+                IntradayDailyRawRequest::new(&requirement.spec.raw_id, requirement.daily_lookback)
+            })
+            .collect::<Vec<_>>();
         if dry_run {
             return Ok(RunReport {
                 factor_count: specs.len(),
@@ -218,11 +273,13 @@ impl Engine {
                 target_dates,
                 effective_start_date: Some(effective_start_date),
                 effective_end_date: Some(effective_end_date),
-                date_batch_count: date_batches.len(),
+                execution_stages,
+                date_batch_count,
                 factor_batch_count,
                 execution_batch_count,
                 selected_factor_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
                 loaded_requests,
+                loaded_intraday_raw_requests,
                 profiles: Vec::new(),
                 status_message: None,
             });
@@ -232,73 +289,122 @@ impl Engine {
             .with_stock_sw_classification_path(self.config.stock_sw_classification_path.clone());
         let loader = MarketDataLoader::new(catalog);
         let storage = FactorStorage::new(self.config.factor_root.clone());
+        let raw_storage = IntradayDailyRawStorage::new(self.config.factor_root.clone());
         let thread_pool = build_thread_pool(request.threads)?;
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();
+        let mut materialized_intraday_raw_dates = BTreeSet::<(String, i32)>::new();
 
-        for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
-            let batch_start_date = *date_batch
-                .first()
-                .expect("date batches are never empty after split");
-            let batch_end_date = *date_batch
-                .last()
-                .expect("date batches are never empty after split");
-            let batch_load_start_date = calendar.warmup_start(batch_start_date, max_lookback);
-            let context = FactorContext {
-                asset_class: request.asset_class,
-                frequency: request.frequency,
-                start_date: batch_start_date,
-                end_date: batch_end_date,
-                load_start_date: batch_load_start_date,
-                target_dates: date_batch.clone(),
-            };
+        for group in &execution_groups {
+            let group_specs = group
+                .factor_indices
+                .iter()
+                .map(|idx| specs[*idx].clone())
+                .collect::<Vec<_>>();
+            let group_max_lookback = group_specs
+                .iter()
+                .map(|spec| spec.lookback.trading_days)
+                .max()
+                .unwrap_or(0);
+            let date_batches = date_batches_for_stage(&group.stage, &target_dates);
+            let factor_ranges = factor_batch_ranges(group.factor_indices.len(), factor_batch_size);
+            let stage_name = group.stage.name();
 
-            for (factor_batch_index, range) in factor_ranges.iter().enumerate() {
-                let batch_specs = specs[range.clone()].to_vec();
-                let batch_requests = merge_requests(
-                    batch_specs
+            for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
+                let batch_start_date = *date_batch
+                    .first()
+                    .expect("date batches are never empty after split");
+                let batch_end_date = *date_batch
+                    .last()
+                    .expect("date batches are never empty after split");
+                let batch_load_start_date =
+                    calendar.warmup_start(batch_start_date, group_max_lookback);
+                let load_dates = calendar.open_dates_between(batch_load_start_date, batch_end_date);
+                let context = FactorContext {
+                    asset_class: request.asset_class,
+                    frequency: request.frequency,
+                    start_date: batch_start_date,
+                    end_date: batch_end_date,
+                    load_start_date: batch_load_start_date,
+                    load_dates,
+                    target_dates: date_batch.clone(),
+                };
+
+                for (factor_batch_index, range) in factor_ranges.iter().enumerate() {
+                    let batch_indices = &group.factor_indices[range.clone()];
+                    let batch_specs = batch_indices
                         .iter()
-                        .flat_map(|spec| spec.dependencies.clone()),
-                );
-                let load_started = Instant::now();
-                let pool = DataPool::load(&loader, &batch_requests, &context)?;
-                let load_ms = load_started.elapsed().as_millis();
-                let compute_started = Instant::now();
-                let results = compute_factor_batch(
-                    &factors[range.clone()],
-                    &context,
-                    &pool,
-                    thread_pool.as_ref(),
-                )?;
-                let compute_ms = compute_started.elapsed().as_millis();
-                let factor_profiles = results
-                    .iter()
-                    .map(|series| FactorProfile {
-                        factor_id: series.spec.id.clone(),
-                        row_count: series.values.len(),
-                        non_null_count: series
-                            .values
+                        .map(|idx| specs[*idx].clone())
+                        .collect::<Vec<_>>();
+                    let batch_factors = batch_indices
+                        .iter()
+                        .map(|idx| factors[*idx].as_ref())
+                        .collect::<Vec<_>>();
+                    let batch_requests = merge_requests(
+                        batch_specs
                             .iter()
-                            .filter(|item| item.value.is_some())
-                            .count(),
-                    })
-                    .collect::<Vec<_>>();
-                let write_started = Instant::now();
-                let written_paths = storage.write_results(&results)?;
-                let write_ms = write_started.elapsed().as_millis();
-                output_paths.extend(written_paths);
-                if request.profile {
-                    profiles.push(BatchProfile {
-                        date_batch_index: date_batch_index + 1,
-                        factor_batch_index: factor_batch_index + 1,
-                        start_date: batch_start_date,
-                        end_date: batch_end_date,
-                        factor_count: batch_specs.len(),
-                        load_ms,
-                        compute_ms,
-                        write_ms,
-                        factors: factor_profiles,
-                    });
+                            .flat_map(|spec| spec.dependencies.clone()),
+                    );
+                    let load_started = Instant::now();
+                    let mut pool = DataPool::load(&loader, &batch_requests, &context)?;
+                    let load_ms = load_started.elapsed().as_millis();
+                    let raw_ids = raw_ids_for_specs(&batch_specs);
+                    if !raw_ids.is_empty() {
+                        let (raw_table, mut raw_profiles) = materialize_intraday_raw_table(
+                            &raw_ids,
+                            &raw_requirements,
+                            &raw_providers,
+                            &loader,
+                            &raw_storage,
+                            &calendar,
+                            request,
+                            &context,
+                            date_batch_index + 1,
+                            factor_batch_index + 1,
+                            thread_pool.as_ref(),
+                            &mut materialized_intraday_raw_dates,
+                        )?;
+                        profiles.append(&mut raw_profiles);
+                        pool.set_intraday_daily_raw(raw_table);
+                    }
+                    let compute_started = Instant::now();
+                    let results = compute_factor_batch(
+                        &batch_factors,
+                        &context,
+                        &pool,
+                        thread_pool.as_ref(),
+                    )?;
+                    let compute_ms = compute_started.elapsed().as_millis();
+                    let factor_profiles = results
+                        .iter()
+                        .map(|series| FactorProfile {
+                            factor_id: series.spec.id.clone(),
+                            row_count: series.values.len(),
+                            non_null_count: series
+                                .values
+                                .iter()
+                                .filter(|item| item.value.is_some())
+                                .count(),
+                        })
+                        .collect::<Vec<_>>();
+                    let write_started = Instant::now();
+                    let written_paths = storage.write_results(&results)?;
+                    let write_ms = write_started.elapsed().as_millis();
+                    output_paths.extend(written_paths);
+                    if request.profile {
+                        profiles.push(BatchProfile {
+                            stage: stage_name.clone(),
+                            date_batch_index: date_batch_index + 1,
+                            factor_batch_index: factor_batch_index + 1,
+                            start_date: batch_start_date,
+                            end_date: batch_end_date,
+                            factor_count: batch_specs.len(),
+                            load_ms,
+                            compute_ms,
+                            write_ms,
+                            factors: factor_profiles,
+                        });
+                    }
                 }
             }
         }
@@ -310,11 +416,13 @@ impl Engine {
             target_dates,
             effective_start_date: Some(effective_start_date),
             effective_end_date: Some(effective_end_date),
-            date_batch_count: date_batches.len(),
+            execution_stages,
+            date_batch_count,
             factor_batch_count,
             execution_batch_count,
             selected_factor_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
             loaded_requests,
+            loaded_intraday_raw_requests,
             profiles,
             status_message: None,
         })
@@ -324,6 +432,358 @@ impl Engine {
 enum SelectionResult {
     Selected(Vec<FactorMetadata>),
     Empty(String),
+}
+
+#[derive(Clone, Debug)]
+struct IntradayRawRequirement {
+    spec: IntradayDailyRawSpec,
+    daily_lookback: usize,
+}
+
+#[derive(Clone)]
+struct RawProvider {
+    spec: IntradayDailyRawSpec,
+    factor: Arc<dyn Factor>,
+}
+
+#[derive(Clone, Debug)]
+struct IntradayRawWork {
+    spec: IntradayDailyRawSpec,
+    target_dates: Vec<i32>,
+}
+
+fn intraday_raw_provider_map() -> Result<BTreeMap<String, RawProvider>> {
+    let mut providers = BTreeMap::new();
+    for factor in all_factors() {
+        let factor: Arc<dyn Factor> = Arc::from(factor);
+        for spec in factor.intraday_raw_specs() {
+            if providers.contains_key(&spec.raw_id) {
+                return Err(err(format!(
+                    "duplicate intraday daily raw provider registered: {}",
+                    spec.raw_id
+                )));
+            }
+            providers.insert(
+                spec.raw_id.clone(),
+                RawProvider {
+                    spec,
+                    factor: Arc::clone(&factor),
+                },
+            );
+        }
+    }
+    Ok(providers)
+}
+
+fn resolve_intraday_raw_requirements(
+    specs: &[FactorSpec],
+    providers: &BTreeMap<String, RawProvider>,
+) -> Result<Vec<IntradayRawRequirement>> {
+    let mut grouped = BTreeMap::<String, usize>::new();
+    for spec in specs {
+        for dependency in &spec.intraday_raw_dependencies {
+            grouped
+                .entry(dependency.raw_id.clone())
+                .and_modify(|lookback| *lookback = (*lookback).max(dependency.daily_lookback))
+                .or_insert(dependency.daily_lookback);
+        }
+    }
+
+    let mut requirements = Vec::new();
+    for (raw_id, daily_lookback) in grouped {
+        let provider = providers.get(&raw_id).ok_or_else(|| {
+            err(format!(
+                "intraday daily raw implementation not found: {raw_id}"
+            ))
+        })?;
+        requirements.push(IntradayRawRequirement {
+            spec: provider.spec.clone(),
+            daily_lookback,
+        });
+    }
+    Ok(requirements)
+}
+
+fn build_intraday_raw_work(
+    requirements: &[IntradayRawRequirement],
+    target_dates: &[i32],
+    calendar: &TradingCalendar,
+) -> Result<Vec<IntradayRawWork>> {
+    let Some(first_target_date) = target_dates.first().copied() else {
+        return Ok(Vec::new());
+    };
+    let Some(last_target_date) = target_dates.last().copied() else {
+        return Ok(Vec::new());
+    };
+    let mut work = Vec::new();
+    for requirement in requirements {
+        let raw_start_date = calendar.warmup_start(first_target_date, requirement.daily_lookback);
+        let target_dates = calendar.open_dates_between(raw_start_date, last_target_date);
+        if target_dates.is_empty() {
+            continue;
+        }
+        work.push(IntradayRawWork {
+            spec: requirement.spec.clone(),
+            target_dates,
+        });
+    }
+    Ok(work)
+}
+
+fn materialize_intraday_raw_table(
+    raw_ids: &[String],
+    requirements: &[IntradayRawRequirement],
+    providers: &BTreeMap<String, RawProvider>,
+    loader: &MarketDataLoader,
+    storage: &IntradayDailyRawStorage,
+    calendar: &TradingCalendar,
+    request: &RunRequest,
+    context: &FactorContext,
+    date_batch_index: usize,
+    factor_batch_index: usize,
+    thread_pool: Option<&rayon::ThreadPool>,
+    materialized_intraday_raw_dates: &mut BTreeSet<(String, i32)>,
+) -> Result<(crate::data::Table, Vec<BatchProfile>)> {
+    let raw_id_set = raw_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut requirements_by_dataset =
+        BTreeMap::<DatasetId, Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new();
+    for requirement in requirements
+        .iter()
+        .filter(|requirement| raw_id_set.contains(&requirement.spec.raw_id))
+    {
+        let mut missing_dates = storage
+            .missing_dates(
+                &requirement.spec,
+                &context.load_dates,
+                request.refresh_minute_cache,
+            )?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let raw_id = requirement.spec.raw_id.clone();
+        missing_dates
+            .retain(|date| !materialized_intraday_raw_dates.contains(&(raw_id.clone(), *date)));
+        if missing_dates.is_empty() {
+            continue;
+        }
+        requirements_by_dataset
+            .entry(requirement.spec.source_dataset)
+            .or_default()
+            .push((requirement, missing_dates));
+    }
+    let mut profiles = Vec::new();
+    let mut materialized_specs = Vec::new();
+
+    for (source_dataset, plans) in requirements_by_dataset {
+        let max_window_days = plans
+            .iter()
+            .map(|(requirement, _)| requirement.spec.window_days)
+            .max()
+            .unwrap_or(1);
+        let columns = plans
+            .iter()
+            .flat_map(|(requirement, _)| requirement.spec.columns.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let missing_dates = plans
+            .iter()
+            .flat_map(|(_, dates)| dates.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let date_batches = split_dates_by_chunk(&missing_dates, DEFAULT_DATE_BATCH_SIZE);
+        let stage_name = if plans.len() == 1 {
+            raw_materialize_stage_name(&plans[0].0.spec)
+        } else {
+            format!("intraday_raw_materialize_window_{max_window_days}")
+        };
+        for date_batch in date_batches {
+            let batch_start_date = *date_batch
+                .first()
+                .expect("raw date batches are never empty after split");
+            let batch_end_date = *date_batch
+                .last()
+                .expect("raw date batches are never empty after split");
+            let minute_lookback = max_window_days.saturating_sub(1);
+            let batch_load_start_date = calendar.warmup_start(batch_start_date, minute_lookback);
+            let load_dates = calendar.open_dates_between(batch_load_start_date, batch_end_date);
+            let raw_context = FactorContext {
+                asset_class: request.asset_class,
+                frequency: Frequency::Daily,
+                start_date: batch_start_date,
+                end_date: batch_end_date,
+                load_start_date: batch_load_start_date,
+                load_dates,
+                target_dates: date_batch.clone(),
+            };
+            let batch_requests = vec![DataRequest {
+                dataset: source_dataset,
+                columns: columns.clone(),
+                financial_quarters: None,
+            }];
+
+            let load_started = Instant::now();
+            let raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
+            let load_ms = load_started.elapsed().as_millis();
+            let compute_started = Instant::now();
+            let jobs = plans
+                .iter()
+                .filter_map(|(requirement, requirement_missing_dates)| {
+                    let provider_target_dates = date_batch
+                        .iter()
+                        .filter(|date| requirement_missing_dates.contains(date))
+                        .copied()
+                        .collect::<Vec<_>>();
+                    if provider_target_dates.is_empty() {
+                        return None;
+                    }
+                    let provider_lookback = requirement.spec.window_days.saturating_sub(1);
+                    let provider_batch_start = *provider_target_dates
+                        .first()
+                        .expect("provider target dates are not empty");
+                    let provider_batch_end = *provider_target_dates
+                        .last()
+                        .expect("provider target dates are not empty");
+                    let provider_load_start_date =
+                        calendar.warmup_start(provider_batch_start, provider_lookback);
+                    let provider_context = FactorContext {
+                        asset_class: raw_context.asset_class,
+                        frequency: raw_context.frequency,
+                        start_date: provider_batch_start,
+                        end_date: provider_batch_end,
+                        load_start_date: provider_load_start_date,
+                        load_dates: calendar
+                            .open_dates_between(provider_load_start_date, provider_batch_end),
+                        target_dates: provider_target_dates,
+                    };
+                    Some((*requirement, provider_context))
+                })
+                .collect::<Vec<_>>();
+
+            let compute_raw = || {
+                jobs.par_iter()
+                    .map(|(requirement, provider_context)| {
+                        let provider =
+                            providers.get(&requirement.spec.raw_id).ok_or_else(|| {
+                                err(format!(
+                                    "intraday daily raw implementation not found: {}",
+                                    requirement.spec.raw_id
+                                ))
+                            })?;
+                        let Some(raw_series) = provider.factor.minute_compute(
+                            &requirement.spec.raw_id,
+                            provider_context,
+                            &raw_pool,
+                        )?
+                        else {
+                            return Err(err(format!(
+                                "intraday daily raw provider did not return requested raw: {}",
+                                requirement.spec.raw_id
+                            )));
+                        };
+                        let raw_profile = FactorProfile {
+                            factor_id: raw_series.spec.raw_id.clone(),
+                            row_count: raw_series.values.len(),
+                            non_null_count: raw_series
+                                .values
+                                .iter()
+                                .filter(|item| item.value.is_some())
+                                .count(),
+                        };
+                        Ok((
+                            raw_series,
+                            raw_profile,
+                            provider_context.target_dates.clone(),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let computed = match thread_pool {
+                Some(thread_pool) => thread_pool.install(compute_raw),
+                None => compute_raw(),
+            };
+            let mut chunk_series = Vec::new();
+            let mut raw_profiles = Vec::new();
+            let mut chunk_materialized_dates = Vec::new();
+            for item in computed {
+                let (raw_series, raw_profile, target_dates) = item?;
+                for date in target_dates {
+                    chunk_materialized_dates.push((raw_series.spec.raw_id.clone(), date));
+                }
+                chunk_series.push(raw_series);
+                raw_profiles.push(raw_profile);
+            }
+            let compute_ms = compute_started.elapsed().as_millis();
+            let write_started = Instant::now();
+            if !chunk_series.is_empty() {
+                storage.write_results(&chunk_series)?;
+            }
+            materialized_intraday_raw_dates.extend(chunk_materialized_dates);
+            let write_ms = write_started.elapsed().as_millis();
+            if request.profile && !raw_profiles.is_empty() {
+                profiles.push(BatchProfile {
+                    stage: stage_name.clone(),
+                    date_batch_index,
+                    factor_batch_index,
+                    start_date: batch_start_date,
+                    end_date: batch_end_date,
+                    factor_count: raw_profiles.len(),
+                    load_ms,
+                    compute_ms,
+                    write_ms,
+                    factors: raw_profiles,
+                });
+            }
+        }
+        materialized_specs.extend(
+            plans
+                .iter()
+                .map(|(requirement, _)| requirement.spec.clone()),
+        );
+    }
+    if !materialized_specs.is_empty() {
+        storage.write_metadata(&materialized_specs)?;
+    }
+
+    Ok((
+        storage.load_raw_by_dates(request.asset_class, raw_ids, &context.load_dates)?,
+        profiles,
+    ))
+}
+
+fn raw_ids_for_specs(specs: &[FactorSpec]) -> Vec<String> {
+    let mut raw_ids = BTreeSet::new();
+    for spec in specs {
+        for dependency in &spec.intraday_raw_dependencies {
+            raw_ids.insert(dependency.raw_id.clone());
+        }
+    }
+    raw_ids.into_iter().collect()
+}
+
+fn raw_materialize_stage_name(spec: &IntradayDailyRawSpec) -> String {
+    format!("intraday_raw_materialize_window_{}", spec.window_days)
+}
+
+fn execution_stage_names(
+    raw_work: &[IntradayRawWork],
+    execution_groups: &[ExecutionGroup],
+) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut stages = Vec::new();
+    for work in raw_work {
+        let stage = raw_materialize_stage_name(&work.spec);
+        if seen.insert(stage.clone()) {
+            stages.push(stage);
+        }
+    }
+    for group in execution_groups {
+        let stage = group.stage.name();
+        if seen.insert(stage.clone()) {
+            stages.push(stage);
+        }
+    }
+    stages
 }
 
 fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> SelectionResult {
@@ -393,11 +853,13 @@ fn empty_report(request: &RunRequest, message: String) -> RunReport {
         target_dates: Vec::new(),
         effective_start_date: None,
         effective_end_date: None,
+        execution_stages: Vec::new(),
         date_batch_count: 0,
         factor_batch_count: 0,
         execution_batch_count: 0,
         selected_factor_ids: Vec::new(),
         loaded_requests: Vec::new(),
+        loaded_intraday_raw_requests: Vec::new(),
         profiles: Vec::new(),
         status_message: Some(message),
     }
@@ -441,25 +903,107 @@ fn validate_date_value(date: i32, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn split_dates_by_year(dates: &[i32]) -> Vec<Vec<i32>> {
-    let mut batches = Vec::new();
-    let mut current = Vec::new();
-    let mut current_year = None;
+fn split_dates_by_chunk(dates: &[i32], chunk_size: usize) -> Vec<Vec<i32>> {
+    let chunk_size = chunk_size.max(1);
+    dates
+        .chunks(chunk_size)
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
 
-    for date in dates {
-        let year = date / 10_000;
-        if current_year.is_some_and(|value| value != year) {
-            batches.push(current);
-            current = Vec::new();
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExecutionGroup {
+    stage: ExecutionStage,
+    factor_indices: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ExecutionStage {
+    DailyNoMinute,
+    IntradayDaily { lookback: usize },
+    IntradayDailyPostprocess { lookback: usize },
+}
+
+impl ExecutionStage {
+    fn name(&self) -> String {
+        match self {
+            Self::DailyNoMinute => "daily_no_minute".to_string(),
+            Self::IntradayDaily { lookback } => format!("intraday_daily_lookback_{lookback}"),
+            Self::IntradayDailyPostprocess { lookback } => {
+                format!("intraday_daily_postprocess_lookback_{lookback}")
+            }
         }
-        current_year = Some(year);
-        current.push(*date);
+    }
+}
+
+fn execution_groups_for_specs(frequency: Frequency, specs: &[FactorSpec]) -> Vec<ExecutionGroup> {
+    let mut daily_no_minute = Vec::new();
+    let mut intraday_daily: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut intraday_daily_postprocess: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+
+    for (idx, spec) in specs.iter().enumerate() {
+        if frequency == Frequency::Daily && spec_has_intraday_raw_dependency(spec) {
+            intraday_daily_postprocess
+                .entry(spec.lookback.trading_days)
+                .or_default()
+                .push(idx);
+        } else if frequency == Frequency::Daily && spec_has_minute_dependency(spec) {
+            intraday_daily
+                .entry(spec.lookback.trading_days)
+                .or_default()
+                .push(idx);
+        } else {
+            daily_no_minute.push(idx);
+        }
     }
 
-    if !current.is_empty() {
-        batches.push(current);
+    let mut groups = Vec::new();
+    if !daily_no_minute.is_empty() {
+        groups.push(ExecutionGroup {
+            stage: ExecutionStage::DailyNoMinute,
+            factor_indices: daily_no_minute,
+        });
     }
-    batches
+    groups.extend(
+        intraday_daily
+            .into_iter()
+            .map(|(lookback, factor_indices)| ExecutionGroup {
+                stage: ExecutionStage::IntradayDaily { lookback },
+                factor_indices,
+            }),
+    );
+    groups.extend(
+        intraday_daily_postprocess
+            .into_iter()
+            .map(|(lookback, factor_indices)| ExecutionGroup {
+                stage: ExecutionStage::IntradayDailyPostprocess { lookback },
+                factor_indices,
+            }),
+    );
+    groups
+}
+
+fn date_batches_for_stage(stage: &ExecutionStage, target_dates: &[i32]) -> Vec<Vec<i32>> {
+    match stage {
+        ExecutionStage::DailyNoMinute
+        | ExecutionStage::IntradayDaily { .. }
+        | ExecutionStage::IntradayDailyPostprocess { .. } => {
+            split_dates_by_chunk(target_dates, DEFAULT_DATE_BATCH_SIZE)
+        }
+    }
+}
+
+fn spec_has_minute_dependency(spec: &FactorSpec) -> bool {
+    spec.dependencies.iter().any(|request| {
+        matches!(
+            request.dataset,
+            DatasetId::StockMinute1m | DatasetId::FutureMinute1m
+        )
+    })
+}
+
+fn spec_has_intraday_raw_dependency(spec: &FactorSpec) -> bool {
+    !spec.intraday_raw_dependencies.is_empty()
 }
 
 fn factor_batch_ranges(factor_count: usize, factor_batch_size: usize) -> Vec<Range<usize>> {
@@ -487,7 +1031,7 @@ fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>
 }
 
 fn compute_factor_batch(
-    factors: &[Box<dyn Factor>],
+    factors: &[&dyn Factor],
     context: &FactorContext,
     pool: &DataPool,
     thread_pool: Option<&rayon::ThreadPool>,
@@ -514,32 +1058,18 @@ pub fn available_specs() -> Vec<FactorSpec> {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::{AssetClass, Frequency};
+    use crate::core::{AssetClass, DataRequest, DatasetId, FactorSpec, Frequency, Lookback};
     use crate::storage::FactorMetadata;
 
     use super::{
-        factor_batch_ranges, select_metadata, split_dates_by_year, validate_date_value, RunRequest,
-        SelectionResult,
+        execution_groups_for_specs, factor_batch_ranges, select_metadata, split_dates_by_chunk,
+        validate_date_value, ExecutionStage, RunRequest, SelectionResult,
     };
 
     #[test]
     fn validates_eight_digit_dates() {
         assert!(validate_date_value(20260424, "end-date").is_ok());
         assert!(validate_date_value(2026424, "end-date").is_err());
-    }
-
-    #[test]
-    fn splits_dates_by_natural_year() {
-        let batches = split_dates_by_year(&[20100104, 20100105, 20110104, 20110105, 20120104]);
-
-        assert_eq!(
-            batches,
-            vec![
-                vec![20100104, 20100105],
-                vec![20110104, 20110105],
-                vec![20120104]
-            ]
-        );
     }
 
     #[test]
@@ -551,6 +1081,86 @@ mod tests {
         assert_eq!(factor_batch_ranges(63, 64), vec![0..63]);
         assert_eq!(factor_batch_ranges(65, 64), vec![0..64, 64..65]);
         assert_eq!(factor_batch_ranges(3, 0), vec![0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn chunks_dates_by_configured_batch_size() {
+        assert_eq!(
+            split_dates_by_chunk(
+                &[20260101, 20260102, 20260103, 20260104, 20260105, 20260106],
+                1
+            ),
+            vec![
+                vec![20260101],
+                vec![20260102],
+                vec![20260103],
+                vec![20260104],
+                vec![20260105],
+                vec![20260106]
+            ]
+        );
+        assert_eq!(
+            split_dates_by_chunk(&[20260101, 20260102], 0),
+            vec![vec![20260101], vec![20260102]]
+        );
+    }
+
+    #[test]
+    fn execution_groups_split_daily_and_intraday_daily_by_lookback() {
+        let specs = vec![
+            spec_with_dataset("return_1d", DatasetId::StockDailyPv, 0),
+            spec_with_dataset("ret_over_sqrt_vol_mean", DatasetId::StockMinute1m, 0),
+            spec_with_dataset(
+                "top20_centered_vol_ret_mean_20d_mean",
+                DatasetId::StockMinute1m,
+                19,
+            ),
+            spec_with_dataset("another_intraday_lookback_19", DatasetId::StockMinute1m, 19),
+        ];
+
+        let groups = execution_groups_for_specs(Frequency::Daily, &specs);
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].stage, ExecutionStage::DailyNoMinute);
+        assert_eq!(groups[0].factor_indices, vec![0]);
+        assert_eq!(
+            groups[1].stage,
+            ExecutionStage::IntradayDaily { lookback: 0 }
+        );
+        assert_eq!(groups[1].factor_indices, vec![1]);
+        assert_eq!(
+            groups[2].stage,
+            ExecutionStage::IntradayDaily { lookback: 19 }
+        );
+        assert_eq!(groups[2].factor_indices, vec![2, 3]);
+    }
+
+    #[test]
+    fn execution_groups_route_intraday_raw_factors_to_postprocess_stage() {
+        let specs = vec![
+            spec_with_dataset("return_1d", DatasetId::StockDailyPv, 0),
+            spec_with_raw("ret_over_sqrt_vol_mean", "ret_over_sqrt_vol_mean", 0),
+            spec_with_raw(
+                "top20_centered_vol_ret_mean_20d_mean",
+                "top20_centered_vol_ret_mean",
+                19,
+            ),
+        ];
+
+        let groups = execution_groups_for_specs(Frequency::Daily, &specs);
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].stage, ExecutionStage::DailyNoMinute);
+        assert_eq!(
+            groups[1].stage,
+            ExecutionStage::IntradayDailyPostprocess { lookback: 0 }
+        );
+        assert_eq!(groups[1].factor_indices, vec![1]);
+        assert_eq!(
+            groups[2].stage,
+            ExecutionStage::IntradayDailyPostprocess { lookback: 19 }
+        );
+        assert_eq!(groups[2].factor_indices, vec![2]);
     }
 
     #[test]
@@ -567,6 +1177,7 @@ mod tests {
             factor_batch_size: 64,
             threads: None,
             profile: false,
+            refresh_minute_cache: false,
         };
         let metadata = vec![
             metadata_row("return_1d", "stock", "daily", &["stock.daily.pv.return_1d"]),
@@ -606,6 +1217,44 @@ mod tests {
             dependencies_json: String::new(),
             description: String::new(),
             updated_at: String::new(),
+        }
+    }
+
+    fn spec_with_dataset(id: &str, dataset: DatasetId, lookback: usize) -> FactorSpec {
+        FactorSpec {
+            id: id.to_string(),
+            aliases: Vec::new(),
+            name: id.to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: "0.1.0".to_string(),
+            tags: Vec::new(),
+            description: String::new(),
+            dependencies: vec![DataRequest::new(dataset, &["close"])],
+            intraday_raw_dependencies: Vec::new(),
+            lookback: Lookback {
+                trading_days: lookback,
+            },
+        }
+    }
+
+    fn spec_with_raw(id: &str, raw_id: &str, lookback: usize) -> FactorSpec {
+        FactorSpec {
+            id: id.to_string(),
+            aliases: Vec::new(),
+            name: id.to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: "0.1.0".to_string(),
+            tags: Vec::new(),
+            description: String::new(),
+            dependencies: Vec::new(),
+            intraday_raw_dependencies: vec![crate::core::IntradayDailyRawRequest::new(
+                raw_id, lookback,
+            )],
+            lookback: Lookback {
+                trading_days: lookback,
+            },
         }
     }
 }

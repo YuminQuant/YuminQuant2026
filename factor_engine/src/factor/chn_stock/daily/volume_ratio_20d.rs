@@ -32,6 +32,7 @@ impl Factor for StockDailyVolumeRatio20d {
                 "Current volume divided by the average volume of the previous 20 observations."
                     .to_string(),
             dependencies: vec![DataRequest::new(DatasetId::StockDailyPv, &["vol"])],
+            intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 20 },
         }
     }

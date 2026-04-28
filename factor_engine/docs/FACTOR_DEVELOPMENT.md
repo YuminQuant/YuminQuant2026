@@ -28,6 +28,47 @@ Use `ts_binary` for multi-column time-series expressions such as
 `ts_corr(volume, close)`, and `cs_binary` for multi-column cross-sectional
 expressions such as regression residuals.
 
+## Minute To Daily Expressions
+
+Minute-to-daily factors use two compute layers. A factor exposes
+`intraday_raw_specs()` and `minute_compute()` in the same `.rs` file that
+contains its final `compute()`. The engine materializes missing raw daily
+vectors from minute data into the local cache, loads the requested raw columns
+into `DataPool`, and then calls the ordinary final `compute()`:
+
+```rust
+let panel = DailyPanel::from_table(
+    data.intraday_daily_raw("ret_over_sqrt_vol_mean")?,
+    context,
+)?;
+let raw = panel.column("ret_over_sqrt_vol_mean")?;
+let factor = raw.ts(|values| ts_mean(values, 20, 20))?;
+Ok(factor.to_factor_series(self.spec()))
+```
+
+Final factors declare raw dependencies in `FactorSpec::intraday_raw_dependencies`.
+The raw expression is discovered from registered factors, so concrete raw
+formula code should stay in factor files. `factor/common/` only provides
+generic intraday grouping, window, cache-table, and numeric helpers.
+
+Raw cache parquet output is enabled by default and lives under
+`data/factors/_cache/intraday_daily/chn_stock/{year}/{trade_date}.parquet` for
+stock raw factors. Use `--refresh-minute-cache` to force raw recomputation.
+
+For factors that do not need daily post-processing, keep the same shape:
+`minute_compute()` creates the raw value and `compute()` simply returns the raw
+column as the final factor. Cross-day minute concat factors are intentionally
+kept for a later design pass.
+
+```rust
+let panel = DailyPanel::from_table(
+    data.intraday_daily_raw("ret_over_sqrt_vol_mean")?,
+    context,
+)?;
+let factor = panel.column("ret_over_sqrt_vol_mean")?;
+Ok(factor.to_factor_series(self.spec()))
+```
+
 ## Financial Statements
 
 Financial statement helpers are point-in-time. They prefer `f_ann_date` over
@@ -54,14 +95,18 @@ mean(n_income_attr_p / total_hldr_eqy_exc_min_int, 8 quarters)
 
 ## Profiling
 
-Pass `--profile` to `run` to print per date batch and factor batch timings:
+Pass `--profile` to `run` to print per target-date batch and factor batch
+timings. The engine processes one trading date at a time, reusing that date's
+loaded data across the selected factors in the current factor batch:
 
 ```powershell
 cargo run --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260105 --end-date 20260130 --factors pe_zscore_60d,roe_8q --profile
 ```
 
-The profile includes load, compute, write milliseconds, row count, and non-null
-count for each factor.
+The profile includes the execution stage, load, compute, write milliseconds,
+row count, and non-null count for each factor. Intraday daily factors show
+`intraday_raw_materialize_window_N` for the in-memory raw step, followed by
+`intraday_daily_postprocess_lookback_N` for final daily expressions.
 
 ## Common Pitfalls
 

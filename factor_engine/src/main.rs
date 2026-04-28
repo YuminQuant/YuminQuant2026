@@ -154,6 +154,7 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
     };
     let config_path = flags.get("config").map(PathBuf::from);
     let profile = flag_enabled(&flags, "profile");
+    let refresh_minute_cache = flag_enabled(&flags, "refresh-minute-cache");
     Ok(RunRequest {
         asset_class,
         frequency,
@@ -166,6 +167,7 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         factor_batch_size,
         threads,
         profile,
+        refresh_minute_cache,
     })
 }
 
@@ -226,6 +228,9 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
         println!("effective date range: {}..{}", start_date, end_date);
     }
     println!("target dates: {}", report.target_dates.len());
+    if !report.execution_stages.is_empty() {
+        println!("execution stages: {}", report.execution_stages.join(","));
+    }
     println!("date batches: {}", report.date_batch_count);
     println!("factor batches: {}", report.factor_batch_count);
     println!("execution batches: {}", report.execution_batch_count);
@@ -240,11 +245,18 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
             request.columns.join(",")
         );
     }
+    for request in &report.loaded_intraday_raw_requests {
+        println!(
+            "load intraday_raw {} daily_lookback={}",
+            request.raw_id, request.daily_lookback
+        );
+    }
     if !report.profiles.is_empty() {
         println!("profile:");
         for batch in &report.profiles {
             println!(
-                "  date_batch={} factor_batch={} dates={}..{} factors={} load_ms={} compute_ms={} write_ms={}",
+                "  stage={} date_batch={} factor_batch={} dates={}..{} factors={} load_ms={} compute_ms={} write_ms={}",
+                batch.stage,
                 batch.date_batch_index,
                 batch.factor_batch_index,
                 batch.start_date,
@@ -279,6 +291,7 @@ fn print_help() {
     println!("  --factor-batch-size N (default 64)");
     println!("  --threads N");
     println!("  --profile");
+    println!("  --refresh-minute-cache");
     println!("  --config D:/path/to/config.toml");
 }
 

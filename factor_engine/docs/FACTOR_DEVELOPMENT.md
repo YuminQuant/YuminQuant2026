@@ -32,13 +32,17 @@ expressions such as regression residuals.
 
 Financial statement helpers are point-in-time. They prefer `f_ann_date` over
 `ann_date` and only expose records whose disclosure date is on or before the
-target trading date. For duplicate `(ts_code, end_date)` records, the as-of
-version with the latest disclosure date is used; ties prefer `update_flag=1`.
+target trading date. Report type preference is explicit: income factors can
+prefer adjusted single-quarter reports before regular single-quarter reports,
+while balance sheet factors can prefer consolidated point-in-time reports. For
+duplicate `(ts_code, end_date, report_type)` records, the as-of version with the
+latest disclosure date is used; ties prefer `update_flag=1`.
 
-The `roe_8q` demo uses the latest 8 disclosed quarters:
+The `roe_8q` demo uses the latest 8 valid quarters and applies the regulatory
+deadline rule for Q1/Q4, Q2, and Q3:
 
 ```text
-sum(n_income_attr_p, 8 quarters) / 2 / mean(total_hldr_eqy_exc_min_int, 8 quarters)
+mean(n_income_attr_p / total_hldr_eqy_exc_min_int, 8 quarters)
 ```
 
 ## Operators

@@ -4,7 +4,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::compute_daily_by_instrument;
+use crate::factor::common::DailyPanel;
 use crate::factor::Factor;
 use crate::operators::ts_zscore;
 
@@ -34,11 +34,8 @@ impl Factor for StockDailyPeZscore60d {
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        compute_daily_by_instrument(
-            self.spec(),
-            context,
-            data.daily(DatasetId::StockDailyBasic)?,
-            |series| Ok(ts_zscore(series.column("pe")?, 60, 60)),
-        )
+        let panel = DailyPanel::from_table(data.daily(DatasetId::StockDailyBasic)?, context)?;
+        let factor = panel.column("pe")?.ts(|values| ts_zscore(values, 60, 60))?;
+        Ok(factor.to_factor_series(self.spec()))
     }
 }

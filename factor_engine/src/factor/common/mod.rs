@@ -14,7 +14,10 @@ pub use cross_section::{
     compute_daily_cross_section, ClassificationLevel, ClassificationMap, DailyCrossSection,
 };
 pub use daily::{compute_daily_by_instrument, DailySeries};
-pub use financial::{PitFinancialData, PitFinancialRecord};
+pub use financial::{
+    DeadlinePolicy, PitFinancialData, PitFinancialRecord, QuarterMatrix, QuarterValue,
+    ReportTypePreference,
+};
 pub use minute::{compute_minute_by_instrument, MinuteSeries};
 pub use panel::{DailyPanel, PanelColumn};
 

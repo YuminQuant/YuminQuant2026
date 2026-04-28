@@ -113,6 +113,7 @@ impl DatasetId {
 pub struct DataRequest {
     pub dataset: DatasetId,
     pub columns: Vec<String>,
+    pub financial_quarters: Option<usize>,
 }
 
 impl DataRequest {
@@ -120,6 +121,15 @@ impl DataRequest {
         Self {
             dataset,
             columns: columns.iter().map(|value| value.to_string()).collect(),
+            financial_quarters: None,
+        }
+    }
+
+    pub fn financial_quarters(dataset: DatasetId, columns: &[&str], quarters: usize) -> Self {
+        Self {
+            dataset,
+            columns: columns.iter().map(|value| value.to_string()).collect(),
+            financial_quarters: Some(quarters),
         }
     }
 }

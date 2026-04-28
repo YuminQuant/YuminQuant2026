@@ -4,11 +4,10 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::compute_daily_by_instrument;
 use crate::factor::common::vector::map_binary;
+use crate::factor::common::DailyPanel;
 use crate::factor::Factor;
-use crate::operators::ts_delay;
-use crate::operators::ts_mean;
+use crate::operators::{ts_delay, ts_mean};
 
 pub struct StockDailyVolumeRatio20d;
 
@@ -38,18 +37,14 @@ impl Factor for StockDailyVolumeRatio20d {
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        compute_daily_by_instrument(
-            self.spec(),
-            context,
-            data.daily(DatasetId::StockDailyPv)?,
-            |series| {
-                let volume = series.column("vol")?;
-                let prev_volume = ts_delay(volume, 1);
-                let mean_prev_20 = ts_mean(&prev_volume, 20, 20);
-                Ok(map_binary(volume, &mean_prev_20, |volume, mean| {
-                    (mean.abs() > f64::EPSILON).then_some(volume / mean)
-                }))
-            },
-        )
+        let panel = DailyPanel::from_table(data.daily(DatasetId::StockDailyPv)?, context)?;
+        let factor = panel.column("vol")?.ts(|volume| {
+            let prev_volume = ts_delay(volume, 1);
+            let mean_prev_20 = ts_mean(&prev_volume, 20, 20);
+            map_binary(volume, &mean_prev_20, |volume, mean| {
+                (mean.abs() > f64::EPSILON).then_some(volume / mean)
+            })
+        })?;
+        Ok(factor.to_factor_series(self.spec()))
     }
 }

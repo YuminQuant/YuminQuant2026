@@ -17,16 +17,19 @@ impl DataPool {
         requests: &[DataRequest],
         context: &FactorContext,
     ) -> Result<Self> {
-        let mut grouped: HashMap<DatasetId, BTreeSet<String>> = HashMap::new();
+        let mut grouped: HashMap<DatasetId, (BTreeSet<String>, Option<usize>)> = HashMap::new();
         for request in requests {
-            grouped
-                .entry(request.dataset)
-                .or_default()
-                .extend(request.columns.iter().cloned());
+            let entry = grouped.entry(request.dataset).or_default();
+            entry.0.extend(request.columns.iter().cloned());
+            entry.1 = match (entry.1, request.financial_quarters) {
+                (Some(left), Some(right)) => Some(left.max(right)),
+                (None, Some(right)) => Some(right),
+                (left, None) => left,
+            };
         }
 
         let mut pool = Self::default();
-        for (dataset, columns) in grouped {
+        for (dataset, (columns, financial_quarters)) in grouped {
             let columns = columns.into_iter().collect::<Vec<_>>();
             if dataset == DatasetId::StockSwClassification {
                 let table = loader.load_stock_sw_classification(
@@ -44,8 +47,9 @@ impl DataPool {
                 let table = loader.load_financial(
                     dataset,
                     &columns,
-                    context.load_start_date,
+                    context.start_date,
                     context.end_date,
+                    financial_quarters.unwrap_or(0),
                 )?;
                 pool.daily.insert(dataset, table);
                 continue;

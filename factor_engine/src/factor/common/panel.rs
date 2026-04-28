@@ -121,6 +121,24 @@ impl DailyPanel {
     pub fn instruments(&self) -> &[String] {
         &self.index.instruments
     }
+
+    pub fn shape_len(&self) -> usize {
+        self.index.date_count() * self.index.instrument_count()
+    }
+
+    pub fn column_from_values(&self, values: Vec<Option<f64>>) -> Result<PanelColumn> {
+        if values.len() != self.shape_len() {
+            return Err(err(format!(
+                "panel column has {} values, expected {}",
+                values.len(),
+                self.shape_len()
+            )));
+        }
+        Ok(PanelColumn {
+            index: Arc::clone(&self.index),
+            values,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]

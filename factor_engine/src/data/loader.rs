@@ -54,6 +54,7 @@ impl MarketDataLoader {
         requested_columns: &[String],
         start_date: i32,
         end_date: i32,
+        quarters: usize,
     ) -> Result<Table> {
         let columns = with_required_columns(
             requested_columns,
@@ -62,10 +63,19 @@ impl MarketDataLoader {
                 "ann_date",
                 "f_ann_date",
                 "end_date",
+                "report_type",
                 "update_flag",
             ],
         );
-        let files = self.catalog.daily_year_files(dataset, start_date, end_date);
+        let start_year = start_date / 10_000;
+        let end_year = end_date / 10_000;
+        let lookback_years = financial_lookback_years(quarters);
+        let file_start_year = start_year.saturating_sub(lookback_years);
+        let files = self.catalog.daily_year_files(
+            dataset,
+            file_start_year * 10_000 + 101,
+            end_year * 10_000 + 12_31,
+        );
         let mut table = Table::empty();
         for file in files {
             let yearly = read_parquet(&file, Some(&columns))?;
@@ -120,6 +130,13 @@ fn filter_classification_range(table: &Table, start_date: i32, end_date: i32) ->
         })
         .collect::<Vec<_>>();
     table.take(&indices)
+}
+
+fn financial_lookback_years(quarters: usize) -> i32 {
+    if quarters == 0 {
+        return 0;
+    }
+    (quarters.div_ceil(4) as i32) + 3
 }
 
 fn filter_financial_disclosure_range(table: &Table, end_date: i32) -> Result<Table> {

@@ -4,10 +4,9 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::compute_daily_by_instrument;
+use crate::factor::common::DailyPanel;
 use crate::factor::Factor;
-use crate::operators::ts_pctchg;
-use crate::operators::ts_std_dev;
+use crate::operators::{ts_pctchg, ts_std_dev};
 
 pub struct StockDailyVolatility20d;
 
@@ -36,14 +35,11 @@ impl Factor for StockDailyVolatility20d {
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        compute_daily_by_instrument(
-            self.spec(),
-            context,
-            data.daily(DatasetId::StockDailyPv)?,
-            |series| {
-                let returns = ts_pctchg(series.column("close")?, 1);
-                Ok(ts_std_dev(&returns, 20, 20))
-            },
-        )
+        let panel = DailyPanel::from_table(data.daily(DatasetId::StockDailyPv)?, context)?;
+        let factor = panel
+            .column("close")?
+            .ts(|values| ts_pctchg(values, 1))?
+            .ts(|values| ts_std_dev(values, 20, 20))?;
+        Ok(factor.to_factor_series(self.spec()))
     }
 }

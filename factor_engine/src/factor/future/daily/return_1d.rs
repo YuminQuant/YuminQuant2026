@@ -4,8 +4,8 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::compute_daily_by_instrument;
 use crate::factor::common::vector::map_binary;
+use crate::factor::common::DailyPanel;
 use crate::factor::Factor;
 
 pub struct FutureDailyReturn1d;
@@ -38,19 +38,14 @@ impl Factor for FutureDailyReturn1d {
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        compute_daily_by_instrument(
-            self.spec(),
-            context,
-            data.daily(DatasetId::FutureDaily)?,
-            |series| {
-                Ok(map_binary(
-                    series.column("close")?,
-                    series.column("pre_close")?,
-                    |close, pre_close| {
-                        (pre_close.abs() > f64::EPSILON).then_some(close / pre_close - 1.0)
-                    },
-                ))
-            },
-        )
+        let panel = DailyPanel::from_table(data.daily(DatasetId::FutureDaily)?, context)?;
+        let close = panel.column("close")?;
+        let pre_close = panel.column("pre_close")?;
+        let factor = close.ts_binary(&pre_close, |close, pre_close| {
+            map_binary(close, pre_close, |close, pre_close| {
+                (pre_close.abs() > f64::EPSILON).then_some(close / pre_close - 1.0)
+            })
+        })?;
+        Ok(factor.to_factor_series(self.spec()))
     }
 }

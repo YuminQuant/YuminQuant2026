@@ -409,18 +409,22 @@ where
 {
     use std::collections::{BTreeSet, HashMap};
 
-    let mut grouped: HashMap<_, BTreeSet<String>> = HashMap::new();
+    let mut grouped: HashMap<_, (BTreeSet<String>, Option<usize>)> = HashMap::new();
     for request in requests {
-        grouped
-            .entry(request.dataset)
-            .or_default()
-            .extend(request.columns.into_iter());
+        let entry = grouped.entry(request.dataset).or_default();
+        entry.0.extend(request.columns.into_iter());
+        entry.1 = match (entry.1, request.financial_quarters) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (None, Some(right)) => Some(right),
+            (left, None) => left,
+        };
     }
     let mut merged = grouped
         .into_iter()
-        .map(|(dataset, columns)| DataRequest {
+        .map(|(dataset, (columns, financial_quarters))| DataRequest {
             dataset,
             columns: columns.into_iter().collect(),
+            financial_quarters,
         })
         .collect::<Vec<_>>();
     merged.sort_by_key(|request| request.dataset);

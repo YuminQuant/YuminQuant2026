@@ -11,6 +11,7 @@ pub struct EngineConfig {
     pub label_root: PathBuf,
     pub barra_root: PathBuf,
     pub stock_sw_classification_path: PathBuf,
+    pub stock_ci_classification_path: PathBuf,
     pub stock_calendar_exchange: String,
     pub future_calendar_exchange: String,
 }
@@ -41,6 +42,15 @@ impl EngineConfig {
                         .join("member_sw")
                         .join("sw_members.parquet")
                 });
+        let stock_ci_classification_path =
+            parse_toml_string_value(&content, "stock_ci_classification_path")
+                .map(|value| normalize_data_path(&data_root, &value))
+                .unwrap_or_else(|| {
+                    data_root
+                        .join("index_data")
+                        .join("member_ci")
+                        .join("ci_members.parquet")
+                });
         Ok(Self {
             project_config_path: path,
             data_root,
@@ -48,6 +58,7 @@ impl EngineConfig {
             label_root,
             barra_root,
             stock_sw_classification_path,
+            stock_ci_classification_path,
             stock_calendar_exchange: "SSE".to_string(),
             future_calendar_exchange: "SHFE".to_string(),
         })

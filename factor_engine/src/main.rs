@@ -560,9 +560,15 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
         println!("  {}", factor_id);
     }
     for request in &report.loaded_requests {
+        let entity = request
+            .entity_id
+            .as_ref()
+            .map(|value| format!(" entity={value}"))
+            .unwrap_or_default();
         println!(
-            "load {} columns={}",
+            "load {}{} columns={}",
             request.dataset.as_str(),
+            entity,
             request.columns.join(",")
         );
     }
@@ -621,9 +627,15 @@ fn print_label_report(label: &str, report: &yq_factor_engine::LabelRunReport) {
         println!("  {}", label_id);
     }
     for request in &report.loaded_requests {
+        let entity = request
+            .entity_id
+            .as_ref()
+            .map(|value| format!(" entity={value}"))
+            .unwrap_or_default();
         println!(
-            "load {} columns={}",
+            "load {}{} columns={}",
             request.dataset.as_str(),
+            entity,
             request.columns.join(",")
         );
     }
@@ -676,9 +688,15 @@ fn print_barra_report(label: &str, report: &yq_factor_engine::BarraRunReport) {
         println!("  {}", exposure_id);
     }
     for request in &report.loaded_requests {
+        let entity = request
+            .entity_id
+            .as_ref()
+            .map(|value| format!(" entity={value}"))
+            .unwrap_or_default();
         println!(
-            "load {} columns={}",
+            "load {}{} columns={}",
             request.dataset.as_str(),
+            entity,
             request.columns.join(",")
         );
     }

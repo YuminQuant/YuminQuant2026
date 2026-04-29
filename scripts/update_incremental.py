@@ -28,6 +28,8 @@ from data_manager import (
     HKCalendarDownloader,
     IncomeDownloader,
     CIMemberDownloader,
+    CIDailyDownloader,
+    IndexDailyDownloader,
     IndexBasicDownloader,
     IndexClassifyDownloader,
     OptionBasicDownloader,
@@ -43,6 +45,7 @@ from data_manager import (
     StockMinuteDownloader,
     StockMoneyflowDownloader,
     StockSuspendDownloader,
+    SWDailyDownloader,
     SWMemberDownloader,
     USBasicDownloader,
     USCalendarDownloader,
@@ -57,6 +60,8 @@ DEFAULT_START_DATES = {
     "future": "20090101",
     "future_minute": "20100101",
     "etf": "20090101",
+    "index_daily": "20090101",
+    "index_industry_daily": "20090101",
     "option": "20150209",
     "hk_calendar_year": 2000,
     "us_calendar_year": 1980,
@@ -112,6 +117,43 @@ def update_index_static(logger):
         ("index_classify", lambda: IndexClassifyDownloader().sync()),
         ("sw_member", lambda: SWMemberDownloader().sync()),
         ("ci_member", lambda: CIMemberDownloader().sync()),
+    ]
+    for name, fn in tasks:
+        run_task(logger, name, fn)
+
+
+def update_index_daily(args, logger):
+    start_date = args.start_date or DEFAULT_START_DATES["index_daily"]
+    end_date = args.end_date or bj_today()
+    downloader = IndexDailyDownloader()
+    if args.ts_code:
+        run_task(
+            logger,
+            f"index_daily_{args.ts_code.strip().upper()}",
+            lambda: downloader.sync(
+                args.ts_code.strip().upper(),
+                start_date=start_date,
+                target_end_date=end_date,
+                list_date=args.list_date,
+            ),
+        )
+    else:
+        run_task(
+            logger,
+            "index_daily",
+            lambda: downloader.sync_many(
+                start_date=start_date,
+                target_end_date=end_date,
+            ),
+        )
+
+
+def update_index_industry_daily(args, logger):
+    start_date = args.start_date or DEFAULT_START_DATES["index_industry_daily"]
+    end_date = args.end_date or bj_today()
+    tasks = [
+        ("sw_daily", lambda: SWDailyDownloader().sync(start_date, end_date)),
+        ("ci_daily", lambda: CIDailyDownloader().sync(start_date, end_date)),
     ]
     for name, fn in tasks:
         run_task(logger, name, fn)
@@ -272,6 +314,8 @@ GROUPS = {
     "static": lambda args, logger: update_static_all(logger),
     "stock_static": lambda args, logger: update_stock_static(logger),
     "index_static": lambda args, logger: update_index_static(logger),
+    "index_daily": update_index_daily,
+    "index_industry_daily": update_index_industry_daily,
     "etf_static": lambda args, logger: update_etf_static(logger),
     "option_static": lambda args, logger: update_option_static(logger),
     "hk_static": lambda args, logger: update_hk_static(logger),
@@ -319,6 +363,14 @@ def parse_args():
     parser.add_argument(
         "--calendar-end-date",
         help="YYYYMMDD. Defaults to the current Beijing year end, e.g. 20261231.",
+    )
+    parser.add_argument(
+        "--ts-code",
+        help="Optional single index ts_code for --groups index_daily, e.g. 000016.SH. If omitted, downloads default broad-based indexes.",
+    )
+    parser.add_argument(
+        "--list-date",
+        help="Optional YYYYMMDD list date for --ts-code; effective start is max(start-date, list-date).",
     )
     return parser.parse_args()
 

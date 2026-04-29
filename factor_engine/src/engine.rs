@@ -256,6 +256,7 @@ impl Engine {
                 .flat_map(|spec| spec.dependencies.clone())
                 .chain(raw_source_specs_for_report.iter().map(|spec| DataRequest {
                     dataset: spec.source_dataset,
+                    entity_id: None,
                     columns: spec.columns.clone(),
                     financial_quarters: None,
                 })),
@@ -287,7 +288,8 @@ impl Engine {
         }
 
         let catalog = DataCatalog::new(self.config.data_root.clone())
-            .with_stock_sw_classification_path(self.config.stock_sw_classification_path.clone());
+            .with_stock_sw_classification_path(self.config.stock_sw_classification_path.clone())
+            .with_stock_ci_classification_path(self.config.stock_ci_classification_path.clone());
         let loader = MarketDataLoader::new(catalog);
         let storage = FactorStorage::new(self.config.factor_root.clone());
         let raw_storage = IntradayDailyRawStorage::new(self.config.factor_root.clone());
@@ -629,6 +631,7 @@ fn materialize_intraday_raw_table(
             };
             let batch_requests = vec![DataRequest {
                 dataset: source_dataset,
+                entity_id: None,
                 columns: columns.clone(),
                 financial_quarters: None,
             }];
@@ -890,7 +893,8 @@ where
 
     let mut grouped: HashMap<_, (BTreeSet<String>, Option<usize>)> = HashMap::new();
     for request in requests {
-        let entry = grouped.entry(request.dataset).or_default();
+        let key = (request.dataset, request.entity_id.clone());
+        let entry = grouped.entry(key).or_default();
         entry.0.extend(request.columns.into_iter());
         entry.1 = match (entry.1, request.financial_quarters) {
             (Some(left), Some(right)) => Some(left.max(right)),
@@ -900,13 +904,20 @@ where
     }
     let mut merged = grouped
         .into_iter()
-        .map(|(dataset, (columns, financial_quarters))| DataRequest {
-            dataset,
-            columns: columns.into_iter().collect(),
-            financial_quarters,
-        })
+        .map(
+            |((dataset, entity_id), (columns, financial_quarters))| DataRequest {
+                dataset,
+                entity_id,
+                columns: columns.into_iter().collect(),
+                financial_quarters,
+            },
+        )
         .collect::<Vec<_>>();
-    merged.sort_by_key(|request| request.dataset);
+    merged.sort_by(|left, right| {
+        left.dataset
+            .cmp(&right.dataset)
+            .then_with(|| left.entity_id.cmp(&right.entity_id))
+    });
     merged
 }
 

@@ -10,6 +10,8 @@ use crate::factor::common::DailyPanel;
 pub struct DataPool {
     daily: HashMap<DatasetId, Table>,
     daily_panels: HashMap<DatasetId, DailyPanel>,
+    index_daily: HashMap<String, Table>,
+    index_daily_panels: HashMap<String, DailyPanel>,
     minute: HashMap<(DatasetId, i32), Table>,
     intraday_daily_raw: Option<Table>,
     intraday_daily_raw_panel: Option<DailyPanel>,
@@ -21,9 +23,12 @@ impl DataPool {
         requests: &[DataRequest],
         context: &FactorContext,
     ) -> Result<Self> {
-        let mut grouped: HashMap<DatasetId, (BTreeSet<String>, Option<usize>)> = HashMap::new();
+        let mut grouped: HashMap<(DatasetId, Option<String>), (BTreeSet<String>, Option<usize>)> =
+            HashMap::new();
         for request in requests {
-            let entry = grouped.entry(request.dataset).or_default();
+            let entry = grouped
+                .entry((request.dataset, request.entity_id.clone()))
+                .or_default();
             entry.0.extend(request.columns.iter().cloned());
             entry.1 = match (entry.1, request.financial_quarters) {
                 (Some(left), Some(right)) => Some(left.max(right)),
@@ -33,10 +38,34 @@ impl DataPool {
         }
 
         let mut pool = Self::default();
-        for (dataset, (columns, financial_quarters)) in grouped {
+        for ((dataset, entity_id), (columns, financial_quarters)) in grouped {
             let columns = columns.into_iter().collect::<Vec<_>>();
+            if dataset == DatasetId::IndexDaily {
+                let ts_code = entity_id.ok_or_else(|| {
+                    err("index.daily request requires entity_id; use DataRequest::index_daily")
+                })?;
+                let table = loader.load_index_daily(
+                    &ts_code,
+                    &columns,
+                    context.load_start_date,
+                    context.end_date,
+                )?;
+                let panel = DailyPanel::from_table(&table, context)?;
+                pool.index_daily_panels.insert(ts_code.clone(), panel);
+                pool.index_daily.insert(ts_code, table);
+                continue;
+            }
             if dataset == DatasetId::StockSwClassification {
                 let table = loader.load_stock_sw_classification(
+                    &columns,
+                    context.load_start_date,
+                    context.end_date,
+                )?;
+                pool.daily.insert(dataset, table);
+                continue;
+            }
+            if dataset == DatasetId::StockCiClassification {
+                let table = loader.load_stock_ci_classification(
                     &columns,
                     context.load_start_date,
                     context.end_date,
@@ -112,6 +141,12 @@ impl DataPool {
             .ok_or_else(|| err(format!("daily panel not loaded: {}", dataset.as_str())))
     }
 
+    pub fn index_daily_panel(&self, ts_code: &str) -> Result<&DailyPanel> {
+        self.index_daily_panels
+            .get(ts_code)
+            .ok_or_else(|| err(format!("index daily panel not loaded: {ts_code}")))
+    }
+
     pub fn minute(&self, dataset: DatasetId, trade_date: i32) -> Option<&Table> {
         self.minute.get(&(dataset, trade_date))
     }
@@ -154,6 +189,8 @@ impl DataPool {
         Self {
             daily: HashMap::new(),
             daily_panels: HashMap::new(),
+            index_daily: HashMap::new(),
+            index_daily_panels: HashMap::new(),
             minute,
             intraday_daily_raw: None,
             intraday_daily_raw_panel: None,
@@ -167,6 +204,7 @@ fn should_build_daily_panel(dataset: DatasetId) -> bool {
         DatasetId::StockDailyPv
             | DatasetId::StockDailyBasic
             | DatasetId::StockBarraDaily
+            | DatasetId::IndexDaily
             | DatasetId::FutureDaily
     )
 }
@@ -221,6 +259,8 @@ mod tests {
         let pool = DataPool {
             daily: HashMap::from([(DatasetId::StockDailyPv, table)]),
             daily_panels: HashMap::from([(DatasetId::StockDailyPv, expected.clone())]),
+            index_daily: HashMap::new(),
+            index_daily_panels: HashMap::new(),
             minute: HashMap::new(),
             intraday_daily_raw: None,
             intraday_daily_raw_panel: None,
@@ -233,6 +273,7 @@ mod tests {
             expected.column("close").expect("expected close").values()
         );
         assert!(pool.daily_panel(DatasetId::StockSwClassification).is_err());
+        assert!(pool.daily_panel(DatasetId::StockCiClassification).is_err());
     }
 
     #[test]

@@ -1,0 +1,267 @@
+use crate::barra::BarraExposure;
+use crate::core::{
+    AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
+};
+use crate::data::DataPool;
+use crate::error::Result;
+use crate::operators::{cs_winsorize_quantile, cs_zscore};
+
+pub struct StockDailyBarraCne6Liquidity;
+
+const MODEL: &str = "CNE6";
+const VERSION: &str = "0.1.0";
+const TRADING_DAYS_PER_MONTH: usize = 21;
+const TRADING_DAYS_PER_YEAR: usize = 252;
+const ATVR_HALF_LIFE: f64 = 63.0;
+
+pub fn create() -> Box<dyn BarraExposure> {
+    Box::new(StockDailyBarraCne6Liquidity)
+}
+
+impl BarraExposure for StockDailyBarraCne6Liquidity {
+    fn specs(&self) -> Vec<BarraSpec> {
+        vec![
+            liquidity_spec(
+                "Monthly_Share_Turnover",
+                &["STOM"],
+                "CNE6 monthly share turnover",
+                "Log of the most recent 21 trading days' share turnover sum.",
+                20,
+            ),
+            liquidity_spec(
+                "Quarterly_Share_Turnover",
+                &["STOQ"],
+                "CNE6 quarterly share turnover",
+                "Average of log monthly share turnover over the most recent three 21-day months.",
+                62,
+            ),
+            liquidity_spec(
+                "Annual_Share_Turnover",
+                &["STOA"],
+                "CNE6 annual share turnover",
+                "Average of log monthly share turnover over the most recent twelve 21-day months.",
+                251,
+            ),
+            liquidity_spec(
+                "Annualized_Traded_Value_Ratio",
+                &["ATVR"],
+                "CNE6 annualized traded value ratio",
+                "Annualized exponentially weighted daily turnover over 252 trading days with half-life 63.",
+                251,
+            ),
+            liquidity_spec(
+                "LIQUIDITY",
+                &[],
+                "CNE6 LIQUIDITY style exposure",
+                "Equal-weight composite of the four standardized liquidity sub-exposures, then z-scored.",
+                251,
+            ),
+        ]
+    }
+
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
+        let panel = data.daily_panel(DatasetId::StockDailyBasic)?;
+        let turnover = panel.column("turnover_rate")?;
+
+        let monthly = turnover
+            .ts(|values| monthly_log_turnover(values, 1))?
+            .cs(standardize_cross_section)?;
+        let quarterly = turnover
+            .ts(|values| monthly_log_turnover(values, 3))?
+            .cs(standardize_cross_section)?;
+        let annual = turnover
+            .ts(|values| monthly_log_turnover(values, 12))?
+            .cs(standardize_cross_section)?;
+        let atvr = turnover
+            .ts(annualized_traded_value_ratio)?
+            .cs(standardize_cross_section)?;
+
+        let composite_raw = monthly.zip_quaternary(
+            &quarterly,
+            &annual,
+            &atvr,
+            |monthly, quarterly, annual, atvr| match (
+                clean(monthly),
+                clean(quarterly),
+                clean(annual),
+                clean(atvr),
+            ) {
+                (Some(monthly), Some(quarterly), Some(annual), Some(atvr)) => {
+                    Some((monthly + quarterly + annual + atvr) / 4.0)
+                }
+                _ => None,
+            },
+        )?;
+        let liquidity = composite_raw.cs(cs_zscore)?;
+
+        let specs = self.specs();
+        Ok(vec![
+            monthly.to_barra_series(specs[0].clone()),
+            quarterly.to_barra_series(specs[1].clone()),
+            annual.to_barra_series(specs[2].clone()),
+            atvr.to_barra_series(specs[3].clone()),
+            liquidity.to_barra_series(specs[4].clone()),
+        ])
+    }
+}
+
+fn liquidity_spec(
+    id: &str,
+    aliases: &[&str],
+    name: &str,
+    description: &str,
+    lookback: usize,
+) -> BarraSpec {
+    BarraSpec {
+        id: id.to_string(),
+        aliases: aliases.iter().map(|value| value.to_string()).collect(),
+        name: name.to_string(),
+        model: MODEL.to_string(),
+        asset_class: AssetClass::Stock,
+        frequency: Frequency::Daily,
+        version: VERSION.to_string(),
+        tags: [
+            "barra",
+            "cne6",
+            "style",
+            "liquidity",
+            "turnover",
+            "daily",
+            "stock",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect(),
+        description: description.to_string(),
+        dependencies: vec![DataRequest::new(
+            DatasetId::StockDailyBasic,
+            &["turnover_rate"],
+        )],
+        lookback: Lookback {
+            trading_days: lookback,
+        },
+    }
+}
+
+fn monthly_log_turnover(values: &[Option<f64>], months: usize) -> Vec<Option<f64>> {
+    if months == 0 {
+        return vec![None; values.len()];
+    }
+    let mut output = vec![None; values.len()];
+    for idx in 0..values.len() {
+        let mut logs = Vec::with_capacity(months);
+        for month_idx in 0..months {
+            let block_end = idx as isize - (month_idx * TRADING_DAYS_PER_MONTH) as isize;
+            let block_start = block_end - TRADING_DAYS_PER_MONTH as isize + 1;
+            if block_start < 0 {
+                logs.clear();
+                break;
+            }
+            let mut sum = 0.0;
+            let mut count = 0;
+            for value_idx in block_start as usize..=block_end as usize {
+                let Some(value) = clean(values[value_idx]) else {
+                    continue;
+                };
+                sum += value;
+                count += 1;
+            }
+            if count != TRADING_DAYS_PER_MONTH || sum <= 0.0 {
+                logs.clear();
+                break;
+            }
+            logs.push(sum.ln());
+        }
+        if logs.len() == months {
+            output[idx] = Some(logs.iter().sum::<f64>() / months as f64);
+        }
+    }
+    output
+}
+
+fn annualized_traded_value_ratio(values: &[Option<f64>]) -> Vec<Option<f64>> {
+    let mut output = vec![None; values.len()];
+    for idx in 0..values.len() {
+        if idx + 1 < TRADING_DAYS_PER_YEAR {
+            continue;
+        }
+        let mut weighted_sum = 0.0;
+        let mut weight_sum = 0.0;
+        let mut count = 0;
+        for lag in 0..TRADING_DAYS_PER_YEAR {
+            let Some(value) = clean(values[idx - lag]) else {
+                continue;
+            };
+            let weight = 0.5_f64.powf(lag as f64 / ATVR_HALF_LIFE);
+            weighted_sum += weight * value;
+            weight_sum += weight;
+            count += 1;
+        }
+        if count == TRADING_DAYS_PER_YEAR && weight_sum > 0.0 {
+            output[idx] = Some(weighted_sum / weight_sum * TRADING_DAYS_PER_YEAR as f64);
+        }
+    }
+    output
+}
+
+fn standardize_cross_section(values: &[Option<f64>]) -> Vec<Option<f64>> {
+    cs_zscore(&cs_winsorize_quantile(values, 0.01, 0.99))
+}
+
+fn clean(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| !value.is_nan())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::barra::BarraExposure;
+
+    use super::{
+        annualized_traded_value_ratio, monthly_log_turnover, StockDailyBarraCne6Liquidity,
+        TRADING_DAYS_PER_YEAR,
+    };
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < 1e-10, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn cne6_liquidity_family_registers_sub_exposures_and_composite() {
+        let exposure = StockDailyBarraCne6Liquidity;
+        let specs = exposure.specs();
+        let ids = specs
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec![
+                "Monthly_Share_Turnover",
+                "Quarterly_Share_Turnover",
+                "Annual_Share_Turnover",
+                "Annualized_Traded_Value_Ratio",
+                "LIQUIDITY"
+            ]
+        );
+        assert!(specs.iter().all(|spec| spec.model == "CNE6"));
+    }
+
+    #[test]
+    fn monthly_turnover_uses_complete_21_day_blocks() {
+        let values = vec![Some(1.0); 42];
+        let output = monthly_log_turnover(&values, 2);
+
+        assert_eq!(output[40], None);
+        assert_close(output[41].unwrap(), 21.0_f64.ln());
+    }
+
+    #[test]
+    fn atvr_requires_full_year_and_annualizes_constant_turnover() {
+        let values = vec![Some(2.0); TRADING_DAYS_PER_YEAR];
+        let output = annualized_traded_value_ratio(&values);
+
+        assert_eq!(output[TRADING_DAYS_PER_YEAR - 2], None);
+        assert_close(output[TRADING_DAYS_PER_YEAR - 1].unwrap(), 2.0 * 252.0);
+    }
+}

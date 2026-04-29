@@ -34,6 +34,26 @@ impl MarketDataLoader {
         Ok(table)
     }
 
+    pub fn load_index_daily(
+        &self,
+        ts_code: &str,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+    ) -> Result<Table> {
+        let columns = with_required_columns(requested_columns, &["trade_date", "ts_code"]);
+        let files = self
+            .catalog
+            .index_daily_year_files(ts_code, start_date, end_date);
+        let mut table = Table::empty();
+        for file in files {
+            let yearly = read_parquet(&file, Some(&columns))?;
+            let filtered = yearly.filter_i32_range("trade_date", start_date, end_date)?;
+            table.append(&filtered)?;
+        }
+        Ok(table)
+    }
+
     pub fn load_stock_sw_classification(
         &self,
         requested_columns: &[String],
@@ -43,6 +63,28 @@ impl MarketDataLoader {
         let path = self.catalog.stock_sw_classification_file().ok_or_else(|| {
             err("stock SW classification path is not configured; set stock_sw_classification_path in config.toml")
         })?;
+        self.load_classification(path, requested_columns, start_date, end_date)
+    }
+
+    pub fn load_stock_ci_classification(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+    ) -> Result<Table> {
+        let path = self.catalog.stock_ci_classification_file().ok_or_else(|| {
+            err("stock CI classification path is not configured; set stock_ci_classification_path in config.toml")
+        })?;
+        self.load_classification(path, requested_columns, start_date, end_date)
+    }
+
+    fn load_classification(
+        &self,
+        path: &std::path::Path,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+    ) -> Result<Table> {
         let columns = with_required_columns(requested_columns, &["ts_code", "in_date", "out_date"]);
         let table = read_parquet(path, Some(&columns))?;
         filter_classification_range(&table, start_date, end_date)
@@ -181,4 +223,143 @@ fn with_required_columns(requested: &[String], required: &[&str]) -> Vec<String>
         columns.insert(column.clone());
     }
     columns.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::data::parquet_io::write_parquet;
+    use crate::data::table::ColumnData;
+
+    use super::*;
+
+    #[test]
+    fn index_daily_loader_reads_code_directory_and_filters_dates() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_index_loader_test_{unique}"));
+        let path = root
+            .join("index_data")
+            .join("daily")
+            .join("000300_SH")
+            .join("2026.parquet");
+        let table = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260102), Some(20260103)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000300.SH".to_string()),
+                    Some("000300.SH".to_string()),
+                ]),
+            ),
+            (
+                "close".to_string(),
+                ColumnData::F32(vec![Some(10.0), Some(11.0)]),
+            ),
+            (
+                "pre_close".to_string(),
+                ColumnData::F32(vec![Some(9.5), Some(10.0)]),
+            ),
+        ]))
+        .expect("table");
+        write_parquet(&path, &table).expect("write parquet");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let loaded = loader
+            .load_index_daily("000300.SH", &["close".to_string()], 20260103, 20260103)
+            .expect("load index daily");
+
+        assert_eq!(loaded.len, 1);
+        assert_eq!(
+            loaded.required_i32("trade_date").expect("trade_date"),
+            &vec![Some(20260103)]
+        );
+        assert_eq!(
+            loaded.required_utf8("ts_code").expect("ts_code"),
+            &vec![Some("000300.SH".to_string())]
+        );
+        assert_eq!(
+            loaded.required_f64_cast("close").expect("close"),
+            vec![Some(11.0)]
+        );
+        assert!(!loaded.columns.contains_key("pre_close"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn ci_classification_loader_reads_configured_member_file_and_filters_active_rows() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_ci_loader_test_{unique}"));
+        let path = root
+            .join("index_data")
+            .join("member_ci")
+            .join("ci_members.parquet");
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000002.SZ".to_string()),
+                    Some("000003.SZ".to_string()),
+                ]),
+            ),
+            (
+                "in_date".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("20200101".to_string()),
+                    Some("20270101".to_string()),
+                    Some("20200101".to_string()),
+                ]),
+            ),
+            (
+                "out_date".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("nan".to_string()),
+                    Some("99991231".to_string()),
+                    Some("20250101".to_string()),
+                ]),
+            ),
+            (
+                "l1_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("CI001".to_string()),
+                    Some("CI002".to_string()),
+                    Some("CI003".to_string()),
+                ]),
+            ),
+        ]))
+        .expect("table");
+        write_parquet(&path, &table).expect("write parquet");
+
+        let catalog =
+            DataCatalog::new(root.clone()).with_stock_ci_classification_path(path.clone());
+        let loader = MarketDataLoader::new(catalog);
+        let loaded = loader
+            .load_stock_ci_classification(&["l1_code".to_string()], 20260424, 20260424)
+            .expect("load ci classification");
+
+        assert_eq!(loaded.len, 1);
+        assert_eq!(
+            loaded.required_utf8("ts_code").expect("ts_code"),
+            &vec![Some("000001.SZ".to_string())]
+        );
+        assert_eq!(
+            loaded.required_utf8("l1_code").expect("l1_code"),
+            &vec![Some("CI001".to_string())]
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 }

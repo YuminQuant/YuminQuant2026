@@ -1170,13 +1170,7 @@ fn dependencies_json(spec: &FactorSpec) -> String {
     let mut items = spec
         .dependencies
         .iter()
-        .map(|dependency| {
-            format!(
-                "{{\"dataset\":\"{}\",\"columns\":{}}}",
-                dependency.dataset.as_str(),
-                string_list_json(&dependency.columns)
-            )
-        })
+        .map(dependency_json)
         .collect::<Vec<_>>();
     items.extend(spec.intraday_raw_dependencies.iter().map(|dependency| {
         format!(
@@ -1192,13 +1186,7 @@ fn label_dependencies_json(spec: &LabelSpec) -> String {
     let mut items = spec
         .dependencies
         .iter()
-        .map(|dependency| {
-            format!(
-                "{{\"dataset\":\"{}\",\"columns\":{}}}",
-                dependency.dataset.as_str(),
-                string_list_json(&dependency.columns)
-            )
-        })
+        .map(dependency_json)
         .collect::<Vec<_>>();
     items.push(format!(
         "{{\"lookahead_trading_days\":{}}}",
@@ -1211,19 +1199,27 @@ fn barra_dependencies_json(spec: &BarraSpec) -> String {
     let mut items = spec
         .dependencies
         .iter()
-        .map(|dependency| {
-            format!(
-                "{{\"dataset\":\"{}\",\"columns\":{}}}",
-                dependency.dataset.as_str(),
-                string_list_json(&dependency.columns)
-            )
-        })
+        .map(dependency_json)
         .collect::<Vec<_>>();
     items.push(format!(
         "{{\"lookback_trading_days\":{}}}",
         spec.lookback.trading_days
     ));
     format!("[{}]", items.join(","))
+}
+
+fn dependency_json(dependency: &crate::core::DataRequest) -> String {
+    let entity = dependency
+        .entity_id
+        .as_ref()
+        .map(|entity_id| format!(",\"entity_id\":\"{}\"", escape_json(entity_id)))
+        .unwrap_or_default();
+    format!(
+        "{{\"dataset\":\"{}\"{},\"columns\":{}}}",
+        dependency.dataset.as_str(),
+        entity,
+        string_list_json(&dependency.columns)
+    )
 }
 
 fn escape_json(value: &str) -> String {

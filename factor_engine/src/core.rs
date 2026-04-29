@@ -66,7 +66,9 @@ pub enum DatasetId {
     StockBalanceSheet,
     StockMinute1m,
     StockSwClassification,
+    StockCiClassification,
     StockBarraDaily,
+    IndexDaily,
     FutureDaily,
     FutureMinute1m,
 }
@@ -80,7 +82,9 @@ impl DatasetId {
             | Self::StockBalanceSheet
             | Self::StockMinute1m
             | Self::StockSwClassification
-            | Self::StockBarraDaily => AssetClass::Stock,
+            | Self::StockCiClassification
+            | Self::StockBarraDaily
+            | Self::IndexDaily => AssetClass::Stock,
             Self::FutureDaily | Self::FutureMinute1m => AssetClass::Future,
         }
     }
@@ -92,7 +96,9 @@ impl DatasetId {
             | Self::StockIncome
             | Self::StockBalanceSheet
             | Self::StockSwClassification
+            | Self::StockCiClassification
             | Self::StockBarraDaily
+            | Self::IndexDaily
             | Self::FutureDaily => Frequency::Daily,
             Self::StockMinute1m | Self::FutureMinute1m => Frequency::Minute1,
         }
@@ -106,7 +112,9 @@ impl DatasetId {
             Self::StockBalanceSheet => "stock.balancesheet",
             Self::StockMinute1m => "stock.minute.1m",
             Self::StockSwClassification => "stock.sw_classification",
+            Self::StockCiClassification => "stock.ci_classification",
             Self::StockBarraDaily => "stock.barra.daily",
+            Self::IndexDaily => "index.daily",
             Self::FutureDaily => "future.daily",
             Self::FutureMinute1m => "future.minute.1m",
         }
@@ -116,6 +124,7 @@ impl DatasetId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DataRequest {
     pub dataset: DatasetId,
+    pub entity_id: Option<String>,
     pub columns: Vec<String>,
     pub financial_quarters: Option<usize>,
 }
@@ -124,6 +133,16 @@ impl DataRequest {
     pub fn new(dataset: DatasetId, columns: &[&str]) -> Self {
         Self {
             dataset,
+            entity_id: None,
+            columns: columns.iter().map(|value| value.to_string()).collect(),
+            financial_quarters: None,
+        }
+    }
+
+    pub fn index_daily(ts_code: &str, columns: &[&str]) -> Self {
+        Self {
+            dataset: DatasetId::IndexDaily,
+            entity_id: Some(ts_code.to_string()),
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
         }
@@ -132,6 +151,7 @@ impl DataRequest {
     pub fn financial_quarters(dataset: DatasetId, columns: &[&str], quarters: usize) -> Self {
         Self {
             dataset,
+            entity_id: None,
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: Some(quarters),
         }

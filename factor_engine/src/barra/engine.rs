@@ -254,7 +254,8 @@ impl BarraEngine {
         }
 
         let catalog = DataCatalog::new(self.config.data_root.clone())
-            .with_stock_sw_classification_path(self.config.stock_sw_classification_path.clone());
+            .with_stock_sw_classification_path(self.config.stock_sw_classification_path.clone())
+            .with_stock_ci_classification_path(self.config.stock_ci_classification_path.clone());
         let loader = MarketDataLoader::new(catalog);
         let storage = BarraStorage::with_model(self.config.barra_root.clone(), &request.model);
         let thread_pool = build_thread_pool(request.threads)?;
@@ -461,20 +462,26 @@ where
 {
     let mut grouped: HashMap<_, BTreeSet<String>> = HashMap::new();
     for request in requests {
+        let key = (request.dataset, request.entity_id.clone());
         grouped
-            .entry(request.dataset)
+            .entry(key)
             .or_default()
             .extend(request.columns.into_iter());
     }
     let mut merged = grouped
         .into_iter()
-        .map(|(dataset, columns)| DataRequest {
+        .map(|((dataset, entity_id), columns)| DataRequest {
             dataset,
+            entity_id,
             columns: columns.into_iter().collect(),
             financial_quarters: None,
         })
         .collect::<Vec<_>>();
-    merged.sort_by_key(|request| request.dataset);
+    merged.sort_by(|left, right| {
+        left.dataset
+            .cmp(&right.dataset)
+            .then_with(|| left.entity_id.cmp(&right.entity_id))
+    });
     merged
 }
 

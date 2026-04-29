@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::core::DatasetId;
+use crate::core::{AssetClass, DatasetId};
 use crate::data::catalog::DataCatalog;
 use crate::data::parquet_io::read_parquet;
 use crate::data::table::Table;
@@ -114,6 +114,27 @@ impl MarketDataLoader {
             }
         }
         Ok(tables)
+    }
+
+    pub fn load_barra_daily(
+        &self,
+        asset_class: AssetClass,
+        model: &str,
+        requested_columns: &[String],
+        target_dates: &[i32],
+    ) -> Result<Table> {
+        let columns = with_required_columns(requested_columns, &["trade_date", "ts_code"]);
+        let mut table = Table::empty();
+        for trade_date in target_dates {
+            if let Some(file) = self
+                .catalog
+                .barra_daily_file(asset_class, model, *trade_date)
+            {
+                let daily = read_parquet(&file, Some(&columns))?;
+                table.append(&daily)?;
+            }
+        }
+        Ok(table)
     }
 }
 

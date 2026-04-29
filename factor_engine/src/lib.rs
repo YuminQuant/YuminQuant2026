@@ -1,3 +1,4 @@
+pub mod barra;
 pub mod calendar;
 pub mod config;
 pub mod core;
@@ -10,6 +11,7 @@ pub mod operators;
 pub mod progress;
 pub mod storage;
 
+pub use barra::engine::{BarraEngine, BarraRunReport, BarraRunRequest};
 pub use engine::{Engine, RunReport, RunRequest};
 pub use error::Result;
 pub use label::engine::{LabelEngine, LabelRunReport, LabelRunRequest};

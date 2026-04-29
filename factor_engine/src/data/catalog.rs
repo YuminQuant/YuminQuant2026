@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::core::DatasetId;
+use crate::core::{AssetClass, DatasetId};
 
 #[derive(Clone, Debug)]
 pub struct DataCatalog {
@@ -94,5 +94,23 @@ impl DataCatalog {
 
     pub fn stock_sw_classification_file(&self) -> Option<&Path> {
         self.stock_sw_classification_path.as_deref()
+    }
+
+    pub fn barra_daily_file(
+        &self,
+        asset_class: AssetClass,
+        model: &str,
+        trade_date: i32,
+    ) -> Option<PathBuf> {
+        let year = trade_date / 10_000;
+        let path = self
+            .data_root
+            .join("barra")
+            .join(asset_class.as_str())
+            .join("daily")
+            .join(model)
+            .join(year.to_string())
+            .join(format!("{}.parquet", trade_date));
+        path.exists().then_some(path)
     }
 }

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{
-    AssetClass, FactorRowKey, FactorSeries, FactorSpec, Frequency, IntradayDailyRawSeries,
-    IntradayDailyRawSpec, LabelSeries, LabelSpec,
+    AssetClass, BarraSeries, BarraSpec, FactorRowKey, FactorSeries, FactorSpec, Frequency,
+    IntradayDailyRawSeries, IntradayDailyRawSpec, LabelSeries, LabelSpec,
 };
 use crate::data::parquet_io::{read_parquet, write_parquet};
 use crate::data::table::{ColumnData, Table};
@@ -25,6 +25,12 @@ pub struct LabelStorage {
     label_root: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+pub struct BarraStorage {
+    barra_root: PathBuf,
+    model: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 struct OutputKey {
     ts_code: String,
@@ -43,6 +49,22 @@ struct MetadataRow {
     version: String,
     output_column: String,
     name: String,
+    asset_class: String,
+    frequency: String,
+    tags_json: String,
+    dependencies_json: String,
+    description: String,
+    updated_at: String,
+}
+
+#[derive(Clone, Debug)]
+struct BarraMetadataRow {
+    exposure_id: String,
+    aliases_json: String,
+    version: String,
+    output_column: String,
+    name: String,
+    model: String,
     asset_class: String,
     frequency: String,
     tags_json: String,
@@ -87,6 +109,24 @@ pub struct LabelMetadata {
     pub version: String,
     pub output_column: String,
     pub name: String,
+    pub asset_class: String,
+    pub frequency: String,
+    pub tags: Vec<String>,
+    pub tags_json: String,
+    pub dependencies_json: String,
+    pub description: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct BarraMetadata {
+    pub exposure_id: String,
+    pub aliases: Vec<String>,
+    pub aliases_json: String,
+    pub version: String,
+    pub output_column: String,
+    pub name: String,
+    pub model: String,
     pub asset_class: String,
     pub frequency: String,
     pub tags: Vec<String>,
@@ -279,6 +319,105 @@ impl LabelStorage {
         self.label_root
             .join(asset_class.as_str())
             .join(frequency.as_str())
+            .join(year.to_string())
+            .join(format!("{}.parquet", trade_date))
+    }
+}
+
+impl BarraStorage {
+    pub fn new(barra_root: PathBuf) -> Self {
+        Self::with_model(barra_root, "CNE6")
+    }
+
+    pub fn with_model(barra_root: PathBuf, model: &str) -> Self {
+        Self {
+            barra_root,
+            model: model.to_string(),
+        }
+    }
+
+    pub fn write_results(&self, results: &[BarraSeries]) -> Result<Vec<PathBuf>> {
+        let mut grouped: BTreeMap<(AssetClass, Frequency, i32), PendingFrame> = BTreeMap::new();
+        for series in results {
+            let column_name = series.spec.output_column();
+            for item in &series.values {
+                let trade_date = item.key.trade_date();
+                let FactorRowKey::Daily { ts_code, .. } = &item.key else {
+                    return Err(err("barra storage only supports daily row keys"));
+                };
+                grouped
+                    .entry((series.spec.asset_class, series.spec.frequency, trade_date))
+                    .or_default()
+                    .values
+                    .entry(OutputKey {
+                        ts_code: ts_code.clone(),
+                        trade_time: None,
+                    })
+                    .or_default()
+                    .insert(column_name.clone(), item.value);
+            }
+        }
+
+        let mut written = Vec::new();
+        for ((asset_class, frequency, trade_date), mut frame) in grouped {
+            let path = self.output_path(asset_class, frequency, trade_date);
+            merge_existing_output(&path, frequency, trade_date, &mut frame)?;
+            let table = pending_frame_to_table(frequency, trade_date, &frame)?;
+            write_parquet(&path, &table)?;
+            written.push(path);
+        }
+        Ok(written)
+    }
+
+    pub fn write_metadata(&self, specs: &[BarraSpec]) -> Result<()> {
+        std::fs::create_dir_all(&self.barra_root)?;
+        let path = self.barra_root.join("barra_metadata.parquet");
+
+        let updated_at = unix_timestamp_string();
+        let mut rows = Vec::new();
+        for spec in specs {
+            rows.push(BarraMetadataRow {
+                exposure_id: spec.id.clone(),
+                aliases_json: string_list_json(&spec.aliases),
+                version: spec.version.clone(),
+                output_column: spec.output_column(),
+                name: spec.name.clone(),
+                model: spec.model.clone(),
+                asset_class: spec.asset_class.as_str().to_string(),
+                frequency: spec.frequency.as_str().to_string(),
+                tags_json: string_list_json(&spec.tags),
+                dependencies_json: barra_dependencies_json(spec),
+                description: spec.description.clone(),
+                updated_at: updated_at.clone(),
+            });
+        }
+
+        let table = barra_metadata_rows_to_table(rows)?;
+        write_parquet(&path, &table)
+    }
+
+    pub fn read_metadata(&self) -> Result<Vec<BarraMetadata>> {
+        let path = self.barra_root.join("barra_metadata.parquet");
+        if !path.exists() {
+            return Err(err(format!(
+                "barra metadata not found: {}. Run `barra-metadata` first.",
+                path.display()
+            )));
+        }
+        read_barra_metadata_records(&path)
+    }
+
+    fn output_path(
+        &self,
+        asset_class: AssetClass,
+        frequency: Frequency,
+        trade_date: i32,
+    ) -> PathBuf {
+        let year = trade_date / 10_000;
+        self.barra_root
+            .join(asset_class.as_str())
+            .join(frequency.as_str())
+            .join(&self.model)
             .join(year.to_string())
             .join(format!("{}.parquet", trade_date))
     }
@@ -624,6 +763,59 @@ fn read_label_metadata_records(path: &Path) -> Result<Vec<LabelMetadata>> {
     Ok(rows)
 }
 
+fn read_barra_metadata_records(path: &Path) -> Result<Vec<BarraMetadata>> {
+    let table = read_parquet(path, None)?;
+    let exposure_id = table.required_utf8("exposure_id")?;
+    let aliases = if table.columns.contains_key("aliases_json") {
+        Some(table.required_utf8("aliases_json")?)
+    } else {
+        None
+    };
+    let version = table.required_utf8("version")?;
+    let output_column = table.required_utf8("output_column")?;
+    let name = table.required_utf8("name")?;
+    let model = if table.columns.contains_key("model") {
+        Some(table.required_utf8("model")?)
+    } else {
+        None
+    };
+    let asset_class = table.required_utf8("asset_class")?;
+    let frequency = table.required_utf8("frequency")?;
+    let tags_json = table.required_utf8("tags_json")?;
+    let dependencies_json = table.required_utf8("dependencies_json")?;
+    let description = table.required_utf8("description")?;
+    let updated_at = table.required_utf8("updated_at")?;
+
+    let mut rows = Vec::new();
+    for idx in 0..table.len {
+        let aliases_json_value = aliases
+            .as_ref()
+            .and_then(|values| values[idx].clone())
+            .unwrap_or_default();
+        let tags_json_value = tags_json[idx].clone().unwrap_or_default();
+        rows.push(BarraMetadata {
+            exposure_id: exposure_id[idx].clone().unwrap_or_default(),
+            aliases: parse_string_list_json(&aliases_json_value),
+            aliases_json: aliases_json_value,
+            version: version[idx].clone().unwrap_or_default(),
+            output_column: output_column[idx].clone().unwrap_or_default(),
+            name: name[idx].clone().unwrap_or_default(),
+            model: model
+                .as_ref()
+                .and_then(|values| values[idx].clone())
+                .unwrap_or_else(|| "CNE6".to_string()),
+            asset_class: asset_class[idx].clone().unwrap_or_default(),
+            frequency: frequency[idx].clone().unwrap_or_default(),
+            tags: parse_string_list_json(&tags_json_value),
+            tags_json: tags_json_value,
+            dependencies_json: dependencies_json[idx].clone().unwrap_or_default(),
+            description: description[idx].clone().unwrap_or_default(),
+            updated_at: updated_at[idx].clone().unwrap_or_default(),
+        });
+    }
+    Ok(rows)
+}
+
 fn parse_string_list_json(value: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut current = String::new();
@@ -802,6 +994,87 @@ fn label_metadata_rows_to_table(rows: Vec<MetadataRow>) -> Result<Table> {
     Ok(table)
 }
 
+fn barra_metadata_rows_to_table(rows: Vec<BarraMetadataRow>) -> Result<Table> {
+    let mut table = Table::empty();
+    table.insert(
+        "exposure_id",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.exposure_id.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "aliases_json",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.aliases_json.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "version",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.version.clone())).collect()),
+    )?;
+    table.insert(
+        "output_column",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.output_column.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "name",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.name.clone())).collect()),
+    )?;
+    table.insert(
+        "model",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.model.clone())).collect()),
+    )?;
+    table.insert(
+        "asset_class",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.asset_class.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "frequency",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.frequency.clone())).collect()),
+    )?;
+    table.insert(
+        "tags_json",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.tags_json.clone())).collect()),
+    )?;
+    table.insert(
+        "dependencies_json",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.dependencies_json.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "description",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.description.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "updated_at",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.updated_at.clone()))
+                .collect(),
+        ),
+    )?;
+    Ok(table)
+}
+
 fn read_raw_metadata_records(path: &Path) -> Result<Vec<RawMetadataRow>> {
     let table = read_parquet(path, None)?;
     let raw_id = table.required_utf8("raw_id")?;
@@ -930,6 +1203,25 @@ fn label_dependencies_json(spec: &LabelSpec) -> String {
     items.push(format!(
         "{{\"lookahead_trading_days\":{}}}",
         spec.lookahead.trading_days
+    ));
+    format!("[{}]", items.join(","))
+}
+
+fn barra_dependencies_json(spec: &BarraSpec) -> String {
+    let mut items = spec
+        .dependencies
+        .iter()
+        .map(|dependency| {
+            format!(
+                "{{\"dataset\":\"{}\",\"columns\":{}}}",
+                dependency.dataset.as_str(),
+                string_list_json(&dependency.columns)
+            )
+        })
+        .collect::<Vec<_>>();
+    items.push(format!(
+        "{{\"lookback_trading_days\":{}}}",
+        spec.lookback.trading_days
     ));
     format!("[{}]", items.join(","))
 }

@@ -66,6 +66,7 @@ pub enum DatasetId {
     StockBalanceSheet,
     StockMinute1m,
     StockSwClassification,
+    StockBarraDaily,
     FutureDaily,
     FutureMinute1m,
 }
@@ -78,7 +79,8 @@ impl DatasetId {
             | Self::StockIncome
             | Self::StockBalanceSheet
             | Self::StockMinute1m
-            | Self::StockSwClassification => AssetClass::Stock,
+            | Self::StockSwClassification
+            | Self::StockBarraDaily => AssetClass::Stock,
             Self::FutureDaily | Self::FutureMinute1m => AssetClass::Future,
         }
     }
@@ -90,6 +92,7 @@ impl DatasetId {
             | Self::StockIncome
             | Self::StockBalanceSheet
             | Self::StockSwClassification
+            | Self::StockBarraDaily
             | Self::FutureDaily => Frequency::Daily,
             Self::StockMinute1m | Self::FutureMinute1m => Frequency::Minute1,
         }
@@ -103,6 +106,7 @@ impl DatasetId {
             Self::StockBalanceSheet => "stock.balancesheet",
             Self::StockMinute1m => "stock.minute.1m",
             Self::StockSwClassification => "stock.sw_classification",
+            Self::StockBarraDaily => "stock.barra.daily",
             Self::FutureDaily => "future.daily",
             Self::FutureMinute1m => "future.minute.1m",
         }
@@ -233,6 +237,45 @@ pub fn label_registry_key(asset_class: &str, frequency: &str, label_id: &str) ->
 }
 
 #[derive(Clone, Debug)]
+pub struct BarraSpec {
+    pub id: String,
+    pub aliases: Vec<String>,
+    pub name: String,
+    pub model: String,
+    pub asset_class: AssetClass,
+    pub frequency: Frequency,
+    pub version: String,
+    pub tags: Vec<String>,
+    pub description: String,
+    pub dependencies: Vec<DataRequest>,
+    pub lookback: Lookback,
+}
+
+impl BarraSpec {
+    pub fn output_column(&self) -> String {
+        self.id.replace('.', "__").replace('-', "_")
+    }
+
+    pub fn registry_key(&self) -> String {
+        barra_registry_key(
+            self.asset_class.as_str(),
+            self.frequency.as_str(),
+            &self.model,
+            &self.id,
+        )
+    }
+}
+
+pub fn barra_registry_key(
+    asset_class: &str,
+    frequency: &str,
+    model: &str,
+    exposure_id: &str,
+) -> String {
+    format!("{asset_class}|{frequency}|{model}|{exposure_id}")
+}
+
+#[derive(Clone, Debug)]
 pub struct FactorContext {
     pub asset_class: AssetClass,
     pub frequency: Frequency,
@@ -279,5 +322,11 @@ pub struct FactorSeries {
 #[derive(Clone, Debug)]
 pub struct LabelSeries {
     pub spec: LabelSpec,
+    pub values: Vec<FactorValue>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BarraSeries {
+    pub spec: BarraSpec,
     pub values: Vec<FactorValue>,
 }

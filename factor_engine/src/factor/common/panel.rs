@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::core::{
-    FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue, IntradayDailyRawSeries,
-    IntradayDailyRawSpec, LabelSeries, LabelSpec,
+    BarraSeries, BarraSpec, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue,
+    IntradayDailyRawSeries, IntradayDailyRawSpec, LabelSeries, LabelSpec,
 };
 use crate::data::Table;
 use crate::error::{err, Result};
+use crate::operators::cs_neutralize_regression;
 
 use super::collect_numeric_columns;
 
@@ -140,6 +141,41 @@ impl DailyPanel {
             index: Arc::clone(&self.index),
             values,
         })
+    }
+
+    pub fn column_from_table(&self, table: &Table, name: &str) -> Result<PanelColumn> {
+        let ts_codes = table.required_utf8("ts_code")?;
+        let trade_dates = table.required_i32("trade_date")?;
+        let source = table.required_f64_cast(name)?;
+        let date_lookup = self
+            .index
+            .dates
+            .iter()
+            .enumerate()
+            .map(|(idx, date)| (*date, idx))
+            .collect::<HashMap<_, _>>();
+        let instrument_lookup = self
+            .index
+            .instruments
+            .iter()
+            .enumerate()
+            .map(|(idx, ts_code)| (ts_code.clone(), idx))
+            .collect::<HashMap<_, _>>();
+        let mut values = vec![None; self.shape_len()];
+        for idx in 0..table.len {
+            let (Some(trade_date), Some(ts_code)) = (trade_dates[idx], ts_codes[idx].clone())
+            else {
+                continue;
+            };
+            let Some(date_idx) = date_lookup.get(&trade_date).copied() else {
+                continue;
+            };
+            let Some(instrument_idx) = instrument_lookup.get(&ts_code).copied() else {
+                continue;
+            };
+            values[self.index.offset(date_idx, instrument_idx)] = source[idx];
+        }
+        self.column_from_values(values)
     }
 
     pub fn has_column(&self, name: &str) -> bool {
@@ -369,6 +405,87 @@ impl PanelColumn {
         Ok(self.with_values(output))
     }
 
+    pub fn cs_neutralize_regression(
+        &self,
+        continuous: &[&Self],
+        weights: Option<&Self>,
+    ) -> Result<Self> {
+        for column in continuous {
+            self.require_same_index(column)?;
+        }
+        if let Some(weights) = weights {
+            self.require_same_index(weights)?;
+        }
+
+        let mut output = vec![None; self.values.len()];
+        for date_idx in 0..self.index.date_count() {
+            let y = self.cross_section_for_date(date_idx);
+            let continuous_values = continuous
+                .iter()
+                .map(|column| column.cross_section_for_date(date_idx))
+                .collect::<Vec<_>>();
+            let continuous_refs = continuous_values
+                .iter()
+                .map(Vec::as_slice)
+                .collect::<Vec<_>>();
+            let weight_values = weights.map(|column| column.cross_section_for_date(date_idx));
+            let computed =
+                cs_neutralize_regression(&y, &continuous_refs, None, weight_values.as_deref());
+            self.require_cross_section_len(computed.len(), "cs_neutralize_regression")?;
+            self.write_cross_section_for_date(date_idx, &computed, &mut output);
+        }
+        Ok(self.with_values(output))
+    }
+
+    pub fn cs_neutralize_regression_by_group<GF>(
+        &self,
+        continuous: &[&Self],
+        weights: Option<&Self>,
+        mut group_provider: GF,
+    ) -> Result<Self>
+    where
+        GF: FnMut(i32, &[String]) -> Vec<Option<String>>,
+    {
+        for column in continuous {
+            self.require_same_index(column)?;
+        }
+        if let Some(weights) = weights {
+            self.require_same_index(weights)?;
+        }
+
+        let mut output = vec![None; self.values.len()];
+        for date_idx in 0..self.index.date_count() {
+            let y = self.cross_section_for_date(date_idx);
+            let continuous_values = continuous
+                .iter()
+                .map(|column| column.cross_section_for_date(date_idx))
+                .collect::<Vec<_>>();
+            let continuous_refs = continuous_values
+                .iter()
+                .map(Vec::as_slice)
+                .collect::<Vec<_>>();
+            let weight_values = weights.map(|column| column.cross_section_for_date(date_idx));
+            let groups = group_provider(self.index.dates[date_idx], &self.index.instruments);
+            if groups.len() != self.index.instrument_count() {
+                return Err(err(format!(
+                    "cs_neutralize_regression_by_group returned {} group labels for date {}, expected {}",
+                    groups.len(),
+                    self.index.dates[date_idx],
+                    self.index.instrument_count()
+                )));
+            }
+            let computed = cs_neutralize_regression(
+                &y,
+                &continuous_refs,
+                Some(&groups),
+                weight_values.as_deref(),
+            );
+            self.require_cross_section_len(computed.len(), "cs_neutralize_regression_by_group")?;
+            self.write_cross_section_for_date(date_idx, &computed, &mut output);
+        }
+        Ok(self.with_values(output))
+    }
+
     pub fn to_factor_series(&self, spec: FactorSpec) -> FactorSeries {
         let mut values = Vec::new();
         for (date_idx, trade_date) in self.index.dates.iter().enumerate() {
@@ -413,6 +530,29 @@ impl PanelColumn {
             }
         }
         LabelSeries { spec, values }
+    }
+
+    pub fn to_barra_series(&self, spec: BarraSpec) -> BarraSeries {
+        let mut values = Vec::new();
+        for (date_idx, trade_date) in self.index.dates.iter().enumerate() {
+            if !self.index.target_dates.contains(trade_date) {
+                continue;
+            }
+            for (instrument_idx, ts_code) in self.index.instruments.iter().enumerate() {
+                let offset = self.index.offset(date_idx, instrument_idx);
+                if !self.index.present[offset] {
+                    continue;
+                }
+                values.push(FactorValue {
+                    key: FactorRowKey::Daily {
+                        trade_date: *trade_date,
+                        ts_code: ts_code.clone(),
+                    },
+                    value: self.values[offset],
+                });
+            }
+        }
+        BarraSeries { spec, values }
     }
 
     pub fn to_intraday_daily_raw_series(

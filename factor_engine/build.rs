@@ -6,11 +6,14 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set");
     let factor_root = Path::new(&manifest_dir).join("src").join("factor");
     let label_root = Path::new(&manifest_dir).join("src").join("label");
+    let barra_root = Path::new(&manifest_dir).join("src").join("barra");
     println!("cargo:rerun-if-changed={}", factor_root.display());
     println!("cargo:rerun-if-changed={}", label_root.display());
+    println!("cargo:rerun-if-changed={}", barra_root.display());
 
     let factor_module_paths = scan_registry_modules(&factor_root, "factor");
     let label_module_paths = scan_registry_modules(&label_root, "label");
+    let barra_module_paths = scan_registry_modules(&barra_root, "barra");
 
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR is set");
     fs::write(
@@ -35,6 +38,11 @@ fn main() {
         ),
     )
     .expect("write generated label registry");
+    fs::write(
+        Path::new(&out_dir).join("barra_registry.rs"),
+        generated_barra_registry(&barra_module_paths),
+    )
+    .expect("write generated barra registry");
 }
 
 fn scan_registry_modules(root: &Path, crate_module: &str) -> Vec<String> {
@@ -62,28 +70,39 @@ fn scan_registry_modules(root: &Path, crate_module: &str) -> Vec<String> {
             }
             let frequency_name = frequency_entry.file_name().to_string_lossy().to_string();
 
-            for factor_entry in fs::read_dir(&frequency_path).expect("read factor files") {
-                let factor_entry = factor_entry.expect("read factor file");
-                let factor_path = factor_entry.path();
-                if factor_path.extension().and_then(|value| value.to_str()) != Some("rs") {
-                    continue;
-                }
-                let Some(stem) = factor_path.file_stem().and_then(|value| value.to_str()) else {
-                    continue;
-                };
-                if stem == "mod" {
-                    continue;
-                }
-                println!("cargo:rerun-if-changed={}", factor_path.display());
-                module_paths.push(format!(
-                    "crate::{crate_module}::{asset_name}::{frequency_name}::{stem}"
-                ));
-            }
+            scan_rs_files(
+                &frequency_path,
+                &format!("crate::{crate_module}::{asset_name}::{frequency_name}"),
+                &mut module_paths,
+            );
         }
     }
 
     module_paths.sort();
     module_paths
+}
+
+fn scan_rs_files(path: &Path, module_prefix: &str, module_paths: &mut Vec<String>) {
+    for entry in fs::read_dir(path).expect("read registry files") {
+        let entry = entry.expect("read registry file");
+        let entry_path = entry.path();
+        let Some(stem) = entry_path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if entry_path.is_dir() {
+            scan_rs_files(
+                &entry_path,
+                &format!("{module_prefix}::{stem}"),
+                module_paths,
+            );
+            continue;
+        }
+        if entry_path.extension().and_then(|value| value.to_str()) != Some("rs") || stem == "mod" {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", entry_path.display());
+        module_paths.push(format!("{module_prefix}::{stem}"));
+    }
 }
 
 fn generated_registry(
@@ -114,6 +133,19 @@ fn generated_registry(
     output.push_str("        items.insert(key, item);\n");
     output.push_str("    }\n");
     output.push_str("    items\n");
+    output.push_str("}\n");
+    output
+}
+
+fn generated_barra_registry(module_paths: &[String]) -> String {
+    let mut output = String::new();
+    output.push_str("use crate::barra::BarraExposure;\n\n");
+    output.push_str("pub fn all_barra_exposures() -> Vec<Box<dyn BarraExposure>> {\n");
+    output.push_str("    vec![\n");
+    for module_path in module_paths {
+        output.push_str(&format!("        {module_path}::create(),\n"));
+    }
+    output.push_str("    ]\n");
     output.push_str("}\n");
     output
 }

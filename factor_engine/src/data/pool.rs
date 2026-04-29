@@ -44,6 +44,18 @@ impl DataPool {
                 pool.daily.insert(dataset, table);
                 continue;
             }
+            if dataset == DatasetId::StockBarraDaily {
+                let table = loader.load_barra_daily(
+                    context.asset_class,
+                    "CNE6",
+                    &columns,
+                    &context.load_dates,
+                )?;
+                let panel = DailyPanel::from_table(&table, context)?;
+                pool.daily_panels.insert(dataset, panel);
+                pool.daily.insert(dataset, table);
+                continue;
+            }
             if matches!(
                 dataset,
                 DatasetId::StockIncome | DatasetId::StockBalanceSheet
@@ -152,7 +164,10 @@ impl DataPool {
 fn should_build_daily_panel(dataset: DatasetId) -> bool {
     matches!(
         dataset,
-        DatasetId::StockDailyPv | DatasetId::StockDailyBasic | DatasetId::FutureDaily
+        DatasetId::StockDailyPv
+            | DatasetId::StockDailyBasic
+            | DatasetId::StockBarraDaily
+            | DatasetId::FutureDaily
     )
 }
 

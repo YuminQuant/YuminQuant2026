@@ -9,6 +9,7 @@ pub struct EngineConfig {
     pub data_root: PathBuf,
     pub factor_root: PathBuf,
     pub label_root: PathBuf,
+    pub barra_root: PathBuf,
     pub stock_sw_classification_path: PathBuf,
     pub stock_calendar_exchange: String,
     pub future_calendar_exchange: String,
@@ -30,6 +31,7 @@ impl EngineConfig {
         let data_root = PathBuf::from(data_root_value);
         let factor_root = data_root.join("factors");
         let label_root = data_root.join("label");
+        let barra_root = data_root.join("barra");
         let stock_sw_classification_path =
             parse_toml_string_value(&content, "stock_sw_classification_path")
                 .map(|value| normalize_data_path(&data_root, &value))
@@ -44,6 +46,7 @@ impl EngineConfig {
             data_root,
             factor_root,
             label_root,
+            barra_root,
             stock_sw_classification_path,
             stock_calendar_exchange: "SSE".to_string(),
             future_calendar_exchange: "SHFE".to_string(),

@@ -5,7 +5,7 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::chn_stock::daily::ret_over_sqrt_vol_mean::RAW_ID as RET_OVER_SQRT_VOL_RAW_ID;
-use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel};
+use crate::factor::common::{ClassificationLevel, ClassificationMap};
 use crate::factor::Factor;
 use crate::operators::cs_neutralize;
 
@@ -53,13 +53,12 @@ impl Factor for StockDailySwSectorNeutralRetOverSqrtVolMean {
         }
     }
 
-    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockSwClassification)?,
             ClassificationLevel::Sector,
         )?;
-        let panel =
-            DailyPanel::from_table(data.intraday_daily_raw(RET_OVER_SQRT_VOL_RAW_ID)?, context)?;
+        let panel = data.intraday_daily_raw_panel(RET_OVER_SQRT_VOL_RAW_ID)?;
         let raw = panel.column(RET_OVER_SQRT_VOL_RAW_ID)?;
         let factor = raw.cs_by_group(
             |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),

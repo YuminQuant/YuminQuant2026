@@ -4,7 +4,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::{DailyPanel, DeadlinePolicy, PitFinancialData, ReportTypePreference};
+use crate::factor::common::{DeadlinePolicy, PitFinancialData, ReportTypePreference};
 use crate::factor::Factor;
 
 const QUARTER_COUNT: usize = 8;
@@ -51,8 +51,8 @@ impl Factor for StockDailyRoe8q {
         }
     }
 
-    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let panel = DailyPanel::from_table(data.daily(DatasetId::StockDailyBasic)?, context)?;
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyBasic)?;
         let income = PitFinancialData::from_table(
             data.daily(DatasetId::StockIncome)?,
             &[PROFIT_COLUMN],

@@ -149,8 +149,20 @@ mod tests {
         assert_eq!(cs_demean(&values), vec![Some(-1.0), None, Some(1.0)]);
         assert_eq!(cs_zscore(&values), vec![Some(-1.0), None, Some(1.0)]);
         assert_eq!(cs_minmax_scale(&values), vec![Some(0.0), None, Some(1.0)]);
+        assert_eq!(cs_scale(&values), vec![Some(0.25), None, Some(0.75)]);
+        assert_eq!(cs_scale(&[Some(0.0), Some(0.0)]), vec![None, None]);
         assert_eq!(cs_mean(&values), vec![Some(2.0), Some(2.0), Some(2.0)]);
         assert_option_close(cs_winsorize95(&values)[2], Some(2.9));
+    }
+
+    #[test]
+    fn decay_linear_gives_largest_weight_to_current_value() {
+        let values = vec![Some(1.0), Some(2.0), Some(3.0)];
+        let output = ts_decay_linear(&values, 3, 3);
+
+        assert_eq!(output[0], None);
+        assert_eq!(output[1], None);
+        assert_option_close(output[2], Some((1.0 + 4.0 + 9.0) / 6.0));
     }
 
     #[test]

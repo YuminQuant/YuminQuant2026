@@ -4,7 +4,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel};
+use crate::factor::common::{ClassificationLevel, ClassificationMap};
 use crate::factor::Factor;
 use crate::operators::{cs_neutralize, cs_pctrank, ts_pctchg, ts_sum};
 
@@ -48,13 +48,13 @@ impl Factor for StockDailySwSectorNeutralRankSumReturn20d {
         }
     }
 
-    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockSwClassification)?,
             ClassificationLevel::Sector,
         )?;
 
-        let panel = DailyPanel::from_table(data.daily(DatasetId::StockDailyPv)?, context)?;
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let factor = panel
             .column("close")?
             .ts(|values| ts_pctchg(values, 1))?

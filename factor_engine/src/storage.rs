@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{
     AssetClass, FactorRowKey, FactorSeries, FactorSpec, Frequency, IntradayDailyRawSeries,
-    IntradayDailyRawSpec,
+    IntradayDailyRawSpec, LabelSeries, LabelSpec,
 };
 use crate::data::parquet_io::{read_parquet, write_parquet};
 use crate::data::table::{ColumnData, Table};
@@ -18,6 +18,11 @@ pub struct FactorStorage {
 #[derive(Clone, Debug)]
 pub struct IntradayDailyRawStorage {
     factor_root: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub struct LabelStorage {
+    label_root: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -60,6 +65,23 @@ struct RawMetadataRow {
 #[derive(Clone, Debug)]
 pub struct FactorMetadata {
     pub factor_id: String,
+    pub aliases: Vec<String>,
+    pub aliases_json: String,
+    pub version: String,
+    pub output_column: String,
+    pub name: String,
+    pub asset_class: String,
+    pub frequency: String,
+    pub tags: Vec<String>,
+    pub tags_json: String,
+    pub dependencies_json: String,
+    pub description: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct LabelMetadata {
+    pub label_id: String,
     pub aliases: Vec<String>,
     pub aliases_json: String,
     pub version: String,
@@ -165,6 +187,96 @@ impl FactorStorage {
     ) -> PathBuf {
         let year = trade_date / 10_000;
         self.factor_root
+            .join(asset_class.as_str())
+            .join(frequency.as_str())
+            .join(year.to_string())
+            .join(format!("{}.parquet", trade_date))
+    }
+}
+
+impl LabelStorage {
+    pub fn new(label_root: PathBuf) -> Self {
+        Self { label_root }
+    }
+
+    pub fn write_results(&self, results: &[LabelSeries]) -> Result<Vec<PathBuf>> {
+        let mut grouped: BTreeMap<(AssetClass, Frequency, i32), PendingFrame> = BTreeMap::new();
+        for series in results {
+            let column_name = series.spec.output_column();
+            for item in &series.values {
+                let trade_date = item.key.trade_date();
+                let FactorRowKey::Daily { ts_code, .. } = &item.key else {
+                    return Err(err("label storage only supports daily row keys"));
+                };
+                grouped
+                    .entry((series.spec.asset_class, series.spec.frequency, trade_date))
+                    .or_default()
+                    .values
+                    .entry(OutputKey {
+                        ts_code: ts_code.clone(),
+                        trade_time: None,
+                    })
+                    .or_default()
+                    .insert(column_name.clone(), item.value);
+            }
+        }
+
+        let mut written = Vec::new();
+        for ((asset_class, frequency, trade_date), mut frame) in grouped {
+            let path = self.output_path(asset_class, frequency, trade_date);
+            merge_existing_output(&path, frequency, trade_date, &mut frame)?;
+            let table = pending_frame_to_table(frequency, trade_date, &frame)?;
+            write_parquet(&path, &table)?;
+            written.push(path);
+        }
+        Ok(written)
+    }
+
+    pub fn write_metadata(&self, specs: &[LabelSpec]) -> Result<()> {
+        std::fs::create_dir_all(&self.label_root)?;
+        let path = self.label_root.join("label_metadata.parquet");
+
+        let updated_at = unix_timestamp_string();
+        let mut rows = Vec::new();
+        for spec in specs {
+            rows.push(MetadataRow {
+                factor_id: spec.id.clone(),
+                aliases_json: string_list_json(&spec.aliases),
+                version: spec.version.clone(),
+                output_column: spec.output_column(),
+                name: spec.name.clone(),
+                asset_class: spec.asset_class.as_str().to_string(),
+                frequency: spec.frequency.as_str().to_string(),
+                tags_json: string_list_json(&spec.tags),
+                dependencies_json: label_dependencies_json(spec),
+                description: spec.description.clone(),
+                updated_at: updated_at.clone(),
+            });
+        }
+
+        let table = label_metadata_rows_to_table(rows)?;
+        write_parquet(&path, &table)
+    }
+
+    pub fn read_metadata(&self) -> Result<Vec<LabelMetadata>> {
+        let path = self.label_root.join("label_metadata.parquet");
+        if !path.exists() {
+            return Err(err(format!(
+                "label metadata not found: {}. Run `label-metadata` first.",
+                path.display()
+            )));
+        }
+        read_label_metadata_records(&path)
+    }
+
+    fn output_path(
+        &self,
+        asset_class: AssetClass,
+        frequency: Frequency,
+        trade_date: i32,
+    ) -> PathBuf {
+        let year = trade_date / 10_000;
+        self.label_root
             .join(asset_class.as_str())
             .join(frequency.as_str())
             .join(year.to_string())
@@ -468,6 +580,50 @@ fn read_metadata_records(path: &Path) -> Result<Vec<FactorMetadata>> {
     Ok(rows)
 }
 
+fn read_label_metadata_records(path: &Path) -> Result<Vec<LabelMetadata>> {
+    let table = read_parquet(path, None)?;
+    let label_id = table.required_utf8("label_id")?;
+    let aliases = if table.columns.contains_key("aliases_json") {
+        Some(table.required_utf8("aliases_json")?)
+    } else {
+        None
+    };
+    let version = table.required_utf8("version")?;
+    let output_column = table.required_utf8("output_column")?;
+    let name = table.required_utf8("name")?;
+    let asset_class = table.required_utf8("asset_class")?;
+    let frequency = table.required_utf8("frequency")?;
+    let tags_json = table.required_utf8("tags_json")?;
+    let dependencies_json = table.required_utf8("dependencies_json")?;
+    let description = table.required_utf8("description")?;
+    let updated_at = table.required_utf8("updated_at")?;
+
+    let mut rows = Vec::new();
+    for idx in 0..table.len {
+        let aliases_json_value = aliases
+            .as_ref()
+            .and_then(|values| values[idx].clone())
+            .unwrap_or_default();
+        let tags_json_value = tags_json[idx].clone().unwrap_or_default();
+        rows.push(LabelMetadata {
+            label_id: label_id[idx].clone().unwrap_or_default(),
+            aliases: parse_string_list_json(&aliases_json_value),
+            aliases_json: aliases_json_value,
+            version: version[idx].clone().unwrap_or_default(),
+            output_column: output_column[idx].clone().unwrap_or_default(),
+            name: name[idx].clone().unwrap_or_default(),
+            asset_class: asset_class[idx].clone().unwrap_or_default(),
+            frequency: frequency[idx].clone().unwrap_or_default(),
+            tags: parse_string_list_json(&tags_json_value),
+            tags_json: tags_json_value,
+            dependencies_json: dependencies_json[idx].clone().unwrap_or_default(),
+            description: description[idx].clone().unwrap_or_default(),
+            updated_at: updated_at[idx].clone().unwrap_or_default(),
+        });
+    }
+    Ok(rows)
+}
+
 fn parse_string_list_json(value: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut current = String::new();
@@ -504,6 +660,79 @@ fn metadata_rows_to_table(rows: Vec<MetadataRow>) -> Result<Table> {
     let mut table = Table::empty();
     table.insert(
         "factor_id",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.factor_id.clone())).collect()),
+    )?;
+    table.insert(
+        "aliases_json",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.aliases_json.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "version",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.version.clone())).collect()),
+    )?;
+    table.insert(
+        "output_column",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.output_column.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "name",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.name.clone())).collect()),
+    )?;
+    table.insert(
+        "asset_class",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.asset_class.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "frequency",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.frequency.clone())).collect()),
+    )?;
+    table.insert(
+        "tags_json",
+        ColumnData::Utf8(rows.iter().map(|row| Some(row.tags_json.clone())).collect()),
+    )?;
+    table.insert(
+        "dependencies_json",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.dependencies_json.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "description",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.description.clone()))
+                .collect(),
+        ),
+    )?;
+    table.insert(
+        "updated_at",
+        ColumnData::Utf8(
+            rows.iter()
+                .map(|row| Some(row.updated_at.clone()))
+                .collect(),
+        ),
+    )?;
+    Ok(table)
+}
+
+fn label_metadata_rows_to_table(rows: Vec<MetadataRow>) -> Result<Table> {
+    let mut table = Table::empty();
+    table.insert(
+        "label_id",
         ColumnData::Utf8(rows.iter().map(|row| Some(row.factor_id.clone())).collect()),
     )?;
     table.insert(
@@ -686,6 +915,25 @@ fn dependencies_json(spec: &FactorSpec) -> String {
     format!("[{}]", items.join(","))
 }
 
+fn label_dependencies_json(spec: &LabelSpec) -> String {
+    let mut items = spec
+        .dependencies
+        .iter()
+        .map(|dependency| {
+            format!(
+                "{{\"dataset\":\"{}\",\"columns\":{}}}",
+                dependency.dataset.as_str(),
+                string_list_json(&dependency.columns)
+            )
+        })
+        .collect::<Vec<_>>();
+    items.push(format!(
+        "{{\"lookahead_trading_days\":{}}}",
+        spec.lookahead.trading_days
+    ));
+    format!("[{}]", items.join(","))
+}
+
 fn escape_json(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -703,11 +951,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::core::{
-        AssetClass, DatasetId, FactorRowKey, FactorValue, IntradayDailyRawSeries,
-        IntradayDailyRawSpec,
+        AssetClass, DatasetId, FactorRowKey, FactorValue, Frequency, IntradayDailyRawSeries,
+        IntradayDailyRawSpec, LabelSeries, LabelSpec, Lookahead,
     };
+    use crate::data::parquet_io::read_parquet;
 
-    use super::IntradayDailyRawStorage;
+    use super::{IntradayDailyRawStorage, LabelStorage};
 
     fn temp_factor_root() -> PathBuf {
         let nanos = SystemTime::now()
@@ -729,6 +978,21 @@ mod tests {
             source_dataset: DatasetId::StockMinute1m,
             columns: vec!["close".to_string(), "vol".to_string()],
             window_days: 1,
+        }
+    }
+
+    fn label_spec(id: &str) -> LabelSpec {
+        LabelSpec {
+            id: id.to_string(),
+            aliases: Vec::new(),
+            name: id.to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: "0.1.0".to_string(),
+            tags: Vec::new(),
+            description: String::new(),
+            dependencies: Vec::new(),
+            lookahead: Lookahead { trading_days: 2 },
         }
     }
 
@@ -778,6 +1042,46 @@ mod tests {
                 .expect("missing"),
             vec![20260105, 20260106]
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn label_storage_creates_daily_file_and_merges_new_columns() {
+        let root = temp_factor_root();
+        let storage = LabelStorage::new(root.clone());
+        let key = FactorRowKey::Daily {
+            trade_date: 20260105,
+            ts_code: "000001.SZ".to_string(),
+        };
+
+        storage
+            .write_results(&[LabelSeries {
+                spec: label_spec("future_open_return_1d"),
+                values: vec![FactorValue {
+                    key: key.clone(),
+                    value: Some(0.01),
+                }],
+            }])
+            .expect("write first label");
+        storage
+            .write_results(&[LabelSeries {
+                spec: label_spec("future_open_return_5d"),
+                values: vec![FactorValue {
+                    key,
+                    value: Some(0.05),
+                }],
+            }])
+            .expect("write second label");
+
+        let path = root
+            .join("stock")
+            .join("daily")
+            .join("2026")
+            .join("20260105.parquet");
+        let table = read_parquet(&path, None).expect("label output");
+        assert!(table.columns.contains_key("future_open_return_1d"));
+        assert!(table.columns.contains_key("future_open_return_5d"));
 
         let _ = std::fs::remove_dir_all(root);
     }

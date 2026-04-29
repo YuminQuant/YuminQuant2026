@@ -14,10 +14,11 @@ use crate::data::{DataCatalog, DataPool, MarketDataLoader};
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
 use crate::factor::Factor;
+use crate::progress::ProgressBar;
 use crate::storage::{FactorMetadata, FactorStorage, IntradayDailyRawStorage};
 use rayon::prelude::*;
 
-pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 64;
+pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 10;
 pub const DEFAULT_DATE_BATCH_SIZE: usize = 1;
 
 #[derive(Clone, Debug)]
@@ -294,6 +295,7 @@ impl Engine {
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();
         let mut materialized_intraday_raw_dates = BTreeSet::<(String, i32)>::new();
+        let progress = ProgressBar::new("run", execution_batch_count, true);
 
         for group in &execution_groups {
             let group_specs = group
@@ -363,9 +365,10 @@ impl Engine {
                             factor_batch_index + 1,
                             thread_pool.as_ref(),
                             &mut materialized_intraday_raw_dates,
+                            &progress,
                         )?;
                         profiles.append(&mut raw_profiles);
-                        pool.set_intraday_daily_raw(raw_table);
+                        pool.set_intraday_daily_raw(raw_table, &context)?;
                     }
                     let compute_started = Instant::now();
                     let results = compute_factor_batch(
@@ -405,9 +408,16 @@ impl Engine {
                             factors: factor_profiles,
                         });
                     }
+                    progress.tick(format!(
+                        "stage={} date={} factors={}",
+                        stage_name,
+                        batch_end_date,
+                        batch_specs.len()
+                    ));
                 }
             }
         }
+        progress.finish();
 
         Ok(RunReport {
             factor_count: specs.len(),
@@ -543,6 +553,7 @@ fn materialize_intraday_raw_table(
     factor_batch_index: usize,
     thread_pool: Option<&rayon::ThreadPool>,
     materialized_intraday_raw_dates: &mut BTreeSet<(String, i32)>,
+    progress: &ProgressBar,
 ) -> Result<(crate::data::Table, Vec<BatchProfile>)> {
     let raw_id_set = raw_ids.iter().cloned().collect::<BTreeSet<_>>();
     let mut requirements_by_dataset =
@@ -734,6 +745,12 @@ fn materialize_intraday_raw_table(
                     factors: raw_profiles,
                 });
             }
+            progress.tick(format!(
+                "stage={} date={} raw={}",
+                stage_name,
+                batch_end_date,
+                chunk_series.len()
+            ));
         }
         materialized_specs.extend(
             plans

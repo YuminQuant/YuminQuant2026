@@ -5,7 +5,6 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::chn_stock::daily::top20_centered_vol_ret_mean::RAW_ID as TOP20_RAW_ID;
-use crate::factor::common::DailyPanel;
 use crate::factor::Factor;
 use crate::operators::ts_mean;
 
@@ -43,8 +42,8 @@ impl Factor for StockDailyTop20CenteredVolRetMean20dMean {
         }
     }
 
-    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let panel = DailyPanel::from_table(data.intraday_daily_raw(TOP20_RAW_ID)?, context)?;
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let panel = data.intraday_daily_raw_panel(TOP20_RAW_ID)?;
         let raw = panel.column(TOP20_RAW_ID)?;
         let factor = raw.ts(|values| ts_mean(values, 20, 20))?;
         Ok(factor.to_factor_series(self.spec()))

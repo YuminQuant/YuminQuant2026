@@ -199,6 +199,39 @@ pub fn factor_registry_key(asset_class: &str, frequency: &str, factor_id: &str) 
     format!("{asset_class}|{frequency}|{factor_id}")
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub struct Lookahead {
+    pub trading_days: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct LabelSpec {
+    pub id: String,
+    pub aliases: Vec<String>,
+    pub name: String,
+    pub asset_class: AssetClass,
+    pub frequency: Frequency,
+    pub version: String,
+    pub tags: Vec<String>,
+    pub description: String,
+    pub dependencies: Vec<DataRequest>,
+    pub lookahead: Lookahead,
+}
+
+impl LabelSpec {
+    pub fn output_column(&self) -> String {
+        self.id.replace('.', "__").replace('-', "_")
+    }
+
+    pub fn registry_key(&self) -> String {
+        label_registry_key(self.asset_class.as_str(), self.frequency.as_str(), &self.id)
+    }
+}
+
+pub fn label_registry_key(asset_class: &str, frequency: &str, label_id: &str) -> String {
+    format!("{asset_class}|{frequency}|{label_id}")
+}
+
 #[derive(Clone, Debug)]
 pub struct FactorContext {
     pub asset_class: AssetClass,
@@ -240,5 +273,11 @@ pub struct FactorValue {
 #[derive(Clone, Debug)]
 pub struct FactorSeries {
     pub spec: FactorSpec,
+    pub values: Vec<FactorValue>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LabelSeries {
+    pub spec: LabelSpec,
     pub values: Vec<FactorValue>,
 }

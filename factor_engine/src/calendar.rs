@@ -9,6 +9,13 @@ pub struct TradingCalendar {
 }
 
 impl TradingCalendar {
+    #[cfg(test)]
+    pub(crate) fn from_open_dates(mut open_dates: Vec<i32>) -> Self {
+        open_dates.sort_unstable();
+        open_dates.dedup();
+        Self { open_dates }
+    }
+
     pub fn load(data_root: &Path, exchange: &str) -> Result<Self> {
         let path = data_root
             .join("calendar")
@@ -68,6 +75,15 @@ impl TradingCalendar {
         let warmup_idx = first_target_idx.saturating_sub(trading_days);
         self.open_dates[warmup_idx]
     }
+
+    pub fn open_date_after(&self, date: i32, trading_days: usize) -> Option<i32> {
+        let idx = self.open_dates.binary_search(&date).ok()?;
+        self.open_dates.get(idx + trading_days).copied()
+    }
+
+    pub fn has_open_date_after(&self, date: i32, trading_days: usize) -> bool {
+        self.open_date_after(date, trading_days).is_some()
+    }
 }
 
 #[cfg(test)]
@@ -75,9 +91,7 @@ mod tests {
     use super::TradingCalendar;
 
     fn calendar() -> TradingCalendar {
-        TradingCalendar {
-            open_dates: vec![20100104, 20100105, 20100106, 20110104],
-        }
+        TradingCalendar::from_open_dates(vec![20100104, 20100105, 20100106, 20110104])
     }
 
     #[test]
@@ -101,5 +115,16 @@ mod tests {
         let calendar = calendar();
 
         assert_eq!(calendar.warmup_start(20110104, 2), 20100105);
+    }
+
+    #[test]
+    fn returns_future_open_date_by_offset() {
+        let calendar = calendar();
+
+        assert_eq!(calendar.open_date_after(20100104, 0), Some(20100104));
+        assert_eq!(calendar.open_date_after(20100104, 2), Some(20100106));
+        assert_eq!(calendar.open_date_after(20100104, 3), Some(20110104));
+        assert_eq!(calendar.open_date_after(20100105, 3), None);
+        assert_eq!(calendar.open_date_after(20100107, 1), None);
     }
 }

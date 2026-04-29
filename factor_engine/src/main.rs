@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use yq_factor_engine::config::EngineConfig;
 use yq_factor_engine::core::{AssetClass, Frequency};
 use yq_factor_engine::engine::DEFAULT_FACTOR_BATCH_SIZE;
-use yq_factor_engine::{Engine, Result, RunRequest};
+use yq_factor_engine::{Engine, LabelEngine, LabelRunRequest, Result, RunRequest};
 
 fn main() {
     if let Err(error) = run_cli() {
@@ -62,6 +62,47 @@ fn run_cli() -> Result<()> {
                 }
             }
         }
+        "label-metadata" => {
+            let flags = parse_flags(&args[1..])?;
+            let engine = label_engine_from_flags(&flags)?;
+            let count = engine.write_metadata()?;
+            println!("label metadata complete");
+            println!("labels: {count}");
+        }
+        "label-list" => {
+            let flags = parse_flags(&args[1..])?;
+            let engine = label_engine_from_flags(&flags)?;
+            let asset_filter = flags
+                .get("asset")
+                .and_then(|value| AssetClass::parse(value));
+            let frequency_filter = flags
+                .get("frequency")
+                .and_then(|value| Frequency::parse(value));
+            let ids_only = flags
+                .get("ids-only")
+                .map(|value| value == "true" || value == "1")
+                .unwrap_or(false);
+            for row in engine.read_metadata()? {
+                if asset_filter.is_some_and(|asset| row.asset_class != asset.as_str()) {
+                    continue;
+                }
+                if frequency_filter.is_some_and(|frequency| row.frequency != frequency.as_str()) {
+                    continue;
+                }
+                if ids_only {
+                    println!("{}", row.label_id);
+                } else {
+                    println!(
+                        "{} | asset={} | frequency={} | version={} | tags={}",
+                        row.label_id,
+                        row.asset_class,
+                        row.frequency,
+                        row.version,
+                        row.tags.join(",")
+                    );
+                }
+            }
+        }
         "plan" => {
             let request = parse_run_request(&args[1..], true)?;
             let engine = Engine::from_request(&request)?;
@@ -74,6 +115,18 @@ fn run_cli() -> Result<()> {
             let report = engine.run(&request)?;
             print_report("run", &report);
         }
+        "label-plan" => {
+            let request = parse_label_run_request(&args[1..], true)?;
+            let engine = LabelEngine::from_request(&request)?;
+            let report = engine.plan(&request)?;
+            print_label_report("label-plan", &report);
+        }
+        "label-run" => {
+            let request = parse_label_run_request(&args[1..], false)?;
+            let engine = LabelEngine::from_request(&request)?;
+            let report = engine.run(&request)?;
+            print_label_report("label-run", &report);
+        }
         command => {
             return Err(yq_factor_engine::error::err(format!(
                 "unknown command: {command}"
@@ -81,6 +134,90 @@ fn run_cli() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunRequest> {
+    let flags = parse_flags(args)?;
+    let asset_class = flags
+        .get("asset")
+        .and_then(|value| AssetClass::parse(value))
+        .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --asset stock|future"))?;
+    let frequency = flags
+        .get("frequency")
+        .and_then(|value| Frequency::parse(value))
+        .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --frequency daily"))?;
+    let start_date = parse_yyyymmdd(
+        flags
+            .get("start-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --start-date YYYYMMDD"))?,
+        "start-date",
+    )?;
+    let end_date = parse_yyyymmdd(
+        flags
+            .get("end-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?,
+        "end-date",
+    )?;
+    let label_ids = flags.get("labels").map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    });
+    let tags = flags.get("tags").map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    });
+    if label_ids.is_some() && tags.is_some() {
+        return Err(yq_factor_engine::error::err(
+            "--labels and --tags cannot be used together",
+        ));
+    }
+    let label_batch_size = match flags.get("label-batch-size") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--label-batch-size must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_FACTOR_BATCH_SIZE,
+    };
+    let threads = match flags.get("threads") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--threads must be greater than 0",
+                ));
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
+    let config_path = flags.get("config").map(PathBuf::from);
+    let profile = flag_enabled(&flags, "profile");
+    Ok(LabelRunRequest {
+        asset_class,
+        frequency,
+        start_date,
+        end_date,
+        label_ids,
+        tags,
+        config_path,
+        dry_run,
+        label_batch_size,
+        threads,
+        profile,
+    })
 }
 
 fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
@@ -185,6 +322,11 @@ fn engine_from_flags(flags: &HashMap<String, String>) -> Result<Engine> {
     Ok(Engine::new(EngineConfig::discover(config_path)?))
 }
 
+fn label_engine_from_flags(flags: &HashMap<String, String>) -> Result<LabelEngine> {
+    let config_path = flags.get("config").map(PathBuf::from);
+    Ok(LabelEngine::new(EngineConfig::discover(config_path)?))
+}
+
 fn parse_flags(args: &[String]) -> Result<HashMap<String, String>> {
     let mut flags = HashMap::new();
     let mut idx = 0;
@@ -276,6 +418,61 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
     }
 }
 
+fn print_label_report(label: &str, report: &yq_factor_engine::LabelRunReport) {
+    if let Some(message) = &report.status_message {
+        println!("{message}");
+        return;
+    }
+    println!("{} complete", label);
+    println!("labels: {}", report.label_count);
+    println!("output files: {}", report.output_file_count);
+    println!("max_lookahead: {}", report.max_lookahead);
+    if let (Some(start_date), Some(end_date)) =
+        (report.effective_start_date, report.effective_end_date)
+    {
+        println!("effective date range: {}..{}", start_date, end_date);
+    }
+    println!("target dates: {}", report.target_dates.len());
+    println!("skipped dates: {}", report.skipped_dates.len());
+    println!("date batches: {}", report.date_batch_count);
+    println!("label batches: {}", report.label_batch_count);
+    println!("execution batches: {}", report.execution_batch_count);
+    println!("selected labels:");
+    for label_id in &report.selected_label_ids {
+        println!("  {}", label_id);
+    }
+    for request in &report.loaded_requests {
+        println!(
+            "load {} columns={}",
+            request.dataset.as_str(),
+            request.columns.join(",")
+        );
+    }
+    if !report.profiles.is_empty() {
+        println!("profile:");
+        for batch in &report.profiles {
+            println!(
+                "  stage={} date_batch={} label_batch={} dates={}..{} labels={} load_ms={} compute_ms={} write_ms={}",
+                batch.stage,
+                batch.date_batch_index,
+                batch.factor_batch_index,
+                batch.start_date,
+                batch.end_date,
+                batch.factor_count,
+                batch.load_ms,
+                batch.compute_ms,
+                batch.write_ms
+            );
+            for label in &batch.factors {
+                println!(
+                    "    {} rows={} non_null={}",
+                    label.factor_id, label.row_count, label.non_null_count
+                );
+            }
+        }
+    }
+}
+
 fn print_help() {
     println!("YuminQuant factor engine MVP");
     println!();
@@ -284,11 +481,27 @@ fn print_help() {
     println!("  list [--asset stock|future] [--frequency daily|minute_1m] [--ids-only true]");
     println!("  plan --asset stock|future --frequency daily|minute_1m --start-date YYYYMMDD --end-date YYYYMMDD");
     println!("  run  --asset stock|future --frequency daily|minute_1m --start-date YYYYMMDD --end-date YYYYMMDD");
+    println!("  label-metadata [--config D:/path/to/config.toml]");
+    println!("  label-list [--asset stock|future] [--frequency daily] [--ids-only true]");
+    println!(
+        "  label-plan --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD"
+    );
+    println!(
+        "  label-run  --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD"
+    );
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
+    println!("  --labels label_id[,label_id...]");
     println!("  --tags tag[,tag...]");
-    println!("  --factor-batch-size N (default 64)");
+    println!(
+        "  --factor-batch-size N (default {})",
+        DEFAULT_FACTOR_BATCH_SIZE
+    );
+    println!(
+        "  --label-batch-size N (default {})",
+        DEFAULT_FACTOR_BATCH_SIZE
+    );
     println!("  --threads N");
     println!("  --profile");
     println!("  --refresh-minute-cache");

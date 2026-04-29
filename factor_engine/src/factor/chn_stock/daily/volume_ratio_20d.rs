@@ -5,7 +5,6 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::vector::map_binary;
-use crate::factor::common::DailyPanel;
 use crate::factor::Factor;
 use crate::operators::{ts_delay, ts_mean};
 
@@ -37,8 +36,8 @@ impl Factor for StockDailyVolumeRatio20d {
         }
     }
 
-    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let panel = DailyPanel::from_table(data.daily(DatasetId::StockDailyPv)?, context)?;
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let factor = panel.column("vol")?.ts(|volume| {
             let prev_volume = ts_delay(volume, 1);
             let mean_prev_20 = ts_mean(&prev_volume, 20, 20);

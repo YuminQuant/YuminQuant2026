@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::core::{
     FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue, IntradayDailyRawSeries,
-    IntradayDailyRawSpec,
+    IntradayDailyRawSpec, LabelSeries, LabelSpec,
 };
 use crate::data::Table;
 use crate::error::{err, Result};
@@ -142,6 +142,10 @@ impl DailyPanel {
         })
     }
 
+    pub fn has_column(&self, name: &str) -> bool {
+        self.columns.contains_key(name)
+    }
+
     pub fn dates(&self) -> &[i32] {
         &self.index.dates
     }
@@ -182,6 +186,67 @@ pub struct PanelColumn {
 impl PanelColumn {
     pub fn values(&self) -> &[Option<f64>] {
         &self.values
+    }
+
+    pub fn map_values<F>(&self, mut f: F) -> Self
+    where
+        F: FnMut(Option<f64>) -> Option<f64>,
+    {
+        self.with_values(self.values.iter().map(|value| f(*value)).collect())
+    }
+
+    pub fn zip_binary<F>(&self, other: &Self, mut f: F) -> Result<Self>
+    where
+        F: FnMut(Option<f64>, Option<f64>) -> Option<f64>,
+    {
+        self.require_same_index(other)?;
+        Ok(self.with_values(
+            self.values
+                .iter()
+                .zip(&other.values)
+                .map(|(left, right)| f(*left, *right))
+                .collect(),
+        ))
+    }
+
+    pub fn zip_ternary<F>(&self, second: &Self, third: &Self, mut f: F) -> Result<Self>
+    where
+        F: FnMut(Option<f64>, Option<f64>, Option<f64>) -> Option<f64>,
+    {
+        self.require_same_index(second)?;
+        self.require_same_index(third)?;
+        Ok(self.with_values(
+            self.values
+                .iter()
+                .zip(&second.values)
+                .zip(&third.values)
+                .map(|((first, second), third)| f(*first, *second, *third))
+                .collect(),
+        ))
+    }
+
+    pub fn zip_quaternary<F>(
+        &self,
+        second: &Self,
+        third: &Self,
+        fourth: &Self,
+        mut f: F,
+    ) -> Result<Self>
+    where
+        F: FnMut(Option<f64>, Option<f64>, Option<f64>, Option<f64>) -> Option<f64>,
+    {
+        self.require_same_index(second)?;
+        self.require_same_index(third)?;
+        self.require_same_index(fourth)?;
+        Ok(self.with_values(
+            self.values
+                .iter()
+                .zip(&second.values)
+                .zip(&third.values)
+                .zip(&fourth.values)
+                .map(|(((first, second), third), fourth)| f(*first, *second, *third, *fourth))
+                .collect(),
+        ))
     }
 
     pub fn ts<F>(&self, mut f: F) -> Result<Self>
@@ -325,6 +390,29 @@ impl PanelColumn {
             }
         }
         FactorSeries { spec, values }
+    }
+
+    pub fn to_label_series(&self, spec: LabelSpec) -> LabelSeries {
+        let mut values = Vec::new();
+        for (date_idx, trade_date) in self.index.dates.iter().enumerate() {
+            if !self.index.target_dates.contains(trade_date) {
+                continue;
+            }
+            for (instrument_idx, ts_code) in self.index.instruments.iter().enumerate() {
+                let offset = self.index.offset(date_idx, instrument_idx);
+                if !self.index.present[offset] {
+                    continue;
+                }
+                values.push(FactorValue {
+                    key: FactorRowKey::Daily {
+                        trade_date: *trade_date,
+                        ts_code: ts_code.clone(),
+                    },
+                    value: self.values[offset],
+                });
+            }
+        }
+        LabelSeries { spec, values }
     }
 
     pub fn to_intraday_daily_raw_series(
@@ -573,6 +661,32 @@ mod tests {
         assert_eq!(corr.values()[3], None);
         assert_option_close(corr.values()[4], Some(1.0));
         assert_option_close(corr.values()[5], Some(1.0));
+    }
+
+    #[test]
+    fn panel_pointwise_zip_binary_reuses_existing_index() {
+        let panel =
+            DailyPanel::from_table(&sample_table(), &context(vec![20260103])).expect("panel");
+        let close = panel.column("close").expect("close");
+        let volume = panel.column("vol").expect("vol");
+        let scaled = close
+            .zip_binary(&volume, |close, volume| match (close, volume) {
+                (Some(close), Some(volume)) => Some(close * volume),
+                _ => None,
+            })
+            .expect("scaled");
+
+        assert_eq!(
+            scaled.values(),
+            &[
+                Some(10.0),
+                Some(1000.0),
+                Some(40.0),
+                None,
+                Some(160.0),
+                Some(4000.0)
+            ]
+        );
     }
 
     #[test]

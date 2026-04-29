@@ -6,9 +6,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::{
-    clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, DailyPanel,
-};
+use crate::factor::common::{clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec};
 use crate::factor::Factor;
 
 pub const RAW_ID: &str = "ret_over_sqrt_vol_mean";
@@ -104,8 +102,8 @@ impl Factor for StockDailyRetOverSqrtVolMean {
         }))
     }
 
-    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let panel = DailyPanel::from_table(data.intraday_daily_raw(RAW_ID)?, context)?;
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let panel = data.intraday_daily_raw_panel(RAW_ID)?;
         let factor = panel.column(RAW_ID)?;
         Ok(factor.to_factor_series(self.spec()))
     }

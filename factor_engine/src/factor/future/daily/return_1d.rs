@@ -5,7 +5,6 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::vector::map_binary;
-use crate::factor::common::DailyPanel;
 use crate::factor::Factor;
 
 pub struct FutureDailyReturn1d;
@@ -38,8 +37,8 @@ impl Factor for FutureDailyReturn1d {
         }
     }
 
-    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let panel = DailyPanel::from_table(data.daily(DatasetId::FutureDaily)?, context)?;
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::FutureDaily)?;
         let close = panel.column("close")?;
         let pre_close = panel.column("pre_close")?;
         let factor = close.ts_binary(&pre_close, |close, pre_close| {

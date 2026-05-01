@@ -55,6 +55,12 @@ impl DataCatalog {
                     .join("daily")
                     .join("basic")
                     .join(format!("{}.parquet", year)),
+                DatasetId::StockAdjFactor => self
+                    .data_root
+                    .join("stock_data")
+                    .join("daily")
+                    .join("adj_factor")
+                    .join(format!("{}.parquet", year)),
                 DatasetId::StockIncome => self
                     .data_root
                     .join("stock_data")
@@ -109,6 +115,13 @@ impl DataCatalog {
                 .join("stock_data")
                 .join("daily")
                 .join("basic")
+                .join(year.to_string())
+                .join(format!("{}.parquet", trade_date)),
+            DatasetId::StockAdjFactor => self
+                .data_root
+                .join("stock_data")
+                .join("daily")
+                .join("adj_factor")
                 .join(year.to_string())
                 .join(format!("{}.parquet", trade_date)),
             DatasetId::FutureDaily => self

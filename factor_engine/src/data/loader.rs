@@ -1,10 +1,10 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use crate::core::{AssetClass, DatasetId};
 use crate::data::catalog::DataCatalog;
 use crate::data::parquet_io::read_parquet;
-use crate::data::table::Table;
+use crate::data::table::{ColumnData, Table};
 use crate::error::{err, Result};
 
 #[derive(Clone, Debug)]
@@ -294,7 +294,6 @@ impl MarketDataLoader {
     ) -> Result<Table> {
         let columns = with_required_columns(requested_columns, &["trade_date", "ts_code"]);
         let mut table = Table::empty();
-        let mut missing_dates = Vec::new();
         for trade_date in target_dates {
             if let Some(file) = self
                 .catalog
@@ -302,18 +301,26 @@ impl MarketDataLoader {
             {
                 let daily = read_parquet(&file, Some(&columns))?;
                 table.append(&daily)?;
-            } else {
-                missing_dates.push(*trade_date);
             }
         }
-        if !missing_dates.is_empty() {
-            return Err(err(format!(
-                "missing Barra daily exposure file(s) for model {} on dates {:?}; run barra-run for the required dates before using StockBarraDaily dependencies",
-                model, missing_dates
-            )));
+        if table.columns.is_empty() {
+            return empty_barra_daily_table(&columns);
         }
         Ok(table)
     }
+}
+
+fn empty_barra_daily_table(columns: &[String]) -> Result<Table> {
+    let mut values = BTreeMap::new();
+    for column in columns {
+        let data = match column.as_str() {
+            "trade_date" => ColumnData::I32(Vec::new()),
+            "ts_code" => ColumnData::Utf8(Vec::new()),
+            _ => ColumnData::F64(Vec::new()),
+        };
+        values.insert(column.clone(), data);
+    }
+    Table::new(values)
 }
 
 fn filter_classification_range(table: &Table, start_date: i32, end_date: i32) -> Result<Table> {
@@ -478,7 +485,9 @@ mod tests {
         );
         assert!(!loaded.columns.contains_key("pre_close"));
 
-        fs::remove_dir_all(root).expect("cleanup");
+        if root.exists() {
+            fs::remove_dir_all(root).expect("cleanup");
+        }
     }
 
     #[test]
@@ -551,7 +560,81 @@ mod tests {
             vec![Some(10.0), Some(99.0)]
         );
 
+        if root.exists() {
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn stock_adj_factor_loader_reads_daily_date_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_adj_factor_loader_test_{unique}"));
+        let daily_path = root
+            .join("stock_data")
+            .join("daily")
+            .join("adj_factor")
+            .join("2026")
+            .join("20260102.parquet");
+        let daily = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260102)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            ("adj_factor".to_string(), ColumnData::F32(vec![Some(1.25)])),
+        ]))
+        .expect("daily table");
+        write_parquet(&daily_path, &daily).expect("write daily");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let loaded = loader
+            .load_daily_by_dates(
+                DatasetId::StockAdjFactor,
+                &["adj_factor".to_string()],
+                &[20260102],
+            )
+            .expect("load adj factor by date");
+
+        assert_eq!(loaded.len, 1);
+        assert_eq!(
+            loaded.required_f64_cast("adj_factor").expect("adj_factor"),
+            vec![Some(1.25)]
+        );
+
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn barra_daily_loader_treats_missing_dates_as_empty_table() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_barra_missing_loader_test_{unique}"));
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let loaded = loader
+            .load_barra_daily(
+                AssetClass::Stock,
+                "CNE6",
+                &["SIZE".to_string()],
+                &[20260424],
+            )
+            .expect("missing barra files should be tolerated");
+
+        assert_eq!(loaded.len, 0);
+        assert!(loaded.columns.contains_key("trade_date"));
+        assert!(loaded.columns.contains_key("ts_code"));
+        assert!(loaded.columns.contains_key("SIZE"));
+
+        if root.exists() {
+            fs::remove_dir_all(root).expect("cleanup");
+        }
     }
 
     #[test]

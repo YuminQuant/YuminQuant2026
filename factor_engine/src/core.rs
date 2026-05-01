@@ -62,6 +62,7 @@ impl Display for Frequency {
 pub enum DatasetId {
     StockDailyPv,
     StockDailyBasic,
+    StockAdjFactor,
     StockIncome,
     StockBalanceSheet,
     StockCashFlow,
@@ -81,6 +82,7 @@ impl DatasetId {
         match self {
             Self::StockDailyPv
             | Self::StockDailyBasic
+            | Self::StockAdjFactor
             | Self::StockIncome
             | Self::StockBalanceSheet
             | Self::StockCashFlow
@@ -99,6 +101,7 @@ impl DatasetId {
         match self {
             Self::StockDailyPv
             | Self::StockDailyBasic
+            | Self::StockAdjFactor
             | Self::StockIncome
             | Self::StockBalanceSheet
             | Self::StockCashFlow
@@ -117,6 +120,7 @@ impl DatasetId {
         match self {
             Self::StockDailyPv => "stock.daily.pv",
             Self::StockDailyBasic => "stock.daily.basic",
+            Self::StockAdjFactor => "stock.adj_factor",
             Self::StockIncome => "stock.income",
             Self::StockBalanceSheet => "stock.balancesheet",
             Self::StockCashFlow => "stock.cashflow",

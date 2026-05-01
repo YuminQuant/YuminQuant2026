@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from data_manager.core import BaseDownloader, ConfigManager
+from data_manager.core.daily_storage import daily_file_path
 
 class StockMinuteDownloader(BaseDownloader):
     """股票分钟线下载器 (按天横截面 Batch 并发极限提取)"""
@@ -50,7 +51,8 @@ class StockMinuteDownloader(BaseDownloader):
     def _get_valid_stocks_for_day(self, date_str):
         """精准提取当天的活跃股票池"""
         year = date_str[:4]
-        pv_file = os.path.join(self.daily_pv_dir, f"{year}.parquet")
+        daily_file = daily_file_path(self.daily_pv_dir, date_str)
+        pv_file = daily_file if os.path.exists(daily_file) else os.path.join(self.daily_pv_dir, f"{year}.parquet")
         if not os.path.exists(pv_file):
             return []
         try:

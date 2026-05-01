@@ -94,6 +94,34 @@ impl DataCatalog {
         paths
     }
 
+    pub fn daily_date_file(&self, dataset: DatasetId, trade_date: i32) -> Option<PathBuf> {
+        let year = trade_date / 10_000;
+        let path = match dataset {
+            DatasetId::StockDailyPv => self
+                .data_root
+                .join("stock_data")
+                .join("daily")
+                .join("pv")
+                .join(year.to_string())
+                .join(format!("{}.parquet", trade_date)),
+            DatasetId::StockDailyBasic => self
+                .data_root
+                .join("stock_data")
+                .join("daily")
+                .join("basic")
+                .join(year.to_string())
+                .join(format!("{}.parquet", trade_date)),
+            DatasetId::FutureDaily => self
+                .data_root
+                .join("future_data")
+                .join("daily")
+                .join(year.to_string())
+                .join(format!("{}.parquet", trade_date)),
+            _ => return None,
+        };
+        path.exists().then_some(path)
+    }
+
     pub fn index_daily_year_files(
         &self,
         ts_code: &str,
@@ -116,6 +144,19 @@ impl DataCatalog {
             }
         }
         paths
+    }
+
+    pub fn index_daily_date_file(&self, ts_code: &str, trade_date: i32) -> Option<PathBuf> {
+        let year = trade_date / 10_000;
+        let code_dir = ts_code.replace('.', "_");
+        let path = self
+            .data_root
+            .join("index_data")
+            .join("daily")
+            .join(&code_dir)
+            .join(year.to_string())
+            .join(format!("{}.parquet", trade_date));
+        path.exists().then_some(path)
     }
 
     pub fn minute_file(&self, dataset: DatasetId, trade_date: i32) -> Option<PathBuf> {

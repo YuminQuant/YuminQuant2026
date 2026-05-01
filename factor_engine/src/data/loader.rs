@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 
 use crate::core::{AssetClass, DatasetId};
 use crate::data::catalog::DataCatalog;
@@ -34,6 +35,40 @@ impl MarketDataLoader {
         Ok(table)
     }
 
+    pub fn load_daily_by_dates(
+        &self,
+        dataset: DatasetId,
+        requested_columns: &[String],
+        trade_dates: &[i32],
+    ) -> Result<Table> {
+        let columns = with_required_columns(requested_columns, &["trade_date", "ts_code"]);
+        let mut table = Table::empty();
+        let mut yearly_cache = HashMap::<i32, Table>::new();
+
+        for trade_date in trade_dates {
+            if let Some(file) = self.catalog.daily_date_file(dataset, *trade_date) {
+                append_file_filtered_by_dates(&mut table, file, &columns, &[*trade_date])?;
+            } else {
+                let year = trade_date / 10_000;
+                if !yearly_cache.contains_key(&year) {
+                    let start_date = year * 10_000 + 101;
+                    let end_date = year * 10_000 + 12_31;
+                    let mut yearly_table = Table::empty();
+                    for file in self.catalog.daily_year_files(dataset, start_date, end_date) {
+                        let yearly = read_parquet(&file, Some(&columns))?;
+                        yearly_table.append(&yearly)?;
+                    }
+                    yearly_cache.insert(year, yearly_table);
+                }
+                if let Some(yearly_table) = yearly_cache.get(&year) {
+                    append_table_filtered_by_dates(&mut table, yearly_table, &[*trade_date])?;
+                }
+            }
+        }
+
+        Ok(table)
+    }
+
     pub fn load_index_daily(
         &self,
         ts_code: &str,
@@ -51,6 +86,43 @@ impl MarketDataLoader {
             let filtered = yearly.filter_i32_range("trade_date", start_date, end_date)?;
             table.append(&filtered)?;
         }
+        Ok(table)
+    }
+
+    pub fn load_index_daily_by_dates(
+        &self,
+        ts_code: &str,
+        requested_columns: &[String],
+        trade_dates: &[i32],
+    ) -> Result<Table> {
+        let columns = with_required_columns(requested_columns, &["trade_date", "ts_code"]);
+        let mut table = Table::empty();
+        let mut yearly_cache = HashMap::<i32, Table>::new();
+
+        for trade_date in trade_dates {
+            if let Some(file) = self.catalog.index_daily_date_file(ts_code, *trade_date) {
+                append_file_filtered_by_dates(&mut table, file, &columns, &[*trade_date])?;
+            } else {
+                let year = trade_date / 10_000;
+                if !yearly_cache.contains_key(&year) {
+                    let start_date = year * 10_000 + 101;
+                    let end_date = year * 10_000 + 12_31;
+                    let mut yearly_table = Table::empty();
+                    for file in self
+                        .catalog
+                        .index_daily_year_files(ts_code, start_date, end_date)
+                    {
+                        let yearly = read_parquet(&file, Some(&columns))?;
+                        yearly_table.append(&yearly)?;
+                    }
+                    yearly_cache.insert(year, yearly_table);
+                }
+                if let Some(yearly_table) = yearly_cache.get(&year) {
+                    append_table_filtered_by_dates(&mut table, yearly_table, &[*trade_date])?;
+                }
+            }
+        }
+
         Ok(table)
     }
 
@@ -222,6 +294,7 @@ impl MarketDataLoader {
     ) -> Result<Table> {
         let columns = with_required_columns(requested_columns, &["trade_date", "ts_code"]);
         let mut table = Table::empty();
+        let mut missing_dates = Vec::new();
         for trade_date in target_dates {
             if let Some(file) = self
                 .catalog
@@ -229,7 +302,15 @@ impl MarketDataLoader {
             {
                 let daily = read_parquet(&file, Some(&columns))?;
                 table.append(&daily)?;
+            } else {
+                missing_dates.push(*trade_date);
             }
+        }
+        if !missing_dates.is_empty() {
+            return Err(err(format!(
+                "missing Barra daily exposure file(s) for model {} on dates {:?}; run barra-run for the required dates before using StockBarraDaily dependencies",
+                model, missing_dates
+            )));
         }
         Ok(table)
     }
@@ -248,6 +329,32 @@ fn filter_classification_range(table: &Table, start_date: i32, end_date: i32) ->
         })
         .collect::<Vec<_>>();
     table.take(&indices)
+}
+
+fn append_file_filtered_by_dates(
+    target: &mut Table,
+    file: PathBuf,
+    columns: &[String],
+    trade_dates: &[i32],
+) -> Result<()> {
+    let table = read_parquet(&file, Some(columns))?;
+    append_table_filtered_by_dates(target, &table, trade_dates)
+}
+
+fn append_table_filtered_by_dates(
+    target: &mut Table,
+    table: &Table,
+    trade_dates: &[i32],
+) -> Result<()> {
+    let wanted = trade_dates.iter().copied().collect::<BTreeSet<_>>();
+    let dates = table.required_i32("trade_date")?;
+    let indices = dates
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, value)| value.and_then(|date| wanted.contains(&date).then_some(idx)))
+        .collect::<Vec<_>>();
+    let filtered = table.take(&indices)?;
+    target.append(&filtered)
 }
 
 fn financial_lookback_years(quarters: usize) -> i32 {
@@ -370,6 +477,79 @@ mod tests {
             vec![Some(11.0)]
         );
         assert!(!loaded.columns.contains_key("pre_close"));
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn daily_loader_reads_date_files_before_yearly_fallback() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_daily_date_loader_test_{unique}"));
+        let yearly_path = root
+            .join("stock_data")
+            .join("daily")
+            .join("pv")
+            .join("2026.parquet");
+        let daily_path = root
+            .join("stock_data")
+            .join("daily")
+            .join("pv")
+            .join("2026")
+            .join("20260103.parquet");
+        let yearly = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260102), Some(20260103)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000001.SZ".to_string()),
+                ]),
+            ),
+            (
+                "close".to_string(),
+                ColumnData::F32(vec![Some(10.0), Some(11.0)]),
+            ),
+        ]))
+        .expect("yearly table");
+        let daily = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260103)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            ("close".to_string(), ColumnData::F32(vec![Some(99.0)])),
+        ]))
+        .expect("daily table");
+        write_parquet(&yearly_path, &yearly).expect("write yearly");
+        write_parquet(&daily_path, &daily).expect("write daily");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let loaded = loader
+            .load_daily_by_dates(
+                DatasetId::StockDailyPv,
+                &["close".to_string()],
+                &[20260102, 20260103],
+            )
+            .expect("load daily by dates");
+
+        assert_eq!(loaded.len, 2);
+        assert_eq!(
+            loaded.required_i32("trade_date").expect("trade_date"),
+            &vec![Some(20260102), Some(20260103)]
+        );
+        assert_eq!(
+            loaded.required_f64_cast("close").expect("close"),
+            vec![Some(10.0), Some(99.0)]
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }

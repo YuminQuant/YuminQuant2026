@@ -514,18 +514,11 @@ fn eligible_label_target_dates(
 }
 
 fn stock_daily_pv_has_dates(loader: &MarketDataLoader, trade_dates: &[i32]) -> Result<bool> {
-    let Some(start_date) = trade_dates.first().copied() else {
+    if trade_dates.is_empty() {
         return Ok(false);
-    };
-    let Some(end_date) = trade_dates.last().copied() else {
-        return Ok(false);
-    };
-    let table = loader.load_daily(
-        DatasetId::StockDailyPv,
-        &["open".to_string()],
-        start_date,
-        end_date,
-    )?;
+    }
+    let table =
+        loader.load_daily_by_dates(DatasetId::StockDailyPv, &["open".to_string()], trade_dates)?;
     let actual_dates = table
         .required_i32("trade_date")?
         .iter()

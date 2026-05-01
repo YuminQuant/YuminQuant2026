@@ -24,7 +24,7 @@ impl Factor for StockDailyWQAlpha009Neu {
             frequency: Frequency::Daily,
             version: "0.1.0".to_string(),
             tags: [
-                "worldquant101alpha",
+                "worldquant101alpha_neutralized",
                 "price_volume",
                 "neutralize",
                 "barra",

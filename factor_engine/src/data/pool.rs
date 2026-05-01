@@ -44,12 +44,8 @@ impl DataPool {
                 let ts_code = entity_id.ok_or_else(|| {
                     err("index.daily request requires entity_id; use DataRequest::index_daily")
                 })?;
-                let table = loader.load_index_daily(
-                    &ts_code,
-                    &columns,
-                    context.load_start_date,
-                    context.end_date,
-                )?;
+                let table =
+                    loader.load_index_daily_by_dates(&ts_code, &columns, &context.load_dates)?;
                 let panel = DailyPanel::from_table(&table, context)?;
                 pool.index_daily_panels.insert(ts_code.clone(), panel);
                 pool.index_daily.insert(ts_code, table);
@@ -119,12 +115,8 @@ impl DataPool {
             }
             match dataset.frequency() {
                 Frequency::Daily => {
-                    let table = loader.load_daily(
-                        dataset,
-                        &columns,
-                        context.load_start_date,
-                        context.end_date,
-                    )?;
+                    let table =
+                        loader.load_daily_by_dates(dataset, &columns, &context.load_dates)?;
                     if should_build_daily_panel(dataset) {
                         let panel = DailyPanel::from_table(&table, context)?;
                         pool.daily_panels.insert(dataset, panel);

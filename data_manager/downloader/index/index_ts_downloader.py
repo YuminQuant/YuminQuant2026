@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from data_manager.core import BaseDownloader, ConfigManager
+from data_manager.core.daily_storage import save_daily_dataframe
 
 
 class IndexDailyDownloader(BaseDownloader):
@@ -68,8 +69,12 @@ class IndexDailyDownloader(BaseDownloader):
         for year in years:
             y_start = max(start_date, f"{year}0101")
             y_end = min(target_end_date, f"{year}1231")
-            file_path = os.path.join(code_dir, f"{year}.parquet")
-            if year < target_end_date[:4] and os.path.exists(file_path):
+            year_dir = os.path.join(code_dir, year)
+            if (
+                year < target_end_date[:4]
+                and os.path.isdir(year_dir)
+                and any(name.endswith(".parquet") for name in os.listdir(year_dir))
+            ):
                 continue
 
             try:
@@ -77,8 +82,8 @@ class IndexDailyDownloader(BaseDownloader):
                 self.safe_sleep()
                 if df is None or df.empty:
                     continue
-                saved_rows = self._save_year(file_path, df)
-                self.logger.info(f"-> index_daily {ts_code} {year} saved rows={saved_rows}")
+                written = self._save_year(code_dir, df)
+                self.logger.info(f"-> index_daily {ts_code} {year} saved files={written}")
             except Exception as exc:
                 self.logger.error(f"index_daily {ts_code} {year} failed: {exc}")
 
@@ -92,26 +97,23 @@ class IndexDailyDownloader(BaseDownloader):
                 list_date=spec.get("list_date"),
             )
 
-    def _save_year(self, file_path, df):
+    def _save_year(self, code_dir, df):
         df = df.copy()
         for column in self.REQUIRED_COLUMNS:
             if column not in df.columns:
                 df[column] = np.nan
         df = df[self.REQUIRED_COLUMNS]
 
-        if os.path.exists(file_path):
-            df_old = pd.read_parquet(file_path)
-            df = pd.concat([df_old, df], ignore_index=True)
-        df.drop_duplicates(subset=["trade_date"], keep="last", inplace=True)
-
         df["trade_date"] = df["trade_date"].astype(np.int32)
         for column in self.FLOAT_COLUMNS:
             df[column] = pd.to_numeric(df[column], errors="coerce").astype(np.float32)
-
-        df.sort_values(by="trade_date", inplace=True)
-        df.reset_index(drop=True, inplace=True)
-        df.to_parquet(file_path, index=False)
-        return len(df)
+        return save_daily_dataframe(
+            code_dir,
+            df,
+            key_cols=["trade_date"],
+            sort_cols=["trade_date"],
+            float32_cols=self.FLOAT_COLUMNS,
+        )
 
 
 class IndexWeightDownloader(BaseDownloader):

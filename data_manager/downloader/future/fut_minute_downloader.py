@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from data_manager.core import BaseDownloader, ConfigManager
+from data_manager.core.daily_storage import daily_file_path
 
 class FutureMinuteDownloader(BaseDownloader):
     """期货1分钟下载器 (本地日线联动 + 按交易日横截面切片，解决夜盘错位)"""
@@ -55,7 +56,8 @@ class FutureMinuteDownloader(BaseDownloader):
     def _get_active_codes_from_local(self, trade_date):
         """羁绊大招：直接从本地存好的期货日线中提取存活合约，零网络开销！"""
         year = trade_date[:4]
-        daily_file = os.path.join(self.daily_dir, f"{year}.parquet")
+        date_file = daily_file_path(self.daily_dir, trade_date)
+        daily_file = date_file if os.path.exists(date_file) else os.path.join(self.daily_dir, f"{year}.parquet")
         
         if not os.path.exists(daily_file):
             self.logger.warning(f"本地缺少 {year} 年的期货日线数据 ({daily_file})，无法获取 {trade_date} 的存活合约。请先跑日线同步！")

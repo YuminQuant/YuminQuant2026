@@ -27,24 +27,26 @@ const RSTR_WINDOW: usize = 252;
 const RSTR_HALF_LIFE: f64 = 126.0;
 const RSTR_LAG: usize = 11;
 const RSTR_AVG_WINDOW: usize = 11;
-const HALPHA_WINDOW: usize = 1040;
-const HALPHA_HALF_LIFE: f64 = 260.0;
-const HALPHA_LAG: usize = 273;
-const HALPHA_AVG_WINDOW: usize = 11;
-const MAX_LOOKBACK: usize = 1323;
+const HALPHA_WINDOW: usize = 252;
+const HALPHA_HALF_LIFE: f64 = 63.0;
+const MAX_LOOKBACK: usize = TRADING_DAYS_PER_YEAR * SEASONALITY_YEARS + TRADING_DAYS_PER_MONTH;
 
 pub fn create() -> Box<dyn BarraExposure> {
     Box::new(StockDailyBarraCne6Momentum)
 }
 
 impl BarraExposure for StockDailyBarraCne6Momentum {
+    fn family_id(&self) -> &'static str {
+        "MOMENTUM"
+    }
+
     fn specs(&self) -> Vec<BarraSpec> {
         vec![
             momentum_spec(
                 "Historical_Alpha",
                 &["HALPHA"],
                 "CNE6 historical alpha",
-                "Negative lagged 11-day average of the EW CAPM alpha against CSI 300.",
+                "EW 252-day CAPM intercept against CSI 300 with half-life 63.",
             ),
             momentum_spec(
                 "Relative_Strength",
@@ -261,10 +263,7 @@ fn historical_alpha_raw(
         HALPHA_WINDOW,
         HALPHA_HALF_LIFE,
     );
-    lagged_mean(&alpha, HALPHA_LAG, HALPHA_AVG_WINDOW)
-        .into_iter()
-        .map(|value| clean(value).map(|value| -value))
-        .collect()
+    alpha
 }
 
 fn industry_momentum_column(

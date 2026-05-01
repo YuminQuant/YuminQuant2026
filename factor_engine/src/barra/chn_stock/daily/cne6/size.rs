@@ -16,17 +16,21 @@ pub fn create() -> Box<dyn BarraExposure> {
 }
 
 impl BarraExposure for StockDailyBarraCne6Size {
+    fn family_id(&self) -> &'static str {
+        "SIZE"
+    }
+
     fn specs(&self) -> Vec<BarraSpec> {
         vec![
             size_spec(
                 "Size",
                 "CNE6 Size secondary exposure",
-                "log(total_mv), winsorized at 1%/99% and equal-weight z-scored.",
+                "log(circ_mv), winsorized at 1%/99% and equal-weight z-scored.",
             ),
             size_spec(
                 "Mid_Cap",
                 "CNE6 Mid_Cap secondary exposure",
-                "Size cubed, WLS residualized against Size with total_mv weights, then winsorized and z-scored.",
+                "Size cubed, WLS residualized against Size with circ_mv weights, then winsorized and z-scored.",
             ),
             size_spec(
                 "SIZE",
@@ -38,13 +42,13 @@ impl BarraExposure for StockDailyBarraCne6Size {
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyBasic)?;
-        let total_mv = panel.column("total_mv")?;
-        let raw_size = total_mv
+        let circ_mv = panel.column("circ_mv")?;
+        let raw_size = circ_mv
             .map_values(|value| clean(value).and_then(|value| (value > 0.0).then_some(value.ln())));
         let size = raw_size.cs(standardize_cross_section)?;
 
         let mid_raw = size.map_values(|value| clean(value).map(|value| value.powi(3)));
-        let mid_residual = mid_raw.cs_ternary(&size, &total_mv, |mid, size, weight| {
+        let mid_residual = mid_raw.cs_ternary(&size, &circ_mv, |mid, size, weight| {
             cs_neutralize_regression(mid, &[size], None, Some(weight))
         })?;
         let mid_cap = mid_residual.cs(standardize_cross_section)?;
@@ -80,7 +84,7 @@ fn size_spec(id: &str, name: &str, description: &str) -> BarraSpec {
             .map(|value| value.to_string())
             .collect(),
         description: description.to_string(),
-        dependencies: vec![DataRequest::new(DatasetId::StockDailyBasic, &["total_mv"])],
+        dependencies: vec![DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"])],
         lookback: Lookback { trading_days: 0 },
     }
 }

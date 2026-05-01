@@ -27,6 +27,10 @@ pub fn create() -> Box<dyn BarraExposure> {
 }
 
 impl BarraExposure for StockDailyBarraCne6Volatility {
+    fn family_id(&self) -> &'static str {
+        "VOLATILITY"
+    }
+
     fn specs(&self) -> Vec<BarraSpec> {
         vec![
             volatility_spec(

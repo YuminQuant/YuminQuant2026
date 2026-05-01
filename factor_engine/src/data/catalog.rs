@@ -65,6 +65,21 @@ impl DataCatalog {
                     .join("stock_data")
                     .join("balancesheet")
                     .join(format!("{}.parquet", year)),
+                DatasetId::StockCashFlow => self
+                    .data_root
+                    .join("stock_data")
+                    .join("cashflow")
+                    .join(format!("{}.parquet", year)),
+                DatasetId::StockDividend => self
+                    .data_root
+                    .join("stock_data")
+                    .join("dividend")
+                    .join(format!("{}.parquet", year)),
+                DatasetId::StockAnalystReport => self
+                    .data_root
+                    .join("stock_data")
+                    .join("analyst_report")
+                    .join(format!("{}.parquet", year)),
                 DatasetId::FutureDaily => self
                     .data_root
                     .join("future_data")

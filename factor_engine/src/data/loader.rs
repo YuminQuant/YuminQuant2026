@@ -127,6 +127,61 @@ impl MarketDataLoader {
         Ok(table)
     }
 
+    pub fn load_stock_dividend(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+    ) -> Result<Table> {
+        let columns = with_required_columns(
+            requested_columns,
+            &[
+                "ts_code",
+                "end_date",
+                "ann_date",
+                "div_proc",
+                "cash_div_tax",
+                "ex_date",
+            ],
+        );
+        let files = self.catalog.daily_year_files(
+            DatasetId::StockDividend,
+            prior_year_start(start_date),
+            end_date,
+        );
+        let mut table = Table::empty();
+        for file in files {
+            let yearly = read_parquet(&file, Some(&columns))?;
+            let filtered = filter_dividend_range(&yearly, end_date)?;
+            table.append(&filtered)?;
+        }
+        Ok(table)
+    }
+
+    pub fn load_stock_analyst_report(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+    ) -> Result<Table> {
+        let columns = with_required_columns(
+            requested_columns,
+            &["ts_code", "report_date", "quarter", "rd"],
+        );
+        let files = self.catalog.daily_year_files(
+            DatasetId::StockAnalystReport,
+            prior_year_start(start_date),
+            end_date,
+        );
+        let mut table = Table::empty();
+        for file in files {
+            let yearly = read_parquet(&file, Some(&columns))?;
+            let filtered = filter_analyst_report_range(&yearly, end_date)?;
+            table.append(&filtered)?;
+        }
+        Ok(table)
+    }
+
     pub fn load_minute_by_date(
         &self,
         dataset: DatasetId,
@@ -202,6 +257,10 @@ fn financial_lookback_years(quarters: usize) -> i32 {
     (quarters.div_ceil(4) as i32) + 3
 }
 
+fn prior_year_start(date: i32) -> i32 {
+    (date / 10_000 - 1).max(0) * 10_000 + 101
+}
+
 fn filter_financial_disclosure_range(table: &Table, end_date: i32) -> Result<Table> {
     let ann_dates = table.required_i32_date_cast("ann_date")?;
     let f_ann_dates = table.required_i32_date_cast("f_ann_date")?;
@@ -210,6 +269,26 @@ fn filter_financial_disclosure_range(table: &Table, end_date: i32) -> Result<Tab
             let disclosure_date = f_ann_dates[*idx].or(ann_dates[*idx]);
             disclosure_date.is_some_and(|date| date <= end_date)
         })
+        .collect::<Vec<_>>();
+    table.take(&indices)
+}
+
+fn filter_dividend_range(table: &Table, end_date: i32) -> Result<Table> {
+    let ann_dates = table.required_i32_date_cast("ann_date")?;
+    let ex_dates = table.required_i32_date_cast("ex_date")?;
+    let indices = (0..table.len)
+        .filter(|idx| {
+            ann_dates[*idx].is_some_and(|date| date <= end_date)
+                || ex_dates[*idx].is_some_and(|date| date <= end_date)
+        })
+        .collect::<Vec<_>>();
+    table.take(&indices)
+}
+
+fn filter_analyst_report_range(table: &Table, end_date: i32) -> Result<Table> {
+    let report_dates = table.required_i32_date_cast("report_date")?;
+    let indices = (0..table.len)
+        .filter(|idx| report_dates[*idx].is_some_and(|date| date <= end_date))
         .collect::<Vec<_>>();
     table.take(&indices)
 }

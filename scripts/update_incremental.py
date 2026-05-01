@@ -258,6 +258,16 @@ def update_stock_financial(args, logger):
             )
 
 
+def update_stock_alt(args, logger):
+    start_date = args.start_date or DEFAULT_START_DATES["stock_alt"]
+    end_date = args.end_date or bj_today()
+    run_task(
+        logger,
+        "analyst_report",
+        lambda: AnalystReportDownloader().sync(start_date=start_date, target_end_date=end_date),
+    )
+
+
 def update_future_static(logger):
     run_task(logger, "future_static", lambda: FutureBasicDownloader().sync())
 
@@ -323,6 +333,7 @@ GROUPS = {
     "stock_daily": update_stock_daily,
     "stock_minute": update_stock_minute,
     "stock_financial": update_stock_financial,
+    "stock_alt": update_stock_alt,
     "future_static": lambda args, logger: update_future_static(logger),
     "future_daily": update_future_daily,
     "future_minute": update_future_minute,

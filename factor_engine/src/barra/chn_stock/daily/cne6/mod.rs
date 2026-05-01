@@ -1,9 +1,19 @@
+pub mod dividend_yield;
+pub mod growth;
 pub mod liquidity;
 pub mod momentum;
+pub mod quality;
+pub mod sentiment;
 pub mod size;
+pub mod value;
 pub mod volatility;
 
+pub use dividend_yield::StockDailyBarraCne6DividendYield;
+pub use growth::StockDailyBarraCne6Growth;
 pub use liquidity::StockDailyBarraCne6Liquidity;
 pub use momentum::StockDailyBarraCne6Momentum;
+pub use quality::StockDailyBarraCne6Quality;
+pub use sentiment::StockDailyBarraCne6Sentiment;
 pub use size::StockDailyBarraCne6Size;
+pub use value::StockDailyBarraCne6Value;
 pub use volatility::StockDailyBarraCne6Volatility;

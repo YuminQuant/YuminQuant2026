@@ -29,6 +29,7 @@ pub struct BarraRunRequest {
     pub end_date: i32,
     pub exposure_ids: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
+    pub families: Option<Vec<String>>,
     pub config_path: Option<PathBuf>,
     pub dry_run: bool,
     pub exposure_batch_size: usize,
@@ -59,6 +60,7 @@ pub struct BarraEngine {
 }
 
 struct BarraProvider {
+    family_id: String,
     exposure: Box<dyn BarraExposure>,
     specs: Vec<BarraSpec>,
 }
@@ -149,13 +151,31 @@ impl BarraEngine {
                 stale_ids.join(",")
             )));
         }
+        if let Some(families) = &request.families {
+            let requested_families = families
+                .iter()
+                .map(|value| normalize_family_id(value))
+                .collect::<BTreeSet<_>>();
+            selected_provider_ids.retain(|provider_idx, _| {
+                requested_families
+                    .contains(&normalize_family_id(&providers[*provider_idx].family_id))
+            });
+        }
         if selected_provider_ids.is_empty() {
             return Ok(empty_barra_report(
                 request,
-                format!(
-                    "No Barra exposures selected for asset={} frequency={}.",
-                    request.asset_class, request.frequency
-                ),
+                match &request.families {
+                    Some(families) => format!(
+                        "No Barra families selected for asset={} frequency={} families={}.",
+                        request.asset_class,
+                        request.frequency,
+                        families.join(",")
+                    ),
+                    None => format!(
+                        "No Barra exposures selected for asset={} frequency={}.",
+                        request.asset_class, request.frequency
+                    ),
+                },
             ));
         }
 
@@ -330,9 +350,10 @@ impl BarraEngine {
                 let written_paths = storage.write_results(&results)?;
                 let write_ms = write_started.elapsed().as_millis();
                 output_paths.extend(written_paths);
+                let stage_name = batch_stage_name(&batch_providers);
                 if request.profile {
                     profiles.push(BatchProfile {
-                        stage: "barra_daily".to_string(),
+                        stage: stage_name.clone(),
                         date_batch_index: date_idx + 1,
                         factor_batch_index: exposure_batch_index + 1,
                         start_date: trade_date,
@@ -345,7 +366,8 @@ impl BarraEngine {
                     });
                 }
                 progress.tick(format!(
-                    "stage=barra_daily date={} exposures={}",
+                    "stage={} date={} exposures={}",
+                    stage_name,
                     trade_date,
                     batch_specs.len()
                 ));
@@ -460,22 +482,27 @@ fn merge_requests<I>(requests: I) -> Vec<DataRequest>
 where
     I: IntoIterator<Item = DataRequest>,
 {
-    let mut grouped: HashMap<_, BTreeSet<String>> = HashMap::new();
+    let mut grouped: HashMap<_, (BTreeSet<String>, Option<usize>)> = HashMap::new();
     for request in requests {
         let key = (request.dataset, request.entity_id.clone());
-        grouped
-            .entry(key)
-            .or_default()
-            .extend(request.columns.into_iter());
+        let entry = grouped.entry(key).or_default();
+        entry.0.extend(request.columns.into_iter());
+        entry.1 = match (entry.1, request.financial_quarters) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (None, Some(right)) => Some(right),
+            (left, None) => left,
+        };
     }
     let mut merged = grouped
         .into_iter()
-        .map(|((dataset, entity_id), columns)| DataRequest {
-            dataset,
-            entity_id,
-            columns: columns.into_iter().collect(),
-            financial_quarters: None,
-        })
+        .map(
+            |((dataset, entity_id), (columns, financial_quarters))| DataRequest {
+                dataset,
+                entity_id,
+                columns: columns.into_iter().collect(),
+                financial_quarters,
+            },
+        )
         .collect::<Vec<_>>();
     merged.sort_by(|left, right| {
         left.dataset
@@ -504,6 +531,25 @@ fn exposure_batch_ranges(exposure_count: usize, exposure_batch_size: usize) -> V
         .step_by(batch_size)
         .map(|start| start..(start + batch_size).min(exposure_count))
         .collect()
+}
+
+fn normalize_family_id(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| *ch != '-' && *ch != '_' && !ch.is_whitespace())
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+fn batch_stage_name(providers: &[&BarraProvider]) -> String {
+    if providers.len() == 1 {
+        format!(
+            "barra_family_{}",
+            providers[0].family_id.to_ascii_lowercase()
+        )
+    } else {
+        "barra_family_multi".to_string()
+    }
 }
 
 fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>> {
@@ -562,8 +608,13 @@ fn barra_providers() -> Vec<BarraProvider> {
     all_barra_exposures()
         .into_iter()
         .map(|exposure| {
+            let family_id = exposure.family_id().to_string();
             let specs = exposure.specs();
-            BarraProvider { exposure, specs }
+            BarraProvider {
+                family_id,
+                exposure,
+                specs,
+            }
         })
         .collect()
 }
@@ -595,6 +646,7 @@ mod tests {
             end_date: 20260105,
             exposure_ids: Some(vec!["SIZE".to_string()]),
             tags: None,
+            families: None,
             config_path: None,
             dry_run: false,
             exposure_batch_size: 10,

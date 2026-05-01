@@ -244,6 +244,14 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
             .map(ToString::to_string)
             .collect::<Vec<_>>()
     });
+    let families = flags.get("families").map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    });
     if exposure_ids.is_some() && tags.is_some() {
         return Err(yq_factor_engine::error::err(
             "--exposures and --tags cannot be used together",
@@ -259,7 +267,7 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
             }
             parsed
         }
-        None => DEFAULT_FACTOR_BATCH_SIZE,
+        None => 1,
     };
     let threads = match flags.get("threads") {
         Some(value) => {
@@ -294,6 +302,7 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
         end_date,
         exposure_ids,
         tags,
+        families,
         config_path,
         dry_run,
         exposure_batch_size,
@@ -754,6 +763,7 @@ fn print_help() {
     println!("  --factors factor_id[,factor_id...]");
     println!("  --labels label_id[,label_id...]");
     println!("  --exposures exposure_id[,exposure_id...]");
+    println!("  --families barra_family[,barra_family...]");
     println!("  --model CNE6");
     println!("  --tags tag[,tag...]");
     println!(
@@ -764,10 +774,7 @@ fn print_help() {
         "  --label-batch-size N (default {})",
         DEFAULT_FACTOR_BATCH_SIZE
     );
-    println!(
-        "  --exposure-batch-size N (default {})",
-        DEFAULT_FACTOR_BATCH_SIZE
-    );
+    println!("  --exposure-batch-size N (default 1 for one Barra family per batch)");
     println!("  --threads N");
     println!("  --profile");
     println!("  --refresh-minute-cache");

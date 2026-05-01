@@ -87,7 +87,7 @@ impl DataPool {
             }
             if matches!(
                 dataset,
-                DatasetId::StockIncome | DatasetId::StockBalanceSheet
+                DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow
             ) {
                 let table = loader.load_financial(
                     dataset,
@@ -95,6 +95,24 @@ impl DataPool {
                     context.start_date,
                     context.end_date,
                     financial_quarters.unwrap_or(0),
+                )?;
+                pool.daily.insert(dataset, table);
+                continue;
+            }
+            if dataset == DatasetId::StockDividend {
+                let table = loader.load_stock_dividend(
+                    &columns,
+                    context.load_start_date,
+                    context.end_date,
+                )?;
+                pool.daily.insert(dataset, table);
+                continue;
+            }
+            if dataset == DatasetId::StockAnalystReport {
+                let table = loader.load_stock_analyst_report(
+                    &columns,
+                    context.load_start_date,
+                    context.end_date,
                 )?;
                 pool.daily.insert(dataset, table);
                 continue;

@@ -64,6 +64,9 @@ pub enum DatasetId {
     StockDailyBasic,
     StockIncome,
     StockBalanceSheet,
+    StockCashFlow,
+    StockDividend,
+    StockAnalystReport,
     StockMinute1m,
     StockSwClassification,
     StockCiClassification,
@@ -80,6 +83,9 @@ impl DatasetId {
             | Self::StockDailyBasic
             | Self::StockIncome
             | Self::StockBalanceSheet
+            | Self::StockCashFlow
+            | Self::StockDividend
+            | Self::StockAnalystReport
             | Self::StockMinute1m
             | Self::StockSwClassification
             | Self::StockCiClassification
@@ -95,6 +101,9 @@ impl DatasetId {
             | Self::StockDailyBasic
             | Self::StockIncome
             | Self::StockBalanceSheet
+            | Self::StockCashFlow
+            | Self::StockDividend
+            | Self::StockAnalystReport
             | Self::StockSwClassification
             | Self::StockCiClassification
             | Self::StockBarraDaily
@@ -110,6 +119,9 @@ impl DatasetId {
             Self::StockDailyBasic => "stock.daily.basic",
             Self::StockIncome => "stock.income",
             Self::StockBalanceSheet => "stock.balancesheet",
+            Self::StockCashFlow => "stock.cashflow",
+            Self::StockDividend => "stock.dividend",
+            Self::StockAnalystReport => "stock.analyst_report",
             Self::StockMinute1m => "stock.minute.1m",
             Self::StockSwClassification => "stock.sw_classification",
             Self::StockCiClassification => "stock.ci_classification",

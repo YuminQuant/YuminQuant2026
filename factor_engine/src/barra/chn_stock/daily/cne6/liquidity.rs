@@ -19,27 +19,31 @@ pub fn create() -> Box<dyn BarraExposure> {
 }
 
 impl BarraExposure for StockDailyBarraCne6Liquidity {
+    fn family_id(&self) -> &'static str {
+        "LIQUIDITY"
+    }
+
     fn specs(&self) -> Vec<BarraSpec> {
         vec![
             liquidity_spec(
                 "Monthly_Share_Turnover",
                 &["STOM"],
                 "CNE6 monthly share turnover",
-                "Log of the most recent 21 trading days' share turnover sum.",
+                "Log of the most recent 21 trading days' free-float share turnover sum.",
                 20,
             ),
             liquidity_spec(
                 "Quarterly_Share_Turnover",
                 &["STOQ"],
                 "CNE6 quarterly share turnover",
-                "Average of log monthly share turnover over the most recent three 21-day months.",
+                "Log of the average of the most recent three 21-day monthly turnover sums.",
                 62,
             ),
             liquidity_spec(
                 "Annual_Share_Turnover",
                 &["STOA"],
                 "CNE6 annual share turnover",
-                "Average of log monthly share turnover over the most recent twelve 21-day months.",
+                "Log of the average of the most recent twelve 21-day monthly turnover sums.",
                 251,
             ),
             liquidity_spec(
@@ -61,16 +65,17 @@ impl BarraExposure for StockDailyBarraCne6Liquidity {
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyBasic)?;
-        let turnover = panel.column("turnover_rate")?;
+        let turnover = panel.column("turnover_rate_f")?.map_values(|value| {
+            clean(value).and_then(|value| (value >= 0.0).then_some(value / 100.0))
+        });
 
-        let monthly = turnover
-            .ts(|values| monthly_log_turnover(values, 1))?
+        let monthly_raw = turnover.ts(stom_raw)?;
+        let monthly = monthly_raw.cs(standardize_cross_section)?;
+        let quarterly = monthly_raw
+            .ts(|values| stoq_or_stoa_from_stom(values, 3))?
             .cs(standardize_cross_section)?;
-        let quarterly = turnover
-            .ts(|values| monthly_log_turnover(values, 3))?
-            .cs(standardize_cross_section)?;
-        let annual = turnover
-            .ts(|values| monthly_log_turnover(values, 12))?
+        let annual = monthly_raw
+            .ts(|values| stoq_or_stoa_from_stom(values, 12))?
             .cs(standardize_cross_section)?;
         let atvr = turnover
             .ts(annualized_traded_value_ratio)?
@@ -135,7 +140,7 @@ fn liquidity_spec(
         description: description.to_string(),
         dependencies: vec![DataRequest::new(
             DatasetId::StockDailyBasic,
-            &["turnover_rate"],
+            &["turnover_rate_f"],
         )],
         lookback: Lookback {
             trading_days: lookback,
@@ -143,37 +148,51 @@ fn liquidity_spec(
     }
 }
 
-fn monthly_log_turnover(values: &[Option<f64>], months: usize) -> Vec<Option<f64>> {
-    if months == 0 {
-        return vec![None; values.len()];
-    }
+fn stom_raw(values: &[Option<f64>]) -> Vec<Option<f64>> {
     let mut output = vec![None; values.len()];
     for idx in 0..values.len() {
-        let mut logs = Vec::with_capacity(months);
-        for month_idx in 0..months {
-            let block_end = idx as isize - (month_idx * TRADING_DAYS_PER_MONTH) as isize;
-            let block_start = block_end - TRADING_DAYS_PER_MONTH as isize + 1;
-            if block_start < 0 {
-                logs.clear();
-                break;
-            }
-            let mut sum = 0.0;
-            let mut count = 0;
-            for value_idx in block_start as usize..=block_end as usize {
-                let Some(value) = clean(values[value_idx]) else {
-                    continue;
-                };
-                sum += value;
-                count += 1;
-            }
-            if count != TRADING_DAYS_PER_MONTH || sum <= 0.0 {
-                logs.clear();
-                break;
-            }
-            logs.push(sum.ln());
+        let Some(start) = idx.checked_sub(TRADING_DAYS_PER_MONTH - 1) else {
+            continue;
+        };
+        let mut sum = 0.0;
+        let mut count = 0;
+        for value in &values[start..=idx] {
+            let Some(value) = clean(*value) else {
+                continue;
+            };
+            sum += value;
+            count += 1;
         }
-        if logs.len() == months {
-            output[idx] = Some(logs.iter().sum::<f64>() / months as f64);
+        if count == TRADING_DAYS_PER_MONTH && sum > 0.0 {
+            output[idx] = Some(sum.ln());
+        }
+    }
+    output
+}
+
+fn stoq_or_stoa_from_stom(stom: &[Option<f64>], months: usize) -> Vec<Option<f64>> {
+    let mut output = vec![None; stom.len()];
+    if months == 0 {
+        return output;
+    }
+    for idx in 0..stom.len() {
+        let mut sum_month_turnover = 0.0;
+        let mut count = 0;
+        let mut valid = true;
+        for month_idx in 0..months {
+            let Some(stom_idx) = idx.checked_sub(month_idx * TRADING_DAYS_PER_MONTH) else {
+                valid = false;
+                break;
+            };
+            let Some(value) = clean(stom[stom_idx]) else {
+                valid = false;
+                break;
+            };
+            sum_month_turnover += value.exp();
+            count += 1;
+        }
+        if valid && count == months && sum_month_turnover > 0.0 {
+            output[idx] = Some((sum_month_turnover / months as f64).ln());
         }
     }
     output
@@ -217,8 +236,8 @@ mod tests {
     use crate::barra::BarraExposure;
 
     use super::{
-        annualized_traded_value_ratio, monthly_log_turnover, StockDailyBarraCne6Liquidity,
-        TRADING_DAYS_PER_YEAR,
+        annualized_traded_value_ratio, stom_raw, stoq_or_stoa_from_stom,
+        StockDailyBarraCne6Liquidity, TRADING_DAYS_PER_YEAR,
     };
 
     fn assert_close(actual: f64, expected: f64) {
@@ -250,7 +269,8 @@ mod tests {
     #[test]
     fn monthly_turnover_uses_complete_21_day_blocks() {
         let values = vec![Some(1.0); 42];
-        let output = monthly_log_turnover(&values, 2);
+        let stom = stom_raw(&values);
+        let output = stoq_or_stoa_from_stom(&stom, 2);
 
         assert_eq!(output[40], None);
         assert_close(output[41].unwrap(), 21.0_f64.ln());

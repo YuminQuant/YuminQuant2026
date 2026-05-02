@@ -353,6 +353,9 @@ fn append_table_filtered_by_dates(
     table: &Table,
     trade_dates: &[i32],
 ) -> Result<()> {
+    if table.len == 0 && !table.columns.contains_key("trade_date") {
+        return Ok(());
+    }
     let wanted = trade_dates.iter().copied().collect::<BTreeSet<_>>();
     let dates = table.required_i32("trade_date")?;
     let indices = dates
@@ -559,6 +562,25 @@ mod tests {
             loaded.required_f64_cast("close").expect("close"),
             vec![Some(10.0), Some(99.0)]
         );
+
+        if root.exists() {
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn daily_loader_tolerates_missing_date_and_yearly_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_daily_missing_loader_test_{unique}"));
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let loaded = loader
+            .load_daily_by_dates(DatasetId::StockDailyPv, &["open".to_string()], &[20260102])
+            .expect("missing daily files should be tolerated");
+
+        assert_eq!(loaded.len, 0);
 
         if root.exists() {
             fs::remove_dir_all(root).expect("cleanup");

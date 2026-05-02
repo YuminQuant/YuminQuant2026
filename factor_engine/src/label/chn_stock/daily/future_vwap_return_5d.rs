@@ -5,48 +5,45 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::label::Label;
 
-pub struct StockDailyFutureOpenReturn1d;
+pub struct StockDailyFutureVwapReturn5d;
 
 pub fn create() -> Box<dyn Label> {
-    Box::new(StockDailyFutureOpenReturn1d)
+    Box::new(StockDailyFutureVwapReturn5d)
 }
 
-impl Label for StockDailyFutureOpenReturn1d {
+impl Label for StockDailyFutureVwapReturn5d {
     fn spec(&self) -> LabelSpec {
         LabelSpec {
-            id: "future_open_return_1d".to_string(),
+            id: "future_vwap_return_5d".to_string(),
             aliases: Vec::new(),
-            name: "Stock future 1-day adjusted open-to-open".to_string(),
+            name: "Stock future 5-day adjusted daily VWAP".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: "0.2.0".to_string(),
-            tags: [
-                "label",
-                "future_return",
-                "adjusted",
-                "open_to_open",
-                "daily",
-            ]
-            .iter()
-            .map(|value| value.to_string())
-            .collect(),
-            description: "Future adjusted open-to-open return from t+1 open to t+2 open."
-                .to_string(),
+            tags: ["label", "future_return", "adjusted", "daily_vwap", "daily"]
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
+            description:
+                "Future adjusted daily VWAP return from t+1 full-day VWAP to t+6 full-day VWAP."
+                    .to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["open"]),
+                DataRequest::new(DatasetId::StockDailyPv, &["amount", "vol"]),
                 DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
             ],
-            lookahead: Lookahead { trading_days: 2 },
+            lookahead: Lookahead { trading_days: 6 },
         }
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<LabelSeries> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let open = panel.column("open")?;
+        let amount = panel.column("amount")?;
+        let vol = panel.column("vol")?;
+        let vwap = amount.zip_binary(&vol, daily_vwap_value)?;
         let adj_factor =
             panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
-        let adjusted_open = open.zip_binary(&adj_factor, adjusted_value)?;
-        let label = adjusted_open.ts(|values| future_return(values, 2))?;
+        let adjusted_vwap = vwap.zip_binary(&adj_factor, adjusted_value)?;
+        let label = adjusted_vwap.ts(|values| future_return(values, 6))?;
         Ok(label.to_label_series(self.spec()))
     }
 }
@@ -69,6 +66,16 @@ fn future_return(values: &[Option<f64>], end_offset: usize) -> Vec<Option<f64>> 
         output[idx] = Some(end / start - 1.0);
     }
     output
+}
+
+fn daily_vwap_value(amount: Option<f64>, vol: Option<f64>) -> Option<f64> {
+    let (Some(amount), Some(vol)) = (clean_value(amount), clean_value(vol)) else {
+        return None;
+    };
+    if vol.abs() <= f64::EPSILON {
+        return None;
+    }
+    Some(amount * 10.0 / vol)
 }
 
 fn adjusted_value(price: Option<f64>, adj_factor: Option<f64>) -> Option<f64> {

@@ -9,6 +9,7 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec};
 use crate::factor::Factor;
+use crate::operators::ts_pctchg;
 
 pub const RAW_ID: &str = "top20_centered_vol_ret_mean";
 const RAW_VERSION: &str = "0.1.0";
@@ -125,6 +126,11 @@ fn top_centered_vol_return_mean_from_rows(
     volume: &[Option<f64>],
     top_count: usize,
 ) -> Option<f64> {
+    let close_series = indices
+        .iter()
+        .map(|idx| clean_intraday_value(close[*idx]))
+        .collect::<Vec<_>>();
+    let returns = ts_pctchg(&close_series, 1);
     let selected_positions = indices
         .iter()
         .enumerate()
@@ -143,18 +149,9 @@ fn top_centered_vol_return_mean_from_rows(
     let mut top = Vec::<(f64, usize, f64)>::with_capacity(top_count);
     for selected_pos_idx in radius..(selected_positions.len() - radius) {
         let center_pos = selected_positions[selected_pos_idx];
-        let center_idx = indices[center_pos];
-        let prev_idx = indices[center_pos.saturating_sub(1)];
-        let (Some(current), Some(previous)) = (
-            clean_intraday_value(close[center_idx]),
-            clean_intraday_value(close[prev_idx]),
-        ) else {
+        let Some(ret) = returns[center_pos] else {
             continue;
         };
-        if center_pos == 0 || previous.abs() <= f64::EPSILON {
-            continue;
-        }
-        let ret = current / previous - 1.0;
 
         let mut volume_sum = 0.0;
         let mut complete = true;

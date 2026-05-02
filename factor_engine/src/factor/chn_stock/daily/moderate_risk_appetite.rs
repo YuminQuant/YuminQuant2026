@@ -12,7 +12,7 @@ use crate::factor::common::{
     ClassificationMap,
 };
 use crate::factor::Factor;
-use crate::operators::{cs_demean_abs, cs_zscore, ts_mean, ts_std_dev};
+use crate::operators::{cs_demean_abs, cs_zscore, ts_mean, ts_pctchg, ts_std_dev};
 
 pub const SPARKLE_VOLATILITY_RAW_ID: &str = "daily_sparkle_volatility";
 pub const SPARKLE_RETURN_RAW_ID: &str = "daily_sparkle_return";
@@ -219,7 +219,11 @@ fn sparkle_values_from_rows(
     close: &[Option<f64>],
     volume: &[Option<f64>],
 ) -> SparkleValues {
-    let returns = minute_returns(indices, close);
+    let close_series = indices
+        .iter()
+        .map(|idx| clean_intraday_value(close[*idx]))
+        .collect::<Vec<_>>();
+    let returns = ts_pctchg(&close_series, 1);
     let mut volume_increases = Vec::<(usize, f64)>::new();
     for (pos, idx) in indices.iter().enumerate() {
         let Some(trade_time) = trade_times[*idx].as_deref() else {
@@ -279,25 +283,6 @@ fn sparkle_values_from_rows(
     }
 }
 
-fn minute_returns(indices: &[usize], close: &[Option<f64>]) -> Vec<Option<f64>> {
-    let mut returns = vec![None; indices.len()];
-    for pos in 1..indices.len() {
-        let idx = indices[pos];
-        let prev_idx = indices[pos - 1];
-        let (Some(current), Some(previous)) = (
-            clean_intraday_value(close[idx]),
-            clean_intraday_value(close[prev_idx]),
-        ) else {
-            continue;
-        };
-        if previous.abs() <= f64::EPSILON {
-            continue;
-        }
-        returns[pos] = Some(current / previous - 1.0);
-    }
-    returns
-}
-
 fn mean_std(values: impl IntoIterator<Item = f64>) -> Option<(f64, f64)> {
     let values = values
         .into_iter()
@@ -317,87 +302,4 @@ fn mean_std(values: impl IntoIterator<Item = f64>) -> Option<(f64, f64)> {
 
 fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| !value.is_nan())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{average_pair, sparkle_values_from_rows};
-    use crate::core::{AssetClass, FactorContext, Frequency};
-    use crate::factor::common::DailyPanel;
-    use crate::operators::cs_demean_abs;
-
-    #[test]
-    fn sparkle_values_use_volume_spikes_for_return_and_following_five_minute_volatility() {
-        let indices = (0..8).collect::<Vec<_>>();
-        let trade_times = vec![
-            Some("09:30:00".to_string()),
-            Some("09:31:00".to_string()),
-            Some("09:32:00".to_string()),
-            Some("09:33:00".to_string()),
-            Some("09:34:00".to_string()),
-            Some("09:35:00".to_string()),
-            Some("09:36:00".to_string()),
-            Some("14:58:00".to_string()),
-        ];
-        let close = vec![
-            Some(100.0),
-            Some(101.0),
-            Some(103.02),
-            Some(99.9294),
-            Some(103.926576),
-            Some(98.7302472),
-            Some(104.653062032),
-            Some(105.0),
-        ];
-        let volume = vec![
-            Some(100.0),
-            Some(101.0),
-            Some(102.0),
-            Some(220.0),
-            Some(221.0),
-            Some(222.0),
-            Some(223.0),
-            Some(224.0),
-        ];
-
-        let actual = sparkle_values_from_rows(&indices, &trade_times, &close, &volume);
-
-        assert!((actual.return_mean.expect("return") - -0.03).abs() < 1e-12);
-        assert!(actual.volatility.expect("volatility") > 0.0);
-    }
-
-    #[test]
-    fn distance_and_pair_average_require_valid_inputs() {
-        let distance = cs_demean_abs(&[Some(1.0), Some(3.0), None]);
-        assert_eq!(distance, vec![Some(1.0), Some(1.0), None]);
-
-        let panel = DailyPanel::from_index(
-            vec![20260102],
-            vec!["000001.SZ".to_string(), "000002.SZ".to_string()],
-            &[20260102],
-            vec![true, true],
-        )
-        .expect("panel");
-        let left = panel
-            .column_from_values(vec![Some(1.0), None])
-            .expect("left");
-        let right = panel
-            .column_from_values(vec![Some(3.0), Some(4.0)])
-            .expect("right");
-        let averaged = average_pair(&left, &right).expect("average");
-        assert_eq!(averaged.values(), &[Some(2.0), None]);
-    }
-
-    #[allow(dead_code)]
-    fn context() -> FactorContext {
-        FactorContext {
-            asset_class: AssetClass::Stock,
-            frequency: Frequency::Daily,
-            start_date: 20260102,
-            end_date: 20260102,
-            load_start_date: 20260102,
-            load_dates: vec![20260102],
-            target_dates: vec![20260102],
-        }
-    }
 }

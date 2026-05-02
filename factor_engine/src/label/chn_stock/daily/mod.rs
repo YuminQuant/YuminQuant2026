@@ -1,7 +1,15 @@
+pub mod future_close_return_1d;
+pub mod future_close_return_20d;
+pub mod future_close_return_5d;
+pub mod future_open_10m_vwap_return_1d;
+pub mod future_open_10m_vwap_return_20d;
+pub mod future_open_10m_vwap_return_5d;
+pub mod future_open_5m_vwap_return_1d;
+pub mod future_open_5m_vwap_return_20d;
+pub mod future_open_5m_vwap_return_5d;
 pub mod future_open_return_1d;
 pub mod future_open_return_20d;
 pub mod future_open_return_5d;
-
-pub use future_open_return_1d::StockDailyFutureOpenReturn1d;
-pub use future_open_return_20d::StockDailyFutureOpenReturn20d;
-pub use future_open_return_5d::StockDailyFutureOpenReturn5d;
+pub mod future_vwap_return_1d;
+pub mod future_vwap_return_20d;
+pub mod future_vwap_return_5d;

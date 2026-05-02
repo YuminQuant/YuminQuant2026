@@ -8,6 +8,7 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec};
 use crate::factor::Factor;
+use crate::operators::ts_pctchg;
 
 pub const RAW_ID: &str = "ret_over_sqrt_vol_mean";
 const RAW_VERSION: &str = "0.1.0";
@@ -115,6 +116,11 @@ fn ret_over_sqrt_vol_mean_from_rows(
     close: &[Option<f64>],
     volume: &[Option<f64>],
 ) -> Option<f64> {
+    let close_series = indices
+        .iter()
+        .map(|idx| clean_intraday_value(close[*idx]))
+        .collect::<Vec<_>>();
+    let returns = ts_pctchg(&close_series, 1);
     let mut sum = 0.0;
     let mut count = 0usize;
     for pos in 1..indices.len() {
@@ -125,18 +131,9 @@ fn ret_over_sqrt_vol_mean_from_rows(
         if !intraday_time_in_range(trade_time, "09:31:00", "15:00:00") {
             continue;
         }
-        let prev_idx = indices[pos - 1];
-        let (Some(current), Some(previous), Some(vol)) = (
-            clean_intraday_value(close[idx]),
-            clean_intraday_value(close[prev_idx]),
-            clean_intraday_value(volume[idx]),
-        ) else {
+        let (Some(ret), Some(vol)) = (returns[pos], clean_intraday_value(volume[idx])) else {
             continue;
         };
-        if previous.abs() <= f64::EPSILON {
-            continue;
-        }
-        let ret = current / previous - 1.0;
         let value = if vol == 0.0 {
             0.0
         } else if vol > 0.0 {

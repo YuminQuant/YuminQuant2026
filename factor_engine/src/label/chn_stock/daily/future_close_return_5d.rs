@@ -5,18 +5,18 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::label::Label;
 
-pub struct StockDailyFutureOpenReturn1d;
+pub struct StockDailyFutureCloseReturn5d;
 
 pub fn create() -> Box<dyn Label> {
-    Box::new(StockDailyFutureOpenReturn1d)
+    Box::new(StockDailyFutureCloseReturn5d)
 }
 
-impl Label for StockDailyFutureOpenReturn1d {
+impl Label for StockDailyFutureCloseReturn5d {
     fn spec(&self) -> LabelSpec {
         LabelSpec {
-            id: "future_open_return_1d".to_string(),
+            id: "future_close_return_5d".to_string(),
             aliases: Vec::new(),
-            name: "Stock future 1-day adjusted open-to-open".to_string(),
+            name: "Stock future 5-day adjusted close-to-close".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: "0.2.0".to_string(),
@@ -24,29 +24,29 @@ impl Label for StockDailyFutureOpenReturn1d {
                 "label",
                 "future_return",
                 "adjusted",
-                "open_to_open",
+                "close_to_close",
                 "daily",
             ]
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Future adjusted open-to-open return from t+1 open to t+2 open."
+            description: "Future adjusted close-to-close return from t+1 close to t+6 close."
                 .to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["open"]),
+                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
             ],
-            lookahead: Lookahead { trading_days: 2 },
+            lookahead: Lookahead { trading_days: 6 },
         }
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<LabelSeries> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let open = panel.column("open")?;
+        let close = panel.column("close")?;
         let adj_factor =
             panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
-        let adjusted_open = open.zip_binary(&adj_factor, adjusted_value)?;
-        let label = adjusted_open.ts(|values| future_return(values, 2))?;
+        let adjusted_close = close.zip_binary(&adj_factor, adjusted_value)?;
+        let label = adjusted_close.ts(|values| future_return(values, 6))?;
         Ok(label.to_label_series(self.spec()))
     }
 }

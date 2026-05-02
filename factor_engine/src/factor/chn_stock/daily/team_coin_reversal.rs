@@ -24,7 +24,7 @@ impl Factor for StockDailyTeamCoinReversal {
             name: "Team Coin Reversal".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             tags: [
                 "price_volume",
                 "return",
@@ -86,23 +86,19 @@ impl Factor for StockDailyTeamCoinReversal {
         let overnight_vol_flip = overnight_volatility_flip(&overnight_returns)?;
         let overnight_turnover_flip = overnight_turnover_flip(&overnight_returns, &turnover)?;
 
-        let interday_component = average_pair(
-            &interday_vol_flip.cs(cs_zscore)?,
-            &interday_turnover_flip.cs(cs_zscore)?,
-        )?;
-        let intraday_component = average_pair(
-            &intraday_vol_flip.cs(cs_zscore)?,
-            &intraday_turnover_flip.cs(cs_zscore)?,
-        )?;
-        let overnight_component = average_pair(
-            &overnight_vol_flip.cs(cs_zscore)?,
-            &overnight_turnover_flip.cs(cs_zscore)?,
-        )?;
+        let interday_component =
+            average_pair(&interday_vol_flip, &interday_turnover_flip)?.cs(cs_zscore)?;
+        let intraday_component =
+            average_pair(&intraday_vol_flip, &intraday_turnover_flip)?.cs(cs_zscore)?;
+        let overnight_component =
+            average_pair(&overnight_vol_flip, &overnight_turnover_flip)?.cs(cs_zscore)?;
         let raw_factor = average_three(
-            &interday_component.cs(cs_zscore)?,
-            &intraday_component.cs(cs_zscore)?,
-            &overnight_component.cs(cs_zscore)?,
-        )?;
+            &interday_component,
+            &intraday_component,
+            &overnight_component,
+        )?
+        .cs(cs_zscore)?
+        .map_values(|value| clean(value).map(|value| -value));
         let neutralized = raw_factor.cs_neutralize_regression_by_group(
             &[&size],
             None,
@@ -114,12 +110,13 @@ impl Factor for StockDailyTeamCoinReversal {
 }
 
 fn volatility_flip(returns: &PanelColumn) -> Result<PanelColumn> {
+    let mean20 = returns.ts(|values| ts_mean(values, WINDOW, WINDOW))?;
     let std20 = returns.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
     let std20_mean = std20.cs(cs_mean)?;
-    returns.zip_binary(
+    mean20.zip_binary(
         &std20.zip_binary(&std20_mean, less_than)?,
-        |ret, flip| match (clean(ret), clean(flip)) {
-            (Some(ret), Some(flip)) => Some(if flip > 0.0 { -ret } else { ret }),
+        |mean20, flip| match (clean(mean20), clean(flip)) {
+            (Some(mean20), Some(flip)) => Some(if flip > 0.0 { -mean20 } else { mean20 }),
             _ => None,
         },
     )

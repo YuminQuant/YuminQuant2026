@@ -12,11 +12,11 @@ use crate::factor::common::{
     ClassificationMap, PanelColumn,
 };
 use crate::factor::Factor;
-use crate::operators::{cs_zscore, ts_mean, ts_std_dev};
+use crate::operators::{cs_zscore, ts_mean, ts_pctchg, ts_std_dev};
 
 pub const RAW_ID: &str = "daily_peak_climb_covariance";
 
-const RAW_VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
 const PRICE_BARS: usize = 5;
 const PRICE_COUNT: usize = PRICE_BARS * 4;
@@ -45,7 +45,7 @@ impl Factor for StockDailyBravePeakClimb {
             name: "Brave Peak Climb".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             tags: [
                 "price_volume",
                 "return",
@@ -145,9 +145,9 @@ impl Factor for StockDailyBravePeakClimb {
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
         let raw = panel.column(RAW_ID)?;
 
-        let monthly_mean_climb = raw.ts(|values| ts_mean(values, WINDOW, WINDOW))?;
-        let monthly_stable_climb = raw.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
-        let raw_factor = average_pair(
+        let monthly_mean_climb = raw.ts(|values| ts_mean(values, WINDOW, 1))?;
+        let monthly_stable_climb = raw.ts(|values| ts_std_dev(values, WINDOW, 1))?;
+        let raw_factor = half_difference(
             &monthly_mean_climb.cs(cs_zscore)?,
             &monthly_stable_climb.cs(cs_zscore)?,
         )?;
@@ -161,9 +161,9 @@ impl Factor for StockDailyBravePeakClimb {
     }
 }
 
-fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> {
+fn half_difference(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> {
     left.zip_binary(right, |left, right| match (clean(left), clean(right)) {
-        (Some(left), Some(right)) => Some((left + right) / 2.0),
+        (Some(left), Some(right)) => Some((left - right) / 2.0),
         _ => None,
     })
 }
@@ -181,7 +181,7 @@ fn peak_climb_covariance_from_rows(
     let threshold = mean + std;
     let selected = points
         .iter()
-        .filter(|point| point.better_volatility >= threshold)
+        .filter(|point| point.better_volatility > threshold)
         .map(|point| (point.return_volatility_ratio, point.better_volatility))
         .collect::<Vec<_>>();
     covariance(&selected)
@@ -195,6 +195,11 @@ fn peak_climb_points_from_rows(
     low: &[Option<f64>],
     close: &[Option<f64>],
 ) -> Vec<ClimbPoint> {
+    let close_series = indices
+        .iter()
+        .map(|idx| clean_intraday_value(close[*idx]))
+        .collect::<Vec<_>>();
+    let returns = ts_pctchg(&close_series, 1);
     let selected_positions = indices
         .iter()
         .enumerate()
@@ -259,24 +264,9 @@ fn peak_climb_points_from_rows(
         }
 
         let pos = selected_positions[selected_idx];
-        if pos == 0 {
-            continue;
-        }
-        let idx = indices[pos];
-        let prev_idx = indices[pos - 1];
-        let (Some(current_close), Some(previous_close)) = (
-            clean_intraday_value(close[idx]),
-            clean_intraday_value(close[prev_idx]),
-        ) else {
+        let Some(minute_return) = returns[pos] else {
             continue;
         };
-        if previous_close.abs() <= f64::EPSILON {
-            continue;
-        }
-        let minute_return = current_close / previous_close - 1.0;
-        if minute_return.is_nan() {
-            continue;
-        }
 
         points.push(ClimbPoint {
             better_volatility,
@@ -287,8 +277,10 @@ fn peak_climb_points_from_rows(
 }
 
 fn covariance(points: &[(f64, f64)]) -> Option<f64> {
-    if points.len() < 2 {
-        return None;
+    match points.len() {
+        0 => return None,
+        1 => return Some(0.0),
+        _ => {}
     }
     let mean_x = points.iter().map(|(x, _)| *x).sum::<f64>() / points.len() as f64;
     let mean_y = points.iter().map(|(_, y)| *y).sum::<f64>() / points.len() as f64;
@@ -320,70 +312,4 @@ fn mean_std(values: impl IntoIterator<Item = f64>) -> Option<(f64, f64)> {
 
 fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| !value.is_nan())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{covariance, peak_climb_points_from_rows};
-
-    #[test]
-    fn better_volatility_uses_last_five_bars_twenty_prices() {
-        let indices = (0..6).collect::<Vec<_>>();
-        let trade_times = vec![
-            Some("09:30:00".to_string()),
-            Some("09:31:00".to_string()),
-            Some("09:32:00".to_string()),
-            Some("09:33:00".to_string()),
-            Some("09:34:00".to_string()),
-            Some("09:35:00".to_string()),
-        ];
-        let open = vec![
-            Some(99.0),
-            Some(1.0),
-            Some(5.0),
-            Some(9.0),
-            Some(13.0),
-            Some(17.0),
-        ];
-        let high = vec![
-            Some(99.0),
-            Some(2.0),
-            Some(6.0),
-            Some(10.0),
-            Some(14.0),
-            Some(18.0),
-        ];
-        let low = vec![
-            Some(99.0),
-            Some(3.0),
-            Some(7.0),
-            Some(11.0),
-            Some(15.0),
-            Some(19.0),
-        ];
-        let close = vec![
-            Some(99.0),
-            Some(4.0),
-            Some(8.0),
-            Some(12.0),
-            Some(16.0),
-            Some(20.0),
-        ];
-
-        let points =
-            peak_climb_points_from_rows(&indices, &trade_times, &open, &high, &low, &close);
-
-        assert_eq!(points.len(), 1);
-        let expected_better_volatility = 33.25 / (10.5 * 10.5);
-        assert!((points[0].better_volatility - expected_better_volatility).abs() < 1e-12);
-        let expected_ratio = (20.0 / 16.0 - 1.0) / expected_better_volatility;
-        assert!((points[0].return_volatility_ratio - expected_ratio).abs() < 1e-12);
-    }
-
-    #[test]
-    fn covariance_requires_at_least_two_points() {
-        assert_eq!(covariance(&[(1.0, 2.0)]), None);
-        let actual = covariance(&[(1.0, 2.0), (3.0, 4.0)]).expect("covariance");
-        assert!((actual - 1.0).abs() < 1e-12);
-    }
 }

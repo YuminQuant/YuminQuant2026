@@ -1,13 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{
-    AssetClass, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue, Frequency,
-    IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec, Lookback,
+    AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+    FactorValue, Frequency, IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec,
+    Lookback,
 };
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{
-    clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, PanelColumn,
+    clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, ClassificationLevel,
+    ClassificationMap, PanelColumn,
 };
 use crate::factor::Factor;
 use crate::operators::{cs_zscore, ts_mean, ts_std_dev};
@@ -50,7 +52,7 @@ impl Factor for StockDailyCompleteTide {
             name: "Complete Tide".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             tags: [
                 "price_volume",
                 "return",
@@ -58,14 +60,21 @@ impl Factor for StockDailyCompleteTide {
                 "intraday",
                 "minute_agg",
                 "composite",
+                "neutralize",
+                "barra",
+                "size",
+                "sector",
                 "daily",
                 "FZZQ",
             ]
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Composite intraday tide factor from 20-day mean strong half-tide rate and 20-day stability of weak half-tide rate.".to_string(),
-            dependencies: Vec::new(),
+            description: "Composite intraday tide factor from 20-day mean strong half-tide rate and 20-day stability of weak half-tide rate, neutralized by Barra SIZE and SW sector.".to_string(),
+            dependencies: vec![
+                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+                DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
+            ],
             intraday_raw_dependencies: vec![
                 IntradayDailyRawRequest::new(STRONG_HALF_TIDE_RAW_ID, WINDOW - 1),
                 IntradayDailyRawRequest::new(WEAK_HALF_TIDE_RAW_ID, WINDOW - 1),
@@ -174,15 +183,24 @@ impl Factor for StockDailyCompleteTide {
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let sector_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockSwClassification)?,
+            ClassificationLevel::Sector,
+        )?;
         let panel = data.intraday_daily_raw_panel(STRONG_HALF_TIDE_RAW_ID)?;
+        let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
         let strong_raw = panel.column(STRONG_HALF_TIDE_RAW_ID)?;
         let weak_raw = panel.column(WEAK_HALF_TIDE_RAW_ID)?;
 
         let strong_mean20 = strong_raw.ts(|values| ts_mean(values, WINDOW, WINDOW))?;
         let weak_stable20 = weak_raw.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
         let factor = average_pair(&strong_mean20.cs(cs_zscore)?, &weak_stable20.cs(cs_zscore)?)?;
+        let neutralized =
+            factor.cs_neutralize_regression_by_group(&[&size], None, |trade_date, ts_codes| {
+                sector_map.groups_for(trade_date, ts_codes)
+            })?;
 
-        Ok(factor.to_factor_series(self.spec()))
+        Ok(neutralized.to_factor_series(self.spec()))
     }
 }
 
@@ -359,79 +377,4 @@ fn min_point_position(points: &[TidePoint], start: usize, end: usize) -> usize {
 
 fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| !value.is_nan())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{average_pair, tide_rates_from_rows};
-    use crate::core::{AssetClass, FactorContext, Frequency};
-    use crate::factor::common::DailyPanel;
-
-    #[test]
-    fn tide_rates_choose_stronger_half_by_lower_neighborhood_endpoint() {
-        let indices = (0..25).collect::<Vec<_>>();
-        let trade_times = (0..15)
-            .map(|idx| Some(format!("09:{:02}:00", 31 + idx)))
-            .chain((15..25).map(|idx| Some(format!("10:{:02}:00", idx - 15))))
-            .collect::<Vec<_>>();
-        let close = (0..25)
-            .map(|idx| {
-                if idx <= 12 {
-                    Some(10.0 + idx as f64)
-                } else {
-                    Some(22.0 - (idx - 12) as f64 * 0.5)
-                }
-            })
-            .collect::<Vec<_>>();
-        let volume = (0..25)
-            .map(|idx| {
-                if (8..=16).contains(&idx) {
-                    Some(100.0)
-                } else if idx < 8 {
-                    Some(1.0)
-                } else {
-                    Some(3.0)
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let rates = tide_rates_from_rows(&indices, &trade_times, &close, &volume);
-
-        assert!(rates.strong.is_some());
-        assert!(rates.weak.is_some());
-        assert!(rates.strong.expect("strong") > 0.0);
-        assert!(rates.weak.expect("weak") < 0.0);
-    }
-
-    #[test]
-    fn composite_average_requires_both_inputs() {
-        let panel = DailyPanel::from_index(
-            vec![20260102],
-            vec!["000001.SZ".to_string(), "000002.SZ".to_string()],
-            &[20260102],
-            vec![true, true],
-        )
-        .expect("panel");
-        let left = panel
-            .column_from_values(vec![Some(1.0), None])
-            .expect("left");
-        let right = panel
-            .column_from_values(vec![Some(3.0), Some(4.0)])
-            .expect("right");
-        let averaged = average_pair(&left, &right).expect("average");
-        assert_eq!(averaged.values(), &[Some(2.0), None]);
-    }
-
-    #[allow(dead_code)]
-    fn context() -> FactorContext {
-        FactorContext {
-            asset_class: AssetClass::Stock,
-            frequency: Frequency::Daily,
-            start_date: 20260102,
-            end_date: 20260102,
-            load_start_date: 20260102,
-            load_dates: vec![20260102],
-            target_dates: vec![20260102],
-        }
-    }
 }

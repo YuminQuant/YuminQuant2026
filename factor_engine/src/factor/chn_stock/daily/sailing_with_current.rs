@@ -21,8 +21,8 @@ use crate::operators::{cs_zscore, ts_mean, ts_std_dev};
 pub const FOLLOW_CURRENT_RAW_ID: &str = "daily_follow_current";
 pub const LONE_GOOSE_RAW_ID: &str = "daily_lone_goose";
 
-const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.1";
+const RAW_VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
 const CORR_BLOCK_SIZE: usize = 64;
 
@@ -216,7 +216,10 @@ impl Factor for StockDailySailingWithCurrent {
         let goose_std20 = goose_raw.ts(|values| ts_std_dev(values, WINDOW, 1))?;
         let goose_component =
             average_pair(&goose_mean20.cs(cs_zscore)?, &goose_std20.cs(cs_zscore)?)?;
-        let raw_factor = subtract_pair(&follow_component, &goose_component)?;
+        let raw_factor = subtract_pair(
+            &follow_component.cs(cs_zscore)?,
+            &goose_component.cs(cs_zscore)?,
+        )?;
         let neutralized = raw_factor.cs_neutralize_regression_by_group(
             &[&size],
             None,
@@ -340,7 +343,7 @@ fn follow_current_for_stock(
             continue;
         };
         let relative_return = close / day_open - 1.0;
-        let amount = amount * 10.0;
+        let amount = amount / 10_000.0;
         if relative_return > reasonable_return {
             high_amount += amount;
         } else if relative_return < reasonable_return {
@@ -703,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn follow_current_uses_amount_times_ten_over_circ_mv() {
+    fn follow_current_converts_minute_yuan_amount_to_ten_thousand_yuan_before_circ_mv() {
         let indices = vec![0, 1, 2];
         let times = vec![
             Some("09:30:00".to_string()),
@@ -724,7 +727,7 @@ mod tests {
                 Some(0.0),
                 Some(100.0),
             ),
-            Some((5.0 * 10.0 - 2.0 * 10.0) / 100.0),
+            Some((5.0 / 10_000.0 - 2.0 / 10_000.0) / 100.0),
         );
     }
 

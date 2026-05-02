@@ -20,7 +20,7 @@ pub const VOLUME_SYNERGY_RAW_ID: &str = "daily_volume_synergy";
 pub const SYNERGY_SPREAD_RAW_ID: &str = "daily_synergy_spread";
 
 const RAW_VERSION: &str = "0.2.0";
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 const WINDOW: usize = 20;
 const OHLC_WINDOW: usize = 5;
 const DIFF_WINDOW: usize = 5;
@@ -237,7 +237,10 @@ impl Factor for StockDailySynergyEffect {
         let synergy_spread = panel.column(SYNERGY_SPREAD_RAW_ID)?;
         let volume_component = rolling_component(&volume_synergy)?;
         let spread_component = rolling_component(&synergy_spread)?;
-        let factor = average_pair(&volume_component, &spread_component)?;
+        let factor = average_pair(
+            &volume_component.cs(cs_zscore)?,
+            &spread_component.cs(cs_zscore)?,
+        )?;
 
         Ok(factor.to_factor_series(self.spec()))
     }

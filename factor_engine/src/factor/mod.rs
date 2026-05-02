@@ -4,8 +4,8 @@ pub mod future;
 pub mod registry;
 
 use crate::core::{
-    DataRequest, FactorContext, FactorSeries, FactorSpec, IntradayDailyRawSeries,
-    IntradayDailyRawSpec,
+    DataRequest, FactorContext, FactorSeries, FactorSpec, IntradayDailyRawAuxiliaryRequest,
+    IntradayDailyRawSeries, IntradayDailyRawSpec,
 };
 use crate::data::DataPool;
 use crate::error::Result;
@@ -18,6 +18,13 @@ pub trait Factor: Send + Sync {
     }
 
     fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
+        Vec::new()
+    }
+
+    fn intraday_raw_auxiliary_requirements(
+        &self,
+        _raw_ids: &[String],
+    ) -> Vec<IntradayDailyRawAuxiliaryRequest> {
         Vec::new()
     }
 

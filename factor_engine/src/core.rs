@@ -203,6 +203,21 @@ pub struct IntradayDailyRawSpec {
     pub window_days: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntradayDailyRawAuxiliaryRequest {
+    pub request: DataRequest,
+    pub daily_lookback: usize,
+}
+
+impl IntradayDailyRawAuxiliaryRequest {
+    pub fn new(request: DataRequest, daily_lookback: usize) -> Self {
+        Self {
+            request,
+            daily_lookback,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct IntradayDailyRawSeries {
     pub spec: IntradayDailyRawSpec,

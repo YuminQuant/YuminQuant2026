@@ -8,7 +8,8 @@ use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{
     factor_registry_key, AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries,
-    FactorSpec, Frequency, IntradayDailyRawRequest, IntradayDailyRawSpec,
+    FactorSpec, Frequency, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawRequest,
+    IntradayDailyRawSpec,
 };
 use crate::data::{DataCatalog, DataPool, MarketDataLoader};
 use crate::error::{err, Result};
@@ -250,6 +251,8 @@ impl Engine {
             .iter()
             .map(|requirement| &requirement.spec)
             .collect::<Vec<_>>();
+        let raw_auxiliary_requests_for_report =
+            auxiliary_requests_for_raw_requirements(&raw_requirements, &raw_providers)?;
         let loaded_requests = merge_requests(
             specs
                 .iter()
@@ -259,7 +262,12 @@ impl Engine {
                     entity_id: None,
                     columns: spec.columns.clone(),
                     financial_quarters: None,
-                })),
+                }))
+                .chain(
+                    raw_auxiliary_requests_for_report
+                        .into_iter()
+                        .map(|request| request.request),
+                ),
         );
         let loaded_intraday_raw_requests = raw_requirements
             .iter()
@@ -651,7 +659,38 @@ fn materialize_intraday_raw_table(
             }];
 
             let load_started = Instant::now();
-            let raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
+            let mut raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
+            let auxiliary_requests =
+                auxiliary_requests_for_raw_batch(&plans, providers, &date_batch)?;
+            if !auxiliary_requests.is_empty() {
+                let max_auxiliary_lookback = auxiliary_requests
+                    .iter()
+                    .map(|request| request.daily_lookback)
+                    .max()
+                    .unwrap_or(0);
+                let auxiliary_load_start_date =
+                    calendar.warmup_start(batch_start_date, max_auxiliary_lookback);
+                let auxiliary_context = FactorContext {
+                    asset_class: request.asset_class,
+                    frequency: Frequency::Daily,
+                    start_date: batch_start_date,
+                    end_date: batch_end_date,
+                    load_start_date: auxiliary_load_start_date,
+                    load_dates: calendar
+                        .open_dates_between(auxiliary_load_start_date, batch_end_date),
+                    target_dates: date_batch.clone(),
+                };
+                let auxiliary_pool = DataPool::load(
+                    loader,
+                    &merge_requests(
+                        auxiliary_requests
+                            .into_iter()
+                            .map(|request| request.request),
+                    ),
+                    &auxiliary_context,
+                )?;
+                raw_pool.extend(auxiliary_pool);
+            }
             let load_ms = load_started.elapsed().as_millis();
             let compute_started = Instant::now();
             let mut grouped_jobs =
@@ -834,6 +873,73 @@ fn raw_ids_for_specs(specs: &[FactorSpec]) -> Vec<String> {
 
 fn raw_materialize_stage_name(spec: &IntradayDailyRawSpec) -> String {
     format!("intraday_raw_materialize_window_{}", spec.window_days)
+}
+
+fn auxiliary_requests_for_raw_requirements(
+    requirements: &[IntradayRawRequirement],
+    providers: &BTreeMap<String, RawProvider>,
+) -> Result<Vec<IntradayDailyRawAuxiliaryRequest>> {
+    let mut raw_ids_by_provider = BTreeMap::<String, BTreeSet<String>>::new();
+    for requirement in requirements {
+        let provider = providers.get(&requirement.spec.raw_id).ok_or_else(|| {
+            err(format!(
+                "intraday daily raw implementation not found: {}",
+                requirement.spec.raw_id
+            ))
+        })?;
+        raw_ids_by_provider
+            .entry(provider.provider_key.clone())
+            .or_default()
+            .insert(requirement.spec.raw_id.clone());
+    }
+    auxiliary_requests_from_provider_groups(raw_ids_by_provider, providers)
+}
+
+fn auxiliary_requests_for_raw_batch(
+    plans: &[(&IntradayRawRequirement, BTreeSet<i32>)],
+    providers: &BTreeMap<String, RawProvider>,
+    date_batch: &[i32],
+) -> Result<Vec<IntradayDailyRawAuxiliaryRequest>> {
+    let date_set = date_batch.iter().copied().collect::<BTreeSet<_>>();
+    let mut raw_ids_by_provider = BTreeMap::<String, BTreeSet<String>>::new();
+    for (requirement, missing_dates) in plans {
+        if missing_dates.is_disjoint(&date_set) {
+            continue;
+        }
+        let provider = providers.get(&requirement.spec.raw_id).ok_or_else(|| {
+            err(format!(
+                "intraday daily raw implementation not found: {}",
+                requirement.spec.raw_id
+            ))
+        })?;
+        raw_ids_by_provider
+            .entry(provider.provider_key.clone())
+            .or_default()
+            .insert(requirement.spec.raw_id.clone());
+    }
+
+    auxiliary_requests_from_provider_groups(raw_ids_by_provider, providers)
+}
+
+fn auxiliary_requests_from_provider_groups(
+    raw_ids_by_provider: BTreeMap<String, BTreeSet<String>>,
+    providers: &BTreeMap<String, RawProvider>,
+) -> Result<Vec<IntradayDailyRawAuxiliaryRequest>> {
+    let mut output = Vec::new();
+    for (provider_key, raw_ids) in raw_ids_by_provider {
+        let factor = providers
+            .values()
+            .find(|provider| provider.provider_key == provider_key)
+            .map(|provider| Arc::clone(&provider.factor))
+            .ok_or_else(|| {
+                err(format!(
+                    "intraday daily raw provider not found: {provider_key}"
+                ))
+            })?;
+        let raw_ids = raw_ids.into_iter().collect::<Vec<_>>();
+        output.extend(factor.intraday_raw_auxiliary_requirements(&raw_ids));
+    }
+    Ok(output)
 }
 
 fn execution_stage_names(

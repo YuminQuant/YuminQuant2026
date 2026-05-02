@@ -161,6 +161,20 @@ impl DataPool {
         self.minute.get(&(dataset, trade_date))
     }
 
+    pub fn extend(&mut self, other: Self) {
+        self.daily.extend(other.daily);
+        self.daily_panels.extend(other.daily_panels);
+        self.index_daily.extend(other.index_daily);
+        self.index_daily_panels.extend(other.index_daily_panels);
+        self.minute.extend(other.minute);
+        if other.intraday_daily_raw.is_some() {
+            self.intraday_daily_raw = other.intraday_daily_raw;
+        }
+        if other.intraday_daily_raw_panel.is_some() {
+            self.intraday_daily_raw_panel = other.intraday_daily_raw_panel;
+        }
+    }
+
     pub fn set_intraday_daily_raw(&mut self, table: Table, context: &FactorContext) -> Result<()> {
         let panel = DailyPanel::from_table(&table, context)?;
         self.intraday_daily_raw = Some(table);

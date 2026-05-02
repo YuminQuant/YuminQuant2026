@@ -1,5 +1,6 @@
 pub mod brave_peak_climb;
 pub mod complete_tide;
+pub mod fog_clearing;
 pub mod moderate_risk_appetite;
 pub mod pe_zscore_60d;
 pub mod ret_over_sqrt_vol_mean;
@@ -73,6 +74,7 @@ pub mod wq_alpha_101;
 
 pub use brave_peak_climb::StockDailyBravePeakClimb;
 pub use complete_tide::StockDailyCompleteTide;
+pub use fog_clearing::StockDailyFogClearing;
 pub use moderate_risk_appetite::StockDailyModerateRiskAppetite;
 pub use pe_zscore_60d::StockDailyPeZscore60d;
 pub use ret_over_sqrt_vol_mean::StockDailyRetOverSqrtVolMean;

@@ -6,7 +6,9 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{ClassificationLevel, ClassificationMap, PanelColumn};
 use crate::factor::Factor;
-use crate::operators::{cs_mean, cs_zscore, ts_delay, ts_diff, ts_mean, ts_pctchg, ts_std_dev};
+use crate::operators::{
+    cs_demean_abs, cs_mean, cs_zscore, ts_delay, ts_diff, ts_mean, ts_pctchg, ts_std_dev,
+};
 
 const WINDOW: usize = 20;
 
@@ -143,8 +145,7 @@ fn overnight_returns(adj_open: &PanelColumn, adj_close: &PanelColumn) -> Result<
 }
 
 fn overnight_distance(overnight_returns: &PanelColumn) -> Result<PanelColumn> {
-    let overnight_mean = overnight_returns.cs(cs_mean)?;
-    overnight_returns.zip_binary(&overnight_mean, abs_diff)
+    overnight_returns.cs(cs_demean_abs)
 }
 
 fn overnight_volatility_flip(overnight_returns: &PanelColumn) -> Result<PanelColumn> {
@@ -169,8 +170,7 @@ fn overnight_turnover_flip(
     let turnover_delta_lag1 = turnover
         .ts(|values| ts_diff(values, 1))?
         .ts(|values| ts_delay(values, 1))?;
-    let turnover_delta_lag1_mean = turnover_delta_lag1.cs(cs_mean)?;
-    let turnover_distance = turnover_delta_lag1.zip_binary(&turnover_delta_lag1_mean, abs_diff)?;
+    let turnover_distance = turnover_delta_lag1.cs(cs_demean_abs)?;
     let turnover_distance_mean = turnover_distance.cs(cs_mean)?;
     let flipped = distance.zip_binary(
         &turnover_distance.zip_binary(&turnover_distance_mean, less_than)?,
@@ -214,13 +214,6 @@ fn ret(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
         (Some(numerator), Some(denominator)) if denominator.abs() > f64::EPSILON => {
             Some(numerator / denominator - 1.0)
         }
-        _ => None,
-    }
-}
-
-fn abs_diff(left: Option<f64>, right: Option<f64>) -> Option<f64> {
-    match (clean(left), clean(right)) {
-        (Some(left), Some(right)) => Some((left - right).abs()),
         _ => None,
     }
 }

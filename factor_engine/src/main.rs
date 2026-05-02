@@ -44,11 +44,15 @@ fn run_cli() -> Result<()> {
                 .get("ids-only")
                 .map(|value| value == "true" || value == "1")
                 .unwrap_or(false);
+            let tags_filter = flags.get("tags").map(|value| parse_csv_values(value));
             for row in engine.read_metadata()? {
                 if asset_filter.is_some_and(|asset| row.asset_class != asset.as_str()) {
                     continue;
                 }
                 if frequency_filter.is_some_and(|frequency| row.frequency != frequency.as_str()) {
+                    continue;
+                }
+                if !matches_tag_filter(&row.tags, &tags_filter) {
                     continue;
                 }
                 if ids_only {
@@ -85,11 +89,15 @@ fn run_cli() -> Result<()> {
                 .get("ids-only")
                 .map(|value| value == "true" || value == "1")
                 .unwrap_or(false);
+            let tags_filter = flags.get("tags").map(|value| parse_csv_values(value));
             for row in engine.read_metadata()? {
                 if asset_filter.is_some_and(|asset| row.asset_class != asset.as_str()) {
                     continue;
                 }
                 if frequency_filter.is_some_and(|frequency| row.frequency != frequency.as_str()) {
+                    continue;
+                }
+                if !matches_tag_filter(&row.tags, &tags_filter) {
                     continue;
                 }
                 if ids_only {
@@ -136,6 +144,7 @@ fn run_cli() -> Result<()> {
                 .get("ids-only")
                 .map(|value| value == "true" || value == "1")
                 .unwrap_or(false);
+            let tags_filter = flags.get("tags").map(|value| parse_csv_values(value));
             for row in engine.read_metadata()? {
                 if !row.model.eq_ignore_ascii_case(&model_filter) {
                     continue;
@@ -144,6 +153,9 @@ fn run_cli() -> Result<()> {
                     continue;
                 }
                 if frequency_filter.is_some_and(|frequency| row.frequency != frequency.as_str()) {
+                    continue;
+                }
+                if !matches_tag_filter(&row.tags, &tags_filter) {
                     continue;
                 }
                 if ids_only {
@@ -228,30 +240,9 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
             .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?,
         "end-date",
     )?;
-    let exposure_ids = flags.get("exposures").map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    });
-    let tags = flags.get("tags").map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    });
-    let families = flags.get("families").map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    });
+    let exposure_ids = flags.get("exposures").map(|value| parse_csv_values(value));
+    let tags = flags.get("tags").map(|value| parse_csv_values(value));
+    let families = flags.get("families").map(|value| parse_csv_values(value));
     if exposure_ids.is_some() && tags.is_some() {
         return Err(yq_factor_engine::error::err(
             "--exposures and --tags cannot be used together",
@@ -333,22 +324,8 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
             .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?,
         "end-date",
     )?;
-    let label_ids = flags.get("labels").map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    });
-    let tags = flags.get("tags").map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    });
+    let label_ids = flags.get("labels").map(|value| parse_csv_values(value));
+    let tags = flags.get("tags").map(|value| parse_csv_values(value));
     if label_ids.is_some() && tags.is_some() {
         return Err(yq_factor_engine::error::err(
             "--labels and --tags cannot be used together",
@@ -419,22 +396,8 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
             .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?,
         "end-date",
     )?;
-    let factor_ids = flags.get("factors").map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    });
-    let tags = flags.get("tags").map(|value| {
-        value
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    });
+    let factor_ids = flags.get("factors").map(|value| parse_csv_values(value));
+    let tags = flags.get("tags").map(|value| parse_csv_values(value));
     if factor_ids.is_some() && tags.is_some() {
         return Err(yq_factor_engine::error::err(
             "--factors and --tags cannot be used together",
@@ -541,6 +504,24 @@ fn flag_enabled(flags: &HashMap<String, String>, name: &str) -> bool {
         .get(name)
         .map(|value| value == "true" || value == "1" || value.eq_ignore_ascii_case("yes"))
         .unwrap_or(false)
+}
+
+fn parse_csv_values(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn matches_tag_filter(row_tags: &[String], tags_filter: &Option<Vec<String>>) -> bool {
+    match tags_filter {
+        Some(tags) => tags
+            .iter()
+            .all(|tag| row_tags.iter().any(|row_tag| row_tag == tag)),
+        None => true,
+    }
 }
 
 fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
@@ -783,7 +764,7 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::{flag_enabled, parse_flags, parse_yyyymmdd};
+    use super::{flag_enabled, matches_tag_filter, parse_csv_values, parse_flags, parse_yyyymmdd};
 
     #[test]
     fn parse_yyyymmdd_rejects_non_eight_digit_input() {
@@ -803,5 +784,19 @@ mod tests {
 
         assert!(flag_enabled(&flags, "profile"));
         assert_eq!(flags.get("asset").map(String::as_str), Some("stock"));
+    }
+
+    #[test]
+    fn list_tag_filter_requires_all_tags() {
+        let row_tags = parse_csv_values("daily,FZZQ,neutralize");
+        assert!(matches_tag_filter(
+            &row_tags,
+            &Some(parse_csv_values("FZZQ,daily"))
+        ));
+        assert!(!matches_tag_filter(
+            &row_tags,
+            &Some(parse_csv_values("FZZQ,missing"))
+        ));
+        assert!(matches_tag_filter(&row_tags, &None));
     }
 }

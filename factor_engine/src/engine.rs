@@ -459,7 +459,15 @@ struct IntradayRawRequirement {
 #[derive(Clone)]
 struct RawProvider {
     spec: IntradayDailyRawSpec,
+    provider_key: String,
     factor: Arc<dyn Factor>,
+}
+
+#[derive(Clone)]
+struct RawJob {
+    raw_ids: Vec<String>,
+    factor: Arc<dyn Factor>,
+    context: FactorContext,
 }
 
 #[derive(Clone, Debug)]
@@ -472,6 +480,7 @@ fn intraday_raw_provider_map() -> Result<BTreeMap<String, RawProvider>> {
     let mut providers = BTreeMap::new();
     for factor in all_factors() {
         let factor: Arc<dyn Factor> = Arc::from(factor);
+        let provider_key = factor.spec().registry_key();
         for spec in factor.intraday_raw_specs() {
             if providers.contains_key(&spec.raw_id) {
                 return Err(err(format!(
@@ -483,6 +492,7 @@ fn intraday_raw_provider_map() -> Result<BTreeMap<String, RawProvider>> {
                 spec.raw_id.clone(),
                 RawProvider {
                     spec,
+                    provider_key: provider_key.clone(),
                     factor: Arc::clone(&factor),
                 },
             );
@@ -644,18 +654,46 @@ fn materialize_intraday_raw_table(
             let raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
             let load_ms = load_started.elapsed().as_millis();
             let compute_started = Instant::now();
-            let jobs = plans
-                .iter()
-                .filter_map(|(requirement, requirement_missing_dates)| {
-                    let provider_target_dates = date_batch
-                        .iter()
-                        .filter(|date| requirement_missing_dates.contains(date))
-                        .copied()
-                        .collect::<Vec<_>>();
+            let mut grouped_jobs =
+                BTreeMap::<String, (Arc<dyn Factor>, BTreeSet<String>, BTreeSet<i32>, usize)>::new(
+                );
+            for (requirement, requirement_missing_dates) in &plans {
+                let provider_target_dates = date_batch
+                    .iter()
+                    .filter(|date| requirement_missing_dates.contains(date))
+                    .copied()
+                    .collect::<Vec<_>>();
+                if provider_target_dates.is_empty() {
+                    continue;
+                }
+                let provider = providers.get(&requirement.spec.raw_id).ok_or_else(|| {
+                    err(format!(
+                        "intraday daily raw implementation not found: {}",
+                        requirement.spec.raw_id
+                    ))
+                })?;
+                let entry = grouped_jobs
+                    .entry(provider.provider_key.clone())
+                    .or_insert_with(|| {
+                        (
+                            Arc::clone(&provider.factor),
+                            BTreeSet::new(),
+                            BTreeSet::new(),
+                            1,
+                        )
+                    });
+                entry.1.insert(requirement.spec.raw_id.clone());
+                entry.2.extend(provider_target_dates);
+                entry.3 = entry.3.max(requirement.spec.window_days);
+            }
+            let jobs = grouped_jobs
+                .into_values()
+                .filter_map(|(factor, raw_ids, target_dates, window_days)| {
+                    let provider_target_dates = target_dates.into_iter().collect::<Vec<_>>();
                     if provider_target_dates.is_empty() {
                         return None;
                     }
-                    let provider_lookback = requirement.spec.window_days.saturating_sub(1);
+                    let provider_lookback = window_days.saturating_sub(1);
                     let provider_batch_start = *provider_target_dates
                         .first()
                         .expect("provider target dates are not empty");
@@ -674,44 +712,51 @@ fn materialize_intraday_raw_table(
                             .open_dates_between(provider_load_start_date, provider_batch_end),
                         target_dates: provider_target_dates,
                     };
-                    Some((*requirement, provider_context))
+                    Some(RawJob {
+                        raw_ids: raw_ids.into_iter().collect(),
+                        factor,
+                        context: provider_context,
+                    })
                 })
                 .collect::<Vec<_>>();
 
             let compute_raw = || {
                 jobs.par_iter()
-                    .map(|(requirement, provider_context)| {
-                        let provider =
-                            providers.get(&requirement.spec.raw_id).ok_or_else(|| {
-                                err(format!(
-                                    "intraday daily raw implementation not found: {}",
-                                    requirement.spec.raw_id
-                                ))
-                            })?;
-                        let Some(raw_series) = provider.factor.minute_compute(
-                            &requirement.spec.raw_id,
-                            provider_context,
+                    .map(|job| {
+                        let requested = job.raw_ids.iter().cloned().collect::<BTreeSet<_>>();
+                        let mut raw_series_list = job.factor.minute_compute_many(
+                            &job.raw_ids,
+                            &job.context,
                             &raw_pool,
-                        )?
-                        else {
+                        )?;
+                        raw_series_list.retain(|series| requested.contains(&series.spec.raw_id));
+                        let returned = raw_series_list
+                            .iter()
+                            .map(|series| series.spec.raw_id.clone())
+                            .collect::<BTreeSet<_>>();
+                        let missing = requested.difference(&returned).cloned().collect::<Vec<_>>();
+                        if !missing.is_empty() {
                             return Err(err(format!(
-                                "intraday daily raw provider did not return requested raw: {}",
-                                requirement.spec.raw_id
+                                "intraday daily raw provider did not return requested raw(s): {}",
+                                missing.join(",")
                             )));
-                        };
-                        let raw_profile = FactorProfile {
-                            factor_id: raw_series.spec.raw_id.clone(),
-                            row_count: raw_series.values.len(),
-                            non_null_count: raw_series
-                                .values
-                                .iter()
-                                .filter(|item| item.value.is_some())
-                                .count(),
-                        };
+                        }
+                        let raw_profiles = raw_series_list
+                            .iter()
+                            .map(|raw_series| FactorProfile {
+                                factor_id: raw_series.spec.raw_id.clone(),
+                                row_count: raw_series.values.len(),
+                                non_null_count: raw_series
+                                    .values
+                                    .iter()
+                                    .filter(|item| item.value.is_some())
+                                    .count(),
+                            })
+                            .collect::<Vec<_>>();
                         Ok((
-                            raw_series,
-                            raw_profile,
-                            provider_context.target_dates.clone(),
+                            raw_series_list,
+                            raw_profiles,
+                            job.context.target_dates.clone(),
                         ))
                     })
                     .collect::<Vec<_>>()
@@ -724,12 +769,14 @@ fn materialize_intraday_raw_table(
             let mut raw_profiles = Vec::new();
             let mut chunk_materialized_dates = Vec::new();
             for item in computed {
-                let (raw_series, raw_profile, target_dates) = item?;
-                for date in target_dates {
-                    chunk_materialized_dates.push((raw_series.spec.raw_id.clone(), date));
+                let (raw_series_list, profiles, target_dates) = item?;
+                for raw_series in raw_series_list {
+                    for date in &target_dates {
+                        chunk_materialized_dates.push((raw_series.spec.raw_id.clone(), *date));
+                    }
+                    chunk_series.push(raw_series);
                 }
-                chunk_series.push(raw_series);
-                raw_profiles.push(raw_profile);
+                raw_profiles.extend(profiles);
             }
             let compute_ms = compute_started.elapsed().as_millis();
             let write_started = Instant::now();

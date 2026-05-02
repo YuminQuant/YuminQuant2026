@@ -22,7 +22,7 @@ pub const FOLLOW_CURRENT_RAW_ID: &str = "daily_follow_current";
 pub const LONE_GOOSE_RAW_ID: &str = "daily_lone_goose";
 
 const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 const WINDOW: usize = 20;
 const CORR_BLOCK_SIZE: usize = 64;
 
@@ -216,10 +216,7 @@ impl Factor for StockDailySailingWithCurrent {
         let goose_std20 = goose_raw.ts(|values| ts_std_dev(values, WINDOW, 1))?;
         let goose_component =
             average_pair(&goose_mean20.cs(cs_zscore)?, &goose_std20.cs(cs_zscore)?)?;
-        let raw_factor = average_pair(
-            &follow_component.cs(cs_zscore)?,
-            &goose_component.cs(cs_zscore)?,
-        )?;
+        let raw_factor = subtract_pair(&follow_component, &goose_component)?;
         let neutralized = raw_factor.cs_neutralize_regression_by_group(
             &[&size],
             None,
@@ -643,6 +640,13 @@ fn average_ranks(values: &[f64]) -> Vec<f64> {
 fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> {
     left.zip_binary(right, |left, right| match (clean(left), clean(right)) {
         (Some(left), Some(right)) => Some((left + right) / 2.0),
+        _ => None,
+    })
+}
+
+fn subtract_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> {
+    left.zip_binary(right, |left, right| match (clean(left), clean(right)) {
+        (Some(left), Some(right)) => Some(left - right),
         _ => None,
     })
 }

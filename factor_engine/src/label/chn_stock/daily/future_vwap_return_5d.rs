@@ -3,6 +3,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
+use crate::factor::common::daily_vwap_from_amount_vol;
 use crate::label::Label;
 
 pub struct StockDailyFutureVwapReturn5d;
@@ -39,7 +40,7 @@ impl Label for StockDailyFutureVwapReturn5d {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let amount = panel.column("amount")?;
         let vol = panel.column("vol")?;
-        let vwap = amount.zip_binary(&vol, daily_vwap_value)?;
+        let vwap = amount.zip_binary(&vol, daily_vwap_from_amount_vol)?;
         let adj_factor =
             panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
         let adjusted_vwap = vwap.zip_binary(&adj_factor, adjusted_value)?;
@@ -66,16 +67,6 @@ fn future_return(values: &[Option<f64>], end_offset: usize) -> Vec<Option<f64>> 
         output[idx] = Some(end / start - 1.0);
     }
     output
-}
-
-fn daily_vwap_value(amount: Option<f64>, vol: Option<f64>) -> Option<f64> {
-    let (Some(amount), Some(vol)) = (clean_value(amount), clean_value(vol)) else {
-        return None;
-    };
-    if vol.abs() <= f64::EPSILON {
-        return None;
-    }
-    Some(amount * 10.0 / vol)
 }
 
 fn adjusted_value(price: Option<f64>, adj_factor: Option<f64>) -> Option<f64> {

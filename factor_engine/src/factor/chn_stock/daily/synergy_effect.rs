@@ -10,7 +10,8 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
-    clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, DailyPanel, PanelColumn,
+    clean_intraday_value, intraday_time_in_range, minute_vwap_from_amount_vol,
+    stock_minute_raw_spec, DailyPanel, PanelColumn,
 };
 use crate::factor::Factor;
 use crate::operators::{cs_zscore, ts_mean, ts_std_dev};
@@ -18,8 +19,8 @@ use crate::operators::{cs_zscore, ts_mean, ts_std_dev};
 pub const VOLUME_SYNERGY_RAW_ID: &str = "daily_volume_synergy";
 pub const SYNERGY_SPREAD_RAW_ID: &str = "daily_synergy_spread";
 
-const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
 const OHLC_WINDOW: usize = 5;
 const DIFF_WINDOW: usize = 5;
@@ -534,7 +535,7 @@ fn minute_vwap(matrix: &MinuteSynergyMatrix, time_idx: usize, code_idx: usize) -
     if volume.abs() <= f64::EPSILON {
         return None;
     }
-    Some(amount * 10.0 / volume)
+    minute_vwap_from_amount_vol(Some(amount), Some(volume))
 }
 
 #[derive(Clone, Debug)]
@@ -920,7 +921,7 @@ mod tests {
         assert_eq!(signals[0], [Some(1), Some(1), Some(1)]);
 
         let mut fallback_preclose = matrix.clone();
-        fallback_preclose.amount[0] = Some(10.0);
+        fallback_preclose.amount[0] = Some(100.0);
         fallback_preclose.close[5] = Some(10.0);
         let signals = synergy_signals(&fallback_preclose, &[Some(11.0)]);
         assert_eq!(signals[0], [Some(-1), Some(-1), Some(-1)]);

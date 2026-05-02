@@ -22,7 +22,7 @@ impl Label for StockDailyFutureOpen5mVwapReturn20d {
             name: "Stock future 20-day opening 5-minute adjusted VWAP".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.3.0".to_string(),
+            version: "0.4.0".to_string(),
             tags: [
                 "label",
                 "future_return",

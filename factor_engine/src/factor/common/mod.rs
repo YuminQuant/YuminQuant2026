@@ -5,6 +5,7 @@ pub mod intraday_daily;
 pub mod intraday_raw;
 pub mod minute;
 pub mod panel;
+pub mod price_volume;
 pub mod vector;
 
 use std::collections::BTreeMap;
@@ -29,6 +30,7 @@ pub use intraday_raw::{
 };
 pub use minute::{compute_minute_by_instrument, MinuteSeries};
 pub use panel::{DailyPanel, PanelColumn};
+pub use price_volume::{daily_vwap_from_amount_vol, minute_vwap_from_amount_vol};
 
 fn collect_numeric_columns(
     table: &Table,

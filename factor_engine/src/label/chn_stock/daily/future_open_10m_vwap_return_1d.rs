@@ -7,11 +7,13 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::{clean_intraday_value, intraday_time_in_range};
+use crate::factor::common::{
+    clean_intraday_value, intraday_time_in_range, minute_vwap_from_amount_vol,
+};
 use crate::label::Label;
 
 const RAW_ID: &str = "open_10m_vwap";
-const RAW_VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.2.0";
 const START_TIME: &str = "09:31:00";
 const END_TIME: &str = "09:40:00";
 
@@ -29,7 +31,7 @@ impl Label for StockDailyFutureOpen10mVwapReturn1d {
             name: "Stock future 1-day opening 10-minute adjusted VWAP".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.3.0".to_string(),
+            version: "0.4.0".to_string(),
             tags: [
                 "label",
                 "future_return",
@@ -149,7 +151,7 @@ fn compute_opening_vwap_raw(
                     trade_date: *trade_date,
                     ts_code: code.to_string(),
                 },
-                value: Some(amount_sum * 10.0 / vol_sum),
+                value: minute_vwap_from_amount_vol(Some(amount_sum), Some(vol_sum)),
             });
         }
     }

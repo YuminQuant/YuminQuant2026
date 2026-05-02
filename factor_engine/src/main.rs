@@ -9,6 +9,8 @@ use yq_factor_engine::{
     BarraEngine, BarraRunRequest, Engine, LabelEngine, LabelRunRequest, Result, RunRequest,
 };
 
+const DEFAULT_LABEL_BATCH_SIZE: usize = 5;
+
 fn main() {
     if let Err(error) = run_cli() {
         eprintln!("error: {error}");
@@ -331,18 +333,7 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
             "--labels and --tags cannot be used together",
         ));
     }
-    let label_batch_size = match flags.get("label-batch-size") {
-        Some(value) => {
-            let parsed = value.parse::<usize>()?;
-            if parsed == 0 {
-                return Err(yq_factor_engine::error::err(
-                    "--label-batch-size must be greater than 0",
-                ));
-            }
-            parsed
-        }
-        None => DEFAULT_FACTOR_BATCH_SIZE,
-    };
+    let label_batch_size = parse_label_batch_size(&flags)?;
     let threads = match flags.get("threads") {
         Some(value) => {
             let parsed = value.parse::<usize>()?;
@@ -357,6 +348,7 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
     };
     let config_path = flags.get("config").map(PathBuf::from);
     let profile = flag_enabled(&flags, "profile");
+    let refresh_label_cache = flag_enabled(&flags, "refresh-label-cache");
     Ok(LabelRunRequest {
         asset_class,
         frequency,
@@ -369,6 +361,7 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
         label_batch_size,
         threads,
         profile,
+        refresh_label_cache,
     })
 }
 
@@ -444,6 +437,31 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         profile,
         refresh_minute_cache,
     })
+}
+
+fn parse_label_batch_size(flags: &HashMap<String, String>) -> Result<usize> {
+    let batch_size = flags.get("label-batch-size");
+    let batch_num = flags.get("label-batch-num");
+    if let (Some(batch_size), Some(batch_num)) = (batch_size, batch_num) {
+        if batch_size != batch_num {
+            return Err(yq_factor_engine::error::err(
+                "--label-batch-size and --label-batch-num cannot be different",
+            ));
+        }
+    }
+    let value = batch_size.or(batch_num);
+    match value {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--label-batch-size/--label-batch-num must be greater than 0",
+                ));
+            }
+            Ok(parsed)
+        }
+        None => Ok(DEFAULT_LABEL_BATCH_SIZE),
+    }
 }
 
 fn parse_yyyymmdd(value: &str, name: &str) -> Result<i32> {
@@ -629,6 +647,12 @@ fn print_label_report(label: &str, report: &yq_factor_engine::LabelRunReport) {
             request.columns.join(",")
         );
     }
+    for request in &report.loaded_intraday_raw_requests {
+        println!(
+            "load label_intraday_raw {} daily_lookback={}",
+            request.raw_id, request.daily_lookback
+        );
+    }
     if !report.profiles.is_empty() {
         println!("profile:");
         for batch in &report.profiles {
@@ -753,18 +777,23 @@ fn print_help() {
     );
     println!(
         "  --label-batch-size N (default {})",
-        DEFAULT_FACTOR_BATCH_SIZE
+        DEFAULT_LABEL_BATCH_SIZE
     );
+    println!("  --label-batch-num N (alias of --label-batch-size)");
     println!("  --exposure-batch-size N (default 1 for one Barra family per batch)");
     println!("  --threads N");
     println!("  --profile");
     println!("  --refresh-minute-cache");
+    println!("  --refresh-label-cache");
     println!("  --config D:/path/to/config.toml");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{flag_enabled, matches_tag_filter, parse_csv_values, parse_flags, parse_yyyymmdd};
+    use super::{
+        flag_enabled, matches_tag_filter, parse_csv_values, parse_flags, parse_label_run_request,
+        parse_yyyymmdd, DEFAULT_LABEL_BATCH_SIZE,
+    };
 
     #[test]
     fn parse_yyyymmdd_rejects_non_eight_digit_input() {
@@ -798,5 +827,64 @@ mod tests {
             &Some(parse_csv_values("FZZQ,missing"))
         ));
         assert!(matches_tag_filter(&row_tags, &None));
+    }
+
+    #[test]
+    fn label_batch_size_defaults_to_five_and_accepts_alias() {
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260401",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_label_run_request(&args, false).expect("request");
+        assert_eq!(request.label_batch_size, DEFAULT_LABEL_BATCH_SIZE);
+
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260401",
+            "--label-batch-num",
+            "7",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_label_run_request(&args, false).expect("request");
+        assert_eq!(request.label_batch_size, 7);
+    }
+
+    #[test]
+    fn label_batch_size_and_num_conflict_is_rejected() {
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260401",
+            "--label-batch-size",
+            "5",
+            "--label-batch-num",
+            "6",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        assert!(parse_label_run_request(&args, false).is_err());
     }
 }

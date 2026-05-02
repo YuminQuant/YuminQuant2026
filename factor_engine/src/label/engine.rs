@@ -1,6 +1,7 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -8,16 +9,16 @@ use rayon::prelude::*;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{
-    label_registry_key, AssetClass, DataRequest, DatasetId, FactorContext, Frequency, LabelSeries,
-    LabelSpec,
+    label_registry_key, AssetClass, DataRequest, DatasetId, FactorContext, Frequency,
+    IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec, LabelSeries, LabelSpec,
 };
-use crate::data::{DataCatalog, DataPool, MarketDataLoader};
+use crate::data::{DataCatalog, DataPool, MarketDataLoader, Table};
 use crate::engine::{BatchProfile, FactorProfile};
 use crate::error::{err, Result};
 use crate::label::registry::{all_labels, label_map};
 use crate::label::Label;
 use crate::progress::ProgressBar;
-use crate::storage::{LabelMetadata, LabelStorage};
+use crate::storage::{IntradayDailyRawStorage, LabelMetadata, LabelStorage};
 
 #[derive(Clone, Debug)]
 pub struct LabelRunRequest {
@@ -32,6 +33,7 @@ pub struct LabelRunRequest {
     pub label_batch_size: usize,
     pub threads: Option<usize>,
     pub profile: bool,
+    pub refresh_label_cache: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +50,7 @@ pub struct LabelRunReport {
     pub execution_batch_count: usize,
     pub selected_label_ids: Vec<String>,
     pub loaded_requests: Vec<DataRequest>,
+    pub loaded_intraday_raw_requests: Vec<IntradayDailyRawRequest>,
     pub profiles: Vec<BatchProfile>,
     pub status_message: Option<String>,
 }
@@ -190,10 +193,15 @@ impl LabelEngine {
         }
 
         let label_batch_size = request.label_batch_size.max(1);
-        let label_ranges = label_batch_ranges(labels.len(), label_batch_size);
+        let execution_stages = label_execution_stages(&labels, &specs, label_batch_size);
+        let label_batch_count = execution_stages
+            .iter()
+            .map(|stage| stage.batch_ranges.len())
+            .sum::<usize>();
         let loaded_requests =
             merge_requests(specs.iter().flat_map(|spec| spec.dependencies.clone()));
-        let execution_batch_count = target_dates.len() * label_ranges.len();
+        let loaded_intraday_raw_requests = label_raw_requests(&labels);
+        let execution_batch_count = target_dates.len() * label_batch_count;
         let date_batch_count = target_dates.len();
         if dry_run {
             return Ok(LabelRunReport {
@@ -205,10 +213,11 @@ impl LabelEngine {
                 effective_end_date: Some(effective_end_date),
                 max_lookahead,
                 date_batch_count,
-                label_batch_count: label_ranges.len(),
+                label_batch_count,
                 execution_batch_count,
                 selected_label_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
                 loaded_requests,
+                loaded_intraday_raw_requests,
                 profiles: Vec::new(),
                 status_message: None,
             });
@@ -219,11 +228,14 @@ impl LabelEngine {
             .with_stock_ci_classification_path(self.config.stock_ci_classification_path.clone());
         let loader = MarketDataLoader::new(catalog);
         let storage = LabelStorage::new(self.config.label_root.clone());
+        let raw_storage = IntradayDailyRawStorage::new(self.config.label_root.clone());
+        let raw_providers = label_raw_providers();
         let thread_pool = build_thread_pool(request.threads)?;
         let progress = ProgressBar::new("label-run", execution_batch_count, true);
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();
         let mut skipped_dates = Vec::new();
+        let mut materialized_intraday_raw_dates = BTreeSet::new();
 
         for (date_idx, trade_date) in target_dates.iter().copied().enumerate() {
             let load_end_date = calendar
@@ -244,68 +256,118 @@ impl LabelEngine {
                 && !stock_daily_pv_has_dates(&loader, &context.load_dates)?
             {
                 skipped_dates.push(trade_date);
-                for _ in &label_ranges {
-                    progress.tick(format!(
-                        "stage=daily_label date={} skipped=missing_future_data",
-                        trade_date
-                    ));
+                for stage in &execution_stages {
+                    for _ in &stage.batch_ranges {
+                        progress.tick(format!(
+                            "stage={} date={} skipped=missing_future_data",
+                            stage.name, trade_date
+                        ));
+                    }
                 }
                 continue;
             }
 
-            for (label_batch_index, range) in label_ranges.iter().enumerate() {
-                let batch_specs = specs[range.clone()].to_vec();
-                let batch_labels = labels[range.clone()]
-                    .iter()
-                    .map(|label| label.as_ref())
-                    .collect::<Vec<_>>();
-                let batch_requests = merge_requests(
-                    batch_specs
+            for stage in &execution_stages {
+                let stage_load_end_date = calendar
+                    .open_date_after(trade_date, stage.max_lookahead)
+                    .expect("target dates are filtered by global lookahead");
+                let stage_load_dates = calendar.open_dates_between(trade_date, stage_load_end_date);
+                let stage_context = FactorContext {
+                    asset_class: request.asset_class,
+                    frequency: request.frequency,
+                    start_date: trade_date,
+                    end_date: stage_load_end_date,
+                    load_start_date: trade_date,
+                    load_dates: stage_load_dates,
+                    target_dates: vec![trade_date],
+                };
+
+                let raw_ids = raw_ids_for_label_indices(&labels, &stage.label_indices);
+                let (raw_table, raw_profiles) = if raw_ids.is_empty() {
+                    (None, Vec::new())
+                } else {
+                    let (table, raw_profiles) = materialize_label_intraday_raw_table(
+                        &raw_ids,
+                        &raw_providers,
+                        &loader,
+                        &raw_storage,
+                        &calendar,
+                        request,
+                        &stage_context,
+                        date_idx + 1,
+                        thread_pool.as_ref(),
+                        &mut materialized_intraday_raw_dates,
+                    )?;
+                    (Some(table), raw_profiles)
+                };
+                profiles.extend(raw_profiles);
+
+                for (label_batch_index, range) in stage.batch_ranges.iter().enumerate() {
+                    let batch_indices = &stage.label_indices[range.clone()];
+                    let batch_specs = batch_indices
                         .iter()
-                        .flat_map(|spec| spec.dependencies.clone()),
-                );
-                let load_started = Instant::now();
-                let pool = DataPool::load(&loader, &batch_requests, &context)?;
-                let load_ms = load_started.elapsed().as_millis();
-                let compute_started = Instant::now();
-                let results =
-                    compute_label_batch(&batch_labels, &context, &pool, thread_pool.as_ref())?;
-                let compute_ms = compute_started.elapsed().as_millis();
-                let label_profiles = results
-                    .iter()
-                    .map(|series| FactorProfile {
-                        factor_id: series.spec.id.clone(),
-                        row_count: series.values.len(),
-                        non_null_count: series
-                            .values
+                        .map(|idx| specs[*idx].clone())
+                        .collect::<Vec<_>>();
+                    let batch_labels = batch_indices
+                        .iter()
+                        .map(|idx| labels[*idx].as_ref())
+                        .collect::<Vec<_>>();
+                    let batch_requests = merge_requests(
+                        batch_specs
                             .iter()
-                            .filter(|item| item.value.is_some())
-                            .count(),
-                    })
-                    .collect::<Vec<_>>();
-                let write_started = Instant::now();
-                let written_paths = storage.write_results(&results)?;
-                let write_ms = write_started.elapsed().as_millis();
-                output_paths.extend(written_paths);
-                if request.profile {
-                    profiles.push(BatchProfile {
-                        stage: "daily_label".to_string(),
-                        date_batch_index: date_idx + 1,
-                        factor_batch_index: label_batch_index + 1,
-                        start_date: trade_date,
-                        end_date: trade_date,
-                        factor_count: batch_specs.len(),
-                        load_ms,
-                        compute_ms,
-                        write_ms,
-                        factors: label_profiles,
-                    });
+                            .flat_map(|spec| spec.dependencies.clone()),
+                    );
+                    let load_started = Instant::now();
+                    let mut pool = DataPool::load(&loader, &batch_requests, &stage_context)?;
+                    if let Some(raw_table) = raw_table.clone() {
+                        pool.set_intraday_daily_raw(raw_table, &stage_context)?;
+                    }
+                    let load_ms = load_started.elapsed().as_millis();
+                    let compute_started = Instant::now();
+                    let results = compute_label_batch(
+                        &batch_labels,
+                        &stage_context,
+                        &pool,
+                        thread_pool.as_ref(),
+                    )?;
+                    let compute_ms = compute_started.elapsed().as_millis();
+                    let label_profiles = results
+                        .iter()
+                        .map(|series| FactorProfile {
+                            factor_id: series.spec.id.clone(),
+                            row_count: series.values.len(),
+                            non_null_count: series
+                                .values
+                                .iter()
+                                .filter(|item| item.value.is_some())
+                                .count(),
+                        })
+                        .collect::<Vec<_>>();
+                    let write_started = Instant::now();
+                    let written_paths = storage.write_results(&results)?;
+                    let write_ms = write_started.elapsed().as_millis();
+                    output_paths.extend(written_paths);
+                    if request.profile {
+                        profiles.push(BatchProfile {
+                            stage: stage.name.to_string(),
+                            date_batch_index: date_idx + 1,
+                            factor_batch_index: label_batch_index + 1,
+                            start_date: trade_date,
+                            end_date: trade_date,
+                            factor_count: batch_specs.len(),
+                            load_ms,
+                            compute_ms,
+                            write_ms,
+                            factors: label_profiles,
+                        });
+                    }
+                    progress.tick(format!(
+                        "stage={} date={} labels={}",
+                        stage.name,
+                        trade_date,
+                        batch_specs.len()
+                    ));
                 }
-                progress.tick(format!(
-                    "stage=daily_label date={} labels={}",
-                    trade_date,
-                    batch_specs.len()
-                ));
             }
         }
         progress.finish();
@@ -319,10 +381,11 @@ impl LabelEngine {
             effective_end_date: Some(effective_end_date),
             max_lookahead,
             date_batch_count,
-            label_batch_count: label_ranges.len(),
+            label_batch_count,
             execution_batch_count,
             selected_label_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
             loaded_requests,
+            loaded_intraday_raw_requests,
             profiles,
             status_message: None,
         })
@@ -332,6 +395,301 @@ impl LabelEngine {
 enum SelectionResult {
     Selected(Vec<LabelMetadata>),
     Empty(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LabelExecutionStage {
+    name: &'static str,
+    label_indices: Vec<usize>,
+    batch_ranges: Vec<Range<usize>>,
+    max_lookahead: usize,
+}
+
+fn label_execution_stages(
+    labels: &[Box<dyn Label>],
+    specs: &[LabelSpec],
+    label_batch_size: usize,
+) -> Vec<LabelExecutionStage> {
+    let raw_dependency_flags = labels
+        .iter()
+        .map(|label| !label.intraday_raw_dependencies().is_empty())
+        .collect::<Vec<_>>();
+    label_execution_stages_with_raw_flags(specs, &raw_dependency_flags, label_batch_size)
+}
+
+fn label_execution_stages_with_raw_flags(
+    specs: &[LabelSpec],
+    raw_dependency_flags: &[bool],
+    label_batch_size: usize,
+) -> Vec<LabelExecutionStage> {
+    let mut daily_indices = Vec::new();
+    let mut minute_indices = Vec::new();
+    for (idx, spec) in specs.iter().enumerate() {
+        if label_requires_minute(spec) || raw_dependency_flags.get(idx).copied().unwrap_or(false) {
+            minute_indices.push(idx);
+        } else {
+            daily_indices.push(idx);
+        }
+    }
+
+    let mut stages = Vec::new();
+    if !daily_indices.is_empty() {
+        stages.push(label_execution_stage(
+            "daily_label_no_minute",
+            daily_indices,
+            specs,
+            label_batch_size,
+        ));
+    }
+    if !minute_indices.is_empty() {
+        stages.push(label_execution_stage(
+            "minute_label_postprocess",
+            minute_indices,
+            specs,
+            label_batch_size,
+        ));
+    }
+    stages
+}
+
+fn label_execution_stage(
+    name: &'static str,
+    label_indices: Vec<usize>,
+    specs: &[LabelSpec],
+    label_batch_size: usize,
+) -> LabelExecutionStage {
+    let max_lookahead = label_indices
+        .iter()
+        .map(|idx| specs[*idx].lookahead.trading_days)
+        .max()
+        .unwrap_or(0);
+    let batch_ranges = label_batch_ranges(label_indices.len(), label_batch_size);
+    LabelExecutionStage {
+        name,
+        label_indices,
+        batch_ranges,
+        max_lookahead,
+    }
+}
+
+#[derive(Clone)]
+struct LabelRawProvider {
+    label: Arc<dyn Label>,
+    spec: IntradayDailyRawSpec,
+}
+
+fn label_raw_providers() -> BTreeMap<String, LabelRawProvider> {
+    let mut providers = BTreeMap::new();
+    for label in all_labels() {
+        let label: Arc<dyn Label> = Arc::from(label);
+        for spec in label.intraday_raw_specs() {
+            providers.insert(
+                spec.raw_id.clone(),
+                LabelRawProvider {
+                    label: Arc::clone(&label),
+                    spec,
+                },
+            );
+        }
+    }
+    providers
+}
+
+fn label_raw_requests(labels: &[Box<dyn Label>]) -> Vec<IntradayDailyRawRequest> {
+    let mut requests = BTreeMap::<String, usize>::new();
+    for label in labels {
+        for request in label.intraday_raw_dependencies() {
+            requests
+                .entry(request.raw_id)
+                .and_modify(|lookback| *lookback = (*lookback).max(request.daily_lookback))
+                .or_insert(request.daily_lookback);
+        }
+    }
+    requests
+        .into_iter()
+        .map(|(raw_id, daily_lookback)| IntradayDailyRawRequest {
+            raw_id,
+            daily_lookback,
+        })
+        .collect()
+}
+
+fn raw_ids_for_label_indices(labels: &[Box<dyn Label>], label_indices: &[usize]) -> Vec<String> {
+    let mut raw_ids = BTreeSet::new();
+    for idx in label_indices {
+        for request in labels[*idx].intraday_raw_dependencies() {
+            raw_ids.insert(request.raw_id);
+        }
+    }
+    raw_ids.into_iter().collect()
+}
+
+fn materialize_label_intraday_raw_table(
+    raw_ids: &[String],
+    providers: &BTreeMap<String, LabelRawProvider>,
+    loader: &MarketDataLoader,
+    storage: &IntradayDailyRawStorage,
+    calendar: &TradingCalendar,
+    request: &LabelRunRequest,
+    context: &FactorContext,
+    date_batch_index: usize,
+    thread_pool: Option<&rayon::ThreadPool>,
+    materialized_intraday_raw_dates: &mut BTreeSet<(String, i32)>,
+) -> Result<(Table, Vec<BatchProfile>)> {
+    let raw_id_set = raw_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut missing_by_date = BTreeMap::<i32, Vec<IntradayDailyRawSpec>>::new();
+    for raw_id in raw_ids {
+        let provider = providers
+            .get(raw_id)
+            .ok_or_else(|| err(format!("label intraday raw provider not found: {raw_id}")))?;
+        let mut missing_dates = storage
+            .missing_dates(
+                &provider.spec,
+                &context.load_dates,
+                request.refresh_label_cache,
+            )?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        missing_dates.retain(|date| {
+            !materialized_intraday_raw_dates.contains(&(provider.spec.raw_id.clone(), *date))
+        });
+        for date in missing_dates {
+            missing_by_date
+                .entry(date)
+                .or_default()
+                .push(provider.spec.clone());
+        }
+    }
+
+    let mut profiles = Vec::new();
+    let mut materialized_specs = Vec::new();
+    for (date, specs) in missing_by_date {
+        let source_dataset = specs
+            .first()
+            .map(|spec| spec.source_dataset)
+            .ok_or_else(|| err("empty label raw materialization plan"))?;
+        let columns = specs
+            .iter()
+            .flat_map(|spec| spec.columns.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let raw_context = FactorContext {
+            asset_class: request.asset_class,
+            frequency: Frequency::Daily,
+            start_date: date,
+            end_date: date,
+            load_start_date: date,
+            load_dates: calendar.open_dates_between(date, date),
+            target_dates: vec![date],
+        };
+        let batch_requests = vec![DataRequest {
+            dataset: source_dataset,
+            entity_id: None,
+            columns,
+            financial_quarters: None,
+        }];
+        let load_started = Instant::now();
+        let raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
+        let load_ms = load_started.elapsed().as_millis();
+
+        let jobs = specs
+            .iter()
+            .map(|spec| {
+                let provider = providers
+                    .get(&spec.raw_id)
+                    .expect("provider already validated");
+                (Arc::clone(&provider.label), spec.raw_id.clone())
+            })
+            .collect::<Vec<_>>();
+
+        let compute_started = Instant::now();
+        let compute_raw = || -> Result<Vec<Vec<IntradayDailyRawSeries>>> {
+            jobs.par_iter()
+                .map(|(label, raw_id)| {
+                    let raw_series = label.minute_compute_many(
+                        std::slice::from_ref(raw_id),
+                        &raw_context,
+                        &raw_pool,
+                    )?;
+                    Ok(raw_series)
+                })
+                .collect()
+        };
+        let computed = match thread_pool {
+            Some(thread_pool) => thread_pool.install(compute_raw),
+            None => compute_raw(),
+        }?;
+        let mut chunk_series = Vec::new();
+        for item in computed {
+            let mut raw_series_list: Vec<_> = item
+                .into_iter()
+                .filter(|series| raw_id_set.contains(&series.spec.raw_id))
+                .collect();
+            chunk_series.append(&mut raw_series_list);
+        }
+        let returned = chunk_series
+            .iter()
+            .map(|series| series.spec.raw_id.clone())
+            .collect::<BTreeSet<_>>();
+        let expected = specs
+            .iter()
+            .map(|spec| spec.raw_id.clone())
+            .collect::<BTreeSet<_>>();
+        let missing = expected.difference(&returned).cloned().collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(err(format!(
+                "label intraday raw provider did not return requested raw(s): {}",
+                missing.join(",")
+            )));
+        }
+        let compute_ms = compute_started.elapsed().as_millis();
+
+        let raw_profiles = chunk_series
+            .iter()
+            .map(|raw_series| FactorProfile {
+                factor_id: raw_series.spec.raw_id.clone(),
+                row_count: raw_series.values.len(),
+                non_null_count: raw_series
+                    .values
+                    .iter()
+                    .filter(|item| item.value.is_some())
+                    .count(),
+            })
+            .collect::<Vec<_>>();
+
+        let write_started = Instant::now();
+        if !chunk_series.is_empty() {
+            storage.write_results(&chunk_series)?;
+        }
+        for raw_series in &chunk_series {
+            materialized_intraday_raw_dates.insert((raw_series.spec.raw_id.clone(), date));
+        }
+        materialized_specs.extend(chunk_series.iter().map(|series| series.spec.clone()));
+        let write_ms = write_started.elapsed().as_millis();
+        if request.profile && !raw_profiles.is_empty() {
+            profiles.push(BatchProfile {
+                stage: "label_intraday_raw_materialize_window_1".to_string(),
+                date_batch_index,
+                factor_batch_index: 1,
+                start_date: date,
+                end_date: date,
+                factor_count: raw_profiles.len(),
+                load_ms,
+                compute_ms,
+                write_ms,
+                factors: raw_profiles,
+            });
+        }
+    }
+    if !materialized_specs.is_empty() {
+        storage.write_metadata(&materialized_specs)?;
+    }
+
+    Ok((
+        storage.load_raw_by_dates(context.asset_class, raw_ids, &context.load_dates)?,
+        profiles,
+    ))
 }
 
 fn select_label_metadata(request: &LabelRunRequest, metadata: &[LabelMetadata]) -> SelectionResult {
@@ -407,6 +765,7 @@ fn empty_label_report(_request: &LabelRunRequest, message: String) -> LabelRunRe
         execution_batch_count: 0,
         selected_label_ids: Vec::new(),
         loaded_requests: Vec::new(),
+        loaded_intraday_raw_requests: Vec::new(),
         profiles: Vec::new(),
         status_message: Some(message),
     }
@@ -501,6 +860,12 @@ fn requires_stock_daily_pv(specs: &[LabelSpec]) -> bool {
     })
 }
 
+fn label_requires_minute(spec: &LabelSpec) -> bool {
+    spec.dependencies
+        .iter()
+        .any(|request| request.dataset == DatasetId::StockMinute1m)
+}
+
 fn eligible_label_target_dates(
     requested_target_dates: &[i32],
     calendar: &TradingCalendar,
@@ -540,8 +905,8 @@ mod tests {
     use crate::storage::LabelMetadata;
 
     use super::{
-        eligible_label_target_dates, label_batch_ranges, select_label_metadata, LabelRunRequest,
-        SelectionResult,
+        eligible_label_target_dates, label_batch_ranges, label_execution_stages_with_raw_flags,
+        merge_requests, select_label_metadata, LabelRunRequest, SelectionResult,
     };
     use crate::calendar::TradingCalendar;
 
@@ -553,6 +918,94 @@ mod tests {
         );
         assert_eq!(label_batch_ranges(3, 10), vec![0..3]);
         assert_eq!(label_batch_ranges(11, 10), vec![0..10, 10..11]);
+    }
+
+    #[test]
+    fn execution_stages_run_daily_labels_before_minute_labels() {
+        let specs = vec![
+            label_spec(
+                "future_open_return_1d",
+                vec![
+                    DataRequest::new(DatasetId::StockDailyPv, &["open"]),
+                    DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
+                ],
+                2,
+            ),
+            label_spec(
+                "future_open_5m_vwap_return_20d",
+                vec![
+                    DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+                    DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
+                    DataRequest::new(DatasetId::StockMinute1m, &["amount", "vol"]),
+                ],
+                21,
+            ),
+            label_spec(
+                "future_close_return_5d",
+                vec![
+                    DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+                    DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
+                ],
+                6,
+            ),
+        ];
+
+        let raw_dependency_flags = vec![false, true, false];
+        let stages = label_execution_stages_with_raw_flags(&specs, &raw_dependency_flags, 1);
+
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[0].name, "daily_label_no_minute");
+        assert_eq!(stages[0].label_indices, vec![0, 2]);
+        assert_eq!(stages[0].batch_ranges, vec![0..1, 1..2]);
+        assert_eq!(stages[0].max_lookahead, 6);
+        assert_eq!(stages[1].name, "minute_label_postprocess");
+        assert_eq!(stages[1].label_indices, vec![1]);
+        assert_eq!(stages[1].batch_ranges, vec![0..1]);
+        assert_eq!(stages[1].max_lookahead, 21);
+    }
+
+    #[test]
+    fn stage_requests_keep_minute_data_out_of_daily_stage() {
+        let specs = vec![
+            label_spec(
+                "future_vwap_return_1d",
+                vec![DataRequest::new(
+                    DatasetId::StockDailyPv,
+                    &["amount", "vol"],
+                )],
+                2,
+            ),
+            label_spec(
+                "future_open_10m_vwap_return_1d",
+                vec![DataRequest::new(
+                    DatasetId::StockMinute1m,
+                    &["amount", "vol"],
+                )],
+                2,
+            ),
+        ];
+        let raw_dependency_flags = vec![false, true];
+        let stages = label_execution_stages_with_raw_flags(&specs, &raw_dependency_flags, 5);
+
+        let daily_requests = merge_requests(
+            stages[0]
+                .label_indices
+                .iter()
+                .flat_map(|idx| specs[*idx].dependencies.clone()),
+        );
+        let minute_requests = merge_requests(
+            stages[1]
+                .label_indices
+                .iter()
+                .flat_map(|idx| specs[*idx].dependencies.clone()),
+        );
+
+        assert!(!daily_requests
+            .iter()
+            .any(|request| request.dataset == DatasetId::StockMinute1m));
+        assert!(minute_requests
+            .iter()
+            .any(|request| request.dataset == DatasetId::StockMinute1m));
     }
 
     #[test]
@@ -585,6 +1038,7 @@ mod tests {
             label_batch_size: 10,
             threads: None,
             profile: false,
+            refresh_label_cache: false,
         };
         let metadata = vec![
             metadata_row("future_open_return_1d", "stock", "daily"),
@@ -614,6 +1068,23 @@ mod tests {
             dependencies_json: String::new(),
             description: String::new(),
             updated_at: String::new(),
+        }
+    }
+
+    fn label_spec(id: &str, dependencies: Vec<DataRequest>, lookahead: usize) -> LabelSpec {
+        LabelSpec {
+            id: id.to_string(),
+            aliases: Vec::new(),
+            name: id.to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: "0.1.0".to_string(),
+            tags: Vec::new(),
+            description: String::new(),
+            dependencies,
+            lookahead: Lookahead {
+                trading_days: lookahead,
+            },
         }
     }
 

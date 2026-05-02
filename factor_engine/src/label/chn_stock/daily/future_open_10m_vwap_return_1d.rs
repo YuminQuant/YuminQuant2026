@@ -1,12 +1,19 @@
 use std::collections::HashMap;
 
 use crate::core::{
-    AssetClass, DataRequest, DatasetId, FactorContext, Frequency, LabelSeries, LabelSpec, Lookahead,
+    AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorValue, Frequency,
+    IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec, LabelSeries, LabelSpec,
+    Lookahead,
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::{clean_intraday_value, intraday_time_in_range, PanelColumn};
+use crate::factor::common::{clean_intraday_value, intraday_time_in_range};
 use crate::label::Label;
+
+const RAW_ID: &str = "open_10m_vwap";
+const RAW_VERSION: &str = "0.1.0";
+const START_TIME: &str = "09:31:00";
+const END_TIME: &str = "09:40:00";
 
 pub struct StockDailyFutureOpen10mVwapReturn1d;
 
@@ -22,7 +29,7 @@ impl Label for StockDailyFutureOpen10mVwapReturn1d {
             name: "Stock future 1-day opening 10-minute adjusted VWAP".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.2.0".to_string(),
+            version: "0.3.0".to_string(),
             tags: [
                 "label",
                 "future_return",
@@ -38,50 +45,68 @@ impl Label for StockDailyFutureOpen10mVwapReturn1d {
             description:
                 "Future adjusted return from t+1 09:31-09:40 VWAP to t+2 09:31-09:40 VWAP."
                     .to_string(),
-            dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
-                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
-                DataRequest::new(DatasetId::StockMinute1m, &["amount", "vol"]),
-            ],
+            dependencies: vec![DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"])],
             lookahead: Lookahead { trading_days: 2 },
         }
     }
 
-    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<LabelSeries> {
-        let adjusted_vwap = adjusted_opening_vwap(data, context, "09:31:00", "09:40:00")?;
+    fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
+        vec![raw_spec()]
+    }
+
+    fn intraday_raw_dependencies(&self) -> Vec<IntradayDailyRawRequest> {
+        vec![IntradayDailyRawRequest::new(RAW_ID, 0)]
+    }
+
+    fn minute_compute(
+        &self,
+        raw_id: &str,
+        context: &FactorContext,
+        data: &DataPool,
+    ) -> Result<Option<IntradayDailyRawSeries>> {
+        if raw_id != RAW_ID {
+            return Ok(None);
+        }
+        Ok(Some(compute_opening_vwap_raw(
+            raw_spec(),
+            context,
+            data,
+            START_TIME,
+            END_TIME,
+        )?))
+    }
+
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<LabelSeries> {
+        let panel = data.intraday_daily_raw_panel(RAW_ID)?;
+        let raw_vwap = panel.column(RAW_ID)?;
+        let adj_factor =
+            panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+        let adjusted_vwap = raw_vwap.zip_binary(&adj_factor, adjusted_value)?;
         let label = adjusted_vwap.ts(|values| future_return(values, 2))?;
         Ok(label.to_label_series(self.spec()))
     }
 }
 
-fn adjusted_opening_vwap(
-    data: &DataPool,
+fn raw_spec() -> IntradayDailyRawSpec {
+    IntradayDailyRawSpec {
+        raw_id: RAW_ID.to_string(),
+        version: RAW_VERSION.to_string(),
+        asset_class: AssetClass::Stock,
+        source_dataset: DatasetId::StockMinute1m,
+        columns: vec!["amount".to_string(), "vol".to_string()],
+        window_days: 1,
+    }
+}
+
+fn compute_opening_vwap_raw(
+    spec: IntradayDailyRawSpec,
     context: &FactorContext,
+    data: &DataPool,
     start_time: &str,
     end_time: &str,
-) -> Result<PanelColumn> {
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-    let adj_factor =
-        panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
-    let instrument_count = panel.instruments().len();
-    let date_index = panel
-        .dates()
-        .iter()
-        .enumerate()
-        .map(|(idx, date)| (*date, idx))
-        .collect::<HashMap<_, _>>();
-    let instrument_index = panel
-        .instruments()
-        .iter()
-        .enumerate()
-        .map(|(idx, code)| (code.as_str(), idx))
-        .collect::<HashMap<_, _>>();
-    let mut values = vec![None; panel.shape_len()];
-
-    for trade_date in &context.load_dates {
-        let Some(date_idx) = date_index.get(trade_date).copied() else {
-            continue;
-        };
+) -> Result<IntradayDailyRawSeries> {
+    let mut values = Vec::new();
+    for trade_date in &context.target_dates {
         let Some(table) = data.minute(DatasetId::StockMinute1m, *trade_date) else {
             continue;
         };
@@ -119,15 +144,17 @@ fn adjusted_opening_vwap(
             if vol_sum.abs() <= f64::EPSILON {
                 continue;
             }
-            let Some(inst_idx) = instrument_index.get(code).copied() else {
-                continue;
-            };
-            values[date_idx * instrument_count + inst_idx] = Some(amount_sum * 10.0 / vol_sum);
+            values.push(FactorValue {
+                key: FactorRowKey::Daily {
+                    trade_date: *trade_date,
+                    ts_code: code.to_string(),
+                },
+                value: Some(amount_sum * 10.0 / vol_sum),
+            });
         }
     }
 
-    let raw_vwap = panel.column_from_values(values)?;
-    raw_vwap.zip_binary(&adj_factor, adjusted_value)
+    Ok(IntradayDailyRawSeries { spec, values })
 }
 
 fn future_return(values: &[Option<f64>], end_offset: usize) -> Vec<Option<f64>> {

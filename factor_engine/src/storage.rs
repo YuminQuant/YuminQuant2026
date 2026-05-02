@@ -502,6 +502,15 @@ impl IntradayDailyRawStorage {
             ensure_raw_columns(&mut table, raw_ids)?;
             output.append(&table)?;
         }
+        if output.columns.is_empty() {
+            let mut columns = BTreeMap::new();
+            columns.insert("trade_date".to_string(), ColumnData::I32(Vec::new()));
+            columns.insert("ts_code".to_string(), ColumnData::Utf8(Vec::new()));
+            for raw_id in raw_ids {
+                columns.insert(raw_id.clone(), ColumnData::F64(Vec::new()));
+            }
+            output = Table::new(columns)?;
+        }
         Ok(output)
     }
 

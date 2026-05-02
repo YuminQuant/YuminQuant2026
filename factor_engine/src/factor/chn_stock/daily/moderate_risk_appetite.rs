@@ -12,12 +12,12 @@ use crate::factor::common::{
     ClassificationMap,
 };
 use crate::factor::Factor;
-use crate::operators::{cs_mean, cs_zscore, ts_mean, ts_std_dev};
+use crate::operators::{cs_demean_abs, cs_zscore, ts_mean, ts_std_dev};
 
 pub const SPARKLE_VOLATILITY_RAW_ID: &str = "daily_sparkle_volatility";
 pub const SPARKLE_RETURN_RAW_ID: &str = "daily_sparkle_return";
 
-const RAW_VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.3.0";
 const WINDOW: usize = 20;
 const SPARKLE_WINDOW: usize = 5;
 
@@ -45,7 +45,7 @@ impl Factor for StockDailyModerateRiskAppetite {
             name: "Moderate Risk Appetite".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.1.0".to_string(),
+            version: "0.3.0".to_string(),
             tags: [
                 "price_volume",
                 "return",
@@ -181,12 +181,8 @@ impl Factor for StockDailyModerateRiskAppetite {
         let panel = data.intraday_daily_raw_panel(SPARKLE_VOLATILITY_RAW_ID)?;
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
-        let vol_distance = panel
-            .column(SPARKLE_VOLATILITY_RAW_ID)?
-            .cs(cs_abs_distance_from_mean)?;
-        let ret_distance = panel
-            .column(SPARKLE_RETURN_RAW_ID)?
-            .cs(cs_abs_distance_from_mean)?;
+        let vol_distance = panel.column(SPARKLE_VOLATILITY_RAW_ID)?.cs(cs_demean_abs)?;
+        let ret_distance = panel.column(SPARKLE_RETURN_RAW_ID)?.cs(cs_demean_abs)?;
 
         let vol_mean20 = vol_distance.ts(|values| ts_mean(values, WINDOW, WINDOW))?;
         let vol_std20 = vol_distance.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
@@ -215,18 +211,6 @@ fn average_pair(
         (Some(left), Some(right)) => Some((left + right) / 2.0),
         _ => None,
     })
-}
-
-fn cs_abs_distance_from_mean(values: &[Option<f64>]) -> Vec<Option<f64>> {
-    let means = cs_mean(values);
-    values
-        .iter()
-        .zip(means.iter())
-        .map(|(value, mean)| match (clean(*value), clean(*mean)) {
-            (Some(value), Some(mean)) => Some((value - mean).abs()),
-            _ => None,
-        })
-        .collect()
 }
 
 fn sparkle_values_from_rows(
@@ -280,7 +264,8 @@ fn sparkle_values_from_rows(
         if pos + SPARKLE_WINDOW <= indices.len() {
             let window = &returns[pos..pos + SPARKLE_WINDOW];
             if window.iter().all(Option::is_some) {
-                let volatility = population_std(window.iter().filter_map(|value| *value));
+                let (_, volatility) = mean_std(window.iter().filter_map(|value| *value))
+                    .expect("complete sparkle return window has values");
                 sparkle_vol_sum += volatility;
                 sparkle_vol_count += 1;
             }
@@ -330,21 +315,16 @@ fn mean_std(values: impl IntoIterator<Item = f64>) -> Option<(f64, f64)> {
     Some((mean, variance.sqrt()))
 }
 
-fn population_std(values: impl IntoIterator<Item = f64>) -> f64 {
-    mean_std(values)
-        .map(|(_, std)| std)
-        .expect("population_std requires at least one value")
-}
-
 fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| !value.is_nan())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{average_pair, cs_abs_distance_from_mean, sparkle_values_from_rows};
+    use super::{average_pair, sparkle_values_from_rows};
     use crate::core::{AssetClass, FactorContext, Frequency};
     use crate::factor::common::DailyPanel;
+    use crate::operators::cs_demean_abs;
 
     #[test]
     fn sparkle_values_use_volume_spikes_for_return_and_following_five_minute_volatility() {
@@ -388,7 +368,7 @@ mod tests {
 
     #[test]
     fn distance_and_pair_average_require_valid_inputs() {
-        let distance = cs_abs_distance_from_mean(&[Some(1.0), Some(3.0), None]);
+        let distance = cs_demean_abs(&[Some(1.0), Some(3.0), None]);
         assert_eq!(distance, vec![Some(1.0), Some(1.0), None]);
 
         let panel = DailyPanel::from_index(

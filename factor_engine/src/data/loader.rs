@@ -633,6 +633,62 @@ mod tests {
     }
 
     #[test]
+    fn stock_moneyflow_loader_reads_daily_date_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_moneyflow_loader_test_{unique}"));
+        let daily_path = root
+            .join("stock_data")
+            .join("daily")
+            .join("moneyflow")
+            .join("2026")
+            .join("20260102.parquet");
+        let daily = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260102)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            (
+                "buy_sm_amount".to_string(),
+                ColumnData::F64(vec![Some(10.0)]),
+            ),
+            (
+                "sell_sm_amount".to_string(),
+                ColumnData::F64(vec![Some(12.0)]),
+            ),
+        ]))
+        .expect("daily table");
+        write_parquet(&daily_path, &daily).expect("write daily");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let loaded = loader
+            .load_daily_by_dates(
+                DatasetId::StockMoneyflow,
+                &["buy_sm_amount".to_string(), "sell_sm_amount".to_string()],
+                &[20260102],
+            )
+            .expect("load moneyflow by date");
+
+        assert_eq!(loaded.len, 1);
+        assert_eq!(
+            loaded.required_f64_cast("buy_sm_amount").expect("buy"),
+            vec![Some(10.0)]
+        );
+        assert_eq!(
+            loaded.required_f64_cast("sell_sm_amount").expect("sell"),
+            vec![Some(12.0)]
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn barra_daily_loader_treats_missing_dates_as_empty_table() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

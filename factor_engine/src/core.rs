@@ -63,6 +63,7 @@ pub enum DatasetId {
     StockDailyPv,
     StockDailyBasic,
     StockAdjFactor,
+    StockMoneyflow,
     StockIncome,
     StockBalanceSheet,
     StockCashFlow,
@@ -83,6 +84,7 @@ impl DatasetId {
             Self::StockDailyPv
             | Self::StockDailyBasic
             | Self::StockAdjFactor
+            | Self::StockMoneyflow
             | Self::StockIncome
             | Self::StockBalanceSheet
             | Self::StockCashFlow
@@ -102,6 +104,7 @@ impl DatasetId {
             Self::StockDailyPv
             | Self::StockDailyBasic
             | Self::StockAdjFactor
+            | Self::StockMoneyflow
             | Self::StockIncome
             | Self::StockBalanceSheet
             | Self::StockCashFlow
@@ -121,6 +124,7 @@ impl DatasetId {
             Self::StockDailyPv => "stock.daily.pv",
             Self::StockDailyBasic => "stock.daily.basic",
             Self::StockAdjFactor => "stock.adj_factor",
+            Self::StockMoneyflow => "stock.moneyflow",
             Self::StockIncome => "stock.income",
             Self::StockBalanceSheet => "stock.balancesheet",
             Self::StockCashFlow => "stock.cashflow",

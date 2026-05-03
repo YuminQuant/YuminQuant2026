@@ -8,14 +8,15 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{intraday_time_in_range, stock_minute_raw_spec};
 use crate::factor::Factor;
-use crate::operators::ts_mean;
+use crate::operators::{ts_mean, ts_sum};
 
 pub const RAW_ID: &str = "daily_rapid_current_spread";
 
-const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.3.0";
+const VERSION: &str = "0.3.0";
 const WINDOW: usize = 20;
 const INTRADAY_WINDOW: usize = 5;
+const TREND_LAG: usize = 5;
 const OHLC_COUNT: usize = INTRADAY_WINDOW * 4;
 
 pub struct StockDailyRapidCurrentAdvance;
@@ -54,7 +55,7 @@ impl Factor for StockDailyRapidCurrentAdvance {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Intraday volume-expansion downtrend amount-volume spread averaged over 20 trading days.".to_string(),
+            description: "Intraday volume-expansion downtrend amount and volume ratios summed, then averaged over 20 trading days.".to_string(),
             dependencies: Vec::new(),
             intraday_raw_dependencies: vec![IntradayDailyRawRequest::new(RAW_ID, WINDOW - 1)],
             lookback: Lookback {
@@ -103,21 +104,22 @@ impl Factor for StockDailyRapidCurrentAdvance {
 
             for (ts_code, mut indices) in grouped {
                 indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
+                let value = rapid_current_spread_from_rows(
+                    &indices,
+                    trade_times,
+                    &open,
+                    &high,
+                    &low,
+                    &close,
+                    &volume,
+                    &amount,
+                );
                 values.push(FactorValue {
                     key: FactorRowKey::Daily {
                         trade_date: *trade_date,
                         ts_code,
                     },
-                    value: rapid_current_spread_from_rows(
-                        &indices,
-                        trade_times,
-                        &open,
-                        &high,
-                        &low,
-                        &close,
-                        &volume,
-                        &amount,
-                    ),
+                    value,
                 });
             }
         }
@@ -137,7 +139,7 @@ impl Factor for StockDailyRapidCurrentAdvance {
     }
 }
 
-fn rapid_current_spread_from_rows(
+pub fn rapid_current_spread_from_rows(
     indices: &[usize],
     trade_times: &[Option<String>],
     open: &[Option<f64>],
@@ -160,29 +162,34 @@ fn rapid_current_spread_from_rows(
         return None;
     }
 
-    let amount_all_mean = mean_clean(selected.iter().map(|idx| amount[*idx]))?;
-    let volume_all_mean = mean_clean(selected.iter().map(|idx| volume[*idx]))?;
+    let Some(amount_all_mean) = mean_clean(selected.iter().map(|idx| amount[*idx])) else {
+        return None;
+    };
+    let Some(volume_all_mean) = mean_clean(selected.iter().map(|idx| volume[*idx])) else {
+        return None;
+    };
     if amount_all_mean.abs() <= f64::EPSILON || volume_all_mean.abs() <= f64::EPSILON {
         return None;
     }
 
-    let rolling_volume = rolling_volume_sum(&selected, volume);
+    let volume_series = selected.iter().map(|idx| volume[*idx]).collect::<Vec<_>>();
+    let rolling_volume = ts_sum(&volume_series, INTRADAY_WINDOW, INTRADAY_WINDOW);
     let rolling_ohlc_mean = rolling_ohlc_mean(&selected, open, high, low, close);
     let mut event_amount = Vec::new();
     let mut event_volume = Vec::new();
-    for pos in INTRADAY_WINDOW..selected.len() {
+    for pos in INTRADAY_WINDOW - 1 + TREND_LAG..selected.len() {
         let (Some(current_volume), Some(previous_volume)) =
             (rolling_volume[pos], rolling_volume[pos - 1])
         else {
             continue;
         };
-        let (Some(current_ohlc), Some(previous_ohlc)) =
-            (rolling_ohlc_mean[pos], rolling_ohlc_mean[pos - 1])
+        let (Some(current_ohlc), Some(lagged_ohlc)) =
+            (rolling_ohlc_mean[pos], rolling_ohlc_mean[pos - TREND_LAG])
         else {
             continue;
         };
         let volume_expanding = current_volume > previous_volume;
-        let trend_down = current_ohlc <= previous_ohlc;
+        let trend_down = current_ohlc < lagged_ohlc;
         if !volume_expanding || !trend_down {
             continue;
         }
@@ -203,27 +210,7 @@ fn rapid_current_spread_from_rows(
         event_amount.iter().sum::<f64>() / event_amount.len() as f64 / amount_all_mean;
     let volume_ratio =
         event_volume.iter().sum::<f64>() / event_volume.len() as f64 / volume_all_mean;
-    Some(amount_ratio - volume_ratio)
-}
-
-fn rolling_volume_sum(indices: &[usize], volume: &[Option<f64>]) -> Vec<Option<f64>> {
-    let mut output = vec![None; indices.len()];
-    for pos in INTRADAY_WINDOW - 1..indices.len() {
-        let mut sum = 0.0;
-        let mut complete = true;
-        for offset in 0..INTRADAY_WINDOW {
-            let idx = indices[pos - offset];
-            let Some(value) = clean(volume[idx]) else {
-                complete = false;
-                break;
-            };
-            sum += value;
-        }
-        if complete {
-            output[pos] = Some(sum);
-        }
-    }
-    output
+    Some(amount_ratio + volume_ratio)
 }
 
 fn rolling_ohlc_mean(
@@ -278,31 +265,13 @@ fn clean(value: Option<f64>) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{rapid_current_spread_from_rows, rolling_ohlc_mean, rolling_volume_sum};
+    use super::{rapid_current_spread_from_rows, rolling_ohlc_mean};
 
     fn times(values: &[&str]) -> Vec<Option<String>> {
         values
             .iter()
             .map(|value| Some((*value).to_string()))
             .collect()
-    }
-
-    #[test]
-    fn rolling_volume_uses_current_and_previous_four_minutes() {
-        let indices = (0..6).collect::<Vec<_>>();
-        let volume = vec![
-            Some(1.0),
-            Some(2.0),
-            Some(3.0),
-            Some(4.0),
-            Some(5.0),
-            Some(6.0),
-        ];
-
-        assert_eq!(
-            rolling_volume_sum(&indices, &volume),
-            vec![None, None, None, None, Some(15.0), Some(20.0)]
-        );
     }
 
     #[test]
@@ -321,10 +290,11 @@ mod tests {
     }
 
     #[test]
-    fn raw_uses_filtered_minutes_and_amount_minus_volume_ratio_for_events() {
-        let indices = (0..7).collect::<Vec<_>>();
+    fn raw_uses_filtered_minutes_and_sums_amount_volume_ratios_for_events() {
+        let indices = (0..11).collect::<Vec<_>>();
         let trade_times = times(&[
             "09:30:00", "09:31:00", "09:32:00", "09:33:00", "09:34:00", "09:35:00", "09:36:00",
+            "09:37:00", "09:38:00", "09:39:00", "09:40:00",
         ]);
         let open = vec![
             Some(10.0),
@@ -333,6 +303,10 @@ mod tests {
             Some(10.0),
             Some(10.0),
             Some(10.0),
+            Some(5.0),
+            Some(5.0),
+            Some(5.0),
+            Some(5.0),
             Some(5.0),
         ];
         let high = open.clone();
@@ -345,10 +319,18 @@ mod tests {
             Some(1.0),
             Some(1.0),
             Some(1.0),
+            Some(1.0),
+            Some(1.0),
+            Some(1.0),
+            Some(1.0),
             Some(6.0),
         ];
         let amount = vec![
             Some(99.0),
+            Some(10.0),
+            Some(10.0),
+            Some(10.0),
+            Some(10.0),
             Some(10.0),
             Some(10.0),
             Some(10.0),
@@ -366,12 +348,11 @@ mod tests {
             &close,
             &volume,
             &amount,
-        )
-        .expect("raw value");
+        );
 
-        let amount_mean_all = (10.0 * 5.0 + 30.0) / 6.0;
-        let volume_mean_all = (1.0 * 5.0 + 6.0) / 6.0;
-        assert_eq!(value, 30.0 / amount_mean_all - 6.0 / volume_mean_all);
+        let amount_mean_all = (10.0 * 9.0 + 30.0) / 10.0;
+        let volume_mean_all = (1.0 * 9.0 + 6.0) / 10.0;
+        assert_eq!(value, Some(30.0 / amount_mean_all + 6.0 / volume_mean_all));
     }
 
     #[test]

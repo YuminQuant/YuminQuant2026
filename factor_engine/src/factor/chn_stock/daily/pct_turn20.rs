@@ -8,7 +8,7 @@ use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::{ts_delay, ts_mean};
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 const BASE_WINDOW: usize = 40;
 const BASE_DELAY: usize = 20;
 const SIGNAL_WINDOW: usize = 20;
@@ -41,7 +41,7 @@ impl Factor for StockDailyPctTurn20 {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Negative 20-day mean of turnover relative to a delayed 40-day baseline, neutralized by SIZE.".to_string(),
+            description: "20-day mean of turnover relative to a delayed 40-day baseline, neutralized by SIZE.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -61,9 +61,7 @@ impl Factor for StockDailyPctTurn20 {
         let base_tnv =
             turnover.ts(|values| delayed_rolling_mean(values, BASE_WINDOW, BASE_DELAY))?;
         let relative_turnover = turnover.zip_binary(&base_tnv, relative_change)?;
-        let raw = relative_turnover
-            .ts(|values| ts_mean(values, SIGNAL_WINDOW, MIN_PERIODS))?
-            .map_values(negate);
+        let raw = relative_turnover.ts(|values| ts_mean(values, SIGNAL_WINDOW, MIN_PERIODS))?;
         let factor = raw.cs_neutralize_regression(&[&size], None)?;
         Ok(factor.to_factor_series(self.spec()))
     }
@@ -79,10 +77,6 @@ fn relative_change(turnover: Option<f64>, base: Option<f64>) -> Option<f64> {
         (Some(turnover), Some(base)) if base.abs() > f64::EPSILON => Some(turnover / base - 1.0),
         _ => None,
     }
-}
-
-fn negate(value: Option<f64>) -> Option<f64> {
-    clean(value).map(|value| -value)
 }
 
 #[cfg(test)]
@@ -120,8 +114,11 @@ mod tests {
     }
 
     #[test]
-    fn negate_keeps_missing_values() {
-        assert_eq!(negate(None), None);
-        assert_close(negate(Some(0.25)), Some(-0.25));
+    fn pct_turn20_keeps_positive_relative_change_sign() {
+        let relative = vec![Some(0.2), Some(0.4)];
+        let mean = ts_mean(&relative, 2, 1);
+
+        assert_close(mean[0], Some(0.2));
+        assert_close(mean[1], Some(0.3));
     }
 }

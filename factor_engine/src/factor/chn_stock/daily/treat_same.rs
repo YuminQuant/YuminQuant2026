@@ -8,8 +8,7 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{
-    clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, ClassificationLevel,
-    ClassificationMap, PanelColumn,
+    clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, PanelColumn,
 };
 use crate::factor::Factor;
 use crate::operators::{cs_zscore, ts_mean, ts_pctchg};
@@ -17,8 +16,8 @@ use crate::operators::{cs_zscore, ts_mean, ts_pctchg};
 pub const FAIR_VOLATILITY_RAW_ID: &str = "daily_fair_volatility";
 pub const FAIR_RETURN_RAW_ID: &str = "daily_fair_return";
 
-const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.3.0";
+const RAW_VERSION: &str = "0.3.0";
+const VERSION: &str = "0.5.0";
 const WINDOW: usize = 20;
 const EVENT_WINDOW: usize = 5;
 
@@ -54,22 +53,16 @@ impl Factor for StockDailyTreatSame {
                 "intraday",
                 "minute_agg",
                 "composite",
-                "neutralize",
-                "barra",
-                "size",
-                "sector",
                 "daily",
                 "FZZQ",
             ]
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Composite fair volatility and fair return response to normalized intraday volume spikes and drops, neutralized by Barra SIZE and SW sector.".to_string(),
-            dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["open", "close"]),
-                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
-                DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
-            ],
+            description:
+                "Composite fair volatility and fair return response to normalized intraday volume spikes and drops."
+                    .to_string(),
+            dependencies: vec![DataRequest::new(DatasetId::StockDailyPv, &["open", "close"])],
             intraday_raw_dependencies: vec![
                 IntradayDailyRawRequest::new(FAIR_VOLATILITY_RAW_ID, WINDOW - 1),
                 IntradayDailyRawRequest::new(FAIR_RETURN_RAW_ID, WINDOW - 1),
@@ -175,12 +168,7 @@ impl Factor for StockDailyTreatSame {
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let sector_map = ClassificationMap::from_table(
-            data.daily(DatasetId::StockSwClassification)?,
-            ClassificationLevel::Sector,
-        )?;
         let panel = data.intraday_daily_raw_panel(FAIR_VOLATILITY_RAW_ID)?;
-        let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
         let open = panel.column_from_table(data.daily(DatasetId::StockDailyPv)?, "open")?;
         let close = panel.column_from_table(data.daily(DatasetId::StockDailyPv)?, "close")?;
         let intraday_return = close.zip_binary(&open, ret)?;
@@ -195,13 +183,8 @@ impl Factor for StockDailyTreatSame {
         let vol_fair = fair_volatility.ts(|values| ts_mean(values, WINDOW, 1))?;
         let ret_fair = fair_return.ts(|values| ts_mean(values, WINDOW, 1))?;
         let raw_factor = average_pair(&vol_fair.cs(cs_zscore)?, &ret_fair.cs(cs_zscore)?)?;
-        let neutralized = raw_factor.cs_neutralize_regression_by_group(
-            &[&size],
-            None,
-            |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),
-        )?;
 
-        Ok(neutralized.to_factor_series(self.spec()))
+        Ok(raw_factor.to_factor_series(self.spec()))
     }
 }
 
@@ -244,7 +227,7 @@ fn fair_values_from_rows(
         .iter()
         .map(|pos| positive_log(clean_intraday_value(volume[indices[*pos]])))
         .collect::<Vec<_>>();
-    let volume_diff = forward_filled_diff(&log_volume);
+    let volume_diff = diff_from_previous_valid(&log_volume);
     let Some((diff_mean, diff_std)) = mean_std(volume_diff.iter().filter_map(|value| *value))
     else {
         return FairValues {
@@ -259,24 +242,35 @@ fn fair_values_from_rows(
     let mut drop_std = Vec::new();
     let mut spike_mean = Vec::new();
     let mut drop_mean = Vec::new();
-    for pos in 0..selected.len().saturating_sub(EVENT_WINDOW - 1) {
+    for pos in 0..selected.len() {
         let Some(diff) = volume_diff[pos] else {
             continue;
         };
-        let window = &returns[pos..pos + EVENT_WINDOW];
-        if !window.iter().all(Option::is_some) {
-            continue;
-        }
-        let Some((return_mean, return_std)) = mean_std(window.iter().filter_map(|value| *value))
-        else {
-            continue;
+        let event_return = returns[pos];
+        let return_std = if pos + EVENT_WINDOW <= returns.len() {
+            let window = &returns[pos..pos + EVENT_WINDOW];
+            window
+                .iter()
+                .all(Option::is_some)
+                .then(|| mean_std(window.iter().filter_map(|value| *value)).map(|(_, std)| std))
+                .flatten()
+        } else {
+            None
         };
         if diff > spike_threshold {
-            spike_std.push(return_std);
-            spike_mean.push(return_mean);
+            if let Some(return_std) = return_std {
+                spike_std.push(return_std);
+            }
+            if let Some(event_return) = event_return {
+                spike_mean.push(event_return);
+            }
         } else if diff < drop_threshold {
-            drop_std.push(return_std);
-            drop_mean.push(return_mean);
+            if let Some(return_std) = return_std {
+                drop_std.push(return_std);
+            }
+            if let Some(event_return) = event_return {
+                drop_mean.push(event_return);
+            }
         }
     }
 
@@ -286,24 +280,17 @@ fn fair_values_from_rows(
     }
 }
 
-fn forward_filled_diff(values: &[Option<f64>]) -> Vec<Option<f64>> {
+fn diff_from_previous_valid(values: &[Option<f64>]) -> Vec<Option<f64>> {
     let mut output = vec![None; values.len()];
-    let mut last_filled: Option<f64> = None;
-    let mut previous_filled: Option<f64> = None;
+    let mut previous_valid: Option<f64> = None;
     for (idx, value) in values.iter().enumerate() {
-        if let Some(value) = clean(*value) {
-            last_filled = Some(value);
-        }
-        let Some(current) = last_filled else {
+        let Some(current) = clean(*value) else {
             continue;
         };
-        if let Some(previous) = previous_filled {
-            let diff = current - previous;
-            if diff.abs() > f64::EPSILON {
-                output[idx] = Some(diff);
-            }
+        if let Some(previous) = previous_valid {
+            output[idx] = Some(current - previous);
         }
-        previous_filled = Some(current);
+        previous_valid = Some(current);
     }
     output
 }
@@ -363,21 +350,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn log_volume_diff_forward_fills_and_drops_zero_diff() {
+    fn log_volume_diff_uses_previous_valid_and_keeps_true_zero_diff() {
         let values = vec![
             Some(10.0_f64.ln()),
             None,
+            None,
+            Some(20.0_f64.ln()),
+            Some(20.0_f64.ln()),
             Some(20.0_f64.ln()),
             Some(20.0_f64.ln()),
             Some(5.0_f64.ln()),
         ];
-        let diff = forward_filled_diff(&values);
+        let diff = diff_from_previous_valid(&values);
 
         assert_eq!(diff[0], None);
         assert_eq!(diff[1], None);
-        assert!(diff[2].is_some_and(|value| value > 0.0));
-        assert_eq!(diff[3], None);
-        assert!(diff[4].is_some_and(|value| value < 0.0));
+        assert_eq!(diff[2], None);
+        assert!(diff[3].is_some_and(|value| value > 0.0));
+        assert_eq!(diff[4], Some(0.0));
+        assert_eq!(diff[5], Some(0.0));
+        assert!(diff[7].is_some_and(|value| value < 0.0));
+    }
+
+    #[test]
+    fn log_volume_diff_does_not_add_zero_for_missing_values() {
+        let values = vec![Some(10.0_f64.ln()), None, None, Some(20.0_f64.ln())];
+        let diff = diff_from_previous_valid(&values);
+
+        assert_eq!(diff[0], None);
+        assert_eq!(diff[1], None);
+        assert_eq!(diff[2], None);
+        assert!((diff[3].unwrap() - (20.0_f64 / 10.0).ln()).abs() < 1e-12);
     }
 
     #[test]
@@ -421,6 +424,33 @@ mod tests {
     }
 
     #[test]
+    fn fair_return_uses_event_minute_return_not_five_minute_mean() {
+        let indices = (0..8).collect::<Vec<_>>();
+        let times = (31..=38)
+            .map(|minute| Some(format!("09:{minute:02}:00")))
+            .collect::<Vec<_>>();
+        let close = vec![
+            Some(100.0),
+            Some(110.0),
+            Some(88.0),
+            Some(90.0),
+            Some(91.0),
+            Some(92.0),
+            Some(93.0),
+            Some(94.0),
+        ];
+        let volume = [0.0_f64, 10.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+            .into_iter()
+            .map(|value| Some(value.exp()))
+            .collect::<Vec<_>>();
+
+        let values = fair_values_from_rows(&indices, &times, &close, &volume);
+
+        assert!((values.return_mean.unwrap() - 0.3).abs() < 1e-12);
+        assert!(values.volatility.is_some());
+    }
+
+    #[test]
     fn fair_values_require_both_spike_and_drop_sides() {
         let indices = (0..7).collect::<Vec<_>>();
         let times = (31..=37)
@@ -435,15 +465,7 @@ mod tests {
             Some(105.0),
             Some(106.0),
         ];
-        let volume = vec![
-            Some(100.0),
-            Some(110.0),
-            Some(120.0),
-            Some(130.0),
-            Some(140.0),
-            Some(150.0),
-            Some(160.0),
-        ];
+        let volume = vec![Some(100.0); 7];
 
         let values = fair_values_from_rows(&indices, &times, &close, &volume);
 

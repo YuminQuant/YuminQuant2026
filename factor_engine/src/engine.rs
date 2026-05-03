@@ -976,6 +976,7 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
     if let Some(tags) = &request.tags {
         let selected = base
             .into_iter()
+            .filter(|row| !is_deprecated_factor(row))
             .filter(|row| {
                 tags.iter()
                     .all(|tag| row.tags.iter().any(|item| item == tag))
@@ -993,13 +994,18 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
     if let Some(factor_ids) = &request.factor_ids {
         let mut selected = Vec::new();
         let mut missing = Vec::new();
+        let mut deprecated = Vec::new();
         for factor_id_or_name in factor_ids {
             if let Some(row) = base.iter().find(|row| {
                 row.factor_id == *factor_id_or_name
                     || row.name == *factor_id_or_name
                     || row.aliases.iter().any(|alias| alias == factor_id_or_name)
             }) {
-                selected.push(row.clone());
+                if is_deprecated_factor(row) {
+                    deprecated.push(row.factor_id.clone());
+                } else {
+                    selected.push(row.clone());
+                }
             } else {
                 missing.push(factor_id_or_name.clone());
             }
@@ -1010,16 +1016,32 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
                 missing.join(",")
             ));
         }
+        if !deprecated.is_empty() {
+            deprecated.sort();
+            deprecated.dedup();
+            return SelectionResult::Empty(format!(
+                "Deprecated factors are excluded from run: {}",
+                deprecated.join(",")
+            ));
+        }
         return SelectionResult::Selected(selected);
     }
 
-    if base.is_empty() {
+    let active = base
+        .into_iter()
+        .filter(|row| !is_deprecated_factor(row))
+        .collect::<Vec<_>>();
+    if active.is_empty() {
         return SelectionResult::Empty(format!(
             "No factors found in metadata for asset={} frequency={}.",
             request.asset_class, request.frequency
         ));
     }
-    SelectionResult::Selected(base)
+    SelectionResult::Selected(active)
+}
+
+fn is_deprecated_factor(row: &FactorMetadata) -> bool {
+    row.tags.iter().any(|tag| tag == "deprecated")
 }
 
 fn empty_report(request: &RunRequest, message: String) -> RunReport {
@@ -1319,12 +1341,8 @@ mod tests {
     fn execution_groups_split_daily_and_intraday_daily_by_lookback() {
         let specs = vec![
             spec_with_dataset("return_1d", DatasetId::StockDailyPv, 0),
-            spec_with_dataset("ret_over_sqrt_vol_mean", DatasetId::StockMinute1m, 0),
-            spec_with_dataset(
-                "top20_centered_vol_ret_mean_20d_mean",
-                DatasetId::StockMinute1m,
-                19,
-            ),
+            spec_with_dataset("intraday_factor_lookback_0", DatasetId::StockMinute1m, 0),
+            spec_with_dataset("intraday_factor_lookback_19", DatasetId::StockMinute1m, 19),
             spec_with_dataset("another_intraday_lookback_19", DatasetId::StockMinute1m, 19),
         ];
 
@@ -1349,10 +1367,10 @@ mod tests {
     fn execution_groups_route_intraday_raw_factors_to_postprocess_stage() {
         let specs = vec![
             spec_with_dataset("return_1d", DatasetId::StockDailyPv, 0),
-            spec_with_raw("ret_over_sqrt_vol_mean", "ret_over_sqrt_vol_mean", 0),
+            spec_with_raw("intraday_factor_lookback_0", "intraday_raw_lookback_0", 0),
             spec_with_raw(
-                "top20_centered_vol_ret_mean_20d_mean",
-                "top20_centered_vol_ret_mean",
+                "intraday_factor_lookback_19",
+                "intraday_raw_lookback_19",
                 19,
             ),
         ];
@@ -1405,6 +1423,61 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].asset_class, "stock");
         assert_eq!(selected[0].factor_id, "return_1d");
+    }
+
+    #[test]
+    fn selection_excludes_deprecated_for_tag_requests() {
+        let request = RunRequest {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20260105,
+            end_date: 20260105,
+            factor_ids: None,
+            tags: Some(vec!["worldquant101alpha".to_string()]),
+            config_path: None,
+            dry_run: false,
+            factor_batch_size: 64,
+            threads: None,
+            profile: false,
+            refresh_minute_cache: false,
+        };
+        let mut active = metadata_row("WQAlpha002", "stock", "daily", &[]);
+        active.tags = vec!["worldquant101alpha".to_string()];
+        let mut deprecated = metadata_row("WQAlpha001", "stock", "daily", &[]);
+        deprecated.tags = vec!["worldquant101alpha".to_string(), "deprecated".to_string()];
+
+        let SelectionResult::Selected(selected) = select_metadata(&request, &[active, deprecated])
+        else {
+            panic!("expected selected");
+        };
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].factor_id, "WQAlpha002");
+    }
+
+    #[test]
+    fn selection_rejects_explicit_deprecated_factor() {
+        let request = RunRequest {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20260105,
+            end_date: 20260105,
+            factor_ids: Some(vec!["WQAlpha001".to_string()]),
+            tags: None,
+            config_path: None,
+            dry_run: false,
+            factor_batch_size: 64,
+            threads: None,
+            profile: false,
+            refresh_minute_cache: false,
+        };
+        let mut deprecated = metadata_row("WQAlpha001", "stock", "daily", &[]);
+        deprecated.tags = vec!["deprecated".to_string()];
+
+        let SelectionResult::Empty(message) = select_metadata(&request, &[deprecated]) else {
+            panic!("expected empty");
+        };
+        assert!(message.contains("Deprecated factors are excluded from run"));
+        assert!(message.contains("WQAlpha001"));
     }
 
     fn metadata_row(

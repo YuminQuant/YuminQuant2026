@@ -534,6 +534,12 @@ fn parse_csv_values(value: &str) -> Vec<String> {
 }
 
 fn matches_tag_filter(row_tags: &[String], tags_filter: &Option<Vec<String>>) -> bool {
+    let asks_for_deprecated = tags_filter
+        .as_ref()
+        .is_some_and(|tags| tags.iter().any(|tag| tag == "deprecated"));
+    if !asks_for_deprecated && row_tags.iter().any(|tag| tag == "deprecated") {
+        return false;
+    }
     match tags_filter {
         Some(tags) => tags
             .iter()
@@ -827,6 +833,20 @@ mod tests {
             &Some(parse_csv_values("FZZQ,missing"))
         ));
         assert!(matches_tag_filter(&row_tags, &None));
+    }
+
+    #[test]
+    fn list_tag_filter_hides_deprecated_by_default() {
+        let row_tags = parse_csv_values("daily,worldquant101alpha,deprecated");
+        assert!(!matches_tag_filter(&row_tags, &None));
+        assert!(!matches_tag_filter(
+            &row_tags,
+            &Some(parse_csv_values("worldquant101alpha"))
+        ));
+        assert!(matches_tag_filter(
+            &row_tags,
+            &Some(parse_csv_values("deprecated"))
+        ));
     }
 
     #[test]

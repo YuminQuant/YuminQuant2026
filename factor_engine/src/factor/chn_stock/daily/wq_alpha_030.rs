@@ -23,7 +23,7 @@ impl Factor for StockDailyWQAlpha030 {
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: "0.1.0".to_string(),
-            tags: ["worldquant101alpha", "price_volume", "daily"]
+            tags: ["worldquant101alpha", "price_volume", "daily", "deprecated"]
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),

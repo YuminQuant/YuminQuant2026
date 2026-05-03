@@ -1,5 +1,6 @@
 pub mod brave_peak_climb;
 pub mod complete_tide;
+pub mod dripping_stone;
 pub mod flower_hidden_forest;
 pub mod fog_clearing;
 pub mod grass_trees_panic;
@@ -84,6 +85,7 @@ pub mod wq_alpha_101;
 
 pub use brave_peak_climb::StockDailyBravePeakClimb;
 pub use complete_tide::StockDailyCompleteTide;
+pub use dripping_stone::StockDailyDrippingStone;
 pub use flower_hidden_forest::StockDailyFlowerHiddenForest;
 pub use fog_clearing::StockDailyFogClearing;
 pub use grass_trees_panic::StockDailyGrassTreesPanic;

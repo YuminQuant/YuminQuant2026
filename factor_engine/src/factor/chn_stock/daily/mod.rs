@@ -1,4 +1,6 @@
 pub mod brave_peak_climb;
+pub mod cdpdp;
+pub mod cdpp;
 pub mod complete_tide;
 pub mod cpv;
 pub mod dripping_stone;
@@ -84,6 +86,8 @@ pub mod wq_alpha_100;
 pub mod wq_alpha_101;
 
 pub use brave_peak_climb::StockDailyBravePeakClimb;
+pub use cdpdp::StockDailyCdpdp;
+pub use cdpp::StockDailyCdpp;
 pub use complete_tide::StockDailyCompleteTide;
 pub use cpv::StockDailyCpv;
 pub use dripping_stone::StockDailyDrippingStone;

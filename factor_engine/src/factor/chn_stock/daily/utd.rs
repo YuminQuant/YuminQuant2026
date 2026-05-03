@@ -17,7 +17,7 @@ use crate::operators::{ts_mean, ts_std_dev};
 pub const TURNOVER_VOLATILITY_RAW_ID: &str = "daily_turnover_rate_volatility";
 
 const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
 const FLOAT_SHARE_UNIT: f64 = 10_000.0;
 
@@ -54,13 +54,16 @@ impl Factor for StockDailyUtd {
                 "distribution",
                 "intraday",
                 "minute_agg",
+                "neutralize",
+                "barra",
+                "size",
                 "daily",
             ]
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Uniformity of Turnover Rate Distribution, computed as the 20-day volatility-to-mean ratio of intraday turnover-rate volatility.".to_string(),
-            dependencies: Vec::new(),
+            description: "Uniformity of Turnover Rate Distribution, computed as the 20-day volatility-to-mean ratio of intraday turnover-rate volatility after SIZE neutralization.".to_string(),
+            dependencies: vec![DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"])],
             intraday_raw_dependencies: vec![IntradayDailyRawRequest::new(
                 TURNOVER_VOLATILITY_RAW_ID,
                 WINDOW - 1,
@@ -154,9 +157,11 @@ impl Factor for StockDailyUtd {
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
         let panel = data.intraday_daily_raw_panel(TURNOVER_VOLATILITY_RAW_ID)?;
         let raw = panel.column(TURNOVER_VOLATILITY_RAW_ID)?;
+        let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
         let mean20 = raw.ts(|values| ts_mean(values, WINDOW, WINDOW))?;
         let std20 = raw.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
-        let factor = std20.zip_binary(&mean20, safe_div)?;
+        let raw_factor = std20.zip_binary(&mean20, safe_div)?;
+        let factor = raw_factor.cs_neutralize_regression(&[&size], None)?;
         Ok(factor.to_factor_series(self.spec()))
     }
 }

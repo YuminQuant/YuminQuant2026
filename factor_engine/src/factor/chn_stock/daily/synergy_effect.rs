@@ -19,8 +19,8 @@ use crate::operators::{cs_zscore, ts_mean, ts_std_dev};
 pub const VOLUME_SYNERGY_RAW_ID: &str = "daily_volume_synergy";
 pub const SYNERGY_SPREAD_RAW_ID: &str = "daily_synergy_spread";
 
-const RAW_VERSION: &str = "0.2.0";
-const VERSION: &str = "0.3.0";
+const RAW_VERSION: &str = "0.3.0";
+const VERSION: &str = "0.4.0";
 const WINDOW: usize = 20;
 const OHLC_WINDOW: usize = 5;
 const DIFF_WINDOW: usize = 5;
@@ -490,17 +490,17 @@ fn synergy_signals(
                 sign(intraday_return[matrix.offset(time_idx, code_idx)]),
                 sign(diff_option(
                     intraday_return[matrix.offset(time_idx, code_idx)],
-                    intraday_return[matrix.offset(time_idx - DIFF_WINDOW, code_idx)],
+                    previous_window_mean(&intraday_return, matrix, time_idx, code_idx),
                 )),
                 sign(diff_option(
                     matrix.volume[matrix.offset(time_idx, code_idx)],
-                    matrix.volume[matrix.offset(time_idx - DIFF_WINDOW, code_idx)],
+                    previous_window_mean(&matrix.volume, matrix, time_idx, code_idx),
                 )),
             ];
             if all_zero(signals) {
                 let fallback = sign(diff_option(
                     matrix.close[matrix.offset(time_idx, code_idx)],
-                    minute_vwap(matrix, time_idx - DIFF_WINDOW, code_idx),
+                    previous_window_vwap(matrix, time_idx, code_idx),
                 ));
                 signals = [fallback; 3];
             }
@@ -515,6 +515,22 @@ fn synergy_signals(
         }
     }
     output
+}
+
+fn previous_window_mean(
+    values: &[Option<f64>],
+    matrix: &MinuteSynergyMatrix,
+    time_idx: usize,
+    code_idx: usize,
+) -> Option<f64> {
+    if time_idx < DIFF_WINDOW {
+        return None;
+    }
+    let mut sum = 0.0;
+    for previous_idx in time_idx - DIFF_WINDOW..time_idx {
+        sum += clean(values[matrix.offset(previous_idx, code_idx)])?;
+    }
+    Some(sum / DIFF_WINDOW as f64)
 }
 
 fn intraday_returns(matrix: &MinuteSynergyMatrix) -> Vec<Option<f64>> {
@@ -532,13 +548,21 @@ fn intraday_returns(matrix: &MinuteSynergyMatrix) -> Vec<Option<f64>> {
     output
 }
 
-fn minute_vwap(matrix: &MinuteSynergyMatrix, time_idx: usize, code_idx: usize) -> Option<f64> {
-    let amount = clean(matrix.amount[matrix.offset(time_idx, code_idx)])?;
-    let volume = clean(matrix.volume[matrix.offset(time_idx, code_idx)])?;
-    if volume.abs() <= f64::EPSILON {
+fn previous_window_vwap(
+    matrix: &MinuteSynergyMatrix,
+    time_idx: usize,
+    code_idx: usize,
+) -> Option<f64> {
+    if time_idx < DIFF_WINDOW {
         return None;
     }
-    minute_vwap_from_amount_vol(Some(amount), Some(volume))
+    let mut amount_sum = 0.0;
+    let mut volume_sum = 0.0;
+    for previous_idx in time_idx - DIFF_WINDOW..time_idx {
+        amount_sum += clean(matrix.amount[matrix.offset(previous_idx, code_idx)])?;
+        volume_sum += clean(matrix.volume[matrix.offset(previous_idx, code_idx)])?;
+    }
+    minute_vwap_from_amount_vol(Some(amount_sum), Some(volume_sum))
 }
 
 #[derive(Clone, Debug)]
@@ -902,7 +926,48 @@ mod tests {
     }
 
     #[test]
-    fn synergy_signals_apply_two_robust_fallbacks_and_project_vwap() {
+    fn synergy_signals_compare_current_values_with_previous_five_minute_means() {
+        let matrix = MinuteSynergyMatrix {
+            times: (0..6).map(|idx| format!("09:3{}:00", idx + 1)).collect(),
+            codes: vec!["a".to_string()],
+            open: vec![Some(100.0); 6],
+            high: vec![Some(100.0); 6],
+            low: vec![Some(100.0); 6],
+            close: vec![
+                Some(150.0),
+                Some(150.0),
+                Some(150.0),
+                Some(150.0),
+                Some(50.0),
+                Some(140.0),
+            ],
+            volume: vec![
+                Some(100.0),
+                Some(1.0),
+                Some(1.0),
+                Some(1.0),
+                Some(1.0),
+                Some(50.0),
+            ],
+            amount: vec![Some(1.0); 6],
+        };
+        let signals = synergy_signals(&matrix, &[Some(100.0)]);
+
+        assert_eq!(signals[0][0], Some(1));
+        assert_eq!(
+            signals[0][1],
+            Some(1),
+            "0.4 is above the previous-five-minute mean return 0.3, but below t-5 return 0.5"
+        );
+        assert_eq!(
+            signals[0][2],
+            Some(1),
+            "50 is above the previous-five-minute mean volume 20.8, but below t-5 volume 100"
+        );
+    }
+
+    #[test]
+    fn synergy_signals_apply_two_robust_fallbacks_with_previous_window_vwap() {
         let matrix = MinuteSynergyMatrix {
             times: (0..6).map(|idx| format!("09:3{}:00", idx + 1)).collect(),
             codes: vec!["a".to_string()],
@@ -912,22 +977,47 @@ mod tests {
             close: vec![Some(10.0); 6],
             volume: vec![Some(10.0); 6],
             amount: vec![
-                Some(10.0),
-                Some(10.0),
-                Some(10.0),
-                Some(10.0),
-                Some(10.0),
-                Some(12.0),
+                Some(50.0),
+                Some(50.0),
+                Some(50.0),
+                Some(50.0),
+                Some(50.0),
+                Some(500.0),
             ],
         };
         let signals = synergy_signals(&matrix, &[Some(9.0)]);
         assert_eq!(signals[0], [Some(1), Some(1), Some(1)]);
 
         let mut fallback_preclose = matrix.clone();
-        fallback_preclose.amount[0] = Some(100.0);
+        for idx in 0..5 {
+            fallback_preclose.amount[idx] = Some(100.0);
+        }
         fallback_preclose.close[5] = Some(10.0);
         let signals = synergy_signals(&fallback_preclose, &[Some(11.0)]);
         assert_eq!(signals[0], [Some(-1), Some(-1), Some(-1)]);
+    }
+
+    #[test]
+    fn previous_window_vwap_requires_complete_previous_five_minutes() {
+        let matrix = MinuteSynergyMatrix {
+            times: (0..6).map(|idx| format!("09:3{}:00", idx + 1)).collect(),
+            codes: vec!["a".to_string()],
+            open: vec![Some(10.0); 6],
+            high: vec![Some(10.0); 6],
+            low: vec![Some(10.0); 6],
+            close: vec![Some(10.0); 6],
+            volume: vec![
+                Some(10.0),
+                Some(10.0),
+                Some(10.0),
+                None,
+                Some(10.0),
+                Some(10.0),
+            ],
+            amount: vec![Some(100.0); 6],
+        };
+
+        assert_eq!(previous_window_vwap(&matrix, 5, 0), None);
     }
 
     #[test]

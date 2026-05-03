@@ -18,7 +18,7 @@ pub const FAIR_VOLATILITY_RAW_ID: &str = "daily_fair_volatility";
 pub const FAIR_RETURN_RAW_ID: &str = "daily_fair_return";
 
 const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.3.0";
 const WINDOW: usize = 20;
 const EVENT_WINDOW: usize = 5;
 

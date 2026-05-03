@@ -400,12 +400,8 @@ impl Engine {
                                 .count(),
                         })
                         .collect::<Vec<_>>();
-                    let writable_results = results
-                        .into_iter()
-                        .filter_map(omit_all_null_barra_dependency_dates)
-                        .collect::<Vec<_>>();
                     let write_started = Instant::now();
-                    let written_paths = storage.write_results(&writable_results)?;
+                    let written_paths = storage.write_results(&results)?;
                     let write_ms = write_started.elapsed().as_millis();
                     output_paths.extend(written_paths);
                     if request.profile {
@@ -1254,31 +1250,6 @@ fn compute_factor_batch(
         None => compute(),
     };
     results.into_iter().collect()
-}
-
-fn omit_all_null_barra_dependency_dates(mut series: FactorSeries) -> Option<FactorSeries> {
-    let depends_on_barra = series
-        .spec
-        .dependencies
-        .iter()
-        .any(|request| request.dataset == DatasetId::StockBarraDaily);
-    if !depends_on_barra {
-        return Some(series);
-    }
-
-    let keep_dates = series
-        .values
-        .iter()
-        .filter(|item| item.value.is_some())
-        .map(|item| item.key.trade_date())
-        .collect::<BTreeSet<_>>();
-    if keep_dates.is_empty() {
-        return None;
-    }
-    series
-        .values
-        .retain(|item| keep_dates.contains(&item.key.trade_date()));
-    Some(series)
 }
 
 pub fn available_specs() -> Vec<FactorSpec> {

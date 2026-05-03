@@ -66,6 +66,9 @@ impl MarketDataLoader {
             }
         }
 
+        if table.columns.is_empty() {
+            return empty_daily_keyed_table(&columns);
+        }
         Ok(table)
     }
 
@@ -123,6 +126,9 @@ impl MarketDataLoader {
             }
         }
 
+        if table.columns.is_empty() {
+            return empty_daily_keyed_table(&columns);
+        }
         Ok(table)
     }
 
@@ -304,13 +310,13 @@ impl MarketDataLoader {
             }
         }
         if table.columns.is_empty() {
-            return empty_barra_daily_table(&columns);
+            return empty_daily_keyed_table(&columns);
         }
         Ok(table)
     }
 }
 
-fn empty_barra_daily_table(columns: &[String]) -> Result<Table> {
+fn empty_daily_keyed_table(columns: &[String]) -> Result<Table> {
     let mut values = BTreeMap::new();
     for column in columns {
         let data = match column.as_str() {
@@ -494,6 +500,28 @@ mod tests {
     }
 
     #[test]
+    fn index_daily_loader_treats_missing_dates_as_empty_keyed_table() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_index_missing_loader_test_{unique}"));
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let loaded = loader
+            .load_index_daily_by_dates("000985.CSI", &["close".to_string()], &[20090105])
+            .expect("missing index files should be tolerated");
+
+        assert_eq!(loaded.len, 0);
+        assert!(loaded.columns.contains_key("trade_date"));
+        assert!(loaded.columns.contains_key("ts_code"));
+        assert!(loaded.columns.contains_key("close"));
+
+        if root.exists() {
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[test]
     fn daily_loader_reads_date_files_before_yearly_fallback() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -581,6 +609,9 @@ mod tests {
             .expect("missing daily files should be tolerated");
 
         assert_eq!(loaded.len, 0);
+        assert!(loaded.columns.contains_key("trade_date"));
+        assert!(loaded.columns.contains_key("ts_code"));
+        assert!(loaded.columns.contains_key("open"));
 
         if root.exists() {
             fs::remove_dir_all(root).expect("cleanup");

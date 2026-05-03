@@ -596,9 +596,15 @@ fn merge_existing_output(
         return Ok(());
     }
     let table = read_parquet(path, None)?;
-    let ts_codes = table.required_utf8("ts_code")?;
+    let ts_codes = table
+        .required_utf8("ts_code")
+        .map_err(|source| err(format!("{source} in {}", path.display())))?;
     let trade_times = if frequency == Frequency::Minute1 {
-        Some(table.required_utf8("trade_time")?)
+        Some(
+            table
+                .required_utf8("trade_time")
+                .map_err(|source| err(format!("{source} in {}", path.display())))?,
+        )
     } else {
         None
     };
@@ -609,7 +615,12 @@ fn merge_existing_output(
         .collect::<Vec<_>>();
     let mut factor_values = BTreeMap::new();
     for column in &factor_columns {
-        factor_values.insert(column.clone(), table.required_f64_cast(column)?);
+        factor_values.insert(
+            column.clone(),
+            table
+                .required_f64_cast(column)
+                .map_err(|source| err(format!("{source} in {}", path.display())))?,
+        );
     }
 
     for idx in 0..table.len {

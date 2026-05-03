@@ -19,6 +19,25 @@ pub fn read_parquet(path: &Path, columns: Option<&[String]>) -> Result<Table> {
 
     if let Some(requested_columns) = columns {
         let schema = builder.schema().clone();
+        let missing_required = requested_columns
+            .iter()
+            .filter(|requested| {
+                matches!(requested.as_str(), "trade_date" | "trade_time" | "ts_code")
+                    && !schema
+                        .fields()
+                        .iter()
+                        .any(|field| field.name() == *requested)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_required.is_empty() {
+            return Err(err(format!(
+                "missing required parquet column(s) {} in {}; requested columns {:?}",
+                missing_required.join(","),
+                path.display(),
+                requested_columns
+            )));
+        }
         let mut projection_indices = Vec::new();
         for requested in requested_columns {
             if let Some((idx, _)) = schema

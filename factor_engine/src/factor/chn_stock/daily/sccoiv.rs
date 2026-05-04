@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
@@ -113,10 +113,13 @@ impl Factor for StockDailySccoiv {
         context: &FactorContext,
         data: &DataPool,
     ) -> Result<Vec<IntradayDailyRawSeries>> {
-        let requested = raw_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
-        let wants_pm_co = requested.contains(PM_CO_RAW_ID);
-        let wants_pm_smart_turnover = requested.contains(PM_SMART_TURNOVER_RAW_ID);
-        let wants_last30_turnover = requested.contains(LAST30_TURNOVER_RAW_ID);
+        let wants_pm_co = raw_ids.iter().any(|raw_id| raw_id == PM_CO_RAW_ID);
+        let wants_pm_smart_turnover = raw_ids
+            .iter()
+            .any(|raw_id| raw_id == PM_SMART_TURNOVER_RAW_ID);
+        let wants_last30_turnover = raw_ids
+            .iter()
+            .any(|raw_id| raw_id == LAST30_TURNOVER_RAW_ID);
         if !wants_pm_co && !wants_pm_smart_turnover && !wants_last30_turnover {
             return Ok(Vec::new());
         }
@@ -296,13 +299,13 @@ fn afternoon_smart_turnover(
         };
         if pos == 0 {
             continue;
-        }
+        };
         let Some(previous_close) = clean_intraday_value(close[indices[pos - 1]]) else {
             continue;
         };
         if previous_close.abs() <= f64::EPSILON {
             continue;
-        }
+        };
         let Some(volume) = clean_intraday_value(volume[idx]) else {
             continue;
         };

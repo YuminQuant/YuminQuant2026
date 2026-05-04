@@ -9,8 +9,9 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_regression_residual, cs_zscore, ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyTpsTurbo;
 
@@ -42,7 +43,7 @@ impl Factor for StockDailyTpsTurbo {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Turbo TPS factor combining pure Turn20 and pure GTR after cross-sectional residualization, SIZE neutralization, and zscore.".to_string(),
+            description: "Turbo TPS factor combining pure Turn20 and pure GTR with relaxed missing-data windows after cross-sectional residualization, SIZE neutralization, and zscore.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -69,7 +70,7 @@ impl Factor for StockDailyTpsTurbo {
             .cs_neutralize_regression(&[&size], None)?
             .cs(cs_zscore)?;
         let pure_gtr = pure_growth
-            .ts(|values| ts_std_dev(values, WINDOW, WINDOW))?
+            .ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?
             .cs_neutralize_regression(&[&size], None)?
             .cs(cs_zscore)?;
         let factor = average_pair(&pure_turn20, &pure_gtr)?;
@@ -103,7 +104,9 @@ fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> 
 
 #[cfg(test)]
 mod tests {
+    use super::{MIN_PERIODS, WINDOW};
     use crate::operators::cs_regression_residual;
+    use crate::operators::ts_std_dev;
 
     #[test]
     fn tps_turbo_daily_residual_removes_linear_turnover_growth_effect() {
@@ -112,5 +115,13 @@ mod tests {
         let residual = cs_regression_residual(&turnover, &growth);
 
         assert!(residual.iter().flatten().all(|value| value.abs() < 1e-10));
+    }
+
+    #[test]
+    fn tps_turbo_pure_gtr_std_skips_missing_growth_values() {
+        let growth = vec![Some(0.1), None, Some(0.3)];
+        let std = ts_std_dev(&growth, WINDOW, MIN_PERIODS);
+
+        assert!(std[2].is_some());
     }
 }

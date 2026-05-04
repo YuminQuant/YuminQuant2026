@@ -9,8 +9,9 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_nonnegative, cs_scale, ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyTurn20Turbo;
 
@@ -41,7 +42,7 @@ impl Factor for StockDailyTurn20Turbo {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Turbo turnover factor combining SIZE-neutralized 20-day average turnover and GTR after non-negative scaling.".to_string(),
+            description: "Turbo turnover factor combining SIZE-neutralized 20-day average turnover and GTR with relaxed missing-data windows after non-negative scaling.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -65,7 +66,7 @@ impl Factor for StockDailyTurn20Turbo {
             .cs_neutralize_regression(&[&size], None)?;
         let growth = turnover.ts(turnover_growth)?;
         let gtr = growth
-            .ts(|values| ts_std_dev(values, WINDOW, WINDOW))?
+            .ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?
             .cs_neutralize_regression(&[&size], None)?;
         let factor = average_pair(&turbo_scale(&turn20)?, &turbo_scale(&gtr)?)?;
         Ok(factor.to_factor_series(self.spec()))
@@ -102,7 +103,10 @@ fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> 
 
 #[cfg(test)]
 mod tests {
+    use crate::operators::ts_std_dev;
     use crate::operators::{cs_nonnegative, cs_scale};
+
+    use super::{MIN_PERIODS, WINDOW};
 
     #[test]
     fn turn20_turbo_transform_order_is_nonnegative_then_scale() {
@@ -113,5 +117,13 @@ mod tests {
         assert_eq!(nonnegative[0], Some(0.0));
         assert!(scaled.iter().flatten().all(|value| *value >= 0.0));
         assert!((scaled.iter().flatten().sum::<f64>() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn turn20_turbo_gtr_std_skips_missing_growth_values() {
+        let growth = vec![Some(0.1), None, Some(0.3)];
+        let std = ts_std_dev(&growth, WINDOW, MIN_PERIODS);
+
+        assert!(std[2].is_some());
     }
 }

@@ -8,10 +8,11 @@ use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::{ts_delay, ts_std_dev};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const CURRENT_WINDOW: usize = 20;
 const BASE_WINDOW: usize = 40;
 const BASE_DELAY: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyScr;
 
@@ -42,7 +43,7 @@ impl Factor for StockDailyScr {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "The STR Change Rate factor, computed as current 20-day turnover volatility over previous 40-day turnover volatility minus one, neutralized by SIZE.".to_string(),
+            description: "The STR Change Rate factor, computed as current 20-day turnover volatility over previous 40-day turnover volatility minus one with relaxed missing-data windows, neutralized by SIZE.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -60,7 +61,7 @@ impl Factor for StockDailyScr {
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
         let current_volatility =
-            turnover.ts(|values| ts_std_dev(values, CURRENT_WINDOW, CURRENT_WINDOW))?;
+            turnover.ts(|values| ts_std_dev(values, CURRENT_WINDOW, MIN_PERIODS))?;
         let base_volatility = turnover.ts(previous_base_volatility)?;
         let raw = current_volatility.zip_binary(&base_volatility, volatility_change_rate)?;
         let factor = raw.cs_neutralize_regression(&[&size], None)?;
@@ -69,7 +70,7 @@ impl Factor for StockDailyScr {
 }
 
 fn previous_base_volatility(values: &[Option<f64>]) -> Vec<Option<f64>> {
-    let base = ts_std_dev(values, BASE_WINDOW, BASE_WINDOW);
+    let base = ts_std_dev(values, BASE_WINDOW, MIN_PERIODS);
     ts_delay(&base, BASE_DELAY)
 }
 
@@ -101,10 +102,21 @@ mod tests {
         values.extend((0..20).map(|_| Some(100.0)));
 
         let base = previous_base_volatility(&values);
-        let expected = ts_std_dev(&values[0..40], BASE_WINDOW, BASE_WINDOW)[39];
+        let expected = ts_std_dev(&values[0..40], BASE_WINDOW, MIN_PERIODS)[39];
 
-        assert_eq!(base[58], None);
         assert_close(base[59], expected);
+    }
+
+    #[test]
+    fn volatility_windows_skip_missing_values_with_min_periods_one() {
+        let mut values = (1..=60).map(|value| Some(value as f64)).collect::<Vec<_>>();
+        values[50] = None;
+
+        let current = ts_std_dev(&values, CURRENT_WINDOW, MIN_PERIODS);
+        let base = previous_base_volatility(&values);
+
+        assert!(current[59].is_some());
+        assert!(base[59].is_some());
     }
 
     #[test]

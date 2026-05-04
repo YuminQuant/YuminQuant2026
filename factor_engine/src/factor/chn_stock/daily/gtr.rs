@@ -8,8 +8,9 @@ use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::ts_std_dev;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyGtr;
 
@@ -40,7 +41,7 @@ impl Factor for StockDailyGtr {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "The Stability of the Growth Rate of Turnover Rate factor, computed as the 20-day standard deviation of turnover growth neutralized by SIZE.".to_string(),
+            description: "The Stability of the Growth Rate of Turnover Rate factor, computed as the 20-day standard deviation of turnover growth with relaxed missing-data windows neutralized by SIZE.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -60,7 +61,7 @@ impl Factor for StockDailyGtr {
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
         let growth = turnover.ts(turnover_growth)?;
-        let growth_std = growth.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
+        let growth_std = growth.ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?;
         let factor = growth_std.cs_neutralize_regression(&[&size], None)?;
         Ok(factor.to_factor_series(self.spec()))
     }
@@ -111,5 +112,13 @@ mod tests {
     #[test]
     fn gtr_turnover_percent_is_converted_to_decimal() {
         assert_close(percent_to_decimal(Some(2.5)), Some(0.025));
+    }
+
+    #[test]
+    fn gtr_std_skips_missing_growth_values_with_min_periods_one() {
+        let growth = vec![Some(0.1), None, Some(0.3)];
+        let std = ts_std_dev(&growth, WINDOW, MIN_PERIODS);
+
+        assert!(std[2].is_some());
     }
 }

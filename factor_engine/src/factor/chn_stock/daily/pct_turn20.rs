@@ -8,7 +8,7 @@ use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::{ts_delay, ts_mean};
 
-const VERSION: &str = "0.3.0";
+const VERSION: &str = "0.4.0";
 const BASE_WINDOW: usize = 40;
 const BASE_DELAY: usize = 20;
 const SIGNAL_WINDOW: usize = 20;
@@ -41,14 +41,14 @@ impl Factor for StockDailyPctTurn20 {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "20-day mean of turnover relative to a delayed 40-day baseline, neutralized by SIZE.".to_string(),
+            description: "20-day mean turnover relative to a single preceding 40-day turnover baseline, neutralized by SIZE.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
             ],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback {
-                trading_days: (BASE_WINDOW - 1) + BASE_DELAY + (SIGNAL_WINDOW - 1),
+                trading_days: (BASE_WINDOW - 1) + BASE_DELAY,
             },
         }
     }
@@ -58,10 +58,10 @@ impl Factor for StockDailyPctTurn20 {
         let turnover = panel.column("turnover_rate_f")?;
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
-        let base_tnv =
+        let signal_mean = turnover.ts(|values| ts_mean(values, SIGNAL_WINDOW, MIN_PERIODS))?;
+        let base_mean =
             turnover.ts(|values| delayed_rolling_mean(values, BASE_WINDOW, BASE_DELAY))?;
-        let relative_turnover = turnover.zip_binary(&base_tnv, relative_change)?;
-        let raw = relative_turnover.ts(|values| ts_mean(values, SIGNAL_WINDOW, MIN_PERIODS))?;
+        let raw = signal_mean.zip_binary(&base_mean, relative_change)?;
         let factor = raw.cs_neutralize_regression(&[&size], None)?;
         Ok(factor.to_factor_series(self.spec()))
     }
@@ -114,11 +114,35 @@ mod tests {
     }
 
     #[test]
-    fn pct_turn20_keeps_positive_relative_change_sign() {
-        let relative = vec![Some(0.2), Some(0.4)];
-        let mean = ts_mean(&relative, 2, 1);
+    fn pct_turn20_uses_signal_mean_over_single_prior_base() {
+        let values = (1..=61).map(|value| Some(value as f64)).collect::<Vec<_>>();
+        let signal = ts_mean(&values, 20, 1);
+        let base = delayed_rolling_mean(&values, 40, 20);
+        let raw = signal
+            .iter()
+            .zip(base.iter())
+            .map(|(signal, base)| relative_change(*signal, *base))
+            .collect::<Vec<_>>();
 
-        assert_close(mean[0], Some(0.2));
-        assert_close(mean[1], Some(0.3));
+        assert_close(raw[58], Some(49.5 / 20.0 - 1.0));
+        assert_close(raw[59], Some(50.5 / 20.5 - 1.0));
+        assert_close(raw[60], Some(51.5 / 21.5 - 1.0));
+    }
+
+    #[test]
+    fn pct_turn20_no_longer_averages_daily_relative_bases() {
+        let values = (1..=61).map(|value| Some(value as f64)).collect::<Vec<_>>();
+        let signal = ts_mean(&values, 20, 1);
+        let base = delayed_rolling_mean(&values, 40, 20);
+        let new_raw = relative_change(signal[60], base[60]).unwrap();
+
+        let daily_relative = values
+            .iter()
+            .zip(base.iter())
+            .map(|(current, base)| relative_change(*current, *base))
+            .collect::<Vec<_>>();
+        let old_raw = ts_mean(&daily_relative, 20, 1)[60].unwrap();
+
+        assert!((new_raw - old_raw).abs() > 1e-3);
     }
 }

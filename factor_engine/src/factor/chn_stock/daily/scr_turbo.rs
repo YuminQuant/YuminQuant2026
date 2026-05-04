@@ -9,10 +9,11 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_nonnegative, cs_scale, ts_delay, ts_std_dev};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const CURRENT_WINDOW: usize = 20;
 const BASE_WINDOW: usize = 40;
 const BASE_DELAY: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyScrTurbo;
 
@@ -44,7 +45,7 @@ impl Factor for StockDailyScrTurbo {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Turbo SCR factor combining SIZE-neutralized turnover stability change and GTR after non-negative scaling.".to_string(),
+            description: "Turbo SCR factor combining SIZE-neutralized turnover stability change with relaxed missing-data windows and GTR after non-negative scaling.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -64,14 +65,14 @@ impl Factor for StockDailyScrTurbo {
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
         let current_volatility =
-            turnover.ts(|values| ts_std_dev(values, CURRENT_WINDOW, CURRENT_WINDOW))?;
+            turnover.ts(|values| ts_std_dev(values, CURRENT_WINDOW, MIN_PERIODS))?;
         let base_volatility = turnover.ts(previous_base_volatility)?;
         let scr = current_volatility
             .zip_binary(&base_volatility, relative_change)?
             .cs_neutralize_regression(&[&size], None)?;
         let growth = turnover.ts(turnover_growth)?;
         let gtr = growth
-            .ts(|values| ts_std_dev(values, CURRENT_WINDOW, CURRENT_WINDOW))?
+            .ts(|values| ts_std_dev(values, CURRENT_WINDOW, MIN_PERIODS))?
             .cs_neutralize_regression(&[&size], None)?;
         let factor = average_pair(&turbo_scale(&scr)?, &turbo_scale(&gtr)?)?;
         Ok(factor.to_factor_series(self.spec()))
@@ -83,7 +84,7 @@ fn percent_to_decimal(value: Option<f64>) -> Option<f64> {
 }
 
 fn previous_base_volatility(values: &[Option<f64>]) -> Vec<Option<f64>> {
-    let base = ts_std_dev(values, BASE_WINDOW, BASE_WINDOW);
+    let base = ts_std_dev(values, BASE_WINDOW, MIN_PERIODS);
     ts_delay(&base, BASE_DELAY)
 }
 
@@ -132,5 +133,25 @@ mod tests {
     fn scr_turbo_rejects_zero_base_volatility() {
         assert_eq!(relative_change(Some(1.0), Some(0.0)), None);
         assert_close(relative_change(Some(3.0), Some(2.0)), Some(0.5));
+    }
+
+    #[test]
+    fn scr_turbo_volatility_windows_skip_missing_values_with_min_periods_one() {
+        let mut values = (1..=60).map(|value| Some(value as f64)).collect::<Vec<_>>();
+        values[50] = None;
+
+        let current = ts_std_dev(&values, CURRENT_WINDOW, MIN_PERIODS);
+        let base = previous_base_volatility(&values);
+
+        assert!(current[59].is_some());
+        assert!(base[59].is_some());
+    }
+
+    #[test]
+    fn scr_turbo_gtr_std_skips_missing_growth_values_with_min_periods_one() {
+        let growth = vec![Some(0.1), None, Some(0.3)];
+        let std = ts_std_dev(&growth, CURRENT_WINDOW, MIN_PERIODS);
+
+        assert!(std[2].is_some());
     }
 }

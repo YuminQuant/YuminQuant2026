@@ -9,7 +9,7 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_nonnegative, cs_scale, ts_delay, ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.4.0";
 const BASE_WINDOW: usize = 40;
 const BASE_DELAY: usize = 20;
 const SIGNAL_WINDOW: usize = 20;
@@ -45,14 +45,14 @@ impl Factor for StockDailyPctTurn20Turbo {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Turbo PctTurn20 factor combining SIZE-neutralized turnover baseline change and GTR after non-negative scaling.".to_string(),
+            description: "Turbo PctTurn20 factor combining SIZE-neutralized 20-day mean turnover relative to a single prior 40-day baseline and direction-aligned GTR after non-negative scaling.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
             ],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback {
-                trading_days: (BASE_WINDOW - 1) + BASE_DELAY + (SIGNAL_WINDOW - 1),
+                trading_days: (BASE_WINDOW - 1) + BASE_DELAY,
             },
         }
     }
@@ -64,15 +64,17 @@ impl Factor for StockDailyPctTurn20Turbo {
             .map_values(percent_to_decimal);
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
-        let base = turnover.ts(|values| delayed_rolling_mean(values, BASE_WINDOW, BASE_DELAY))?;
-        let relative = turnover.zip_binary(&base, relative_change)?;
-        let pct_turn20 = relative
-            .ts(|values| ts_mean(values, SIGNAL_WINDOW, MIN_PERIODS))?
+        let signal_mean = turnover.ts(|values| ts_mean(values, SIGNAL_WINDOW, MIN_PERIODS))?;
+        let base_mean =
+            turnover.ts(|values| delayed_rolling_mean(values, BASE_WINDOW, BASE_DELAY))?;
+        let pct_turn20 = signal_mean
+            .zip_binary(&base_mean, relative_change)?
             .cs_neutralize_regression(&[&size], None)?;
         let growth = turnover.ts(turnover_growth)?;
         let gtr = growth
-            .ts(|values| ts_std_dev(values, SIGNAL_WINDOW, SIGNAL_WINDOW))?
-            .cs_neutralize_regression(&[&size], None)?;
+            .ts(|values| ts_std_dev(values, SIGNAL_WINDOW, MIN_PERIODS))?
+            .cs_neutralize_regression(&[&size], None)?
+            .map_values(negate);
         let factor = average_pair(&turbo_scale(&pct_turn20)?, &turbo_scale(&gtr)?)?;
         Ok(factor.to_factor_series(self.spec()))
     }
@@ -100,6 +102,10 @@ fn turnover_growth(values: &[Option<f64>]) -> Vec<Option<f64>> {
         output[idx] = relative_change(values[idx], values[idx - 1]);
     }
     output
+}
+
+fn negate(value: Option<f64>) -> Option<f64> {
+    clean(value).map(|value| -value)
 }
 
 fn turbo_scale(values: &PanelColumn) -> Result<PanelColumn> {
@@ -131,5 +137,35 @@ mod tests {
     #[test]
     fn pct_turn20_turbo_relative_change_has_no_negative_sign() {
         assert_close(relative_change(Some(12.0), Some(10.0)), Some(0.2));
+    }
+
+    #[test]
+    fn pct_turn20_turbo_uses_signal_mean_over_single_prior_base() {
+        let values = (1..=61).map(|value| Some(value as f64)).collect::<Vec<_>>();
+        let signal = ts_mean(&values, SIGNAL_WINDOW, MIN_PERIODS);
+        let base = delayed_rolling_mean(&values, BASE_WINDOW, BASE_DELAY);
+        let raw = signal
+            .iter()
+            .zip(base.iter())
+            .map(|(signal, base)| relative_change(*signal, *base))
+            .collect::<Vec<_>>();
+
+        assert_close(raw[58], Some(49.5 / 20.0 - 1.0));
+        assert_close(raw[59], Some(50.5 / 20.5 - 1.0));
+        assert_close(raw[60], Some(51.5 / 21.5 - 1.0));
+    }
+
+    #[test]
+    fn pct_turn20_turbo_negates_gtr_direction_before_scaling() {
+        assert_close(negate(Some(0.3)), Some(-0.3));
+        assert_eq!(negate(None), None);
+    }
+
+    #[test]
+    fn pct_turn20_turbo_gtr_std_skips_missing_growth_values() {
+        let growth = vec![Some(0.1), None, Some(0.3)];
+        let std = ts_std_dev(&growth, SIGNAL_WINDOW, MIN_PERIODS);
+
+        assert!(std[2].is_some());
     }
 }

@@ -56,12 +56,12 @@ impl Factor for StockDailyTps {
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
         let pv = data.daily_panel(DatasetId::StockDailyPv)?;
-        let basic = data.daily_panel(DatasetId::StockDailyBasic)?;
         let close = pv.column("close")?;
         let high = pv.column("high")?;
         let low = pv.column("low")?;
         let pre_close = pv.column("pre_close")?;
-        let turnover = basic.column("turnover_rate_f")?;
+        let turnover =
+            pv.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "turnover_rate_f")?;
 
         let plus = plus_factor(&close, &high, &low, &pre_close)?;
         let turn_deplus20 = turn_deplus(&turnover, &plus)?

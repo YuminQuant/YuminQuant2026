@@ -14,8 +14,9 @@ use crate::operators::ts_std_dev;
 pub const PRICE_VOLUME_CORR_1430_RAW_ID: &str = "daily_price_volume_corr_1430";
 
 const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyPvCorrStd1430;
 
@@ -136,7 +137,7 @@ impl Factor for StockDailyPvCorrStd1430 {
         let corr_1430 = panel.column(PRICE_VOLUME_CORR_1430_RAW_ID)?;
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
-        let corr_std = corr_1430.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
+        let corr_std = corr_1430.ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?;
         let factor = corr_std.cs_neutralize_regression(&[&size], None)?;
         Ok(factor.to_factor_series(self.spec()))
     }

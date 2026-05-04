@@ -9,8 +9,9 @@ use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::{ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyUid;
 
@@ -59,8 +60,8 @@ impl Factor for StockDailyUid {
         let panel = data.intraday_daily_raw_panel(INTRADAY_RETURN_VOLATILITY_RAW_ID)?;
         let raw = panel.column(INTRADAY_RETURN_VOLATILITY_RAW_ID)?;
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
-        let mean20 = raw.ts(|values| ts_mean(values, WINDOW, WINDOW))?;
-        let std20 = raw.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
+        let mean20 = raw.ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?;
+        let std20 = raw.ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?;
         let raw_factor = std20.zip_binary(&mean20, safe_div)?;
         let factor = raw_factor.cs_neutralize_regression(&[&size], None)?;
         Ok(factor.to_factor_series(self.spec()))

@@ -8,7 +8,7 @@ use crate::factor::common::{vector::clean, PanelColumn};
 use crate::factor::common::{ClassificationLevel, ClassificationMap};
 use crate::factor::Factor;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const MA_WINDOWS: [usize; 6] = [1, 5, 10, 20, 60, 120];
 const MAX_WINDOW: usize = 120;
 
@@ -81,7 +81,7 @@ fn convergence_score(input: &PanelColumn) -> Result<PanelColumn> {
 fn convergence_score_series(values: &[Option<f64>]) -> Vec<Option<f64>> {
     let means = MA_WINDOWS
         .iter()
-        .map(|window| rolling_mean_full(values, *window))
+        .map(|window| rolling_mean_min_periods_one(values, *window))
         .collect::<Vec<_>>();
     (0..values.len())
         .map(|idx| {
@@ -95,7 +95,7 @@ fn convergence_score_series(values: &[Option<f64>]) -> Vec<Option<f64>> {
         .collect()
 }
 
-fn rolling_mean_full(values: &[Option<f64>], window: usize) -> Vec<Option<f64>> {
+fn rolling_mean_min_periods_one(values: &[Option<f64>], window: usize) -> Vec<Option<f64>> {
     let mut output = vec![None; values.len()];
     if window == 0 {
         return output;
@@ -113,8 +113,8 @@ fn rolling_mean_full(values: &[Option<f64>], window: usize) -> Vec<Option<f64>> 
                 count -= 1;
             }
         }
-        if count == window {
-            output[idx] = Some(sum / window as f64);
+        if count > 0 {
+            output[idx] = Some(sum / count as f64);
         }
     }
     output

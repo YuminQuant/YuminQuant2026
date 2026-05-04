@@ -9,7 +9,7 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_nonnegative, cs_scale, ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 const WINDOW: usize = 20;
 const MIN_PERIODS: usize = 1;
 
@@ -62,7 +62,7 @@ impl Factor for StockDailyTurn20Turbo {
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
         let turn20 = turnover
-            .ts(|values| ts_mean(values, WINDOW, WINDOW))?
+            .ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?
             .cs_neutralize_regression(&[&size], None)?;
         let growth = turnover.ts(turnover_growth)?;
         let gtr = growth

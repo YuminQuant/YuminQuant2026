@@ -17,8 +17,9 @@ use crate::operators::{cs_zscore, ts_corr, ts_delay};
 pub const OPEN_AUCTION_TURNOVER_RAW_ID: &str = "daily_open_auction_turnover";
 
 const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 const FLOAT_SHARE_UNIT: f64 = 10_000.0;
 
 pub struct StockDailyRpv;
@@ -163,11 +164,11 @@ impl Factor for StockDailyRpv {
 
         let co = close.zip_binary(&open, subtract)?;
         let iv = turnover.zip_binary(&auction_turnover, subtract)?;
-        let ccoiv = co.ts_binary(&iv, |co, iv| ts_corr(co, iv, WINDOW, WINDOW))?;
+        let ccoiv = co.ts_binary(&iv, |co, iv| ts_corr(co, iv, WINDOW, MIN_PERIODS))?;
 
         let oyc = open.zip_binary(&pre_close, subtract)?;
         let yv = turnover.ts(|values| ts_delay(values, 1))?;
-        let cov = oyc.ts_binary(&yv, |oyc, yv| ts_corr(oyc, yv, WINDOW, WINDOW))?;
+        let cov = oyc.ts_binary(&yv, |oyc, yv| ts_corr(oyc, yv, WINDOW, MIN_PERIODS))?;
 
         let raw = subtract_pair(&ccoiv.cs(cs_zscore)?, &cov.cs(cs_zscore)?)?;
         let factor = raw.cs_neutralize_regression(&[&size], None)?;

@@ -9,9 +9,10 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_zscore, ts_delay, ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const PREV_WINDOW: usize = 5;
 const MONTH_WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyUbl;
 
@@ -36,6 +37,7 @@ impl Factor for StockDailyUbl {
                 "barra",
                 "size",
                 "daily",
+                "DWZQ",
             ]
             .iter()
             .map(|value| value.to_string())
@@ -62,18 +64,18 @@ impl Factor for StockDailyUbl {
 
         let upper_shadow = high.zip_ternary(&open, &close, upper_shadow)?;
         let upper_mean5_prev =
-            upper_shadow.ts(|values| previous_window_mean(values, PREV_WINDOW, PREV_WINDOW))?;
+            upper_shadow.ts(|values| previous_window_mean(values, PREV_WINDOW, MIN_PERIODS))?;
         let normalized_upper = upper_shadow.zip_binary(&upper_mean5_prev, safe_div)?;
         let upper_std20 =
-            normalized_upper.ts(|values| ts_std_dev(values, MONTH_WINDOW, MONTH_WINDOW))?;
+            normalized_upper.ts(|values| ts_std_dev(values, MONTH_WINDOW, MIN_PERIODS))?;
         let upper_std_desize = upper_std20.cs_neutralize_regression(&[&size], None)?;
 
         let lower_shadow = close.zip_binary(&low, lower_shadow)?;
         let lower_mean5_prev =
-            lower_shadow.ts(|values| previous_window_mean(values, PREV_WINDOW, PREV_WINDOW))?;
+            lower_shadow.ts(|values| previous_window_mean(values, PREV_WINDOW, MIN_PERIODS))?;
         let normalized_lower = lower_shadow.zip_binary(&lower_mean5_prev, safe_div)?;
         let lower_mean20 =
-            normalized_lower.ts(|values| ts_mean(values, MONTH_WINDOW, MONTH_WINDOW))?;
+            normalized_lower.ts(|values| ts_mean(values, MONTH_WINDOW, MIN_PERIODS))?;
         let lower_mean_desize = lower_mean20.cs_neutralize_regression(&[&size], None)?;
 
         let factor = average_pair(

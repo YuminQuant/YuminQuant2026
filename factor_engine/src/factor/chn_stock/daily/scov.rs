@@ -9,8 +9,9 @@ use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::{ts_corr, ts_delay};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyScov;
 
@@ -65,7 +66,9 @@ impl Factor for StockDailyScov {
         let y1430v = panel
             .column(LAST30_TURNOVER_RAW_ID)?
             .ts(|values| ts_delay(values, 1))?;
-        let factor = oyc.ts_binary(&y1430v, |oyc, y1430v| ts_corr(oyc, y1430v, WINDOW, WINDOW))?;
+        let factor = oyc.ts_binary(&y1430v, |oyc, y1430v| {
+            ts_corr(oyc, y1430v, WINDOW, MIN_PERIODS)
+        })?;
         Ok(factor.to_factor_series(self.spec()))
     }
 }

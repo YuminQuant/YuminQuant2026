@@ -9,7 +9,7 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_regression_residual, cs_zscore, ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 const WINDOW: usize = 20;
 const MIN_PERIODS: usize = 1;
 
@@ -66,7 +66,7 @@ impl Factor for StockDailyTpsTurbo {
         let pure_turnover = turnover.cs_binary(&growth, cs_regression_residual)?;
         let pure_growth = growth.cs_binary(&turnover, cs_regression_residual)?;
         let pure_turn20 = pure_turnover
-            .ts(|values| ts_mean(values, WINDOW, WINDOW))?
+            .ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?
             .cs_neutralize_regression(&[&size], None)?
             .cs(cs_zscore)?;
         let pure_gtr = pure_growth

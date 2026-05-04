@@ -17,8 +17,9 @@ use crate::operators::{cs_zscore, ts_mean, ts_regression, ts_std_dev, ts_sum};
 pub const PRICE_VOLUME_CORR_RAW_ID: &str = "daily_price_volume_corr";
 
 const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyCpv;
 
@@ -147,14 +148,14 @@ impl Factor for StockDailyCpv {
             .map_values(turnover_percent_to_decimal);
 
         let stock_return = close.zip_binary(&pre_close, ret)?;
-        let ret20 = stock_return.ts(|values| ts_sum(values, WINDOW, WINDOW))?;
-        let turnover20 = turnover.ts(|values| ts_mean(values, WINDOW, WINDOW))?;
-        let vol20 = stock_return.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
+        let ret20 = stock_return.ts(|values| ts_sum(values, WINDOW, MIN_PERIODS))?;
+        let turnover20 = turnover.ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?;
+        let vol20 = stock_return.ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?;
 
         let pv_corr_avg_raw =
-            daily_price_volume_corr.ts(|values| ts_mean(values, WINDOW, WINDOW))?;
+            daily_price_volume_corr.ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?;
         let pv_corr_std_raw =
-            daily_price_volume_corr.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
+            daily_price_volume_corr.ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?;
 
         let pv_corr_avg = pv_corr_avg_raw.cs_neutralize_regression(&[&size], None)?;
         let pv_corr_std = pv_corr_std_raw.cs_neutralize_regression(&[&size], None)?;
@@ -167,7 +168,7 @@ impl Factor for StockDailyCpv {
 
         let time_index = time_index_column(panel)?;
         let pv_corr_trend_raw = daily_price_volume_corr
-            .ts_binary(&time_index, |y, x| ts_regression(y, x, WINDOW, WINDOW))?;
+            .ts_binary(&time_index, |y, x| ts_regression(y, x, WINDOW, MIN_PERIODS))?;
         let pv_corr_trend = pv_corr_trend_raw
             .cs_neutralize_regression(&[&size, &ret20, &turnover20, &vol20], None)?;
 
@@ -346,7 +347,7 @@ mod tests {
         let y = panel.column("y").expect("y");
         let time_index = time_index_column(&panel).expect("time");
         let slope = y
-            .ts_binary(&time_index, |y, x| ts_regression(y, x, WINDOW, WINDOW))
+            .ts_binary(&time_index, |y, x| ts_regression(y, x, WINDOW, MIN_PERIODS))
             .expect("slope");
 
         assert_close(slope.values()[19], Some(2.0));

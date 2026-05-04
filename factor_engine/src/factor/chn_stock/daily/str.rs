@@ -7,8 +7,9 @@ use crate::error::Result;
 use crate::factor::Factor;
 use crate::operators::ts_std_dev;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyStr;
 
@@ -55,7 +56,7 @@ impl Factor for StockDailyStr {
         let turnover = panel.column("turnover_rate_f")?;
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
-        let turnover_std = turnover.ts(|values| ts_std_dev(values, WINDOW, WINDOW))?;
+        let turnover_std = turnover.ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?;
         let factor = turnover_std.cs_neutralize_regression(&[&size], None)?;
         Ok(factor.to_factor_series(self.spec()))
     }

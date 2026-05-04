@@ -5,12 +5,12 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::chn_stock::daily::tps::{
-    multiply_pair, nonnegative_shift, plus_deturn, plus_factor, turn_deplus, WINDOW,
+    multiply_pair, nonnegative_shift, plus_deturn, plus_factor, turn_deplus, MIN_PERIODS, WINDOW,
 };
 use crate::factor::Factor;
 use crate::operators::{cs_zscore, ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 
 pub struct StockDailySps;
 
@@ -66,11 +66,11 @@ impl Factor for StockDailySps {
 
         let plus = plus_factor(&close, &high, &low, &pre_close)?;
         let str_deplus = turn_deplus(&turnover, &plus)?
-            .ts(|values| ts_std_dev(values, WINDOW, WINDOW))?
+            .ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?
             .cs(cs_zscore)?
             .cs(nonnegative_shift)?;
         let plus_deturn20 = plus_deturn(&plus, &turnover)?
-            .ts(|values| ts_mean(values, WINDOW, WINDOW))?
+            .ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?
             .cs(cs_zscore)?
             .cs(nonnegative_shift)?;
         let factor = multiply_pair(&str_deplus, &plus_deturn20)?;

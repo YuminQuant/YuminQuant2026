@@ -12,8 +12,9 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_zscore, ts_corr, ts_delay};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 
 pub struct StockDailySrv;
 
@@ -65,8 +66,9 @@ impl Factor for StockDailySrv {
         let panel = data.intraday_daily_raw_panel(PM_CO_RAW_ID)?;
         let pm_co = panel.column(PM_CO_RAW_ID)?;
         let pm_smart_turnover = panel.column(PM_SMART_TURNOVER_RAW_ID)?;
-        let sccoiv =
-            pm_co.ts_binary(&pm_smart_turnover, |co, sv| ts_corr(co, sv, WINDOW, WINDOW))?;
+        let sccoiv = pm_co.ts_binary(&pm_smart_turnover, |co, sv| {
+            ts_corr(co, sv, WINDOW, MIN_PERIODS)
+        })?;
 
         let pv_table = data.daily(DatasetId::StockDailyPv)?;
         let open = panel.column_from_table(pv_table, "open")?;
@@ -75,7 +77,9 @@ impl Factor for StockDailySrv {
         let y1430v = panel
             .column(LAST30_TURNOVER_RAW_ID)?
             .ts(|values| ts_delay(values, 1))?;
-        let scov = oyc.ts_binary(&y1430v, |oyc, y1430v| ts_corr(oyc, y1430v, WINDOW, WINDOW))?;
+        let scov = oyc.ts_binary(&y1430v, |oyc, y1430v| {
+            ts_corr(oyc, y1430v, WINDOW, MIN_PERIODS)
+        })?;
 
         let factor = subtract_pair(&sccoiv.cs(cs_zscore)?, &scov.cs(cs_zscore)?)?;
         Ok(factor.to_factor_series(self.spec()))

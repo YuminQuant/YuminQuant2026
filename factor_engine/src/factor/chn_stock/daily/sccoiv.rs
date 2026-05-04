@@ -19,8 +19,9 @@ pub const PM_SMART_TURNOVER_RAW_ID: &str = "daily_pm_smart_turnover";
 pub const LAST30_TURNOVER_RAW_ID: &str = "daily_last30m_turnover";
 
 const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
+const MIN_PERIODS: usize = 1;
 const FLOAT_SHARE_UNIT: f64 = 10_000.0;
 const SMART_MINUTES: usize = 24;
 
@@ -229,8 +230,9 @@ impl Factor for StockDailySccoiv {
         let panel = data.intraday_daily_raw_panel(PM_CO_RAW_ID)?;
         let pm_co = panel.column(PM_CO_RAW_ID)?;
         let pm_smart_turnover = panel.column(PM_SMART_TURNOVER_RAW_ID)?;
-        let factor =
-            pm_co.ts_binary(&pm_smart_turnover, |co, sv| ts_corr(co, sv, WINDOW, WINDOW))?;
+        let factor = pm_co.ts_binary(&pm_smart_turnover, |co, sv| {
+            ts_corr(co, sv, WINDOW, MIN_PERIODS)
+        })?;
         Ok(factor.to_factor_series(self.spec()))
     }
 }

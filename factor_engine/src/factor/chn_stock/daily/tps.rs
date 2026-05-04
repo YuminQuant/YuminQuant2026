@@ -9,8 +9,9 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_regression_residual, cs_zscore, ts_mean};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 pub(super) const WINDOW: usize = 20;
+pub(super) const MIN_PERIODS: usize = 1;
 
 pub struct StockDailyTps;
 
@@ -65,11 +66,11 @@ impl Factor for StockDailyTps {
 
         let plus = plus_factor(&close, &high, &low, &pre_close)?;
         let turn_deplus20 = turn_deplus(&turnover, &plus)?
-            .ts(|values| ts_mean(values, WINDOW, WINDOW))?
+            .ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?
             .cs(cs_zscore)?
             .cs(nonnegative_shift)?;
         let plus_deturn20 = plus_deturn(&plus, &turnover)?
-            .ts(|values| ts_mean(values, WINDOW, WINDOW))?
+            .ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?
             .cs(cs_zscore)?
             .cs(nonnegative_shift)?;
         let factor = multiply_pair(&turn_deplus20, &plus_deturn20)?;

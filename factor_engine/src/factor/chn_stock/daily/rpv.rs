@@ -7,14 +7,13 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
+use crate::factor::common::stock_daily_raw_ids::OPEN_AUCTION_TURNOVER_RAW_ID;
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, DailyPanel, PanelColumn,
 };
 use crate::factor::Factor;
 use crate::operators::{cs_zscore, ts_corr, ts_delay};
-
-pub const OPEN_AUCTION_TURNOVER_RAW_ID: &str = "daily_open_auction_turnover";
 
 const RAW_VERSION: &str = "0.1.0";
 const VERSION: &str = "0.2.0";

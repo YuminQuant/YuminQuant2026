@@ -4,7 +4,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::chn_stock::daily::utd::VOLUME_CV_RAW_ID;
+use crate::factor::common::stock_daily_raw_ids::VOLUME_CV_RAW_ID;
 use crate::factor::common::{vector::clean, PanelColumn};
 use crate::factor::Factor;
 

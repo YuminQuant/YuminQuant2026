@@ -7,7 +7,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::chn_stock::daily::cdpp::rolling_mean_desize;
+use crate::factor::common::stock_daily_ops::rolling_mean_desize;
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, PanelColumn,

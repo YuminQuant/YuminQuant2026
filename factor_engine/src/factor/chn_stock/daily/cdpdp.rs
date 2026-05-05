@@ -4,8 +4,9 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::chn_stock::daily::cdpp::{
-    rolling_mean_desize, DP_NEG_NEXT_DP_NEG_CORR_RAW_ID, DP_POS_NEXT_DP_POS_CORR_RAW_ID,
+use crate::factor::common::stock_daily_ops::rolling_mean_desize;
+use crate::factor::common::stock_daily_raw_ids::{
+    DP_NEG_NEXT_DP_NEG_CORR_RAW_ID, DP_POS_NEXT_DP_POS_CORR_RAW_ID,
 };
 use crate::factor::common::vector::clean;
 use crate::factor::common::PanelColumn;

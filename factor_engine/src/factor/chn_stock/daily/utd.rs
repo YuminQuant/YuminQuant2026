@@ -7,16 +7,15 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
+use crate::factor::common::stock_daily_raw_ids::{
+    INTRADAY_RETURN_VOLATILITY_RAW_ID, TURNOVER_VOLATILITY_RAW_ID, VOLUME_CV_RAW_ID,
+};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, DailyPanel, PanelColumn,
 };
 use crate::factor::Factor;
 use crate::operators::{ts_mean, ts_pctchg, ts_std_dev};
-
-pub const TURNOVER_VOLATILITY_RAW_ID: &str = "daily_turnover_rate_volatility";
-pub const INTRADAY_RETURN_VOLATILITY_RAW_ID: &str = "daily_intraday_return_volatility";
-pub const VOLUME_CV_RAW_ID: &str = "daily_volume_cv";
 
 const RAW_VERSION: &str = "0.1.0";
 const VERSION: &str = "0.2.0";

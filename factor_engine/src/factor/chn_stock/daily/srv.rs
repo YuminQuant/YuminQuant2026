@@ -4,7 +4,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::chn_stock::daily::sccoiv::{
+use crate::factor::common::stock_daily_raw_ids::{
     LAST30_TURNOVER_RAW_ID, PM_CO_RAW_ID, PM_SMART_TURNOVER_RAW_ID,
 };
 use crate::factor::common::vector::clean;

@@ -4,8 +4,9 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::chn_stock::daily::tps::{
-    multiply_pair, nonnegative_shift, plus_deturn, plus_factor, turn_deplus, MIN_PERIODS, WINDOW,
+use crate::factor::common::stock_daily_ops::{
+    multiply_pair, nonnegative_shift, plus_deturn, plus_factor, turn_deplus,
+    PLUS_TURNOVER_MIN_PERIODS, PLUS_TURNOVER_WINDOW,
 };
 use crate::factor::Factor;
 use crate::operators::{cs_zscore, ts_mean, ts_std_dev};
@@ -50,7 +51,7 @@ impl Factor for StockDailySps {
             ],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback {
-                trading_days: WINDOW - 1,
+                trading_days: PLUS_TURNOVER_WINDOW - 1,
             },
         }
     }
@@ -66,11 +67,11 @@ impl Factor for StockDailySps {
 
         let plus = plus_factor(&close, &high, &low, &pre_close)?;
         let str_deplus = turn_deplus(&turnover, &plus)?
-            .ts(|values| ts_std_dev(values, WINDOW, MIN_PERIODS))?
+            .ts(|values| ts_std_dev(values, PLUS_TURNOVER_WINDOW, PLUS_TURNOVER_MIN_PERIODS))?
             .cs(cs_zscore)?
             .cs(nonnegative_shift)?;
         let plus_deturn20 = plus_deturn(&plus, &turnover)?
-            .ts(|values| ts_mean(values, WINDOW, MIN_PERIODS))?
+            .ts(|values| ts_mean(values, PLUS_TURNOVER_WINDOW, PLUS_TURNOVER_MIN_PERIODS))?
             .cs(cs_zscore)?
             .cs(nonnegative_shift)?;
         let factor = multiply_pair(&str_deplus, &plus_deturn20)?;

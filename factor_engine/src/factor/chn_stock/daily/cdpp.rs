@@ -7,17 +7,17 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
+use crate::factor::common::stock_daily_ops::rolling_mean_desize;
+use crate::factor::common::stock_daily_raw_ids::{
+    DP_NEG_NEXT_DP_NEG_CORR_RAW_ID, DP_NEG_PRICE_CORR_RAW_ID, DP_POS_NEXT_DP_POS_CORR_RAW_ID,
+    DP_POS_PRICE_CORR_RAW_ID,
+};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, PanelColumn,
 };
 use crate::factor::Factor;
-use crate::operators::{cs_zscore, ts_mean};
-
-pub const DP_POS_PRICE_CORR_RAW_ID: &str = "daily_dp_pos_price_corr";
-pub const DP_NEG_PRICE_CORR_RAW_ID: &str = "daily_dp_neg_price_corr";
-pub const DP_POS_NEXT_DP_POS_CORR_RAW_ID: &str = "daily_dp_pos_next_dp_pos_corr";
-pub const DP_NEG_NEXT_DP_NEG_CORR_RAW_ID: &str = "daily_dp_neg_next_dp_neg_corr";
+use crate::operators::cs_zscore;
 
 const RAW_VERSION: &str = "0.1.0";
 const VERSION: &str = "0.1.0";
@@ -226,12 +226,6 @@ impl Factor for StockDailyCdpp {
         let factor = subtract_pair(&positive.cs(cs_zscore)?, &negative.cs(cs_zscore)?)?;
         Ok(factor.to_factor_series(self.spec()))
     }
-}
-
-pub(super) fn rolling_mean_desize(values: PanelColumn, size: &PanelColumn) -> Result<PanelColumn> {
-    values
-        .ts(|series| ts_mean(series, WINDOW, 1))?
-        .cs_neutralize_regression(&[size], None)
 }
 
 fn daily_correlations(

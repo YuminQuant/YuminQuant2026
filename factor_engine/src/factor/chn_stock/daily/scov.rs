@@ -4,7 +4,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::chn_stock::daily::sccoiv::LAST30_TURNOVER_RAW_ID;
+use crate::factor::common::stock_daily_raw_ids::LAST30_TURNOVER_RAW_ID;
 use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::{ts_corr, ts_delay};

@@ -3,12 +3,20 @@ pub mod common;
 pub mod future;
 pub mod registry;
 
+use std::any::Any;
+
 use crate::core::{
     DataRequest, FactorContext, FactorSeries, FactorSpec, IntradayDailyRawAuxiliaryRequest,
     IntradayDailyRawSeries, IntradayDailyRawSpec,
 };
 use crate::data::DataPool;
 use crate::error::Result;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IntradayRawMaterializeMode {
+    Stateless,
+    Stateful,
+}
 
 pub trait Factor: Send + Sync {
     fn spec(&self) -> FactorSpec;
@@ -19,6 +27,14 @@ pub trait Factor: Send + Sync {
 
     fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
         Vec::new()
+    }
+
+    fn intraday_raw_materialize_mode(&self, _raw_ids: &[String]) -> IntradayRawMaterializeMode {
+        IntradayRawMaterializeMode::Stateless
+    }
+
+    fn initial_intraday_raw_state(&self, _raw_ids: &[String]) -> Box<dyn Any + Send> {
+        Box::new(())
     }
 
     fn intraday_raw_auxiliary_requirements(
@@ -50,6 +66,16 @@ pub trait Factor: Send + Sync {
             }
         }
         Ok(output)
+    }
+
+    fn minute_compute_stateful_many(
+        &self,
+        raw_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+        _state: &mut dyn Any,
+    ) -> Result<Vec<IntradayDailyRawSeries>> {
+        self.minute_compute_many(raw_ids, context, data)
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries>;

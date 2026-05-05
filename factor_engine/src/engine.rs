@@ -14,7 +14,7 @@ use crate::core::{
 use crate::data::{DataCatalog, DataPool, MarketDataLoader};
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
-use crate::factor::Factor;
+use crate::factor::{Factor, IntradayRawMaterializeMode};
 use crate::progress::ProgressBar;
 use crate::storage::{FactorMetadata, FactorStorage, IntradayDailyRawStorage};
 use rayon::prelude::*;
@@ -580,7 +580,9 @@ fn materialize_intraday_raw_table(
     progress: &ProgressBar,
 ) -> Result<(crate::data::Table, Vec<BatchProfile>)> {
     let raw_id_set = raw_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let mut requirements_by_dataset =
+    let mut stateless_requirements_by_dataset =
+        BTreeMap::<DatasetId, Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new();
+    let mut stateful_requirements_by_dataset =
         BTreeMap::<DatasetId, Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new();
     for requirement in requirements
         .iter()
@@ -600,7 +602,20 @@ fn materialize_intraday_raw_table(
         if missing_dates.is_empty() {
             continue;
         }
-        requirements_by_dataset
+        let provider = providers.get(&requirement.spec.raw_id).ok_or_else(|| {
+            err(format!(
+                "intraday daily raw implementation not found: {}",
+                requirement.spec.raw_id
+            ))
+        })?;
+        let mode = provider
+            .factor
+            .intraday_raw_materialize_mode(std::slice::from_ref(&requirement.spec.raw_id));
+        let target_map = match mode {
+            IntradayRawMaterializeMode::Stateless => &mut stateless_requirements_by_dataset,
+            IntradayRawMaterializeMode::Stateful => &mut stateful_requirements_by_dataset,
+        };
+        target_map
             .entry(requirement.spec.source_dataset)
             .or_default()
             .push((requirement, missing_dates));
@@ -608,7 +623,7 @@ fn materialize_intraday_raw_table(
     let mut profiles = Vec::new();
     let mut materialized_specs = Vec::new();
 
-    for (source_dataset, plans) in requirements_by_dataset {
+    for (source_dataset, plans) in stateless_requirements_by_dataset {
         let max_window_days = plans
             .iter()
             .map(|(requirement, _)| requirement.spec.window_days)
@@ -850,6 +865,208 @@ fn materialize_intraday_raw_table(
                 .iter()
                 .map(|(requirement, _)| requirement.spec.clone()),
         );
+    }
+    for (source_dataset, plans) in stateful_requirements_by_dataset {
+        let columns = plans
+            .iter()
+            .flat_map(|(requirement, _)| requirement.spec.columns.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let batch_requests = vec![DataRequest {
+            dataset: source_dataset,
+            entity_id: None,
+            columns,
+            financial_quarters: None,
+        }];
+
+        let mut grouped_jobs = BTreeMap::<
+            String,
+            (
+                Arc<dyn Factor>,
+                BTreeSet<String>,
+                BTreeSet<i32>,
+                usize,
+                Vec<IntradayDailyRawSpec>,
+            ),
+        >::new();
+        for (requirement, requirement_missing_dates) in &plans {
+            let provider = providers.get(&requirement.spec.raw_id).ok_or_else(|| {
+                err(format!(
+                    "intraday daily raw implementation not found: {}",
+                    requirement.spec.raw_id
+                ))
+            })?;
+            let entry = grouped_jobs
+                .entry(provider.provider_key.clone())
+                .or_insert_with(|| {
+                    (
+                        Arc::clone(&provider.factor),
+                        BTreeSet::new(),
+                        BTreeSet::new(),
+                        1,
+                        Vec::new(),
+                    )
+                });
+            entry.1.insert(requirement.spec.raw_id.clone());
+            entry.2.extend(requirement_missing_dates.iter().copied());
+            entry.3 = entry.3.max(requirement.spec.window_days);
+            entry.4.push(requirement.spec.clone());
+        }
+
+        for (_provider_key, (factor, raw_ids, target_dates, window_days, specs)) in grouped_jobs {
+            if target_dates.is_empty() {
+                continue;
+            }
+            let raw_ids_vec = raw_ids.iter().cloned().collect::<Vec<_>>();
+            let first_target = *target_dates
+                .iter()
+                .next()
+                .expect("target dates are not empty");
+            let last_target = *target_dates
+                .iter()
+                .next_back()
+                .expect("target dates are not empty");
+            let warmup_days = window_days.saturating_sub(1);
+            let stream_start = calendar.warmup_start(first_target, warmup_days);
+            let stream_dates = calendar.open_dates_between(stream_start, last_target);
+            let target_set = target_dates.iter().copied().collect::<BTreeSet<_>>();
+            let auxiliary_requirements = factor.intraday_raw_auxiliary_requirements(&raw_ids_vec);
+            let auxiliary_max_lookback = auxiliary_requirements
+                .iter()
+                .map(|request| request.daily_lookback)
+                .max()
+                .unwrap_or(0);
+            let mut state = factor.initial_intraday_raw_state(&raw_ids_vec);
+            let stage_name = format!("intraday_raw_materialize_window_{window_days}");
+            let mut total_load_ms = 0u128;
+            let mut total_compute_ms = 0u128;
+            let mut total_write_ms = 0u128;
+            let mut raw_profiles = BTreeMap::<String, (usize, usize)>::new();
+
+            for trade_date in stream_dates {
+                let raw_context = FactorContext {
+                    asset_class: request.asset_class,
+                    frequency: Frequency::Daily,
+                    start_date: trade_date,
+                    end_date: trade_date,
+                    load_start_date: trade_date,
+                    load_dates: vec![trade_date],
+                    target_dates: vec![trade_date],
+                };
+
+                let load_started = Instant::now();
+                let mut raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
+                if !auxiliary_requirements.is_empty() {
+                    let auxiliary_load_start_date =
+                        calendar.warmup_start(trade_date, auxiliary_max_lookback);
+                    let auxiliary_context = FactorContext {
+                        asset_class: request.asset_class,
+                        frequency: Frequency::Daily,
+                        start_date: trade_date,
+                        end_date: trade_date,
+                        load_start_date: auxiliary_load_start_date,
+                        load_dates: calendar
+                            .open_dates_between(auxiliary_load_start_date, trade_date),
+                        target_dates: vec![trade_date],
+                    };
+                    let auxiliary_pool = DataPool::load(
+                        loader,
+                        &merge_requests(
+                            auxiliary_requirements
+                                .iter()
+                                .map(|request| request.request.clone()),
+                        ),
+                        &auxiliary_context,
+                    )?;
+                    raw_pool.extend(auxiliary_pool);
+                }
+                total_load_ms += load_started.elapsed().as_millis();
+
+                let compute_started = Instant::now();
+                let mut raw_series_list = factor.minute_compute_stateful_many(
+                    &raw_ids_vec,
+                    &raw_context,
+                    &raw_pool,
+                    state.as_mut(),
+                )?;
+                raw_series_list.retain(|series| raw_ids.contains(&series.spec.raw_id));
+                for series in &mut raw_series_list {
+                    series
+                        .values
+                        .retain(|value| target_set.contains(&value.key.trade_date()));
+                }
+                total_compute_ms += compute_started.elapsed().as_millis();
+
+                if !target_set.contains(&trade_date) {
+                    continue;
+                }
+
+                let returned = raw_series_list
+                    .iter()
+                    .map(|series| series.spec.raw_id.clone())
+                    .collect::<BTreeSet<_>>();
+                let missing = raw_ids.difference(&returned).cloned().collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    return Err(err(format!(
+                        "stateful intraday daily raw provider did not return requested raw(s): {}",
+                        missing.join(",")
+                    )));
+                }
+
+                for raw_series in &raw_series_list {
+                    let entry = raw_profiles
+                        .entry(raw_series.spec.raw_id.clone())
+                        .or_insert((0, 0));
+                    entry.0 += raw_series.values.len();
+                    entry.1 += raw_series
+                        .values
+                        .iter()
+                        .filter(|item| item.value.is_some())
+                        .count();
+                }
+
+                let write_started = Instant::now();
+                if !raw_series_list.is_empty() {
+                    storage.write_results(&raw_series_list)?;
+                }
+                total_write_ms += write_started.elapsed().as_millis();
+
+                for raw_series in &raw_series_list {
+                    materialized_intraday_raw_dates
+                        .insert((raw_series.spec.raw_id.clone(), trade_date));
+                }
+                progress.tick(format!(
+                    "stage={} date={} raw={}",
+                    stage_name,
+                    trade_date,
+                    raw_series_list.len()
+                ));
+            }
+
+            if request.profile && !raw_profiles.is_empty() {
+                profiles.push(BatchProfile {
+                    stage: stage_name,
+                    date_batch_index,
+                    factor_batch_index,
+                    start_date: first_target,
+                    end_date: last_target,
+                    factor_count: raw_profiles.len(),
+                    load_ms: total_load_ms,
+                    compute_ms: total_compute_ms,
+                    write_ms: total_write_ms,
+                    factors: raw_profiles
+                        .into_iter()
+                        .map(|(factor_id, (row_count, non_null_count))| FactorProfile {
+                            factor_id,
+                            row_count,
+                            non_null_count,
+                        })
+                        .collect(),
+                });
+            }
+            materialized_specs.extend(specs);
+        }
     }
     if !materialized_specs.is_empty() {
         storage.write_metadata(&materialized_specs)?;

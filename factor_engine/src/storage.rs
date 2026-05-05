@@ -42,6 +42,12 @@ struct PendingFrame {
     values: BTreeMap<OutputKey, BTreeMap<String, Option<f64>>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputValueDtype {
+    F32,
+    F64,
+}
+
 #[derive(Clone, Debug)]
 struct MetadataRow {
     factor_id: String,
@@ -175,7 +181,8 @@ impl FactorStorage {
         for ((asset_class, frequency, trade_date), mut frame) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
-            let table = pending_frame_to_table(frequency, trade_date, &frame)?;
+            let table =
+                pending_frame_to_table(frequency, trade_date, &frame, OutputValueDtype::F32)?;
             write_parquet(&path, &table)?;
             written.push(path);
         }
@@ -265,7 +272,8 @@ impl LabelStorage {
         for ((asset_class, frequency, trade_date), mut frame) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
-            let table = pending_frame_to_table(frequency, trade_date, &frame)?;
+            let table =
+                pending_frame_to_table(frequency, trade_date, &frame, OutputValueDtype::F32)?;
             write_parquet(&path, &table)?;
             written.push(path);
         }
@@ -362,7 +370,8 @@ impl BarraStorage {
         for ((asset_class, frequency, trade_date), mut frame) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
-            let table = pending_frame_to_table(frequency, trade_date, &frame)?;
+            let table =
+                pending_frame_to_table(frequency, trade_date, &frame, OutputValueDtype::F32)?;
             write_parquet(&path, &table)?;
             written.push(path);
         }
@@ -477,7 +486,12 @@ impl IntradayDailyRawStorage {
         for ((asset_class, trade_date), mut frame) in grouped {
             let path = self.output_path(asset_class, trade_date);
             merge_existing_output(&path, Frequency::Daily, trade_date, &mut frame)?;
-            let table = pending_frame_to_table(Frequency::Daily, trade_date, &frame)?;
+            let table = pending_frame_to_table(
+                Frequency::Daily,
+                trade_date,
+                &frame,
+                OutputValueDtype::F64,
+            )?;
             write_parquet(&path, &table)?;
             written.push(path);
         }
@@ -652,6 +666,7 @@ fn pending_frame_to_table(
     frequency: Frequency,
     trade_date: i32,
     frame: &PendingFrame,
+    value_dtype: OutputValueDtype,
 ) -> Result<Table> {
     let mut factor_columns = BTreeSet::new();
     for row in frame.values.values() {
@@ -689,9 +704,21 @@ fn pending_frame_to_table(
     }
     table.insert("ts_code", ColumnData::Utf8(ts_codes))?;
     for (column, values) in factors {
-        table.insert(column, ColumnData::F64(values))?;
+        table.insert(column, value_column(values, value_dtype))?;
     }
     Ok(table)
+}
+
+fn value_column(values: Vec<Option<f64>>, dtype: OutputValueDtype) -> ColumnData {
+    match dtype {
+        OutputValueDtype::F32 => ColumnData::F32(
+            values
+                .into_iter()
+                .map(|value| value.map(|v| v as f32))
+                .collect(),
+        ),
+        OutputValueDtype::F64 => ColumnData::F64(values),
+    }
 }
 
 fn read_metadata_records(path: &Path) -> Result<Vec<FactorMetadata>> {
@@ -1259,12 +1286,14 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::core::{
-        AssetClass, DatasetId, FactorRowKey, FactorValue, Frequency, IntradayDailyRawSeries,
-        IntradayDailyRawSpec, LabelSeries, LabelSpec, Lookahead,
+        AssetClass, BarraSeries, BarraSpec, DatasetId, FactorRowKey, FactorSeries, FactorSpec,
+        FactorValue, Frequency, IntradayDailyRawSeries, IntradayDailyRawSpec, LabelSeries,
+        LabelSpec, Lookahead, Lookback,
     };
     use crate::data::parquet_io::read_parquet;
+    use crate::data::ColumnData;
 
-    use super::{IntradayDailyRawStorage, LabelStorage};
+    use super::{BarraStorage, FactorStorage, IntradayDailyRawStorage, LabelStorage};
 
     fn temp_factor_root() -> PathBuf {
         let nanos = SystemTime::now()
@@ -1301,6 +1330,38 @@ mod tests {
             description: String::new(),
             dependencies: Vec::new(),
             lookahead: Lookahead { trading_days: 2 },
+        }
+    }
+
+    fn factor_spec(id: &str) -> FactorSpec {
+        FactorSpec {
+            id: id.to_string(),
+            aliases: Vec::new(),
+            name: id.to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: "0.1.0".to_string(),
+            tags: Vec::new(),
+            description: String::new(),
+            dependencies: Vec::new(),
+            intraday_raw_dependencies: Vec::new(),
+            lookback: Lookback { trading_days: 0 },
+        }
+    }
+
+    fn barra_spec(id: &str) -> BarraSpec {
+        BarraSpec {
+            id: id.to_string(),
+            aliases: Vec::new(),
+            name: id.to_string(),
+            model: "CNE6".to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: "0.1.0".to_string(),
+            tags: Vec::new(),
+            description: String::new(),
+            dependencies: Vec::new(),
+            lookback: Lookback { trading_days: 0 },
         }
     }
 
@@ -1350,6 +1411,127 @@ mod tests {
                 .expect("missing"),
             vec![20260105, 20260106]
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn formal_outputs_write_float32_value_columns() {
+        let root = temp_factor_root();
+        let key = FactorRowKey::Daily {
+            trade_date: 20260105,
+            ts_code: "000001.SZ".to_string(),
+        };
+
+        FactorStorage::new(root.join("factors"))
+            .write_results(&[FactorSeries {
+                spec: factor_spec("factor_a"),
+                values: vec![FactorValue {
+                    key: key.clone(),
+                    value: Some(1.25),
+                }],
+            }])
+            .expect("write factor");
+        LabelStorage::new(root.join("label"))
+            .write_results(&[LabelSeries {
+                spec: label_spec("label_a"),
+                values: vec![FactorValue {
+                    key: key.clone(),
+                    value: Some(2.5),
+                }],
+            }])
+            .expect("write label");
+        BarraStorage::new(root.join("barra"))
+            .write_results(&[BarraSeries {
+                spec: barra_spec("SIZE"),
+                values: vec![FactorValue {
+                    key,
+                    value: Some(3.75),
+                }],
+            }])
+            .expect("write barra");
+
+        let factor_table = read_parquet(
+            &root
+                .join("factors")
+                .join("stock")
+                .join("daily")
+                .join("2026")
+                .join("20260105.parquet"),
+            None,
+        )
+        .expect("factor output");
+        assert!(matches!(
+            factor_table.columns.get("factor_a"),
+            Some(ColumnData::F32(_))
+        ));
+
+        let label_table = read_parquet(
+            &root
+                .join("label")
+                .join("stock")
+                .join("daily")
+                .join("2026")
+                .join("20260105.parquet"),
+            None,
+        )
+        .expect("label output");
+        assert!(matches!(
+            label_table.columns.get("label_a"),
+            Some(ColumnData::F32(_))
+        ));
+
+        let barra_table = read_parquet(
+            &root
+                .join("barra")
+                .join("stock")
+                .join("daily")
+                .join("CNE6")
+                .join("2026")
+                .join("20260105.parquet"),
+            None,
+        )
+        .expect("barra output");
+        assert!(matches!(
+            barra_table.columns.get("SIZE"),
+            Some(ColumnData::F32(_))
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn raw_cache_keeps_float64_value_columns() {
+        let root = temp_factor_root();
+        let storage = IntradayDailyRawStorage::new(root.clone());
+
+        storage
+            .write_results(&[IntradayDailyRawSeries {
+                spec: raw_spec("0.1.0"),
+                values: vec![FactorValue {
+                    key: FactorRowKey::Daily {
+                        trade_date: 20260105,
+                        ts_code: "000001.SZ".to_string(),
+                    },
+                    value: Some(1.0),
+                }],
+            }])
+            .expect("write raw");
+
+        let table = read_parquet(
+            &root
+                .join("_cache")
+                .join("intraday_daily")
+                .join("chn_stock")
+                .join("2026")
+                .join("20260105.parquet"),
+            None,
+        )
+        .expect("raw output");
+        assert!(matches!(
+            table.columns.get("raw_a"),
+            Some(ColumnData::F64(_))
+        ));
 
         let _ = std::fs::remove_dir_all(root);
     }

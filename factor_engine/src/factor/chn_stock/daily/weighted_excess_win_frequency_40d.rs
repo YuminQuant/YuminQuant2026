@@ -5,7 +5,7 @@ use crate::core::{
     Lookback,
 };
 use crate::data::DataPool;
-use crate::error::{err, Result};
+use crate::error::Result;
 use crate::factor::common::vector::clean;
 use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel, PanelColumn};
 use crate::factor::Factor;
@@ -93,7 +93,7 @@ fn expand_index_column(
 ) -> Result<PanelColumn> {
     let index_instrument_count = index_panel.instruments().len();
     if index_instrument_count == 0 {
-        return Err(err("index daily panel has no instruments"));
+        return stock_panel.column_from_values(vec![None; stock_panel.shape_len()]);
     }
     let mut by_date = HashMap::new();
     for (date_idx, trade_date) in index_panel.dates().iter().enumerate() {
@@ -117,6 +117,62 @@ fn mul(left: Option<f64>, right: Option<f64>) -> Option<f64> {
     match (clean(left), clean(right)) {
         (Some(left), Some(right)) => Some(left * right),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::core::{AssetClass, FactorContext, Frequency};
+    use crate::data::{ColumnData, Table};
+    use crate::factor::common::DailyPanel;
+
+    use super::*;
+
+    #[test]
+    fn empty_index_panel_expands_to_all_missing_market_returns() {
+        let context = FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20090105,
+            end_date: 20090105,
+            load_start_date: 20090105,
+            load_dates: vec![20090105],
+            target_dates: vec![20090105],
+        };
+        let stock_table = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20090105), Some(20090105)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000002.SZ".to_string()),
+                ]),
+            ),
+            (
+                "raw".to_string(),
+                ColumnData::F64(vec![Some(1.0), Some(2.0)]),
+            ),
+        ]))
+        .expect("stock table");
+        let index_table = Table::new(BTreeMap::from([
+            ("trade_date".to_string(), ColumnData::I32(Vec::new())),
+            ("ts_code".to_string(), ColumnData::Utf8(Vec::new())),
+            ("ret".to_string(), ColumnData::F64(Vec::new())),
+        ]))
+        .expect("empty index table");
+        let stock_panel = DailyPanel::from_table(&stock_table, &context).expect("stock panel");
+        let index_panel = DailyPanel::from_table(&index_table, &context).expect("index panel");
+        let index_column = index_panel.column("ret").expect("ret");
+
+        let expanded =
+            expand_index_column(&stock_panel, &index_panel, &index_column).expect("expand");
+
+        assert_eq!(expanded.values(), &[None, None]);
     }
 }
 

@@ -14,8 +14,8 @@ use crate::operators::{cs_regression_residual, cs_zscore, ts_mean, ts_std_dev};
 
 pub const CP_INTRADAY_RAW_ID: &str = "daily_cp_intraday";
 
-const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
 const MIN_PERIODS: usize = 1;
 
@@ -32,7 +32,7 @@ pub fn create() -> Box<dyn Factor> {
 }
 
 fn raw_spec() -> IntradayDailyRawSpec {
-    stock_minute_raw_spec(CP_INTRADAY_RAW_ID, RAW_VERSION, &["open", "close"], 1)
+    stock_minute_raw_spec(CP_INTRADAY_RAW_ID, RAW_VERSION, &["close"], 1)
 }
 
 impl Factor for StockDailyRcp {
@@ -59,7 +59,7 @@ impl Factor for StockDailyRcp {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "RCP confidence recovery factor from intraday fast-up and fast-down minute timing, de-intraday-returned and SIZE-neutralized.".to_string(),
+            description: "RCP confidence recovery factor from intraday fast-up and fast-down close-to-close minute timing, de-intraday-returned and SIZE-neutralized.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["open", "close"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -95,7 +95,6 @@ impl Factor for StockDailyRcp {
             };
             let ts_codes = table.required_utf8("ts_code")?;
             let trade_times = table.required_utf8("trade_time")?;
-            let open = table.required_f64_cast("open")?;
             let close = table.required_f64_cast("close")?;
 
             let mut grouped = BTreeMap::<String, Vec<usize>>::new();
@@ -116,7 +115,7 @@ impl Factor for StockDailyRcp {
                         trade_date: *trade_date,
                         ts_code,
                     },
-                    value: cp_intraday_from_rows(&indices, trade_times, &open, &close),
+                    value: cp_intraday_from_rows(&indices, trade_times, &close),
                 });
             }
         }
@@ -152,11 +151,20 @@ impl Factor for StockDailyRcp {
 fn cp_intraday_from_rows(
     indices: &[usize],
     trade_times: &[Option<String>],
-    open: &[Option<f64>],
     close: &[Option<f64>],
 ) -> Option<f64> {
+    let minute_returns = minute_close_returns_from_rows(indices, trade_times, close);
+    cp_intraday_from_returns(&minute_returns)
+}
+
+fn minute_close_returns_from_rows(
+    indices: &[usize],
+    trade_times: &[Option<String>],
+    close: &[Option<f64>],
+) -> Vec<MinuteReturn> {
     let mut minute_returns = Vec::new();
     let mut sequence = 0usize;
+    let mut previous_close = None;
     for idx in indices {
         let Some(trade_time) = trade_times[*idx].as_deref() else {
             continue;
@@ -165,11 +173,15 @@ fn cp_intraday_from_rows(
             continue;
         }
         sequence += 1;
-        if let Some(value) = ret(close[*idx], open[*idx]) {
+        let current_close = close[*idx];
+        if let Some(value) = ret(current_close, previous_close) {
             minute_returns.push(MinuteReturn { sequence, value });
         }
+        if clean(current_close).is_some() {
+            previous_close = current_close;
+        }
     }
-    cp_intraday_from_returns(&minute_returns)
+    minute_returns
 }
 
 fn cp_intraday_from_returns(minute_returns: &[MinuteReturn]) -> Option<f64> {
@@ -203,7 +215,7 @@ fn cp_intraday_from_returns(minute_returns: &[MinuteReturn]) -> Option<f64> {
 }
 
 fn is_rcp_session_time(trade_time: &str) -> bool {
-    intraday_time_in_range(trade_time, "09:31:00", "11:30:00")
+    intraday_time_in_range(trade_time, "09:30:00", "11:30:00")
         || intraday_time_in_range(trade_time, "13:01:00", "15:00:00")
 }
 
@@ -252,7 +264,7 @@ mod tests {
 
     #[test]
     fn session_time_keeps_morning_and_afternoon_continuous_auction() {
-        assert!(!is_rcp_session_time("09:30:00"));
+        assert!(is_rcp_session_time("09:30:00"));
         assert!(is_rcp_session_time("09:31:00"));
         assert!(is_rcp_session_time("11:30:00"));
         assert!(!is_rcp_session_time("11:31:00"));
@@ -262,9 +274,29 @@ mod tests {
     }
 
     #[test]
-    fn minute_return_uses_bar_close_over_open() {
+    fn minute_return_uses_close_over_previous_close() {
         assert_close(ret(Some(102.0), Some(100.0)), Some(0.02));
         assert_eq!(ret(Some(102.0), Some(0.0)), None);
+    }
+
+    #[test]
+    fn minute_close_returns_keep_0930_as_sequence_one_anchor() {
+        let indices = vec![0, 1, 2, 3];
+        let trade_times = vec![
+            Some("09:30:00".to_string()),
+            Some("09:31:00".to_string()),
+            Some("09:32:00".to_string()),
+            Some("11:31:00".to_string()),
+        ];
+        let close = vec![Some(100.0), Some(110.0), Some(99.0), Some(88.0)];
+
+        let returns = minute_close_returns_from_rows(&indices, &trade_times, &close);
+
+        assert_eq!(returns.len(), 2);
+        assert_eq!(returns[0].sequence, 2);
+        assert_close(Some(returns[0].value), Some(0.1));
+        assert_eq!(returns[1].sequence, 3);
+        assert_close(Some(returns[1].value), Some(-0.1));
     }
 
     #[test]

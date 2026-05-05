@@ -8,7 +8,7 @@ use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::{ts_delay, ts_std_dev};
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.4.0";
 const CURRENT_WINDOW: usize = 20;
 const BASE_WINDOW: usize = 40;
 const BASE_DELAY: usize = 20;

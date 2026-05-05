@@ -33,6 +33,7 @@ pub struct BarraRunRequest {
     pub config_path: Option<PathBuf>,
     pub dry_run: bool,
     pub exposure_batch_size: usize,
+    pub date_batch_size: usize,
     pub threads: Option<usize>,
     pub profile: bool,
 }
@@ -248,13 +249,14 @@ impl BarraEngine {
         }
 
         let exposure_batch_size = request.exposure_batch_size.max(1);
+        let date_batch_size = request.date_batch_size.max(1);
         let exposure_ranges = exposure_batch_ranges(selected_providers.len(), exposure_batch_size);
-        let execution_batch_count = target_dates.len() * exposure_ranges.len();
+        let date_batches = split_dates_by_chunk(&target_dates, date_batch_size);
+        let execution_batch_count = date_batches.len() * exposure_ranges.len();
         let load_start_date = calendar.warmup_start(effective_start_date, max_lookback);
         let loaded_requests =
             merge_requests(specs.iter().flat_map(|spec| spec.dependencies.clone()));
         if dry_run {
-            let date_batch_count = target_dates.len();
             return Ok(BarraRunReport {
                 exposure_count: specs.len(),
                 output_file_count: 0,
@@ -262,7 +264,7 @@ impl BarraEngine {
                 target_dates,
                 effective_start_date: Some(effective_start_date),
                 effective_end_date: Some(effective_end_date),
-                date_batch_count,
+                date_batch_count: date_batches.len(),
                 exposure_batch_count: exposure_ranges.len(),
                 execution_batch_count,
                 selected_exposure_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
@@ -283,17 +285,23 @@ impl BarraEngine {
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();
 
-        for (date_idx, trade_date) in target_dates.iter().copied().enumerate() {
-            let batch_load_start_date = calendar.warmup_start(trade_date, max_lookback);
-            let load_dates = calendar.open_dates_between(batch_load_start_date, trade_date);
+        for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
+            let batch_start_date = *date_batch
+                .first()
+                .expect("date batches are never empty after split");
+            let batch_end_date = *date_batch
+                .last()
+                .expect("date batches are never empty after split");
+            let batch_load_start_date = calendar.warmup_start(batch_start_date, max_lookback);
+            let load_dates = calendar.open_dates_between(batch_load_start_date, batch_end_date);
             let context = FactorContext {
                 asset_class: request.asset_class,
                 frequency: request.frequency,
-                start_date: trade_date,
-                end_date: trade_date,
+                start_date: batch_start_date,
+                end_date: batch_end_date,
                 load_start_date: batch_load_start_date,
                 load_dates,
-                target_dates: vec![trade_date],
+                target_dates: date_batch.clone(),
             };
 
             for (exposure_batch_index, range) in exposure_ranges.iter().enumerate() {
@@ -354,10 +362,10 @@ impl BarraEngine {
                 if request.profile {
                     profiles.push(BatchProfile {
                         stage: stage_name.clone(),
-                        date_batch_index: date_idx + 1,
+                        date_batch_index: date_batch_index + 1,
                         factor_batch_index: exposure_batch_index + 1,
-                        start_date: trade_date,
-                        end_date: trade_date,
+                        start_date: batch_start_date,
+                        end_date: batch_end_date,
                         factor_count: batch_specs.len(),
                         load_ms,
                         compute_ms,
@@ -366,9 +374,10 @@ impl BarraEngine {
                     });
                 }
                 progress.tick(format!(
-                    "stage={} date={} exposures={}",
+                    "stage={} dates={}..{} exposures={}",
                     stage_name,
-                    trade_date,
+                    batch_start_date,
+                    batch_end_date,
                     batch_specs.len()
                 ));
             }
@@ -382,7 +391,7 @@ impl BarraEngine {
             target_dates,
             effective_start_date: Some(effective_start_date),
             effective_end_date: Some(effective_end_date),
-            date_batch_count: execution_batch_count / exposure_ranges.len(),
+            date_batch_count: date_batches.len(),
             exposure_batch_count: exposure_ranges.len(),
             execution_batch_count,
             selected_exposure_ids: specs.iter().map(|spec| spec.id.clone()).collect(),
@@ -533,6 +542,16 @@ fn exposure_batch_ranges(exposure_count: usize, exposure_batch_size: usize) -> V
         .collect()
 }
 
+fn split_dates_by_chunk(target_dates: &[i32], chunk_size: usize) -> Vec<Vec<i32>> {
+    if target_dates.is_empty() {
+        return Vec::new();
+    }
+    target_dates
+        .chunks(chunk_size.max(1))
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
 fn normalize_family_id(value: &str) -> String {
     value
         .chars()
@@ -624,7 +643,10 @@ mod tests {
     use crate::core::{AssetClass, DataRequest, DatasetId, Frequency};
     use crate::storage::BarraMetadata;
 
-    use super::{exposure_batch_ranges, select_barra_metadata, BarraRunRequest, SelectionResult};
+    use super::{
+        exposure_batch_ranges, select_barra_metadata, split_dates_by_chunk, BarraRunRequest,
+        SelectionResult,
+    };
 
     #[test]
     fn chunks_exposures_by_configured_batch_size() {
@@ -634,6 +656,23 @@ mod tests {
         );
         assert_eq!(exposure_batch_ranges(3, 10), vec![0..3]);
         assert_eq!(exposure_batch_ranges(11, 10), vec![0..10, 10..11]);
+    }
+
+    #[test]
+    fn chunks_barra_dates_by_configured_batch_size() {
+        assert_eq!(split_dates_by_chunk(&[], 10), Vec::<Vec<i32>>::new());
+        assert_eq!(
+            split_dates_by_chunk(&[20260101, 20260102, 20260103, 20260104, 20260105], 2),
+            vec![
+                vec![20260101, 20260102],
+                vec![20260103, 20260104],
+                vec![20260105],
+            ]
+        );
+        assert_eq!(
+            split_dates_by_chunk(&[20260101, 20260102], 0),
+            vec![vec![20260101], vec![20260102]]
+        );
     }
 
     #[test]
@@ -650,6 +689,7 @@ mod tests {
             config_path: None,
             dry_run: false,
             exposure_batch_size: 10,
+            date_batch_size: 1,
             threads: None,
             profile: false,
         };

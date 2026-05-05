@@ -9,7 +9,7 @@ use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 use crate::operators::{cs_nonnegative, cs_scale, ts_delay, ts_std_dev};
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 const CURRENT_WINDOW: usize = 20;
 const BASE_WINDOW: usize = 40;
 const BASE_DELAY: usize = 20;
@@ -45,7 +45,7 @@ impl Factor for StockDailyScrTurbo {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Turbo SCR factor combining SIZE-neutralized turnover stability change with relaxed missing-data windows and GTR after non-negative scaling.".to_string(),
+            description: "Turbo SCR factor combining SIZE-neutralized turnover stability change with direction-aligned GTR after non-negative scaling.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -73,7 +73,8 @@ impl Factor for StockDailyScrTurbo {
         let growth = turnover.ts(turnover_growth)?;
         let gtr = growth
             .ts(|values| ts_std_dev(values, CURRENT_WINDOW, MIN_PERIODS))?
-            .cs_neutralize_regression(&[&size], None)?;
+            .cs_neutralize_regression(&[&size], None)?
+            .map_values(negate);
         let factor = average_pair(&turbo_scale(&scr)?, &turbo_scale(&gtr)?)?;
         Ok(factor.to_factor_series(self.spec()))
     }
@@ -101,6 +102,10 @@ fn turnover_growth(values: &[Option<f64>]) -> Vec<Option<f64>> {
         output[idx] = relative_change(values[idx], values[idx - 1]);
     }
     output
+}
+
+fn negate(value: Option<f64>) -> Option<f64> {
+    clean(value).map(|value| -value)
 }
 
 fn turbo_scale(values: &PanelColumn) -> Result<PanelColumn> {
@@ -153,5 +158,11 @@ mod tests {
         let std = ts_std_dev(&growth, CURRENT_WINDOW, MIN_PERIODS);
 
         assert!(std[2].is_some());
+    }
+
+    #[test]
+    fn scr_turbo_negates_gtr_direction_before_scaling() {
+        assert_close(negate(Some(0.3)), Some(-0.3));
+        assert_eq!(negate(None), None);
     }
 }

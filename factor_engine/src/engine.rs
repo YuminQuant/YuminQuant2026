@@ -33,6 +33,7 @@ pub struct RunRequest {
     pub config_path: Option<PathBuf>,
     pub dry_run: bool,
     pub factor_batch_size: usize,
+    pub date_batch_size: usize,
     pub threads: Option<usize>,
     pub profile: bool,
     pub refresh_minute_cache: bool,
@@ -215,6 +216,7 @@ impl Engine {
         let raw_work = build_intraday_raw_work(&raw_requirements, &target_dates, &calendar)?;
         let execution_groups = execution_groups_for_specs(request.frequency, &specs);
         let execution_stages = execution_stage_names(&raw_work, &execution_groups);
+        let date_batch_size = request.date_batch_size.max(1);
         let raw_date_batch_count = raw_work
             .iter()
             .map(|work| split_dates_by_chunk(&work.target_dates, DEFAULT_DATE_BATCH_SIZE).len())
@@ -224,7 +226,8 @@ impl Engine {
         let execution_plans = execution_groups
             .iter()
             .map(|group| {
-                let date_batch_count = date_batches_for_stage(&group.stage, &target_dates).len();
+                let date_batch_count =
+                    date_batches_for_stage(&group.stage, &target_dates, date_batch_size).len();
                 let factor_batch_count =
                     factor_batch_ranges(group.factor_indices.len(), factor_batch_size).len();
                 (date_batch_count, factor_batch_count)
@@ -318,7 +321,8 @@ impl Engine {
                 .map(|spec| spec.lookback.trading_days)
                 .max()
                 .unwrap_or(0);
-            let date_batches = date_batches_for_stage(&group.stage, &target_dates);
+            let date_batches =
+                date_batches_for_stage(&group.stage, &target_dates, request.date_batch_size);
             let factor_ranges = factor_batch_ranges(group.factor_indices.len(), factor_batch_size);
             let stage_name = group.stage.name();
 
@@ -1186,11 +1190,16 @@ fn execution_groups_for_specs(frequency: Frequency, specs: &[FactorSpec]) -> Vec
     groups
 }
 
-fn date_batches_for_stage(stage: &ExecutionStage, target_dates: &[i32]) -> Vec<Vec<i32>> {
+fn date_batches_for_stage(
+    stage: &ExecutionStage,
+    target_dates: &[i32],
+    date_batch_size: usize,
+) -> Vec<Vec<i32>> {
     match stage {
-        ExecutionStage::DailyNoMinute
-        | ExecutionStage::IntradayDaily { .. }
-        | ExecutionStage::IntradayDailyPostprocess { .. } => {
+        ExecutionStage::DailyNoMinute | ExecutionStage::IntradayDailyPostprocess { .. } => {
+            split_dates_by_chunk(target_dates, date_batch_size.max(1))
+        }
+        ExecutionStage::IntradayDaily { .. } => {
             split_dates_by_chunk(target_dates, DEFAULT_DATE_BATCH_SIZE)
         }
     }
@@ -1265,8 +1274,9 @@ mod tests {
     use crate::storage::FactorMetadata;
 
     use super::{
-        execution_groups_for_specs, factor_batch_ranges, select_metadata, split_dates_by_chunk,
-        validate_date_value, ExecutionStage, RunRequest, SelectionResult,
+        date_batches_for_stage, execution_groups_for_specs, factor_batch_ranges, select_metadata,
+        split_dates_by_chunk, validate_date_value, ExecutionStage, RunRequest, SelectionResult,
+        DEFAULT_DATE_BATCH_SIZE,
     };
 
     #[test]
@@ -1305,6 +1315,41 @@ mod tests {
         assert_eq!(
             split_dates_by_chunk(&[20260101, 20260102], 0),
             vec![vec![20260101], vec![20260102]]
+        );
+    }
+
+    #[test]
+    fn daily_and_postprocess_stages_use_configured_date_batch_size() {
+        let target_dates = vec![20260101, 20260102, 20260105, 20260106, 20260107];
+        let expected = vec![
+            vec![20260101, 20260102],
+            vec![20260105, 20260106],
+            vec![20260107],
+        ];
+        assert_eq!(
+            date_batches_for_stage(&ExecutionStage::DailyNoMinute, &target_dates, 2),
+            expected
+        );
+        assert_eq!(
+            date_batches_for_stage(
+                &ExecutionStage::IntradayDailyPostprocess { lookback: 19 },
+                &target_dates,
+                2,
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn direct_intraday_stage_ignores_configured_date_batch_size() {
+        let target_dates = vec![20260101, 20260102, 20260105];
+        assert_eq!(
+            date_batches_for_stage(
+                &ExecutionStage::IntradayDaily { lookback: 19 },
+                &target_dates,
+                20,
+            ),
+            vec![vec![20260101], vec![20260102], vec![20260105]]
         );
     }
 
@@ -1374,6 +1419,7 @@ mod tests {
             config_path: None,
             dry_run: false,
             factor_batch_size: 64,
+            date_batch_size: DEFAULT_DATE_BATCH_SIZE,
             threads: None,
             profile: false,
             refresh_minute_cache: false,
@@ -1408,6 +1454,7 @@ mod tests {
             config_path: None,
             dry_run: false,
             factor_batch_size: 64,
+            date_batch_size: DEFAULT_DATE_BATCH_SIZE,
             threads: None,
             profile: false,
             refresh_minute_cache: false,
@@ -1437,6 +1484,7 @@ mod tests {
             config_path: None,
             dry_run: false,
             factor_batch_size: 64,
+            date_batch_size: DEFAULT_DATE_BATCH_SIZE,
             threads: None,
             profile: false,
             refresh_minute_cache: false,

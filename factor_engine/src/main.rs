@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
 use yq_factor_engine::core::{AssetClass, Frequency};
-use yq_factor_engine::engine::DEFAULT_FACTOR_BATCH_SIZE;
+use yq_factor_engine::engine::{DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE};
 use yq_factor_engine::{
     BarraEngine, BarraRunRequest, Engine, LabelEngine, LabelRunRequest, Result, RunRequest,
 };
@@ -408,6 +408,18 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         }
         None => DEFAULT_FACTOR_BATCH_SIZE,
     };
+    let date_batch_size = match flags.get("date-batch-size") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--date-batch-size must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_DATE_BATCH_SIZE,
+    };
     let threads = match flags.get("threads") {
         Some(value) => {
             let parsed = value.parse::<usize>()?;
@@ -433,6 +445,7 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         config_path,
         dry_run,
         factor_batch_size,
+        date_batch_size,
         threads,
         profile,
         refresh_minute_cache,
@@ -782,6 +795,10 @@ fn print_help() {
         DEFAULT_FACTOR_BATCH_SIZE
     );
     println!(
+        "  --date-batch-size N (default {})",
+        DEFAULT_DATE_BATCH_SIZE
+    );
+    println!(
         "  --label-batch-size N (default {})",
         DEFAULT_LABEL_BATCH_SIZE
     );
@@ -798,7 +815,7 @@ fn print_help() {
 mod tests {
     use super::{
         flag_enabled, matches_tag_filter, parse_csv_values, parse_flags, parse_label_run_request,
-        parse_yyyymmdd, DEFAULT_LABEL_BATCH_SIZE,
+        parse_run_request, parse_yyyymmdd, DEFAULT_DATE_BATCH_SIZE, DEFAULT_LABEL_BATCH_SIZE,
     };
 
     #[test]
@@ -884,6 +901,43 @@ mod tests {
         .collect::<Vec<_>>();
         let request = parse_label_run_request(&args, false).expect("request");
         assert_eq!(request.label_batch_size, 7);
+    }
+
+    #[test]
+    fn run_date_batch_size_defaults_to_one_and_accepts_flag() {
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_run_request(&args, false).expect("request");
+        assert_eq!(request.date_batch_size, DEFAULT_DATE_BATCH_SIZE);
+
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--date-batch-size",
+            "20",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_run_request(&args, false).expect("request");
+        assert_eq!(request.date_batch_size, 20);
     }
 
     #[test]

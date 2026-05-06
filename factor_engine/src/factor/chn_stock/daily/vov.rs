@@ -3,7 +3,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::dbzq_5min_risk::{self, DbzqFactorDef, DbzqPostProcess};
+use crate::factor::common::dbzq_5min_risk::{self, DbzqFactorDef, DbzqPostProcess, DbzqRawFamily};
 use crate::factor::common::stock_daily_raw_ids::RV_5MIN_RAW_ID;
 use crate::factor::Factor;
 
@@ -27,7 +27,11 @@ impl Factor for StockDailyVov {
     }
 
     fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
-        dbzq_5min_risk::raw_specs()
+        dbzq_5min_risk::ordinary_raw_specs()
+    }
+
+    fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
+        "dbzq_5min_risk_provider".to_string()
     }
 
     fn minute_compute(
@@ -37,11 +41,14 @@ impl Factor for StockDailyVov {
         data: &DataPool,
     ) -> Result<Option<IntradayDailyRawSeries>> {
         let raw_ids = vec![raw_id.to_string()];
-        Ok(
-            dbzq_5min_risk::minute_compute_many(&raw_ids, context, data)?
-                .into_iter()
-                .next(),
-        )
+        Ok(dbzq_5min_risk::minute_compute_many_for(
+            &raw_ids,
+            context,
+            data,
+            DbzqRawFamily::Ordinary,
+        )?
+        .into_iter()
+        .next())
     }
 
     fn minute_compute_many(
@@ -50,7 +57,7 @@ impl Factor for StockDailyVov {
         context: &FactorContext,
         data: &DataPool,
     ) -> Result<Vec<IntradayDailyRawSeries>> {
-        dbzq_5min_risk::minute_compute_many(raw_ids, context, data)
+        dbzq_5min_risk::minute_compute_many_for(raw_ids, context, data, DbzqRawFamily::Ordinary)
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {

@@ -35,6 +35,12 @@ pub enum DbzqPostProcess {
     Uncertainty,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DbzqRawFamily {
+    Ordinary,
+    Idiosyncratic,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DbzqFactorDef {
     pub id: &'static str,
@@ -86,12 +92,61 @@ pub fn all_raw_ids() -> [&'static str; 18] {
     ]
 }
 
+pub fn ordinary_raw_ids() -> [&'static str; 9] {
+    [
+        RV_5MIN_RAW_ID,
+        VAR90_5MIN_RAW_ID,
+        VAR95_5MIN_RAW_ID,
+        CVAR90_5MIN_RAW_ID,
+        CVAR95_5MIN_RAW_ID,
+        VAR90_RT_5MIN_RAW_ID,
+        VAR95_RT_5MIN_RAW_ID,
+        CVAR90_RT_5MIN_RAW_ID,
+        CVAR95_RT_5MIN_RAW_ID,
+    ]
+}
+
+pub fn idiosyncratic_raw_ids() -> [&'static str; 9] {
+    [
+        ID_RV_5MIN_RAW_ID,
+        ID_VAR90_5MIN_RAW_ID,
+        ID_VAR95_5MIN_RAW_ID,
+        ID_CVAR90_5MIN_RAW_ID,
+        ID_CVAR95_5MIN_RAW_ID,
+        ID_VAR90_RT_5MIN_RAW_ID,
+        ID_VAR95_RT_5MIN_RAW_ID,
+        ID_CVAR90_RT_5MIN_RAW_ID,
+        ID_CVAR95_RT_5MIN_RAW_ID,
+    ]
+}
+
+fn raw_ids_for_family(family: DbzqRawFamily) -> Vec<&'static str> {
+    match family {
+        DbzqRawFamily::Ordinary => ordinary_raw_ids().to_vec(),
+        DbzqRawFamily::Idiosyncratic => idiosyncratic_raw_ids().to_vec(),
+    }
+}
+
 pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
     stock_minute_raw_spec(raw_id, RAW_VERSION, &["close"], RAW_WINDOW_DAYS)
 }
 
 pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
     all_raw_ids()
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
+pub fn ordinary_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    ordinary_raw_ids()
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
+pub fn idiosyncratic_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    idiosyncratic_raw_ids()
         .iter()
         .map(|raw_id| raw_spec(raw_id))
         .collect()
@@ -177,16 +232,26 @@ pub fn minute_compute_many(
     context: &FactorContext,
     data: &DataPool,
 ) -> Result<Vec<IntradayDailyRawSeries>> {
+    minute_compute_many_for(raw_ids, context, data, DbzqRawFamily::Ordinary)
+}
+
+pub fn minute_compute_many_for(
+    raw_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    family: DbzqRawFamily,
+) -> Result<Vec<IntradayDailyRawSeries>> {
+    let family_raw_ids = raw_ids_for_family(family);
     let requested = raw_ids
         .iter()
         .map(String::as_str)
-        .filter(|raw_id| all_raw_ids().contains(raw_id))
+        .filter(|raw_id| family_raw_ids.contains(raw_id))
         .collect::<BTreeSet<_>>();
     if requested.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut values = all_raw_ids()
+    let mut values = family_raw_ids
         .iter()
         .map(|raw_id| (*raw_id, Vec::<FactorValue>::new()))
         .collect::<BTreeMap<_, _>>();
@@ -217,142 +282,34 @@ pub fn minute_compute_many(
                 returns: five_minute_log_returns(&indices, trade_times, &close),
             });
         }
-        let market_returns = market_mean_returns(&instrument_returns);
+        let market_returns = matches!(family, DbzqRawFamily::Idiosyncratic)
+            .then(|| market_mean_returns(&instrument_returns));
 
         for instrument in instrument_returns {
-            let ordinary = daily_risk_stats(&instrument.returns);
-            let idiosyncratic_returns = capm_residuals(&instrument.returns, &market_returns);
-            let idiosyncratic = daily_risk_stats(&idiosyncratic_returns);
             let key = FactorRowKey::Daily {
                 trade_date: *trade_date,
                 ts_code: instrument.ts_code,
             };
 
-            push_requested(&mut values, &requested, RV_5MIN_RAW_ID, &key, ordinary.rv);
-            push_requested(
-                &mut values,
-                &requested,
-                VAR90_5MIN_RAW_ID,
-                &key,
-                ordinary.var90,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                VAR95_5MIN_RAW_ID,
-                &key,
-                ordinary.var95,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                CVAR90_5MIN_RAW_ID,
-                &key,
-                ordinary.cvar90,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                CVAR95_5MIN_RAW_ID,
-                &key,
-                ordinary.cvar95,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                VAR90_RT_5MIN_RAW_ID,
-                &key,
-                ordinary.var90_rt,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                VAR95_RT_5MIN_RAW_ID,
-                &key,
-                ordinary.var95_rt,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                CVAR90_RT_5MIN_RAW_ID,
-                &key,
-                ordinary.cvar90_rt,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                CVAR95_RT_5MIN_RAW_ID,
-                &key,
-                ordinary.cvar95_rt,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_RV_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.rv,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_VAR90_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.var90,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_VAR95_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.var95,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_CVAR90_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.cvar90,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_CVAR95_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.cvar95,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_VAR90_RT_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.var90_rt,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_VAR95_RT_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.var95_rt,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_CVAR90_RT_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.cvar90_rt,
-            );
-            push_requested(
-                &mut values,
-                &requested,
-                ID_CVAR95_RT_5MIN_RAW_ID,
-                &key,
-                idiosyncratic.cvar95_rt,
-            );
+            match family {
+                DbzqRawFamily::Ordinary => {
+                    let ordinary = daily_risk_stats(&instrument.returns);
+                    push_ordinary_stats(&mut values, &requested, &key, ordinary);
+                }
+                DbzqRawFamily::Idiosyncratic => {
+                    let Some(market_returns) = market_returns.as_ref() else {
+                        continue;
+                    };
+                    let residuals = capm_residuals(&instrument.returns, market_returns);
+                    let idiosyncratic = daily_risk_stats(&residuals);
+                    push_idiosyncratic_stats(&mut values, &requested, &key, idiosyncratic);
+                }
+            }
         }
     }
 
     let mut output = Vec::new();
-    for raw_id in all_raw_ids() {
+    for raw_id in family_raw_ids {
         if !requested.contains(raw_id) {
             continue;
         }
@@ -405,6 +362,76 @@ fn push_requested(
         key: key.clone(),
         value,
     });
+}
+
+fn push_ordinary_stats(
+    values: &mut BTreeMap<&'static str, Vec<FactorValue>>,
+    requested: &BTreeSet<&str>,
+    key: &FactorRowKey,
+    stats: DailyRiskStats,
+) {
+    push_requested(values, requested, RV_5MIN_RAW_ID, key, stats.rv);
+    push_requested(values, requested, VAR90_5MIN_RAW_ID, key, stats.var90);
+    push_requested(values, requested, VAR95_5MIN_RAW_ID, key, stats.var95);
+    push_requested(values, requested, CVAR90_5MIN_RAW_ID, key, stats.cvar90);
+    push_requested(values, requested, CVAR95_5MIN_RAW_ID, key, stats.cvar95);
+    push_requested(values, requested, VAR90_RT_5MIN_RAW_ID, key, stats.var90_rt);
+    push_requested(values, requested, VAR95_RT_5MIN_RAW_ID, key, stats.var95_rt);
+    push_requested(
+        values,
+        requested,
+        CVAR90_RT_5MIN_RAW_ID,
+        key,
+        stats.cvar90_rt,
+    );
+    push_requested(
+        values,
+        requested,
+        CVAR95_RT_5MIN_RAW_ID,
+        key,
+        stats.cvar95_rt,
+    );
+}
+
+fn push_idiosyncratic_stats(
+    values: &mut BTreeMap<&'static str, Vec<FactorValue>>,
+    requested: &BTreeSet<&str>,
+    key: &FactorRowKey,
+    stats: DailyRiskStats,
+) {
+    push_requested(values, requested, ID_RV_5MIN_RAW_ID, key, stats.rv);
+    push_requested(values, requested, ID_VAR90_5MIN_RAW_ID, key, stats.var90);
+    push_requested(values, requested, ID_VAR95_5MIN_RAW_ID, key, stats.var95);
+    push_requested(values, requested, ID_CVAR90_5MIN_RAW_ID, key, stats.cvar90);
+    push_requested(values, requested, ID_CVAR95_5MIN_RAW_ID, key, stats.cvar95);
+    push_requested(
+        values,
+        requested,
+        ID_VAR90_RT_5MIN_RAW_ID,
+        key,
+        stats.var90_rt,
+    );
+    push_requested(
+        values,
+        requested,
+        ID_VAR95_RT_5MIN_RAW_ID,
+        key,
+        stats.var95_rt,
+    );
+    push_requested(
+        values,
+        requested,
+        ID_CVAR90_RT_5MIN_RAW_ID,
+        key,
+        stats.cvar90_rt,
+    );
+    push_requested(
+        values,
+        requested,
+        ID_CVAR95_RT_5MIN_RAW_ID,
+        key,
+        stats.cvar95_rt,
+    );
 }
 
 fn five_minute_log_returns(

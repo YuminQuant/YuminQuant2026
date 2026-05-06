@@ -95,3 +95,9 @@ pub const CUTVOL_TIME_MEAN_RAW_ID: &str = "daily_cutvol_time_mean";
 pub const CUTVOL_TIME_VAR_RAW_ID: &str = "daily_cutvol_time_var";
 pub const CUTVOL_TIME_COR_RAW_ID: &str = "daily_cutvol_time_cor";
 pub const CUTVOL_ENTROPY_RAW_ID: &str = "daily_cutvol_entropy";
+
+pub const NEGV_MEAN_RAW_ID: &str = "daily_negv_mean";
+pub const NEGV_MAX_RAW_ID: &str = "daily_negv_max";
+pub const NEGVWGT_MEAN_RAW_ID: &str = "daily_negvwgt_mean";
+pub const NEGVWGT_MAX_RAW_ID: &str = "daily_negvwgt_max";
+pub const MINV_RAW_ID: &str = "daily_minv";

@@ -3,37 +3,35 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::stock_daily_raw_ids::FLASH_CRASH_PROB_RAW_ID;
-use crate::factor::common::xyzq_serial_structure::{
-    self, XyzqSerialAggregation, XyzqSerialFactorDef, XyzqSerialRawFamily,
-};
+use crate::factor::common::stock_daily_raw_ids::RVC_COR_RAW_ID;
+use crate::factor::common::xyzq_flow_structure::{self, XyzqFlowFactorDef, XyzqFlowRawFamily};
 use crate::factor::Factor;
 
-const DEF: XyzqSerialFactorDef = XyzqSerialFactorDef {
-    id: "flash_crash_prob",
-    alias: "flashCrashProb",
-    name: "flashCrashProb",
-    raw_id: FLASH_CRASH_PROB_RAW_ID,
-    aggregation: XyzqSerialAggregation::Mean,
+const DEF: XyzqFlowFactorDef = XyzqFlowFactorDef {
+    id: "rvc_cor",
+    alias: "rvc_cor",
+    name: "rvc_cor",
+    raw_id: RVC_COR_RAW_ID,
+    window: xyzq_flow_structure::default_window(),
 };
 
-pub struct StockDailyFlashCrashProb;
+pub struct StockDailyRvcCor;
 
 pub fn create() -> Box<dyn Factor> {
-    Box::new(StockDailyFlashCrashProb)
+    Box::new(StockDailyRvcCor)
 }
 
-impl Factor for StockDailyFlashCrashProb {
+impl Factor for StockDailyRvcCor {
     fn spec(&self) -> FactorSpec {
-        xyzq_serial_structure::factor_spec(DEF)
+        xyzq_flow_structure::factor_spec(DEF)
     }
 
     fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
-        xyzq_serial_structure::flash_crash_raw_specs()
+        xyzq_flow_structure::correlation_raw_specs()
     }
 
     fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
-        "xyzq_flash_crash_provider".to_string()
+        "xyzq_flow_correlation_provider".to_string()
     }
 
     fn minute_compute(
@@ -43,11 +41,11 @@ impl Factor for StockDailyFlashCrashProb {
         data: &DataPool,
     ) -> Result<Option<IntradayDailyRawSeries>> {
         let raw_ids = vec![raw_id.to_string()];
-        Ok(xyzq_serial_structure::minute_compute_many_for(
+        Ok(xyzq_flow_structure::minute_compute_many_for(
             &raw_ids,
             context,
             data,
-            XyzqSerialRawFamily::FlashCrash,
+            XyzqFlowRawFamily::Correlation,
         )?
         .into_iter()
         .next())
@@ -59,15 +57,15 @@ impl Factor for StockDailyFlashCrashProb {
         context: &FactorContext,
         data: &DataPool,
     ) -> Result<Vec<IntradayDailyRawSeries>> {
-        xyzq_serial_structure::minute_compute_many_for(
+        xyzq_flow_structure::minute_compute_many_for(
             raw_ids,
             context,
             data,
-            XyzqSerialRawFamily::FlashCrash,
+            XyzqFlowRawFamily::Correlation,
         )
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        xyzq_serial_structure::compute_factor(DEF, data)
+        xyzq_flow_structure::compute_factor(DEF, data)
     }
 }

@@ -4,7 +4,9 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::stock_daily_raw_ids::RTN5_MEAN_RAW_ID;
-use crate::factor::common::xyzq_intraday_distribution::{self, XyzqFactorDef};
+use crate::factor::common::xyzq_intraday_distribution::{
+    self, XyzqDistributionRawFamily, XyzqFactorDef,
+};
 use crate::factor::Factor;
 
 const DEF: XyzqFactorDef = XyzqFactorDef {
@@ -26,7 +28,11 @@ impl Factor for StockDailyRtn5Mean {
     }
 
     fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
-        xyzq_intraday_distribution::raw_specs()
+        xyzq_intraday_distribution::five_minute_noise_raw_specs()
+    }
+
+    fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
+        "xyzq_5min_noise_provider".to_string()
     }
 
     fn minute_compute(
@@ -36,11 +42,14 @@ impl Factor for StockDailyRtn5Mean {
         data: &DataPool,
     ) -> Result<Option<IntradayDailyRawSeries>> {
         let raw_ids = vec![raw_id.to_string()];
-        Ok(
-            xyzq_intraday_distribution::minute_compute_many(&raw_ids, context, data)?
-                .into_iter()
-                .next(),
-        )
+        Ok(xyzq_intraday_distribution::minute_compute_many_for(
+            &raw_ids,
+            context,
+            data,
+            XyzqDistributionRawFamily::FiveMinuteNoise,
+        )?
+        .into_iter()
+        .next())
     }
 
     fn minute_compute_many(
@@ -49,7 +58,12 @@ impl Factor for StockDailyRtn5Mean {
         context: &FactorContext,
         data: &DataPool,
     ) -> Result<Vec<IntradayDailyRawSeries>> {
-        xyzq_intraday_distribution::minute_compute_many(raw_ids, context, data)
+        xyzq_intraday_distribution::minute_compute_many_for(
+            raw_ids,
+            context,
+            data,
+            XyzqDistributionRawFamily::FiveMinuteNoise,
+        )
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {

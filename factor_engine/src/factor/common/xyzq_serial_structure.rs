@@ -36,6 +36,15 @@ pub enum XyzqSerialAggregation {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub enum XyzqSerialRawFamily {
+    ReturnSerial,
+    VolumeSerial,
+    HighStdRtn,
+    CondVar,
+    FlashCrash,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct XyzqSerialFactorDef {
     pub id: &'static str,
     pub alias: &'static str,
@@ -61,6 +70,24 @@ struct SerialStats {
     flash_crash_prob: Option<f64>,
 }
 
+impl SerialStats {
+    fn merge(&mut self, other: SerialStats) {
+        self.rtn_foc = self.rtn_foc.or(other.rtn_foc);
+        self.vol_foc = self.vol_foc.or(other.vol_foc);
+        self.rtn_dw = self.rtn_dw.or(other.rtn_dw);
+        self.vol_dw = self.vol_dw.or(other.vol_dw);
+        self.rtn_rho = self.rtn_rho.or(other.rtn_rho);
+        self.vol_rho = self.vol_rho.or(other.vol_rho);
+        self.rtn_lbq = self.rtn_lbq.or(other.rtn_lbq);
+        self.vol_lbq = self.vol_lbq.or(other.vol_lbq);
+        self.high_std_rtn_mean = self.high_std_rtn_mean.or(other.high_std_rtn_mean);
+        self.rtn_cond_var = self.rtn_cond_var.or(other.rtn_cond_var);
+        self.lambda_pos = self.lambda_pos.or(other.lambda_pos);
+        self.lambda_neg = self.lambda_neg.or(other.lambda_neg);
+        self.flash_crash_prob = self.flash_crash_prob.or(other.flash_crash_prob);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct MinutePoint {
     in_window: bool,
@@ -84,6 +111,26 @@ pub fn all_raw_ids() -> [&'static str; 11] {
     ]
 }
 
+pub fn raw_ids_for_family(family: XyzqSerialRawFamily) -> &'static [&'static str] {
+    match family {
+        XyzqSerialRawFamily::ReturnSerial => &[
+            RTN_FOC_RAW_ID,
+            RTN_DW_RAW_ID,
+            RTN_RHO_RAW_ID,
+            RTN_LBQ_RAW_ID,
+        ],
+        XyzqSerialRawFamily::VolumeSerial => &[
+            VOL_FOC_RAW_ID,
+            VOL_DW_RAW_ID,
+            VOL_RHO_RAW_ID,
+            VOL_LBQ_RAW_ID,
+        ],
+        XyzqSerialRawFamily::HighStdRtn => &[HIGH_STD_RTN_MEAN_RAW_ID],
+        XyzqSerialRawFamily::CondVar => &[RTN_COND_VAR_RAW_ID],
+        XyzqSerialRawFamily::FlashCrash => &[FLASH_CRASH_PROB_RAW_ID],
+    }
+}
+
 pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
     stock_minute_raw_spec(raw_id, RAW_VERSION, &["close", "vol"], RAW_WINDOW_DAYS)
 }
@@ -93,6 +140,33 @@ pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
         .iter()
         .map(|raw_id| raw_spec(raw_id))
         .collect()
+}
+
+pub fn raw_specs_for_family(family: XyzqSerialRawFamily) -> Vec<IntradayDailyRawSpec> {
+    raw_ids_for_family(family)
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
+pub fn return_serial_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqSerialRawFamily::ReturnSerial)
+}
+
+pub fn volume_serial_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqSerialRawFamily::VolumeSerial)
+}
+
+pub fn high_std_rtn_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqSerialRawFamily::HighStdRtn)
+}
+
+pub fn cond_var_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqSerialRawFamily::CondVar)
+}
+
+pub fn flash_crash_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqSerialRawFamily::FlashCrash)
 }
 
 pub fn factor_spec(def: XyzqSerialFactorDef) -> FactorSpec {
@@ -175,10 +249,35 @@ pub fn minute_compute_many(
     context: &FactorContext,
     data: &DataPool,
 ) -> Result<Vec<IntradayDailyRawSeries>> {
+    minute_compute_many_impl(raw_ids, context, data, &all_raw_ids(), None)
+}
+
+pub fn minute_compute_many_for(
+    raw_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    family: XyzqSerialRawFamily,
+) -> Result<Vec<IntradayDailyRawSeries>> {
+    minute_compute_many_impl(
+        raw_ids,
+        context,
+        data,
+        raw_ids_for_family(family),
+        Some(family),
+    )
+}
+
+fn minute_compute_many_impl(
+    raw_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    family_raw_ids: &[&'static str],
+    family: Option<XyzqSerialRawFamily>,
+) -> Result<Vec<IntradayDailyRawSeries>> {
     let requested = raw_ids
         .iter()
         .map(String::as_str)
-        .filter(|raw_id| all_raw_ids().contains(raw_id))
+        .filter(|raw_id| family_raw_ids.contains(raw_id))
         .collect::<BTreeSet<_>>();
     if requested.is_empty() {
         return Ok(Vec::new());
@@ -213,7 +312,10 @@ pub fn minute_compute_many(
         for (ts_code, mut indices) in grouped {
             indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
             let points = minute_points_from_indices(&indices, &trade_times, &close, &vol);
-            let stats = serial_stats(&points);
+            let stats = match family {
+                Some(family) => serial_stats_for(&points, family),
+                None => serial_stats(&points),
+            };
             let key = FactorRowKey::Daily {
                 trade_date: *trade_date,
                 ts_code,
@@ -221,7 +323,9 @@ pub fn minute_compute_many(
             per_stock.push((key, stats));
         }
 
-        fill_flash_crash_probabilities(&mut per_stock);
+        if family.is_none() || matches!(family, Some(XyzqSerialRawFamily::FlashCrash)) {
+            fill_flash_crash_probabilities(&mut per_stock);
+        }
 
         for (key, stats) in per_stock {
             push_requested(&mut values, &requested, RTN_FOC_RAW_ID, &key, stats.rtn_foc);
@@ -257,7 +361,7 @@ pub fn minute_compute_many(
     }
 
     let mut output = Vec::new();
-    for raw_id in all_raw_ids() {
+    for &raw_id in family_raw_ids {
         if requested.contains(raw_id) {
             output.push(IntradayDailyRawSeries {
                 spec: raw_spec(raw_id),
@@ -332,6 +436,20 @@ fn minute_points_from_indices(
 }
 
 fn serial_stats(points: &[MinutePoint]) -> SerialStats {
+    let mut stats = SerialStats::default();
+    for family in [
+        XyzqSerialRawFamily::ReturnSerial,
+        XyzqSerialRawFamily::VolumeSerial,
+        XyzqSerialRawFamily::HighStdRtn,
+        XyzqSerialRawFamily::CondVar,
+        XyzqSerialRawFamily::FlashCrash,
+    ] {
+        stats.merge(serial_stats_for(points, family));
+    }
+    stats
+}
+
+fn serial_stats_for(points: &[MinutePoint], family: XyzqSerialRawFamily) -> SerialStats {
     let returns = simple_returns(points);
     let selected_positions = points
         .iter()
@@ -350,24 +468,34 @@ fn serial_stats(points: &[MinutePoint]) -> SerialStats {
         .iter()
         .map(|idx| points[*idx].vol)
         .collect::<Vec<_>>();
-    let vol_pct = volume_pct(&selected_vol);
-
-    let (lambda_pos, lambda_neg) = run_length_lambdas(&selected_returns);
-    SerialStats {
-        rtn_foc: lag_corr(&selected_returns),
-        vol_foc: lag_corr(&vol_pct),
-        rtn_dw: durbin_watson(&selected_returns),
-        vol_dw: durbin_watson(&vol_pct),
-        rtn_rho: residual_ar1_rho(&selected_returns),
-        vol_rho: residual_ar1_rho(&vol_pct),
-        rtn_lbq: lbq_std(&selected_returns),
-        vol_lbq: lbq_std(&vol_pct),
-        high_std_rtn_mean: high_std_rtn_mean(points, &returns),
-        rtn_cond_var: cond_var(&selected_close),
-        lambda_pos,
-        lambda_neg,
-        flash_crash_prob: None,
+    let mut stats = SerialStats::default();
+    match family {
+        XyzqSerialRawFamily::ReturnSerial => {
+            stats.rtn_foc = lag_corr(&selected_returns);
+            stats.rtn_dw = durbin_watson(&selected_returns);
+            stats.rtn_rho = residual_ar1_rho(&selected_returns);
+            stats.rtn_lbq = lbq_std(&selected_returns);
+        }
+        XyzqSerialRawFamily::VolumeSerial => {
+            let vol_pct = volume_pct(&selected_vol);
+            stats.vol_foc = lag_corr(&vol_pct);
+            stats.vol_dw = durbin_watson(&vol_pct);
+            stats.vol_rho = residual_ar1_rho(&vol_pct);
+            stats.vol_lbq = lbq_std(&vol_pct);
+        }
+        XyzqSerialRawFamily::HighStdRtn => {
+            stats.high_std_rtn_mean = high_std_rtn_mean(points, &returns);
+        }
+        XyzqSerialRawFamily::CondVar => {
+            stats.rtn_cond_var = cond_var(&selected_close);
+        }
+        XyzqSerialRawFamily::FlashCrash => {
+            let (lambda_pos, lambda_neg) = run_length_lambdas(&selected_returns);
+            stats.lambda_pos = lambda_pos;
+            stats.lambda_neg = lambda_neg;
+        }
     }
+    stats
 }
 
 fn simple_returns(points: &[MinutePoint]) -> Vec<Option<f64>> {

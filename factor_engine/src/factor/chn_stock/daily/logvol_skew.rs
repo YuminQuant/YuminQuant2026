@@ -5,7 +5,7 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::stock_daily_raw_ids::LOGVOL_SKEW_RAW_ID;
 use crate::factor::common::xyzq_volume_shape::{
-    self, default_window, XyzqVolumeAggregation, XyzqVolumeFactorDef,
+    self, default_window, XyzqVolumeAggregation, XyzqVolumeFactorDef, XyzqVolumeRawFamily,
 };
 use crate::factor::Factor;
 
@@ -30,7 +30,11 @@ impl Factor for StockDailyLogvolSkew {
     }
 
     fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
-        xyzq_volume_shape::raw_specs()
+        xyzq_volume_shape::logvol_raw_specs()
+    }
+
+    fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
+        "xyzq_logvol_shape_provider".to_string()
     }
 
     fn minute_compute(
@@ -40,11 +44,14 @@ impl Factor for StockDailyLogvolSkew {
         data: &DataPool,
     ) -> Result<Option<IntradayDailyRawSeries>> {
         let raw_ids = vec![raw_id.to_string()];
-        Ok(
-            xyzq_volume_shape::minute_compute_many(&raw_ids, context, data)?
-                .into_iter()
-                .next(),
-        )
+        Ok(xyzq_volume_shape::minute_compute_many_for(
+            &raw_ids,
+            context,
+            data,
+            XyzqVolumeRawFamily::LogvolShape,
+        )?
+        .into_iter()
+        .next())
     }
 
     fn minute_compute_many(
@@ -53,7 +60,12 @@ impl Factor for StockDailyLogvolSkew {
         context: &FactorContext,
         data: &DataPool,
     ) -> Result<Vec<IntradayDailyRawSeries>> {
-        xyzq_volume_shape::minute_compute_many(raw_ids, context, data)
+        xyzq_volume_shape::minute_compute_many_for(
+            raw_ids,
+            context,
+            data,
+            XyzqVolumeRawFamily::LogvolShape,
+        )
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {

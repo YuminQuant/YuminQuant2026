@@ -21,7 +21,6 @@ pub const VERSION: &str = "0.1.0";
 const RAW_WINDOW_DAYS: usize = 1;
 const DEFAULT_SMOOTH_WINDOW: usize = 20;
 const GMM_MEAN2WGT_SMOOTH_WINDOW: usize = 15;
-const GMM_RAW_LOOKBACK: usize = DEFAULT_SMOOTH_WINDOW - 1;
 const MIN_PERIODS: usize = 1;
 const EPS: f64 = f64::EPSILON;
 const EXTREME_Z: f64 = 1.96;
@@ -39,6 +38,12 @@ pub struct XyzqExtremeGmmFactorDef {
     pub name: &'static str,
     pub raw_id: &'static str,
     pub smooth_window: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum XyzqExtremeGmmRawFamily {
+    ExtremeReturn,
+    GmmReturn,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -82,7 +87,7 @@ pub fn all_raw_ids() -> [&'static str; 8] {
     ]
 }
 
-fn extreme_raw_ids() -> [&'static str; 4] {
+pub fn extreme_raw_ids() -> [&'static str; 4] {
     [
         EX_RTN_MAX_VAL_RAW_ID,
         EX_RTN_MAX_FRE_RAW_ID,
@@ -91,13 +96,20 @@ fn extreme_raw_ids() -> [&'static str; 4] {
     ]
 }
 
-fn gmm_raw_ids() -> [&'static str; 4] {
+pub fn gmm_raw_ids() -> [&'static str; 4] {
     [
         GMM_MEAN_RAW_ID,
         GMM_MEAN2WGT_RAW_ID,
         GMM_MEANDIF_RAW_ID,
         GMM_MEANDIF2WGTDIF_RAW_ID,
     ]
+}
+
+fn raw_ids_for_family(family: XyzqExtremeGmmRawFamily) -> Vec<&'static str> {
+    match family {
+        XyzqExtremeGmmRawFamily::ExtremeReturn => extreme_raw_ids().to_vec(),
+        XyzqExtremeGmmRawFamily::GmmReturn => gmm_raw_ids().to_vec(),
+    }
 }
 
 pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
@@ -111,21 +123,23 @@ pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
         .collect()
 }
 
+pub fn extreme_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    extreme_raw_ids()
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
+pub fn gmm_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    gmm_raw_ids()
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
 pub fn factor_spec(def: XyzqExtremeGmmFactorDef) -> FactorSpec {
-    let is_gmm_factor = gmm_raw_ids().contains(&def.raw_id);
-    let raw_lookback = if is_gmm_factor {
-        GMM_RAW_LOOKBACK
-    } else {
-        def.smooth_window - 1
-    };
-    let intraday_raw_dependencies = if is_gmm_factor {
-        gmm_raw_ids()
-            .iter()
-            .map(|raw_id| IntradayDailyRawRequest::new(*raw_id, raw_lookback))
-            .collect()
-    } else {
-        vec![IntradayDailyRawRequest::new(def.raw_id, raw_lookback)]
-    };
+    let raw_lookback = def.smooth_window - 1;
+    let intraday_raw_dependencies = vec![IntradayDailyRawRequest::new(def.raw_id, raw_lookback)];
     FactorSpec {
         id: def.id.to_string(),
         aliases: vec![def.alias.to_string()],
@@ -194,19 +208,26 @@ pub fn minute_compute_many(
     context: &FactorContext,
     data: &DataPool,
 ) -> Result<Vec<IntradayDailyRawSeries>> {
-    let mut requested = raw_ids
+    minute_compute_many_for(
+        raw_ids,
+        context,
+        data,
+        XyzqExtremeGmmRawFamily::ExtremeReturn,
+    )
+}
+
+pub fn minute_compute_many_for(
+    raw_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    family: XyzqExtremeGmmRawFamily,
+) -> Result<Vec<IntradayDailyRawSeries>> {
+    let family_raw_ids = raw_ids_for_family(family);
+    let requested = raw_ids
         .iter()
         .map(String::as_str)
-        .filter(|raw_id| all_raw_ids().contains(raw_id))
+        .filter(|raw_id| family_raw_ids.contains(raw_id))
         .collect::<BTreeSet<_>>();
-    if requested
-        .iter()
-        .any(|raw_id| gmm_raw_ids().contains(raw_id))
-    {
-        for raw_id in gmm_raw_ids() {
-            requested.insert(raw_id);
-        }
-    }
     if requested.is_empty() {
         return Ok(Vec::new());
     }
@@ -217,7 +238,7 @@ pub fn minute_compute_many(
         .iter()
         .any(|raw_id| gmm_raw_ids().contains(raw_id));
 
-    let mut values = all_raw_ids()
+    let mut values = family_raw_ids
         .iter()
         .map(|raw_id| (*raw_id, Vec::<FactorValue>::new()))
         .collect::<BTreeMap<_, _>>();
@@ -310,7 +331,7 @@ pub fn minute_compute_many(
     }
 
     let mut output = Vec::new();
-    for raw_id in all_raw_ids() {
+    for raw_id in family_raw_ids {
         if requested.contains(raw_id) {
             output.push(IntradayDailyRawSeries {
                 spec: raw_spec(raw_id),
@@ -820,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn xyzq_extreme_gmm_factor_spec_uses_shared_raw_lookback() {
+    fn xyzq_extreme_gmm_factor_spec_uses_factor_window_lookback() {
         let def = XyzqExtremeGmmFactorDef {
             id: "gmm_mean2wgt",
             alias: "gmm_mean2wgt",
@@ -830,11 +851,11 @@ mod tests {
         };
         let spec = factor_spec(def);
 
-        assert_eq!(spec.lookback.trading_days, GMM_RAW_LOOKBACK);
-        assert_eq!(spec.intraday_raw_dependencies.len(), gmm_raw_ids().len());
-        assert!(spec
-            .intraday_raw_dependencies
-            .iter()
-            .all(|request| request.daily_lookback == GMM_RAW_LOOKBACK));
+        assert_eq!(spec.lookback.trading_days, GMM_MEAN2WGT_SMOOTH_WINDOW - 1);
+        assert_eq!(spec.intraday_raw_dependencies.len(), 1);
+        assert_eq!(
+            spec.intraday_raw_dependencies[0].daily_lookback,
+            GMM_MEAN2WGT_SMOOTH_WINDOW - 1
+        );
     }
 }

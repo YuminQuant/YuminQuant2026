@@ -488,7 +488,6 @@ fn intraday_raw_provider_map() -> Result<BTreeMap<String, RawProvider>> {
     let mut providers = BTreeMap::new();
     for factor in all_factors() {
         let factor: Arc<dyn Factor> = Arc::from(factor);
-        let provider_key = factor.spec().registry_key();
         for spec in factor.intraday_raw_specs() {
             if providers.contains_key(&spec.raw_id) {
                 return Err(err(format!(
@@ -496,6 +495,7 @@ fn intraday_raw_provider_map() -> Result<BTreeMap<String, RawProvider>> {
                     spec.raw_id
                 )));
             }
+            let provider_key = factor.intraday_raw_provider_key(&spec.raw_id);
             providers.insert(
                 spec.raw_id.clone(),
                 RawProvider {
@@ -579,7 +579,8 @@ fn materialize_intraday_raw_table(
     materialized_intraday_raw_dates: &mut BTreeSet<(String, i32)>,
     progress: &ProgressBar,
 ) -> Result<(crate::data::Table, Vec<BatchProfile>)> {
-    let raw_id_set = raw_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let raw_id_set =
+        expand_raw_ids_to_selected_provider_siblings(raw_ids, requirements, providers)?;
     let mut stateless_requirements_by_dataset =
         BTreeMap::<DatasetId, Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new();
     let mut stateful_requirements_by_dataset =
@@ -1078,6 +1079,35 @@ fn materialize_intraday_raw_table(
     ))
 }
 
+fn expand_raw_ids_to_selected_provider_siblings(
+    raw_ids: &[String],
+    requirements: &[IntradayRawRequirement],
+    providers: &BTreeMap<String, RawProvider>,
+) -> Result<BTreeSet<String>> {
+    let mut raw_id_set = raw_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut provider_keys = BTreeSet::new();
+    for raw_id in raw_ids {
+        let provider = providers.get(raw_id).ok_or_else(|| {
+            err(format!(
+                "intraday daily raw implementation not found: {raw_id}"
+            ))
+        })?;
+        provider_keys.insert(provider.provider_key.clone());
+    }
+    for requirement in requirements {
+        let provider = providers.get(&requirement.spec.raw_id).ok_or_else(|| {
+            err(format!(
+                "intraday daily raw implementation not found: {}",
+                requirement.spec.raw_id
+            ))
+        })?;
+        if provider_keys.contains(&provider.provider_key) {
+            raw_id_set.insert(requirement.spec.raw_id.clone());
+        }
+    }
+    Ok(raw_id_set)
+}
+
 fn raw_ids_for_specs(specs: &[FactorSpec]) -> Vec<String> {
     let mut raw_ids = BTreeSet::new();
     for spec in specs {
@@ -1487,13 +1517,22 @@ pub fn available_specs() -> Vec<FactorSpec> {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::{AssetClass, DataRequest, DatasetId, FactorSpec, Frequency, Lookback};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use crate::core::{
+        AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
+        IntradayDailyRawSpec, Lookback,
+    };
+    use crate::data::DataPool;
+    use crate::error::Result;
+    use crate::factor::Factor;
     use crate::storage::FactorMetadata;
 
     use super::{
         date_batches_for_stage, execution_groups_for_specs, factor_batch_ranges, select_metadata,
-        split_dates_by_chunk, validate_date_value, ExecutionStage, RunRequest, SelectionResult,
-        DEFAULT_DATE_BATCH_SIZE,
+        split_dates_by_chunk, validate_date_value, ExecutionStage, IntradayRawRequirement,
+        RawProvider, RunRequest, SelectionResult, DEFAULT_DATE_BATCH_SIZE,
     };
 
     #[test]
@@ -1625,6 +1664,47 @@ mod tests {
     }
 
     #[test]
+    fn raw_materialization_expands_to_selected_sibling_raws_by_provider_key() {
+        let factor: Arc<dyn Factor> = Arc::new(DummyFactor);
+        let providers = BTreeMap::from([
+            (
+                "raw_a".to_string(),
+                raw_provider("raw_a", "provider_one", Arc::clone(&factor)),
+            ),
+            (
+                "raw_b".to_string(),
+                raw_provider("raw_b", "provider_one", Arc::clone(&factor)),
+            ),
+            (
+                "raw_unselected".to_string(),
+                raw_provider("raw_unselected", "provider_one", Arc::clone(&factor)),
+            ),
+            (
+                "raw_c".to_string(),
+                raw_provider("raw_c", "provider_two", Arc::clone(&factor)),
+            ),
+        ]);
+        let requirements = vec![
+            raw_requirement("raw_a"),
+            raw_requirement("raw_b"),
+            raw_requirement("raw_c"),
+        ];
+        let raw_ids = vec!["raw_a".to_string()];
+
+        let expanded = super::expand_raw_ids_to_selected_provider_siblings(
+            &raw_ids,
+            &requirements,
+            &providers,
+        )
+        .expect("expand raw ids");
+
+        assert!(expanded.contains("raw_a"));
+        assert!(expanded.contains("raw_b"));
+        assert!(!expanded.contains("raw_c"));
+        assert!(!expanded.contains("raw_unselected"));
+    }
+
+    #[test]
     fn selection_matches_short_id_and_legacy_alias_inside_asset_frequency() {
         let request = RunRequest {
             asset_class: AssetClass::Stock,
@@ -1736,6 +1816,44 @@ mod tests {
             dependencies_json: String::new(),
             description: String::new(),
             updated_at: String::new(),
+        }
+    }
+
+    struct DummyFactor;
+
+    impl Factor for DummyFactor {
+        fn spec(&self) -> FactorSpec {
+            spec_with_dataset("dummy", DatasetId::StockDailyPv, 0)
+        }
+
+        fn compute(&self, _context: &FactorContext, _data: &DataPool) -> Result<FactorSeries> {
+            unimplemented!("dummy factor is only used as a raw provider handle in engine tests")
+        }
+    }
+
+    fn raw_provider(raw_id: &str, provider_key: &str, factor: Arc<dyn Factor>) -> RawProvider {
+        RawProvider {
+            spec: raw_spec(raw_id),
+            provider_key: provider_key.to_string(),
+            factor,
+        }
+    }
+
+    fn raw_requirement(raw_id: &str) -> IntradayRawRequirement {
+        IntradayRawRequirement {
+            spec: raw_spec(raw_id),
+            daily_lookback: 0,
+        }
+    }
+
+    fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
+        IntradayDailyRawSpec {
+            raw_id: raw_id.to_string(),
+            version: "0.1.0".to_string(),
+            asset_class: AssetClass::Stock,
+            source_dataset: DatasetId::StockMinute1m,
+            columns: vec!["close".to_string()],
+            window_days: 1,
         }
     }
 

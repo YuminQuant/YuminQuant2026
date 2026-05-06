@@ -1,10 +1,73 @@
+use crate::core::{
+    FactorContext, FactorSeries, FactorSpec, IntradayDailyRawSeries, IntradayDailyRawSpec,
+};
+use crate::data::DataPool;
+use crate::error::Result;
 use crate::factor::common::stock_daily_raw_ids::VOL_FOC_RAW_ID;
+use crate::factor::common::xyzq_serial_structure::{
+    self, XyzqSerialAggregation, XyzqSerialFactorDef, XyzqSerialRawFamily,
+};
+use crate::factor::Factor;
 
-crate::define_xyzq_serial_structure_factor!(
-    StockDailyVolFoc,
-    "vol_foc",
-    "vol_foc",
-    "vol_foc",
-    VOL_FOC_RAW_ID,
-    Mean
-);
+const DEF: XyzqSerialFactorDef = XyzqSerialFactorDef {
+    id: "vol_foc",
+    alias: "vol_foc",
+    name: "vol_foc",
+    raw_id: VOL_FOC_RAW_ID,
+    aggregation: XyzqSerialAggregation::Mean,
+};
+
+pub struct StockDailyVolFoc;
+
+pub fn create() -> Box<dyn Factor> {
+    Box::new(StockDailyVolFoc)
+}
+
+impl Factor for StockDailyVolFoc {
+    fn spec(&self) -> FactorSpec {
+        xyzq_serial_structure::factor_spec(DEF)
+    }
+
+    fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
+        xyzq_serial_structure::volume_serial_raw_specs()
+    }
+
+    fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
+        "xyzq_volume_serial_provider".to_string()
+    }
+
+    fn minute_compute(
+        &self,
+        raw_id: &str,
+        context: &FactorContext,
+        data: &DataPool,
+    ) -> Result<Option<IntradayDailyRawSeries>> {
+        let raw_ids = vec![raw_id.to_string()];
+        Ok(xyzq_serial_structure::minute_compute_many_for(
+            &raw_ids,
+            context,
+            data,
+            XyzqSerialRawFamily::VolumeSerial,
+        )?
+        .into_iter()
+        .next())
+    }
+
+    fn minute_compute_many(
+        &self,
+        raw_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+    ) -> Result<Vec<IntradayDailyRawSeries>> {
+        xyzq_serial_structure::minute_compute_many_for(
+            raw_ids,
+            context,
+            data,
+            XyzqSerialRawFamily::VolumeSerial,
+        )
+    }
+
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        xyzq_serial_structure::compute_factor(DEF, data)
+    }
+}

@@ -39,6 +39,16 @@ pub enum XyzqVolumeAggregation {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub enum XyzqVolumeRawFamily {
+    LogvolShape,
+    VolrocShape,
+    CumsumvolShape,
+    VolEntropy,
+    VolBootstrapMax,
+    Vsa,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct XyzqVolumeFactorDef {
     pub id: &'static str,
     pub alias: &'static str,
@@ -101,6 +111,21 @@ pub fn all_raw_ids() -> [&'static str; 13] {
     ]
 }
 
+pub fn raw_ids_for_family(family: XyzqVolumeRawFamily) -> &'static [&'static str] {
+    match family {
+        XyzqVolumeRawFamily::LogvolShape => &[
+            LOGVOL_SKEW_RAW_ID,
+            LOGVOL_90TAIL_RAW_ID,
+            LOGVOL_10TAIL_RAW_ID,
+        ],
+        XyzqVolumeRawFamily::VolrocShape => &[VOLROC_SKEW_RAW_ID, VOLROC_KURT_RAW_ID],
+        XyzqVolumeRawFamily::CumsumvolShape => &[CUMSUMVOL_MEAN_RAW_ID, CUMSUMVOL_STD_RAW_ID],
+        XyzqVolumeRawFamily::VolEntropy => &[VOL_ENTROPY_SHAPE_RAW_ID],
+        XyzqVolumeRawFamily::VolBootstrapMax => &[VOL_MAXMEAN_RAW_ID, VOL_MAXSTD_RAW_ID],
+        XyzqVolumeRawFamily::Vsa => &[VSA_RATIO_RAW_ID, VSA_LOW2MAX_RAW_ID, VSA_HIGH2MIN_RAW_ID],
+    }
+}
+
 pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
     stock_minute_raw_spec(raw_id, RAW_VERSION, &["close", "vol"], RAW_WINDOW_DAYS)
 }
@@ -110,6 +135,37 @@ pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
         .iter()
         .map(|raw_id| raw_spec(raw_id))
         .collect()
+}
+
+pub fn raw_specs_for_family(family: XyzqVolumeRawFamily) -> Vec<IntradayDailyRawSpec> {
+    raw_ids_for_family(family)
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
+pub fn logvol_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqVolumeRawFamily::LogvolShape)
+}
+
+pub fn volroc_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqVolumeRawFamily::VolrocShape)
+}
+
+pub fn cumsumvol_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqVolumeRawFamily::CumsumvolShape)
+}
+
+pub fn vol_entropy_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqVolumeRawFamily::VolEntropy)
+}
+
+pub fn vol_bootstrap_max_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqVolumeRawFamily::VolBootstrapMax)
+}
+
+pub fn vsa_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    raw_specs_for_family(XyzqVolumeRawFamily::Vsa)
 }
 
 pub fn factor_spec(def: XyzqVolumeFactorDef) -> FactorSpec {
@@ -191,10 +247,28 @@ pub fn minute_compute_many(
     context: &FactorContext,
     data: &DataPool,
 ) -> Result<Vec<IntradayDailyRawSeries>> {
+    minute_compute_many_impl(raw_ids, context, data, &all_raw_ids())
+}
+
+pub fn minute_compute_many_for(
+    raw_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    family: XyzqVolumeRawFamily,
+) -> Result<Vec<IntradayDailyRawSeries>> {
+    minute_compute_many_impl(raw_ids, context, data, raw_ids_for_family(family))
+}
+
+fn minute_compute_many_impl(
+    raw_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    family_raw_ids: &[&'static str],
+) -> Result<Vec<IntradayDailyRawSeries>> {
     let requested = raw_ids
         .iter()
         .map(String::as_str)
-        .filter(|raw_id| all_raw_ids().contains(raw_id))
+        .filter(|raw_id| family_raw_ids.contains(raw_id))
         .collect::<BTreeSet<_>>();
     if requested.is_empty() {
         return Ok(Vec::new());
@@ -332,7 +406,7 @@ pub fn minute_compute_many(
     }
 
     let mut output = Vec::new();
-    for raw_id in all_raw_ids() {
+    for &raw_id in family_raw_ids {
         if requested.contains(raw_id) {
             output.push(IntradayDailyRawSeries {
                 spec: raw_spec(raw_id),

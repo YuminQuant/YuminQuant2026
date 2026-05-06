@@ -82,3 +82,16 @@ pub const VOL_LBQ_RAW_ID: &str = "daily_vol_lbq";
 pub const HIGH_STD_RTN_MEAN_RAW_ID: &str = "daily_high_std_rtn_mean";
 pub const RTN_COND_VAR_RAW_ID: &str = "daily_rtn_cond_var";
 pub const FLASH_CRASH_PROB_RAW_ID: &str = "daily_flash_crash_prob";
+
+pub const RVC_COR_RAW_ID: &str = "daily_rvc_cor";
+pub const RHL_COR_RAW_ID: &str = "daily_rhl_cor";
+pub const VOH_COR_RAW_ID: &str = "daily_voh_cor";
+pub const VOL_COR_RAW_ID: &str = "daily_vol_cor";
+pub const TE_V2R_RAW_ID: &str = "daily_te_v2r";
+pub const TE_R2V_RAW_ID: &str = "daily_te_r2v";
+pub const CUTVOL_RTN_MEAN_RAW_ID: &str = "daily_cutvol_rtn_mean";
+pub const CUTVOL_RTN_VAR_RAW_ID: &str = "daily_cutvol_rtn_var";
+pub const CUTVOL_TIME_MEAN_RAW_ID: &str = "daily_cutvol_time_mean";
+pub const CUTVOL_TIME_VAR_RAW_ID: &str = "daily_cutvol_time_var";
+pub const CUTVOL_TIME_COR_RAW_ID: &str = "daily_cutvol_time_cor";
+pub const CUTVOL_ENTROPY_RAW_ID: &str = "daily_cutvol_entropy";

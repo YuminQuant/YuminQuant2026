@@ -4,7 +4,9 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::stock_daily_raw_ids::EX_RTN_MAX_VAL_RAW_ID;
-use crate::factor::common::xyzq_extreme_gmm::{self, XyzqExtremeGmmFactorDef};
+use crate::factor::common::xyzq_extreme_gmm::{
+    self, XyzqExtremeGmmFactorDef, XyzqExtremeGmmRawFamily,
+};
 use crate::factor::Factor;
 
 const DEF: XyzqExtremeGmmFactorDef = XyzqExtremeGmmFactorDef {
@@ -27,7 +29,11 @@ impl Factor for StockDailyExRtnMaxVal {
     }
 
     fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
-        xyzq_extreme_gmm::raw_specs()
+        xyzq_extreme_gmm::extreme_raw_specs()
+    }
+
+    fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
+        "xyzq_extreme_return_provider".to_string()
     }
 
     fn minute_compute(
@@ -37,11 +43,14 @@ impl Factor for StockDailyExRtnMaxVal {
         data: &DataPool,
     ) -> Result<Option<IntradayDailyRawSeries>> {
         let raw_ids = vec![raw_id.to_string()];
-        Ok(
-            xyzq_extreme_gmm::minute_compute_many(&raw_ids, context, data)?
-                .into_iter()
-                .next(),
-        )
+        Ok(xyzq_extreme_gmm::minute_compute_many_for(
+            &raw_ids,
+            context,
+            data,
+            XyzqExtremeGmmRawFamily::ExtremeReturn,
+        )?
+        .into_iter()
+        .next())
     }
 
     fn minute_compute_many(
@@ -50,7 +59,12 @@ impl Factor for StockDailyExRtnMaxVal {
         context: &FactorContext,
         data: &DataPool,
     ) -> Result<Vec<IntradayDailyRawSeries>> {
-        xyzq_extreme_gmm::minute_compute_many(raw_ids, context, data)
+        xyzq_extreme_gmm::minute_compute_many_for(
+            raw_ids,
+            context,
+            data,
+            XyzqExtremeGmmRawFamily::ExtremeReturn,
+        )
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {

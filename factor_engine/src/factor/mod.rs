@@ -29,6 +29,10 @@ pub trait Factor: Send + Sync {
         Vec::new()
     }
 
+    fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
+        self.spec().registry_key()
+    }
+
     fn intraday_raw_materialize_mode(&self, _raw_ids: &[String]) -> IntradayRawMaterializeMode {
         IntradayRawMaterializeMode::Stateless
     }

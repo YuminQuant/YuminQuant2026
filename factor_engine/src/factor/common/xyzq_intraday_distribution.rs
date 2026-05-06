@@ -34,6 +34,12 @@ pub struct XyzqFactorDef {
     pub raw_id: &'static str,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum XyzqDistributionRawFamily {
+    MinuteReturnDistribution,
+    FiveMinuteNoise,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct DailyDistributionStats {
     rtn5_mean: Option<f64>,
@@ -63,12 +69,51 @@ pub fn all_raw_ids() -> [&'static str; 10] {
     ]
 }
 
+pub fn minute_return_distribution_raw_ids() -> [&'static str; 7] {
+    [
+        REAL_VAR_RAW_ID,
+        RTN_SKEW_RAW_ID,
+        RTN_KURT_RAW_ID,
+        RV_UP_RAW_ID,
+        RV_DOWN_RAW_ID,
+        RV_UMD_RAW_ID,
+        CPR_SW_RAW_ID,
+    ]
+}
+
+pub fn five_minute_noise_raw_ids() -> [&'static str; 3] {
+    [RTN5_MEAN_RAW_ID, NOS_SW_RAW_ID, NOS_GS_RAW_ID]
+}
+
+fn raw_ids_for_family(family: XyzqDistributionRawFamily) -> Vec<&'static str> {
+    match family {
+        XyzqDistributionRawFamily::MinuteReturnDistribution => {
+            minute_return_distribution_raw_ids().to_vec()
+        }
+        XyzqDistributionRawFamily::FiveMinuteNoise => five_minute_noise_raw_ids().to_vec(),
+    }
+}
+
 pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
     stock_minute_raw_spec(raw_id, RAW_VERSION, &["close"], RAW_WINDOW_DAYS)
 }
 
 pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
     all_raw_ids()
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
+pub fn minute_return_distribution_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    minute_return_distribution_raw_ids()
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
+pub fn five_minute_noise_raw_specs() -> Vec<IntradayDailyRawSpec> {
+    five_minute_noise_raw_ids()
         .iter()
         .map(|raw_id| raw_spec(raw_id))
         .collect()
@@ -145,16 +190,31 @@ pub fn minute_compute_many(
     context: &FactorContext,
     data: &DataPool,
 ) -> Result<Vec<IntradayDailyRawSeries>> {
+    minute_compute_many_for(
+        raw_ids,
+        context,
+        data,
+        XyzqDistributionRawFamily::FiveMinuteNoise,
+    )
+}
+
+pub fn minute_compute_many_for(
+    raw_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    family: XyzqDistributionRawFamily,
+) -> Result<Vec<IntradayDailyRawSeries>> {
+    let family_raw_ids = raw_ids_for_family(family);
     let requested = raw_ids
         .iter()
         .map(String::as_str)
-        .filter(|raw_id| all_raw_ids().contains(raw_id))
+        .filter(|raw_id| family_raw_ids.contains(raw_id))
         .collect::<BTreeSet<_>>();
     if requested.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut values = all_raw_ids()
+    let mut values = family_raw_ids
         .iter()
         .map(|raw_id| (*raw_id, Vec::<FactorValue>::new()))
         .collect::<BTreeMap<_, _>>();
@@ -180,9 +240,7 @@ pub fn minute_compute_many(
 
         for (ts_code, indices) in grouped {
             let close_by_second = close_by_second(&indices, trade_times, &close);
-            let minute_returns = one_minute_returns(&close_by_second);
-            let five_minute_returns = five_minute_returns(&close_by_second);
-            let stats = daily_distribution_stats(&minute_returns, &five_minute_returns);
+            let stats = daily_distribution_stats_for(&close_by_second, family);
             let key = FactorRowKey::Daily {
                 trade_date: *trade_date,
                 ts_code,
@@ -226,7 +284,7 @@ pub fn minute_compute_many(
     }
 
     let mut output = Vec::new();
-    for raw_id in all_raw_ids() {
+    for raw_id in family_raw_ids {
         if requested.contains(raw_id) {
             output.push(IntradayDailyRawSeries {
                 spec: raw_spec(raw_id),
@@ -406,24 +464,36 @@ fn time_to_seconds(value: &str) -> Option<i32> {
     None
 }
 
-fn daily_distribution_stats(
-    minute_returns: &[f64],
-    five_minute_returns: &[f64],
+fn daily_distribution_stats_for(
+    close_by_second: &BTreeMap<i32, f64>,
+    family: XyzqDistributionRawFamily,
 ) -> DailyDistributionStats {
-    let real_var = realized_variance(minute_returns);
-    let rv_up = signed_realized_variance(minute_returns, |value| value > 0.0);
-    let rv_down = signed_realized_variance(minute_returns, |value| value < 0.0);
-    DailyDistributionStats {
-        rtn5_mean: mean(five_minute_returns),
-        real_var,
-        rtn_skew: skewness(minute_returns),
-        rtn_kurt: kurtosis(minute_returns),
-        rv_up,
-        rv_down,
-        rv_umd: rv_umd(rv_up, rv_down, real_var),
-        nos_sw: nos_sw(five_minute_returns),
-        nos_gs: nos_gs(five_minute_returns),
-        cpr_sw: cumulative_return_skewness(minute_returns),
+    match family {
+        XyzqDistributionRawFamily::MinuteReturnDistribution => {
+            let minute_returns = one_minute_returns(close_by_second);
+            let real_var = realized_variance(&minute_returns);
+            let rv_up = signed_realized_variance(&minute_returns, |value| value > 0.0);
+            let rv_down = signed_realized_variance(&minute_returns, |value| value < 0.0);
+            DailyDistributionStats {
+                real_var,
+                rtn_skew: skewness(&minute_returns),
+                rtn_kurt: kurtosis(&minute_returns),
+                rv_up,
+                rv_down,
+                rv_umd: rv_umd(rv_up, rv_down, real_var),
+                cpr_sw: cumulative_return_skewness(&minute_returns),
+                ..DailyDistributionStats::default()
+            }
+        }
+        XyzqDistributionRawFamily::FiveMinuteNoise => {
+            let five_minute_returns = five_minute_returns(close_by_second);
+            DailyDistributionStats {
+                rtn5_mean: mean(&five_minute_returns),
+                nos_sw: nos_sw(&five_minute_returns),
+                nos_gs: nos_gs(&five_minute_returns),
+                ..DailyDistributionStats::default()
+            }
+        }
     }
 }
 

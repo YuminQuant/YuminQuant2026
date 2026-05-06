@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::factor::common::chip;
 use crate::factor::Factor;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 
 pub struct StockDailyHoldingRetEnhanced;
 
@@ -36,7 +36,7 @@ impl Factor for StockDailyHoldingRetEnhanced {
             .map(|value| value.to_string())
             .collect(),
             description:
-                "Enhanced chip factor combining the -2% adjusted holding return with Ret20."
+                "Enhanced chip factor combining the -2% adjusted holding return with negative Ret20."
                     .to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["amount", "vol", "close"]),
@@ -55,7 +55,26 @@ impl Factor for StockDailyHoldingRetEnhanced {
         let market = chip::cross_section_mean_constant(&holding_ret)?;
         let adjusted_holding = holding_ret.zip_binary(&market, chip::sign_adjust_minus_2pct)?;
         let ret20 = chip::ret20_from_data(&panel, data)?;
-        let factor = ret20.zip_binary(&adjusted_holding, chip::enhanced)?;
+        let negative_ret20 = ret20.map_values(negate);
+        let factor = negative_ret20.zip_binary(&adjusted_holding, chip::enhanced)?;
         Ok(factor.to_factor_series(self.spec()))
+    }
+}
+
+fn negate(value: Option<f64>) -> Option<f64> {
+    chip::finite(value).map(|value| -value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negate_ret20_before_enhanced_formula() {
+        assert_eq!(negate(Some(0.2)), Some(-0.2));
+        assert_eq!(
+            chip::enhanced(negate(Some(0.2)), Some(0.1)),
+            Some(-0.2 * 1.2 + 1.2 * 0.1)
+        );
     }
 }

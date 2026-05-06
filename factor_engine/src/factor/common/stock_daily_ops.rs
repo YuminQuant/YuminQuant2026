@@ -1,6 +1,9 @@
+use crate::core::DatasetId;
+use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::vector::clean;
 use crate::factor::common::PanelColumn;
+use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel};
 use crate::operators::{cs_regression_residual, ts_mean};
 
 pub const PLUS_TURNOVER_WINDOW: usize = 20;
@@ -18,6 +21,21 @@ pub fn rolling_mean_desize(values: PanelColumn, size: &PanelColumn) -> Result<Pa
             )
         })?
         .cs_neutralize_regression(&[size], None)
+}
+
+pub fn neutralize_size_sector(
+    values: &PanelColumn,
+    panel: &DailyPanel,
+    data: &DataPool,
+) -> Result<PanelColumn> {
+    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let sector_map = ClassificationMap::from_table(
+        data.daily(DatasetId::StockSwClassification)?,
+        ClassificationLevel::Sector,
+    )?;
+    values.cs_neutralize_regression_by_group(&[&size], None, |trade_date, ts_codes| {
+        sector_map.groups_for(trade_date, ts_codes)
+    })
 }
 
 pub fn plus_factor(

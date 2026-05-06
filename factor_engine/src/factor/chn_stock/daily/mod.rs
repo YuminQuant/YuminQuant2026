@@ -1,4 +1,6 @@
 pub mod acf;
+pub mod apb_5d;
+pub mod arpp_5d_20d;
 pub mod brave_peak_climb;
 pub mod cdpdp;
 pub mod cdpdv_v;
@@ -141,6 +143,8 @@ pub mod wq_alpha_100;
 pub mod wq_alpha_101;
 
 pub use acf::StockDailyAcf;
+pub use apb_5d::StockDailyApb5d;
+pub use arpp_5d_20d::StockDailyArpp5d20d;
 pub use brave_peak_climb::StockDailyBravePeakClimb;
 pub use cdpdp::StockDailyCdpdp;
 pub use cdpdv_v::StockDailyCdpdvV;

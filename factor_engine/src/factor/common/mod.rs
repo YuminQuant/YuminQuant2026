@@ -8,6 +8,7 @@ pub mod panel;
 pub mod price_volume;
 pub mod stock_daily_ops;
 pub mod stock_daily_raw_ids;
+pub mod umr;
 pub mod vector;
 
 use std::collections::BTreeMap;

@@ -1,0 +1,787 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::core::{
+    AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+    FactorValue, Frequency, IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec,
+    Lookback,
+};
+use crate::data::DataPool;
+use crate::error::Result;
+use crate::factor::common::stock_daily_ops::neutralize_size_sector;
+use crate::factor::common::stock_daily_raw_ids::{
+    CVAR90_5MIN_RAW_ID, CVAR90_RT_5MIN_RAW_ID, CVAR95_5MIN_RAW_ID, CVAR95_RT_5MIN_RAW_ID,
+    ID_CVAR90_5MIN_RAW_ID, ID_CVAR90_RT_5MIN_RAW_ID, ID_CVAR95_5MIN_RAW_ID,
+    ID_CVAR95_RT_5MIN_RAW_ID, ID_RV_5MIN_RAW_ID, ID_VAR90_5MIN_RAW_ID, ID_VAR90_RT_5MIN_RAW_ID,
+    ID_VAR95_5MIN_RAW_ID, ID_VAR95_RT_5MIN_RAW_ID, RV_5MIN_RAW_ID, VAR90_5MIN_RAW_ID,
+    VAR90_RT_5MIN_RAW_ID, VAR95_5MIN_RAW_ID, VAR95_RT_5MIN_RAW_ID,
+};
+use crate::factor::common::{clean_intraday_value, quantile_linear, stock_minute_raw_spec};
+use crate::operators::{cs_zscore, ts_mean};
+
+pub const RAW_VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.1.0";
+
+pub const WEEK_WINDOW: usize = 5;
+pub const UNCERTAINTY_WINDOW: usize = 21;
+pub const MIN_PERIODS: usize = 1;
+
+const RAW_WINDOW_DAYS: usize = 1;
+const FIVE_MINUTE_RETURN_COUNT: usize = 48;
+const EPS: f64 = f64::EPSILON;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DbzqPostProcess {
+    WeekMean,
+    Uncertainty,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DbzqFactorDef {
+    pub id: &'static str,
+    pub alias: &'static str,
+    pub name: &'static str,
+    pub raw_id: &'static str,
+    pub postprocess: DbzqPostProcess,
+}
+
+#[derive(Clone, Debug)]
+struct InstrumentReturns {
+    ts_code: String,
+    returns: Vec<Option<f64>>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DailyRiskStats {
+    rv: Option<f64>,
+    var90: Option<f64>,
+    var95: Option<f64>,
+    cvar90: Option<f64>,
+    cvar95: Option<f64>,
+    var90_rt: Option<f64>,
+    var95_rt: Option<f64>,
+    cvar90_rt: Option<f64>,
+    cvar95_rt: Option<f64>,
+}
+
+pub fn all_raw_ids() -> [&'static str; 18] {
+    [
+        RV_5MIN_RAW_ID,
+        VAR90_5MIN_RAW_ID,
+        VAR95_5MIN_RAW_ID,
+        CVAR90_5MIN_RAW_ID,
+        CVAR95_5MIN_RAW_ID,
+        VAR90_RT_5MIN_RAW_ID,
+        VAR95_RT_5MIN_RAW_ID,
+        CVAR90_RT_5MIN_RAW_ID,
+        CVAR95_RT_5MIN_RAW_ID,
+        ID_RV_5MIN_RAW_ID,
+        ID_VAR90_5MIN_RAW_ID,
+        ID_VAR95_5MIN_RAW_ID,
+        ID_CVAR90_5MIN_RAW_ID,
+        ID_CVAR95_5MIN_RAW_ID,
+        ID_VAR90_RT_5MIN_RAW_ID,
+        ID_VAR95_RT_5MIN_RAW_ID,
+        ID_CVAR90_RT_5MIN_RAW_ID,
+        ID_CVAR95_RT_5MIN_RAW_ID,
+    ]
+}
+
+pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
+    stock_minute_raw_spec(raw_id, RAW_VERSION, &["close"], RAW_WINDOW_DAYS)
+}
+
+pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
+    all_raw_ids()
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
+pub fn factor_spec(def: DbzqFactorDef) -> FactorSpec {
+    let lookback = match def.postprocess {
+        DbzqPostProcess::WeekMean => WEEK_WINDOW - 1,
+        DbzqPostProcess::Uncertainty => UNCERTAINTY_WINDOW - 1,
+    };
+    FactorSpec {
+        id: def.id.to_string(),
+        aliases: vec![def.alias.to_string()],
+        name: def.name.to_string(),
+        asset_class: AssetClass::Stock,
+        frequency: Frequency::Daily,
+        version: VERSION.to_string(),
+        tags: tags(),
+        description: format!(
+            "{} based on 5-minute intraday log returns and neutralized by Barra SIZE and SW sector.",
+            def.name
+        ),
+        dependencies: dependencies(),
+        intraday_raw_dependencies: vec![IntradayDailyRawRequest::new(def.raw_id, lookback)],
+        lookback: Lookback {
+            trading_days: lookback,
+        },
+    }
+}
+
+pub fn compute_factor(def: DbzqFactorDef, data: &DataPool) -> Result<FactorSeries> {
+    let panel = data.intraday_daily_raw_panel(def.raw_id)?;
+    let raw = panel.column(def.raw_id)?;
+    let post = match def.postprocess {
+        DbzqPostProcess::WeekMean => raw.ts(|values| ts_mean(values, WEEK_WINDOW, MIN_PERIODS))?,
+        DbzqPostProcess::Uncertainty => {
+            let mean = raw.ts(|values| ts_mean(values, UNCERTAINTY_WINDOW, MIN_PERIODS))?;
+            let std = raw.ts(|values| sample_std(values, UNCERTAINTY_WINDOW, MIN_PERIODS))?;
+            std.zip_binary(&mean, safe_div)?
+        }
+    };
+    let standardized = post.cs(cs_zscore)?;
+    let factor = neutralize_size_sector(&standardized, &panel, data)?;
+    Ok(factor.to_factor_series(factor_spec(def)))
+}
+
+#[macro_export]
+macro_rules! define_dbzq_5min_factor {
+    ($struct_name:ident, $id:expr, $alias:expr, $name:expr, $raw_id:expr, $postprocess:ident) => {
+        const DEF: $crate::factor::common::dbzq_5min_risk::DbzqFactorDef =
+            $crate::factor::common::dbzq_5min_risk::DbzqFactorDef {
+                id: $id,
+                alias: $alias,
+                name: $name,
+                raw_id: $raw_id,
+                postprocess: $crate::factor::common::dbzq_5min_risk::DbzqPostProcess::$postprocess,
+            };
+
+        pub struct $struct_name;
+
+        pub fn create() -> Box<dyn $crate::factor::Factor> {
+            Box::new($struct_name)
+        }
+
+        impl $crate::factor::Factor for $struct_name {
+            fn spec(&self) -> $crate::core::FactorSpec {
+                $crate::factor::common::dbzq_5min_risk::factor_spec(DEF)
+            }
+
+            fn compute(
+                &self,
+                _context: &$crate::core::FactorContext,
+                data: &$crate::data::DataPool,
+            ) -> $crate::error::Result<$crate::core::FactorSeries> {
+                $crate::factor::common::dbzq_5min_risk::compute_factor(DEF, data)
+            }
+        }
+    };
+}
+
+pub fn minute_compute_many(
+    raw_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+) -> Result<Vec<IntradayDailyRawSeries>> {
+    let requested = raw_ids
+        .iter()
+        .map(String::as_str)
+        .filter(|raw_id| all_raw_ids().contains(raw_id))
+        .collect::<BTreeSet<_>>();
+    if requested.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut values = all_raw_ids()
+        .iter()
+        .map(|raw_id| (*raw_id, Vec::<FactorValue>::new()))
+        .collect::<BTreeMap<_, _>>();
+
+    for trade_date in &context.target_dates {
+        let Some(table) = data.minute(DatasetId::StockMinute1m, *trade_date) else {
+            continue;
+        };
+        let ts_codes = table.required_utf8("ts_code")?;
+        let trade_times = table.required_utf8("trade_time")?;
+        let close = table.required_f64_cast("close")?;
+
+        let mut grouped = BTreeMap::<String, Vec<usize>>::new();
+        for idx in 0..table.len {
+            let Some(ts_code) = ts_codes[idx].clone() else {
+                continue;
+            };
+            if trade_times[idx].is_none() {
+                continue;
+            }
+            grouped.entry(ts_code).or_default().push(idx);
+        }
+
+        let mut instrument_returns = Vec::with_capacity(grouped.len());
+        for (ts_code, indices) in grouped {
+            instrument_returns.push(InstrumentReturns {
+                ts_code,
+                returns: five_minute_log_returns(&indices, trade_times, &close),
+            });
+        }
+        let market_returns = market_mean_returns(&instrument_returns);
+
+        for instrument in instrument_returns {
+            let ordinary = daily_risk_stats(&instrument.returns);
+            let idiosyncratic_returns = capm_residuals(&instrument.returns, &market_returns);
+            let idiosyncratic = daily_risk_stats(&idiosyncratic_returns);
+            let key = FactorRowKey::Daily {
+                trade_date: *trade_date,
+                ts_code: instrument.ts_code,
+            };
+
+            push_requested(&mut values, &requested, RV_5MIN_RAW_ID, &key, ordinary.rv);
+            push_requested(
+                &mut values,
+                &requested,
+                VAR90_5MIN_RAW_ID,
+                &key,
+                ordinary.var90,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                VAR95_5MIN_RAW_ID,
+                &key,
+                ordinary.var95,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                CVAR90_5MIN_RAW_ID,
+                &key,
+                ordinary.cvar90,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                CVAR95_5MIN_RAW_ID,
+                &key,
+                ordinary.cvar95,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                VAR90_RT_5MIN_RAW_ID,
+                &key,
+                ordinary.var90_rt,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                VAR95_RT_5MIN_RAW_ID,
+                &key,
+                ordinary.var95_rt,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                CVAR90_RT_5MIN_RAW_ID,
+                &key,
+                ordinary.cvar90_rt,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                CVAR95_RT_5MIN_RAW_ID,
+                &key,
+                ordinary.cvar95_rt,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_RV_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.rv,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_VAR90_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.var90,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_VAR95_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.var95,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_CVAR90_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.cvar90,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_CVAR95_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.cvar95,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_VAR90_RT_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.var90_rt,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_VAR95_RT_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.var95_rt,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_CVAR90_RT_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.cvar90_rt,
+            );
+            push_requested(
+                &mut values,
+                &requested,
+                ID_CVAR95_RT_5MIN_RAW_ID,
+                &key,
+                idiosyncratic.cvar95_rt,
+            );
+        }
+    }
+
+    let mut output = Vec::new();
+    for raw_id in all_raw_ids() {
+        if !requested.contains(raw_id) {
+            continue;
+        }
+        output.push(IntradayDailyRawSeries {
+            spec: raw_spec(raw_id),
+            values: values.remove(raw_id).unwrap_or_default(),
+        });
+    }
+    Ok(output)
+}
+
+fn tags() -> Vec<String> {
+    [
+        "price_volume",
+        "return",
+        "risk",
+        "tail_risk",
+        "intraday",
+        "minute_agg",
+        "neutralize",
+        "barra",
+        "size",
+        "sector",
+        "daily",
+        "DBZQ",
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .collect()
+}
+
+fn dependencies() -> Vec<DataRequest> {
+    vec![
+        DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+        DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
+    ]
+}
+
+fn push_requested(
+    values: &mut BTreeMap<&'static str, Vec<FactorValue>>,
+    requested: &BTreeSet<&str>,
+    raw_id: &'static str,
+    key: &FactorRowKey,
+    value: Option<f64>,
+) {
+    if !requested.contains(raw_id) {
+        return;
+    }
+    values.entry(raw_id).or_default().push(FactorValue {
+        key: key.clone(),
+        value,
+    });
+}
+
+fn five_minute_log_returns(
+    indices: &[usize],
+    trade_times: &[Option<String>],
+    close: &[Option<f64>],
+) -> Vec<Option<f64>> {
+    let mut close_by_anchor = BTreeMap::<i32, f64>::new();
+    for idx in indices {
+        let Some(trade_time) = trade_times[*idx].as_deref() else {
+            continue;
+        };
+        let Some(seconds) = time_to_seconds(trade_time) else {
+            continue;
+        };
+        if !anchor_seconds().contains(&seconds) {
+            continue;
+        }
+        let Some(close) = clean_intraday_value(close[*idx]).filter(|value| *value > 0.0) else {
+            continue;
+        };
+        close_by_anchor.insert(seconds, close);
+    }
+
+    let anchors = anchor_seconds();
+    let mut returns = Vec::with_capacity(FIVE_MINUTE_RETURN_COUNT);
+    for pair in anchors.windows(2) {
+        let (Some(previous), Some(current)) =
+            (close_by_anchor.get(&pair[0]), close_by_anchor.get(&pair[1]))
+        else {
+            returns.push(None);
+            continue;
+        };
+        returns.push(Some(current.ln() - previous.ln()));
+    }
+    returns
+}
+
+fn anchor_seconds() -> Vec<i32> {
+    let mut anchors = Vec::with_capacity(FIVE_MINUTE_RETURN_COUNT + 1);
+    anchors.push(seconds(9, 30));
+    let mut minute = 35;
+    while minute <= 150 {
+        let (hour, minute_in_hour) = if minute < 60 {
+            (9, minute)
+        } else {
+            (10 + (minute - 60) / 60, (minute - 60) % 60)
+        };
+        anchors.push(seconds(hour, minute_in_hour));
+        minute += 5;
+    }
+    let mut afternoon_minute = 5;
+    while afternoon_minute <= 120 {
+        let (hour, minute_in_hour) = if afternoon_minute < 60 {
+            (13, afternoon_minute)
+        } else {
+            (
+                14 + (afternoon_minute - 60) / 60,
+                (afternoon_minute - 60) % 60,
+            )
+        };
+        anchors.push(seconds(hour, minute_in_hour));
+        afternoon_minute += 5;
+    }
+    anchors
+}
+
+fn seconds(hour: i32, minute: i32) -> i32 {
+    hour * 3600 + minute * 60
+}
+
+fn time_to_seconds(value: &str) -> Option<i32> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let value = value
+        .rsplit_once(' ')
+        .map(|(_, right)| right)
+        .or_else(|| value.rsplit_once('T').map(|(_, right)| right))
+        .unwrap_or(value)
+        .trim();
+    if value.len() < 5 {
+        return None;
+    }
+    let hour = value.get(0..2)?.parse::<i32>().ok()?;
+    let minute = value.get(3..5)?.parse::<i32>().ok()?;
+    let second = if value.len() >= 8 {
+        value.get(6..8)?.parse::<i32>().ok()?
+    } else {
+        0
+    };
+    Some(hour * 3600 + minute * 60 + second)
+}
+
+fn market_mean_returns(instruments: &[InstrumentReturns]) -> Vec<Option<f64>> {
+    let mut output = Vec::with_capacity(FIVE_MINUTE_RETURN_COUNT);
+    for idx in 0..FIVE_MINUTE_RETURN_COUNT {
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for instrument in instruments {
+            if let Some(value) = instrument.returns.get(idx).and_then(|value| *value) {
+                if value.is_finite() {
+                    sum += value;
+                    count += 1;
+                }
+            }
+        }
+        output.push((count > 0).then_some(sum / count as f64));
+    }
+    output
+}
+
+fn capm_residuals(stock: &[Option<f64>], market: &[Option<f64>]) -> Vec<Option<f64>> {
+    let pairs = stock
+        .iter()
+        .zip(market.iter())
+        .filter_map(|(stock, market)| match (*stock, *market) {
+            (Some(stock), Some(market)) if stock.is_finite() && market.is_finite() => {
+                Some((stock, market))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if pairs.len() < 3 {
+        return vec![None; stock.len()];
+    }
+    let mean_stock = pairs.iter().map(|(stock, _)| *stock).sum::<f64>() / pairs.len() as f64;
+    let mean_market = pairs.iter().map(|(_, market)| *market).sum::<f64>() / pairs.len() as f64;
+    let variance_market = pairs
+        .iter()
+        .map(|(_, market)| {
+            let diff = *market - mean_market;
+            diff * diff
+        })
+        .sum::<f64>();
+    if variance_market <= EPS {
+        return vec![None; stock.len()];
+    }
+    let covariance = pairs
+        .iter()
+        .map(|(stock, market)| (*stock - mean_stock) * (*market - mean_market))
+        .sum::<f64>();
+    let beta = covariance / variance_market;
+    let alpha = mean_stock - beta * mean_market;
+
+    stock
+        .iter()
+        .zip(market.iter())
+        .map(|(stock, market)| match (*stock, *market) {
+            (Some(stock), Some(market)) if stock.is_finite() && market.is_finite() => {
+                Some(stock - alpha - beta * market)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn daily_risk_stats(values: &[Option<f64>]) -> DailyRiskStats {
+    let valid = values
+        .iter()
+        .filter_map(|value| value.filter(|value| value.is_finite()))
+        .collect::<Vec<_>>();
+    if valid.is_empty() {
+        return DailyRiskStats::default();
+    }
+    let rv = Some(valid.iter().map(|value| value * value).sum::<f64>());
+    let var90 = left_var(&valid, 0.10);
+    let var95 = left_var(&valid, 0.05);
+    let cvar90 = left_cvar(&valid, 0.10);
+    let cvar95 = left_cvar(&valid, 0.05);
+    let var90_rt = right_var(&valid, 0.10);
+    let var95_rt = right_var(&valid, 0.05);
+    let cvar90_rt = right_cvar(&valid, 0.10);
+    let cvar95_rt = right_cvar(&valid, 0.05);
+    DailyRiskStats {
+        rv,
+        var90,
+        var95,
+        cvar90,
+        cvar95,
+        var90_rt,
+        var95_rt,
+        cvar90_rt,
+        cvar95_rt,
+    }
+}
+
+fn left_var(values: &[f64], alpha: f64) -> Option<f64> {
+    let q = quantile(values, alpha)?;
+    Some(-q)
+}
+
+fn right_var(values: &[f64], alpha: f64) -> Option<f64> {
+    quantile(values, 1.0 - alpha)
+}
+
+fn left_cvar(values: &[f64], alpha: f64) -> Option<f64> {
+    let q = quantile(values, alpha)?;
+    let tail = values
+        .iter()
+        .copied()
+        .filter(|value| *value <= q)
+        .collect::<Vec<_>>();
+    mean(&tail).map(|value| -value)
+}
+
+fn right_cvar(values: &[f64], alpha: f64) -> Option<f64> {
+    let q = quantile(values, 1.0 - alpha)?;
+    let tail = values
+        .iter()
+        .copied()
+        .filter(|value| *value >= q)
+        .collect::<Vec<_>>();
+    mean(&tail)
+}
+
+fn quantile(values: &[f64], q: f64) -> Option<f64> {
+    let mut values = values.to_vec();
+    quantile_linear(&mut values, q)
+}
+
+fn mean(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
+}
+
+fn sample_std(values: &[Option<f64>], window: usize, min_periods: usize) -> Vec<Option<f64>> {
+    let mut output = vec![None; values.len()];
+    let min_periods = min_periods.max(1).min(window);
+    for idx in 0..values.len() {
+        let start = (idx + 1).saturating_sub(window);
+        let valid = values[start..=idx]
+            .iter()
+            .filter_map(|value| value.filter(|value| value.is_finite()))
+            .collect::<Vec<_>>();
+        if valid.len() < min_periods || valid.len() < 2 {
+            continue;
+        }
+        let mean = valid.iter().sum::<f64>() / valid.len() as f64;
+        let variance = valid
+            .iter()
+            .map(|value| {
+                let diff = value - mean;
+                diff * diff
+            })
+            .sum::<f64>()
+            / (valid.len() - 1) as f64;
+        output[idx] = Some(variance.sqrt());
+    }
+    output
+}
+
+fn safe_div(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
+    match (numerator, denominator) {
+        (Some(numerator), Some(denominator))
+            if numerator.is_finite()
+                && denominator.is_finite()
+                && denominator.abs() > f64::EPSILON =>
+        {
+            Some(numerator / denominator)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(actual: Option<f64>, expected: Option<f64>) {
+        match (actual, expected) {
+            (Some(actual), Some(expected)) => assert!(
+                (actual - expected).abs() < 1e-10,
+                "expected {expected}, got {actual}"
+            ),
+            (None, None) => {}
+            _ => panic!("expected {:?}, got {:?}", expected, actual),
+        }
+    }
+
+    #[test]
+    fn dbzq_anchor_seconds_generate_forty_eight_returns_with_0930_anchor() {
+        let anchors = anchor_seconds();
+
+        assert_eq!(anchors.len(), 49);
+        assert_eq!(anchors[0], seconds(9, 30));
+        assert_eq!(anchors[1], seconds(9, 35));
+        assert_eq!(anchors[24], seconds(11, 30));
+        assert_eq!(anchors[25], seconds(13, 5));
+        assert_eq!(anchors[48], seconds(15, 0));
+    }
+
+    #[test]
+    fn dbzq_five_minute_returns_use_log_close_differences() {
+        let times = vec![
+            Some("09:30:00".to_string()),
+            Some("09:35:00".to_string()),
+            Some("09:40:00".to_string()),
+        ];
+        let close = vec![Some(10.0), Some(11.0), Some(12.1)];
+        let indices = vec![0, 1, 2];
+
+        let returns = five_minute_log_returns(&indices, &times, &close);
+
+        assert_close(returns[0], Some((11.0_f64 / 10.0).ln()));
+        assert_close(returns[1], Some((12.1_f64 / 11.0).ln()));
+        assert_eq!(returns.len(), 48);
+    }
+
+    #[test]
+    fn dbzq_market_return_is_equal_weighted_cross_section_mean() {
+        let instruments = vec![
+            InstrumentReturns {
+                ts_code: "a".to_string(),
+                returns: vec![Some(0.01), None],
+            },
+            InstrumentReturns {
+                ts_code: "b".to_string(),
+                returns: vec![Some(0.03), Some(0.02)],
+            },
+        ];
+
+        let market = market_mean_returns(&instruments);
+
+        assert_close(market[0], Some(0.02));
+        assert_close(market[1], Some(0.02));
+    }
+
+    #[test]
+    fn dbzq_capm_residuals_use_intercept_and_beta() {
+        let stock = vec![Some(2.0), Some(4.0), Some(6.0), Some(8.0)];
+        let market = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
+
+        let residuals = capm_residuals(&stock, &market);
+
+        assert!(residuals
+            .into_iter()
+            .all(|value| value.unwrap().abs() < 1e-10));
+    }
+
+    #[test]
+    fn dbzq_capm_residuals_reject_zero_market_variance() {
+        let stock = vec![Some(1.0), Some(2.0), Some(3.0)];
+        let market = vec![Some(1.0), Some(1.0), Some(1.0)];
+
+        assert_eq!(capm_residuals(&stock, &market), vec![None, None, None]);
+    }
+
+    #[test]
+    fn dbzq_tail_metrics_match_left_and_right_definitions() {
+        let values = vec![-4.0, -2.0, 1.0, 3.0, 5.0];
+
+        assert_close(left_var(&values, 0.25), Some(2.0));
+        assert_close(right_var(&values, 0.25), Some(3.0));
+        assert_close(left_cvar(&values, 0.25), Some(3.0));
+        assert_close(right_cvar(&values, 0.25), Some(4.0));
+    }
+
+    #[test]
+    fn dbzq_sample_std_uses_n_minus_one_and_requires_two_values() {
+        let values = vec![Some(1.0), Some(3.0), None, Some(5.0)];
+
+        let std = sample_std(&values, 21, 1);
+
+        assert_eq!(std[0], None);
+        assert_close(std[1], Some(2.0_f64.sqrt()));
+        assert_close(std[2], Some(2.0_f64.sqrt()));
+        assert_close(std[3], Some(2.0));
+    }
+
+    #[test]
+    fn dbzq_uncertainty_rejects_zero_mean() {
+        assert_eq!(safe_div(Some(1.0), Some(0.0)), None);
+        assert_close(safe_div(Some(2.0), Some(4.0)), Some(0.5));
+    }
+}

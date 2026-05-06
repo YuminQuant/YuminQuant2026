@@ -12,3 +12,27 @@ pub const LAST30_TURNOVER_RAW_ID: &str = "daily_last30m_turnover";
 pub const TURNOVER_VOLATILITY_RAW_ID: &str = "daily_turnover_rate_volatility";
 pub const INTRADAY_RETURN_VOLATILITY_RAW_ID: &str = "daily_intraday_return_volatility";
 pub const VOLUME_CV_RAW_ID: &str = "daily_volume_cv";
+
+pub const SUBRS_5MIN_RAW_ID: &str = "daily_subrs_5min";
+pub const SUBRK_5MIN_RAW_ID: &str = "daily_subrk_5min";
+pub const SUBRHS_5MIN_RAW_ID: &str = "daily_subrhs_5min";
+pub const SUBRHT_5MIN_RAW_ID: &str = "daily_subrht_5min";
+
+pub const RV_5MIN_RAW_ID: &str = "daily_rv_5min";
+pub const VAR90_5MIN_RAW_ID: &str = "daily_var90_5min";
+pub const VAR95_5MIN_RAW_ID: &str = "daily_var95_5min";
+pub const CVAR90_5MIN_RAW_ID: &str = "daily_cvar90_5min";
+pub const CVAR95_5MIN_RAW_ID: &str = "daily_cvar95_5min";
+pub const VAR90_RT_5MIN_RAW_ID: &str = "daily_var90_rt_5min";
+pub const VAR95_RT_5MIN_RAW_ID: &str = "daily_var95_rt_5min";
+pub const CVAR90_RT_5MIN_RAW_ID: &str = "daily_cvar90_rt_5min";
+pub const CVAR95_RT_5MIN_RAW_ID: &str = "daily_cvar95_rt_5min";
+pub const ID_RV_5MIN_RAW_ID: &str = "daily_id_rv_5min";
+pub const ID_VAR90_5MIN_RAW_ID: &str = "daily_id_var90_5min";
+pub const ID_VAR95_5MIN_RAW_ID: &str = "daily_id_var95_5min";
+pub const ID_CVAR90_5MIN_RAW_ID: &str = "daily_id_cvar90_5min";
+pub const ID_CVAR95_5MIN_RAW_ID: &str = "daily_id_cvar95_5min";
+pub const ID_VAR90_RT_5MIN_RAW_ID: &str = "daily_id_var90_rt_5min";
+pub const ID_VAR95_RT_5MIN_RAW_ID: &str = "daily_id_var95_rt_5min";
+pub const ID_CVAR90_RT_5MIN_RAW_ID: &str = "daily_id_cvar90_rt_5min";
+pub const ID_CVAR95_RT_5MIN_RAW_ID: &str = "daily_id_cvar95_rt_5min";

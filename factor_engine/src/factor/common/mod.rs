@@ -1,6 +1,8 @@
 pub mod chip;
 pub mod cross_section;
 pub mod daily;
+pub mod dbzq_5min_risk;
+pub mod dbzq_coskewness;
 pub mod financial;
 pub mod intraday_daily;
 pub mod intraday_raw;

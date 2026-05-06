@@ -47,3 +47,12 @@ pub const RV_UMD_RAW_ID: &str = "daily_rv_umd";
 pub const NOS_SW_RAW_ID: &str = "daily_nos_sw";
 pub const NOS_GS_RAW_ID: &str = "daily_nos_gs";
 pub const CPR_SW_RAW_ID: &str = "daily_cpr_sw";
+
+pub const EX_RTN_MAX_VAL_RAW_ID: &str = "daily_ex_rtn_max_val";
+pub const EX_RTN_MAX_FRE_RAW_ID: &str = "daily_ex_rtn_max_fre";
+pub const EX_RTN_MIN_VAL_RAW_ID: &str = "daily_ex_rtn_min_val";
+pub const EX_RTN_MIN_FRE_RAW_ID: &str = "daily_ex_rtn_min_fre";
+pub const GMM_MEAN_RAW_ID: &str = "daily_gmm_mean";
+pub const GMM_MEAN2WGT_RAW_ID: &str = "daily_gmm_mean2wgt";
+pub const GMM_MEANDIF_RAW_ID: &str = "daily_gmm_meandif";
+pub const GMM_MEANDIF2WGTDIF_RAW_ID: &str = "daily_gmm_meandif2wgtdif";

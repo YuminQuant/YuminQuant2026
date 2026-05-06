@@ -13,6 +13,7 @@ pub mod stock_daily_ops;
 pub mod stock_daily_raw_ids;
 pub mod umr;
 pub mod vector;
+pub mod xyzq_intraday_distribution;
 
 use std::collections::BTreeMap;
 

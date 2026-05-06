@@ -36,3 +36,14 @@ pub const ID_VAR90_RT_5MIN_RAW_ID: &str = "daily_id_var90_rt_5min";
 pub const ID_VAR95_RT_5MIN_RAW_ID: &str = "daily_id_var95_rt_5min";
 pub const ID_CVAR90_RT_5MIN_RAW_ID: &str = "daily_id_cvar90_rt_5min";
 pub const ID_CVAR95_RT_5MIN_RAW_ID: &str = "daily_id_cvar95_rt_5min";
+
+pub const RTN5_MEAN_RAW_ID: &str = "daily_rtn5_mean";
+pub const REAL_VAR_RAW_ID: &str = "daily_real_var";
+pub const RTN_SKEW_RAW_ID: &str = "daily_rtn_skew";
+pub const RTN_KURT_RAW_ID: &str = "daily_rtn_kurt";
+pub const RV_UP_RAW_ID: &str = "daily_rv_up";
+pub const RV_DOWN_RAW_ID: &str = "daily_rv_down";
+pub const RV_UMD_RAW_ID: &str = "daily_rv_umd";
+pub const NOS_SW_RAW_ID: &str = "daily_nos_sw";
+pub const NOS_GS_RAW_ID: &str = "daily_nos_gs";
+pub const CPR_SW_RAW_ID: &str = "daily_cpr_sw";

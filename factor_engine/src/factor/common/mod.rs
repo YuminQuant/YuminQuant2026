@@ -1,3 +1,4 @@
+pub mod chip;
 pub mod cross_section;
 pub mod daily;
 pub mod financial;

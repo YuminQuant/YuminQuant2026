@@ -56,3 +56,17 @@ pub const GMM_MEAN_RAW_ID: &str = "daily_gmm_mean";
 pub const GMM_MEAN2WGT_RAW_ID: &str = "daily_gmm_mean2wgt";
 pub const GMM_MEANDIF_RAW_ID: &str = "daily_gmm_meandif";
 pub const GMM_MEANDIF2WGTDIF_RAW_ID: &str = "daily_gmm_meandif2wgtdif";
+
+pub const LOGVOL_SKEW_RAW_ID: &str = "daily_logvol_skew";
+pub const LOGVOL_90TAIL_RAW_ID: &str = "daily_logvol_90tail";
+pub const LOGVOL_10TAIL_RAW_ID: &str = "daily_logvol_10tail";
+pub const VOLROC_SKEW_RAW_ID: &str = "daily_volroc_skew";
+pub const VOLROC_KURT_RAW_ID: &str = "daily_volroc_kurt";
+pub const CUMSUMVOL_MEAN_RAW_ID: &str = "daily_cumsumvol_mean";
+pub const CUMSUMVOL_STD_RAW_ID: &str = "daily_cumsumvol_std";
+pub const VOL_ENTROPY_SHAPE_RAW_ID: &str = "daily_vol_entropy_shape";
+pub const VOL_MAXMEAN_RAW_ID: &str = "daily_vol_maxmean";
+pub const VOL_MAXSTD_RAW_ID: &str = "daily_vol_maxstd";
+pub const VSA_RATIO_RAW_ID: &str = "daily_vsa_ratio";
+pub const VSA_LOW2MAX_RAW_ID: &str = "daily_vsa_low2max";
+pub const VSA_HIGH2MIN_RAW_ID: &str = "daily_vsa_high2min";

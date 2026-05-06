@@ -70,3 +70,15 @@ pub const VOL_MAXSTD_RAW_ID: &str = "daily_vol_maxstd";
 pub const VSA_RATIO_RAW_ID: &str = "daily_vsa_ratio";
 pub const VSA_LOW2MAX_RAW_ID: &str = "daily_vsa_low2max";
 pub const VSA_HIGH2MIN_RAW_ID: &str = "daily_vsa_high2min";
+
+pub const RTN_FOC_RAW_ID: &str = "daily_rtn_foc";
+pub const VOL_FOC_RAW_ID: &str = "daily_vol_foc";
+pub const RTN_DW_RAW_ID: &str = "daily_rtn_dw";
+pub const VOL_DW_RAW_ID: &str = "daily_vol_dw";
+pub const RTN_RHO_RAW_ID: &str = "daily_rtn_rho";
+pub const VOL_RHO_RAW_ID: &str = "daily_vol_rho";
+pub const RTN_LBQ_RAW_ID: &str = "daily_rtn_lbq";
+pub const VOL_LBQ_RAW_ID: &str = "daily_vol_lbq";
+pub const HIGH_STD_RTN_MEAN_RAW_ID: &str = "daily_high_std_rtn_mean";
+pub const RTN_COND_VAR_RAW_ID: &str = "daily_rtn_cond_var";
+pub const FLASH_CRASH_PROB_RAW_ID: &str = "daily_flash_crash_prob";

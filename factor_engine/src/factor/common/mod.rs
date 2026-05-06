@@ -15,6 +15,7 @@ pub mod umr;
 pub mod vector;
 pub mod xyzq_extreme_gmm;
 pub mod xyzq_intraday_distribution;
+pub mod xyzq_serial_structure;
 pub mod xyzq_volume_shape;
 
 use std::collections::BTreeMap;

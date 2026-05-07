@@ -72,6 +72,7 @@ impl Factor for StockDailyUtd {
                 "barra",
                 "size",
                 "daily",
+                "DWZQ"
             ]
             .iter()
             .map(|value| value.to_string())

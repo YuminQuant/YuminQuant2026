@@ -14,7 +14,7 @@ use crate::factor::common::stock_daily_raw_ids::{
 use crate::factor::common::{
     clean_intraday_value, intraday_time_in_range, quantile_linear, stock_minute_raw_spec,
 };
-use crate::operators::{cs_pctrank, ts_delay, ts_mean};
+use crate::operators::{cs_pctrank, ts_mean};
 
 pub const RAW_VERSION: &str = "0.1.0";
 pub const VERSION: &str = "0.1.0";
@@ -22,6 +22,7 @@ pub const VERSION: &str = "0.1.0";
 const RAW_WINDOW_DAYS: usize = 1;
 const DEFAULT_WINDOW: usize = 15;
 const FLASH_WINDOW: usize = 20;
+const FLASH_LAMBDA_WINDOW: usize = 21;
 const SHARED_RAW_LOOKBACK: usize = FLASH_WINDOW - 1;
 const MIN_PERIODS: usize = 1;
 const START_TIME: &str = "09:41:00";
@@ -144,10 +145,7 @@ fn compute_flash_crash_prob_v(data: &DataPool) -> Result<crate::factor::common::
     let minv = panel.column(MINV_RAW_ID)?;
     let negv_mean = panel.column(NEGV_MEAN_RAW_ID)?;
 
-    let mean_prior_minv = minv.ts(|values| {
-        let delayed = ts_delay(values, 1);
-        ts_mean(&delayed, FLASH_WINDOW, MIN_PERIODS)
-    })?;
+    let mean_prior_minv = minv.ts(|values| ts_mean(values, FLASH_LAMBDA_WINDOW, MIN_PERIODS))?;
     let lambda = mean_prior_minv.map_values(|value| match clean(value) {
         Some(value) if value > EPS => finite_value(1.0 / value),
         _ => None,

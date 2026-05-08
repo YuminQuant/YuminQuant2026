@@ -10,6 +10,7 @@ use crate::backtest::preprocess::{
 use crate::backtest::request::{BacktestRunRequest, DEFAULT_DECAY_HORIZON};
 use crate::backtest::schedule::date_after;
 use crate::error::{err, Result};
+use crate::progress::ProgressBar;
 
 #[derive(Clone, Debug, Default)]
 pub struct CrossSectionBacktestOutput {
@@ -61,6 +62,7 @@ pub fn run_cross_section_backtest(
     request: &BacktestRunRequest,
     input: &BacktestInput,
     rebalance_dates: &[i32],
+    progress: &ProgressBar,
 ) -> Result<CrossSectionBacktestOutput> {
     let mut output = CrossSectionBacktestOutput::default();
     let target_date_set = input
@@ -188,6 +190,12 @@ pub fn run_cross_section_backtest(
                 });
             }
         }
+        progress.tick(format!(
+            "factor={} dates={} rebalance={}",
+            factor.factor_id,
+            input.target_dates.len(),
+            rebalance_dates.len()
+        ));
     }
 
     Ok(output)

@@ -351,9 +351,17 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
     )?;
     let factor_ids = flags.get("factors").map(|value| parse_csv_values(value));
     let tags = flags.get("tags").map(|value| parse_csv_values(value));
-    if factor_ids.is_some() && tags.is_some() {
+    let all_factors = flag_enabled(&flags, "all-factors");
+    let selection_count =
+        usize::from(factor_ids.is_some()) + usize::from(tags.is_some()) + usize::from(all_factors);
+    if selection_count > 1 {
         return Err(yq_factor_engine::error::err(
-            "--factors and --tags cannot be used together",
+            "--factors, --tags and --all-factors cannot be used together",
+        ));
+    }
+    if selection_count == 0 {
+        return Err(yq_factor_engine::error::err(
+            "backtest requires --factors, --tags or --all-factors",
         ));
     }
     let groups = match flags.get("groups") {
@@ -385,6 +393,7 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         end_date,
         factor_ids,
         tags,
+        all_factors,
         label_id: flags
             .get("label")
             .cloned()
@@ -866,8 +875,15 @@ fn print_backtest_report(report: &BacktestRunReport) {
         println!("  {}", path.display());
     }
     println!("selected factors:");
-    for factor_id in &report.selected_factor_ids {
+    let display_limit = 50;
+    for factor_id in report.selected_factor_ids.iter().take(display_limit) {
         println!("  {}", factor_id);
+    }
+    if report.selected_factor_ids.len() > display_limit {
+        println!(
+            "  ... {} more",
+            report.selected_factor_ids.len() - display_limit
+        );
     }
 }
 
@@ -901,6 +917,7 @@ fn print_help() {
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
+    println!("  --all-factors (backtest all non-deprecated factors)");
     println!("  --labels label_id[,label_id...]");
     println!("  --exposures exposure_id[,exposure_id...]");
     println!("  --families barra_family[,barra_family...]");

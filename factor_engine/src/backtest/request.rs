@@ -15,6 +15,7 @@ pub struct BacktestRunRequest {
     pub end_date: i32,
     pub factor_ids: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
+    pub all_factors: bool,
     pub label_id: String,
     pub groups: usize,
     pub rebalance: RebalanceRule,

@@ -23,6 +23,7 @@ use crate::backtest::schedule::rebalance_dates;
 use crate::backtest::storage::{write_detail_outputs, write_summary_outputs};
 use crate::config::EngineConfig;
 use crate::error::Result;
+use crate::progress::ProgressBar;
 
 #[derive(Clone, Debug)]
 pub struct BacktestEngine {
@@ -54,7 +55,9 @@ impl BacktestEngine {
         ensure_backtest_inputs(request)?;
         let input = load_backtest_input(&self.config, request)?;
         let rebalance_dates = rebalance_dates(&input.target_dates, &request.rebalance);
-        let output = run_cross_section_backtest(request, &input, &rebalance_dates)?;
+        let progress = ProgressBar::new("backtest", input.factor_metadata.len(), true);
+        let output = run_cross_section_backtest(request, &input, &rebalance_dates, &progress)?;
+        progress.finish();
         let performance_summary = summarize_performance(&output.returns);
         let factor_stats_summary = summarize_factor_stats(&output.factor_stats);
         let ic_summary = summarize_daily_ic(&output.daily_ic);
@@ -171,6 +174,7 @@ fn default_output_dir(
     first_factor_id: &str,
 ) -> PathBuf {
     let factor_label = match (&request.factor_ids, &request.tags) {
+        _ if request.all_factors => "all_factors".to_string(),
         (Some(ids), _) if ids.len() == 1 => ids[0].clone(),
         (Some(ids), _) => format!("{}_factors", ids.len()),
         (_, Some(tags)) => format!("tags_{}", tags.join("_")),

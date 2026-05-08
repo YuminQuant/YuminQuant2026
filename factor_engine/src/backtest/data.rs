@@ -63,6 +63,15 @@ impl BacktestPanel {
         let end = start + self.instruments.len();
         Ok(column[start..end].to_vec())
     }
+
+    fn ensure_columns(&mut self, names: &[String]) {
+        let shape_len = self.dates.len() * self.instruments.len();
+        for name in names {
+            self.columns
+                .entry(name.clone())
+                .or_insert_with(|| vec![None; shape_len]);
+        }
+    }
 }
 
 pub fn load_backtest_input(
@@ -129,7 +138,10 @@ pub fn load_backtest_input(
             &barra_columns,
         )?);
     }
-    let panel = BacktestPanel::from_tables(all_dates.clone(), tables)?;
+    let mut panel = BacktestPanel::from_tables(all_dates.clone(), tables)?;
+    panel.ensure_columns(&factor_columns);
+    panel.ensure_columns(&label_columns);
+    panel.ensure_columns(&barra_columns);
 
     let sectors = if request.neutralize.uses_industry() {
         let table = read_parquet(
@@ -245,8 +257,8 @@ fn select_factors(
 ) -> Result<Vec<FactorMetadata>> {
     let storage = FactorStorage::new(config.factor_root.clone());
     let metadata = storage.read_metadata()?;
-    let selected = match (&request.factor_ids, &request.tags) {
-        (Some(ids), None) => {
+    let selected = match (&request.factor_ids, &request.tags, request.all_factors) {
+        (Some(ids), None, false) => {
             let mut rows = Vec::new();
             for id in ids {
                 let Some(row) = metadata.iter().find(|row| &row.factor_id == id) else {
@@ -261,7 +273,7 @@ fn select_factors(
             }
             rows
         }
-        (None, Some(tags)) => metadata
+        (None, Some(tags), false) => metadata
             .into_iter()
             .filter(|row| !row.tags.iter().any(|tag| tag == "deprecated"))
             .filter(|row| {
@@ -269,14 +281,31 @@ fn select_factors(
                     .all(|tag| row.tags.iter().any(|row_tag| row_tag == tag))
             })
             .collect(),
-        (None, None) => {
-            return Err(err("backtest requires either --factors or --tags"));
+        (None, None, true) => metadata
+            .into_iter()
+            .filter(|row| !row.tags.iter().any(|tag| tag == "deprecated"))
+            .collect(),
+        (None, None, false) => {
+            return Err(err("backtest requires --factors, --tags or --all-factors"));
         }
-        (Some(_), Some(_)) => {
-            return Err(err("--factors and --tags cannot be used together"));
+        _ => {
+            return Err(err(
+                "--factors, --tags and --all-factors cannot be used together",
+            ));
         }
     };
-    Ok(selected)
+    Ok(dedup_factor_metadata(selected))
+}
+
+fn dedup_factor_metadata(rows: Vec<FactorMetadata>) -> Vec<FactorMetadata> {
+    let mut seen = BTreeSet::new();
+    let mut output = Vec::new();
+    for row in rows {
+        if seen.insert(row.factor_id.clone()) {
+            output.push(row);
+        }
+    }
+    output
 }
 
 fn select_label(config: &EngineConfig, label_id: &str) -> Result<LabelMetadataInfo> {

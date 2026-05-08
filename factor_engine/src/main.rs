@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use yq_factor_engine::backtest::request::{
+    BacktestRunRequest, NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL, DEFAULT_GROUPS,
+};
 use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
 use yq_factor_engine::core::{AssetClass, Frequency};
 use yq_factor_engine::engine::{DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE};
 use yq_factor_engine::{
-    BarraEngine, BarraRunRequest, Engine, LabelEngine, LabelRunRequest, Result, RunRequest,
+    BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest, Engine, LabelEngine,
+    LabelRunRequest, Result, RunRequest,
 };
 
 const DEFAULT_LABEL_BATCH_SIZE: usize = 5;
@@ -211,6 +215,12 @@ fn run_cli() -> Result<()> {
             let report = engine.run(&request)?;
             print_barra_report("barra-run", &report);
         }
+        "backtest" => {
+            let request = parse_backtest_run_request(&args[1..])?;
+            let engine = BacktestEngine::from_request(&request)?;
+            let report = engine.run(&request)?;
+            print_backtest_report(&report);
+        }
         command => {
             return Err(yq_factor_engine::error::err(format!(
                 "unknown command: {command}"
@@ -314,6 +324,77 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
         date_batch_size,
         threads,
         profile,
+    })
+}
+
+fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
+    let flags = parse_flags(args)?;
+    let asset_class = flags
+        .get("asset")
+        .and_then(|value| AssetClass::parse(value))
+        .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --asset stock"))?;
+    let frequency = flags
+        .get("frequency")
+        .and_then(|value| Frequency::parse(value))
+        .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --frequency daily"))?;
+    let start_date = parse_yyyymmdd(
+        flags
+            .get("start-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --start-date YYYYMMDD"))?,
+        "start-date",
+    )?;
+    let end_date = parse_yyyymmdd(
+        flags
+            .get("end-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?,
+        "end-date",
+    )?;
+    let factor_ids = flags.get("factors").map(|value| parse_csv_values(value));
+    let tags = flags.get("tags").map(|value| parse_csv_values(value));
+    if factor_ids.is_some() && tags.is_some() {
+        return Err(yq_factor_engine::error::err(
+            "--factors and --tags cannot be used together",
+        ));
+    }
+    let groups = match flags.get("groups") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--groups must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_GROUPS,
+    };
+    let rebalance = flags
+        .get("rebalance")
+        .map(|value| RebalanceRule::parse(value))
+        .transpose()?
+        .unwrap_or(RebalanceRule::Daily);
+    let neutralize = flags
+        .get("neutralize")
+        .map(|value| NeutralizeSpec::parse(value))
+        .transpose()?
+        .unwrap_or(NeutralizeSpec::None);
+    Ok(BacktestRunRequest {
+        asset_class,
+        frequency,
+        start_date,
+        end_date,
+        factor_ids,
+        tags,
+        label_id: flags
+            .get("label")
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_BACKTEST_LABEL.to_string()),
+        groups,
+        rebalance,
+        neutralize,
+        write_detail: flag_enabled(&flags, "write-detail"),
+        output_dir: flags.get("output-dir").map(PathBuf::from),
+        config_path: flags.get("config").map(PathBuf::from),
     })
 }
 
@@ -771,6 +852,25 @@ fn print_barra_report(label: &str, report: &yq_factor_engine::BarraRunReport) {
     }
 }
 
+fn print_backtest_report(report: &BacktestRunReport) {
+    println!("backtest complete");
+    println!("factors: {}", report.factor_count);
+    println!("rebalance dates: {}", report.rebalance_count);
+    println!("output_dir: {}", report.output_dir.display());
+    println!("summary files: {}", report.summary_files.len());
+    for path in &report.summary_files {
+        println!("  {}", path.display());
+    }
+    println!("detail files: {}", report.detail_files.len());
+    for path in &report.detail_files {
+        println!("  {}", path.display());
+    }
+    println!("selected factors:");
+    for factor_id in &report.selected_factor_ids {
+        println!("  {}", factor_id);
+    }
+}
+
 fn print_help() {
     println!("YuminQuant factor engine MVP");
     println!();
@@ -795,6 +895,9 @@ fn print_help() {
     println!(
         "  barra-run  --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD"
     );
+    println!(
+        "  backtest --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD --factors factor_id[,factor_id...]"
+    );
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
@@ -803,6 +906,12 @@ fn print_help() {
     println!("  --families barra_family[,barra_family...]");
     println!("  --model CNE6");
     println!("  --tags tag[,tag...]");
+    println!("  --label label_id (backtest default future_vwap_return_1d)");
+    println!("  --groups N (backtest default 10)");
+    println!("  --rebalance daily|N|weekly|biweekly|monthly|quarterly");
+    println!("  --neutralize none|industry|barra:SIZE|barra:SIZE+industry");
+    println!("  --write-detail true");
+    println!("  --output-dir D:/path/to/output");
     println!(
         "  --factor-batch-size N (default {})",
         DEFAULT_FACTOR_BATCH_SIZE

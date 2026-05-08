@@ -101,3 +101,10 @@ pub const NEGV_MAX_RAW_ID: &str = "daily_negv_max";
 pub const NEGVWGT_MEAN_RAW_ID: &str = "daily_negvwgt_mean";
 pub const NEGVWGT_MAX_RAW_ID: &str = "daily_negvwgt_max";
 pub const MINV_RAW_ID: &str = "daily_minv";
+
+pub const LH_RTN_DIFF_RAW_ID: &str = "daily_lh_rtn_diff";
+pub const LH_VOL_DIFF_RAW_ID: &str = "daily_lh_vol_diff";
+pub const LH_STD_DIFF_RAW_ID: &str = "daily_lh_std_diff";
+pub const DIFF_IDX_RAW_ID: &str = "daily_diff_idx";
+pub const DIFF_STD_RAW_ID: &str = "daily_diff_std";
+pub const DIFF_VOL_RAW_ID: &str = "daily_diff_vol";

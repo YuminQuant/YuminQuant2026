@@ -236,7 +236,7 @@ impl BacktestPanel {
                 for name in &numeric_columns {
                     let values = &numeric_values[name];
                     if let Some(target) = columns.get_mut(name) {
-                        target[offset] = values[row_idx];
+                        target[offset] = values.get(row_idx).copied().unwrap_or(None);
                     }
                 }
             }
@@ -354,7 +354,8 @@ fn load_output_table(
         if !path.exists() {
             continue;
         }
-        let daily = read_parquet(&path, Some(&columns))?;
+        let mut daily = read_parquet(&path, Some(&columns))?;
+        ensure_table_columns(&mut daily, requested_columns)?;
         if table.columns.is_empty() {
             table = daily;
         } else {
@@ -366,6 +367,15 @@ fn load_output_table(
     } else {
         Ok(table)
     }
+}
+
+fn ensure_table_columns(table: &mut Table, requested_columns: &[String]) -> Result<()> {
+    for column in requested_columns {
+        if !table.columns.contains_key(column) {
+            table.insert(column.clone(), ColumnData::F64(vec![None; table.len]))?;
+        }
+    }
+    Ok(())
 }
 
 fn output_path(

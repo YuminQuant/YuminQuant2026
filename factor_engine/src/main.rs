@@ -437,6 +437,18 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
         ));
     }
     let label_batch_size = parse_label_batch_size(&flags)?;
+    let date_batch_size = match flags.get("date-batch-size") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--date-batch-size must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_DATE_BATCH_SIZE,
+    };
     let threads = match flags.get("threads") {
         Some(value) => {
             let parsed = value.parse::<usize>()?;
@@ -462,6 +474,7 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
         config_path,
         dry_run,
         label_batch_size,
+        date_batch_size,
         threads,
         profile,
         refresh_label_cache,
@@ -1041,6 +1054,43 @@ mod tests {
         .collect::<Vec<_>>();
         let request = parse_label_run_request(&args, false).expect("request");
         assert_eq!(request.label_batch_size, 7);
+    }
+
+    #[test]
+    fn label_date_batch_size_defaults_to_one_and_accepts_flag() {
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_label_run_request(&args, false).expect("request");
+        assert_eq!(request.date_batch_size, DEFAULT_DATE_BATCH_SIZE);
+
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--date-batch-size",
+            "20",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_label_run_request(&args, false).expect("request");
+        assert_eq!(request.date_batch_size, 20);
     }
 
     #[test]

@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = ["scikit-learn", "lightgbm"]
+xgb = ["xgboost"]
 torch = ["torch"]
 tune = ["optuna"]
 

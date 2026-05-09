@@ -19,8 +19,8 @@ from yq_ml_alpha.output.artifacts import window_artifact_path
 @dataclass(frozen=True)
 class TrainingWindow:
     window_id: str
-    train_range: tuple[int, int]
-    valid_range: tuple[int, int]
+    train_dates: list[int]
+    valid_dates: list[int]
     predict_dates: list[int]
 
 
@@ -39,8 +39,8 @@ def train_only(config_path: str | Path) -> list[Path]:
     for window in build_windows(config, calendar):
         model = _new_model(config)
         context = _context(config, window.window_id)
-        train_bundle = dataset.load(sample_dates(calendar, window.train_range, config.sample.frequency), include_label=True)
-        valid_bundle = dataset.load(sample_dates(calendar, window.valid_range, config.sample.frequency), include_label=True)
+        train_bundle = dataset.load(window.train_dates, include_label=True)
+        valid_bundle = dataset.load(window.valid_dates, include_label=True)
         model.fit(train_bundle.frame, valid_bundle.frame, context)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
         model.save(path)
@@ -74,10 +74,8 @@ def _fit_predict_all(config: MlAlphaConfig) -> pd.DataFrame:
     for window in build_windows(config, calendar):
         model = _new_model(config)
         context = _context(config, window.window_id)
-        train_dates = sample_dates(calendar, window.train_range, config.sample.frequency)
-        valid_dates = sample_dates(calendar, window.valid_range, config.sample.frequency)
-        train_bundle = dataset.load(train_dates, include_label=True)
-        valid_bundle = dataset.load(valid_dates, include_label=True)
+        train_bundle = dataset.load(window.train_dates, include_label=True)
+        valid_bundle = dataset.load(window.valid_dates, include_label=True)
         if train_bundle.frame.empty:
             continue
         model.fit(train_bundle.frame, valid_bundle.frame, context)
@@ -90,17 +88,21 @@ def _fit_predict_all(config: MlAlphaConfig) -> pd.DataFrame:
 
 
 def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[TrainingWindow]:
-    predict_dates = sample_dates(calendar, config.dates.predict, config.sample.frequency)
+    train_frequency = _train_frequency(config)
+    predict_dates = sample_dates(calendar, config.dates.predict, _predict_frequency(config))
     scheme = config.train_scheme.type.lower()
     if scheme == "static":
         return [
             TrainingWindow(
                 window_id="static",
-                train_range=config.dates.train,
-                valid_range=config.dates.valid,
+                train_dates=sample_dates(calendar, config.dates.train, train_frequency),
+                valid_dates=sample_dates(calendar, config.dates.valid, train_frequency),
                 predict_dates=predict_dates,
             )
         ]
+
+    if config.train_scheme.train_sample_count > 0:
+        return _sample_count_windows(config, calendar, predict_dates, scheme, train_frequency)
 
     starts = refit_dates(calendar, predict_dates, config.train_scheme.refit_frequency)
     if predict_dates and (not starts or starts[0] != predict_dates[0]):
@@ -117,12 +119,87 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
         windows.append(
             TrainingWindow(
                 window_id=f"{idx + 1:04d}_{segment[0]}_{segment[-1]}",
-                train_range=train_range,
-                valid_range=valid_range,
+                train_dates=sample_dates(calendar, train_range, train_frequency),
+                valid_dates=sample_dates(calendar, valid_range, train_frequency),
                 predict_dates=segment,
             )
         )
     return windows
+
+
+def _sample_count_windows(
+    config: MlAlphaConfig,
+    calendar: TradingCalendar,
+    predict_dates: list[int],
+    scheme: str,
+    train_frequency: str,
+) -> list[TrainingWindow]:
+    refits = _actual_refit_dates(calendar, config.dates.predict, config.train_scheme.refit_frequency)
+    train_pool = sample_dates(calendar, config.dates.train, train_frequency)
+    count = int(config.train_scheme.train_sample_count)
+    windows = []
+    for idx, refit in enumerate(refits):
+        next_refit = refits[idx + 1] if idx + 1 < len(refits) else None
+        segment = [date for date in predict_dates if date > refit and (next_refit is None or date <= next_refit)]
+        if not segment:
+            continue
+        candidates = [date for date in train_pool if date < refit]
+        if len(candidates) < count:
+            continue
+        if scheme == "rolling":
+            train_dates = candidates[-count:]
+        elif scheme == "expanding":
+            train_dates = candidates
+        else:
+            raise ValueError(f"train_sample_count is only supported for rolling/expanding, got {scheme}")
+        windows.append(
+            TrainingWindow(
+                window_id=f"{len(windows) + 1:04d}_{segment[0]}_{segment[-1]}",
+                train_dates=train_dates,
+                valid_dates=[],
+                predict_dates=segment,
+            )
+        )
+    return windows
+
+
+def _actual_refit_dates(calendar: TradingCalendar, date_range: tuple[int, int], frequency: str) -> list[int]:
+    candidates = refit_dates(calendar, calendar.between(date_range[0], date_range[1]), frequency)
+    return [date for date in candidates if _is_actual_period_end(calendar, date, frequency)]
+
+
+def _is_actual_period_end(calendar: TradingCalendar, date: int, frequency: str) -> bool:
+    frequency = frequency.lower().strip()
+    next_open = next((item for item in calendar.dates if item > date), None)
+    if next_open is not None:
+        if frequency in {"monthly", "monthly_end"}:
+            return next_open // 100 != date // 100
+        if frequency in {"weekly", "weekly_end"}:
+            return _iso_week_key(next_open) != _iso_week_key(date)
+    if frequency in {"monthly", "monthly_end"}:
+        import calendar as cal
+
+        text = str(date)
+        last_day = cal.monthrange(int(text[:4]), int(text[4:6]))[1]
+        return int(text[6:]) >= last_day - 3
+    return True
+
+
+def _train_frequency(config: MlAlphaConfig) -> str:
+    return config.sample.train_frequency or config.sample.frequency
+
+
+def _predict_frequency(config: MlAlphaConfig) -> str:
+    return config.sample.predict_frequency or config.sample.frequency
+
+
+def _iso_week_key(yyyymmdd: int) -> tuple[int, int]:
+    import datetime as dt
+
+    text = str(yyyymmdd)
+    date = dt.date(int(text[:4]), int(text[4:6]), int(text[6:]))
+    year, week, _ = date.isocalendar()
+    return year, week
 
 
 def _training_ranges(

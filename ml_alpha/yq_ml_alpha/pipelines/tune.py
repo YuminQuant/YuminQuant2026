@@ -19,8 +19,9 @@ def run(config_path: str | Path):
     context = _context(config, "tuning")
 
     def data_factory():
-        train_dates = sample_dates(calendar, config.dates.train, config.sample.frequency)
-        valid_dates = sample_dates(calendar, config.dates.valid, config.sample.frequency)
+        train_frequency = config.sample.train_frequency or config.sample.frequency
+        train_dates = sample_dates(calendar, config.dates.train, train_frequency)
+        valid_dates = sample_dates(calendar, config.dates.valid, train_frequency)
         return (
             dataset.load(train_dates, include_label=True).frame,
             dataset.load(valid_dates, include_label=True).frame,

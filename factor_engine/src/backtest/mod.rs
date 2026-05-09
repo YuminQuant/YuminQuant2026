@@ -14,7 +14,9 @@ use crate::backtest::cross_section::{
     ensure_backtest_inputs, finalize_cross_section_backtest, init_cross_section_states,
     update_cross_section_backtest_states,
 };
-use crate::backtest::data::{load_backtest_input_batch, prepare_backtest_data_plan};
+use crate::backtest::data::{
+    load_backtest_input_batch, prepare_backtest_data_plan, FactorFillState,
+};
 use crate::backtest::request::BacktestRunRequest;
 use crate::backtest::schedule::rebalance_dates;
 use crate::backtest::storage::write_backtest_outputs;
@@ -68,6 +70,12 @@ impl BacktestEngine {
         let mut output_files = Vec::new();
         for (batch_idx, range) in factor_batches.iter().enumerate() {
             let batch_factors = plan.factor_metadata[range.clone()].to_vec();
+            let factor_columns = batch_factors
+                .iter()
+                .map(|row| row.output_column.clone())
+                .collect::<Vec<_>>();
+            let mut factor_fill_state =
+                FactorFillState::new(&factor_columns, plan.instruments.len());
             let mut states = init_cross_section_states(&batch_factors);
             for date_range in &date_batches {
                 let target_dates = &plan.target_dates[date_range.clone()];
@@ -77,6 +85,7 @@ impl BacktestEngine {
                     &plan,
                     &batch_factors,
                     target_dates,
+                    &mut factor_fill_state,
                 )?;
                 update_cross_section_backtest_states(
                     request,

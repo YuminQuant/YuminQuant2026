@@ -35,6 +35,7 @@ pub struct BacktestPanel {
     instruments: Vec<String>,
     date_lookup: BTreeMap<i32, usize>,
     columns: BTreeMap<String, Vec<Option<f64>>>,
+    presence: BTreeMap<String, Vec<bool>>,
 }
 
 impl BacktestPanel {
@@ -64,12 +65,25 @@ impl BacktestPanel {
         Ok(column[start..end].to_vec())
     }
 
+    pub fn cross_section_presence(&self, name: &str, date_idx: usize) -> Result<Vec<bool>> {
+        let column = self
+            .presence
+            .get(name)
+            .ok_or_else(|| err(format!("backtest panel missing presence mask for {name}")))?;
+        let start = date_idx * self.instruments.len();
+        let end = start + self.instruments.len();
+        Ok(column[start..end].to_vec())
+    }
+
     fn ensure_columns(&mut self, names: &[String]) {
         let shape_len = self.dates.len() * self.instruments.len();
         for name in names {
             self.columns
                 .entry(name.clone())
                 .or_insert_with(|| vec![None; shape_len]);
+            self.presence
+                .entry(name.clone())
+                .or_insert_with(|| vec![false; shape_len]);
         }
     }
 }
@@ -198,6 +212,7 @@ impl BacktestPanel {
             .collect::<BTreeMap<_, _>>();
         let shape_len = dates.len() * instruments.len();
         let mut columns = BTreeMap::<String, Vec<Option<f64>>>::new();
+        let mut presence = BTreeMap::<String, Vec<bool>>::new();
 
         for table in tables {
             if table.columns.is_empty() {
@@ -219,6 +234,9 @@ impl BacktestPanel {
                 columns
                     .entry(name.clone())
                     .or_insert_with(|| vec![None; shape_len]);
+                presence
+                    .entry(name.clone())
+                    .or_insert_with(|| vec![false; shape_len]);
             }
             for row_idx in 0..table.len {
                 let (Some(trade_date), Some(ts_code)) =
@@ -238,6 +256,9 @@ impl BacktestPanel {
                     if let Some(target) = columns.get_mut(name) {
                         target[offset] = values.get(row_idx).copied().unwrap_or(None);
                     }
+                    if let Some(target) = presence.get_mut(name) {
+                        target[offset] = true;
+                    }
                 }
             }
         }
@@ -247,6 +268,7 @@ impl BacktestPanel {
             instruments,
             date_lookup,
             columns,
+            presence,
         })
     }
 }

@@ -11,21 +11,41 @@ pub struct CoverageStats {
 }
 
 pub fn coverage_stats(values: &[Option<f64>]) -> CoverageStats {
+    coverage_stats_with_universe(values, None)
+}
+
+pub fn coverage_stats_with_universe(
+    values: &[Option<f64>],
+    universe: Option<&[bool]>,
+) -> CoverageStats {
     if values.is_empty() {
         return CoverageStats::default();
     }
-    let present = values.iter().filter(|value| value.is_some()).count();
-    let inf = values
-        .iter()
-        .filter(|value| value.is_some_and(|value| value.is_infinite()))
-        .count();
-    let finite = values
-        .iter()
-        .filter(|value| value.is_some_and(f64::is_finite))
-        .count();
+    let mut denominator = 0usize;
+    let mut present = 0usize;
+    let mut inf = 0usize;
+    let mut finite = 0usize;
+    for (idx, value) in values.iter().enumerate() {
+        if universe.is_some_and(|universe| !universe.get(idx).copied().unwrap_or(false)) {
+            continue;
+        }
+        denominator += 1;
+        if value.is_some() {
+            present += 1;
+        }
+        if value.is_some_and(|value| value.is_infinite()) {
+            inf += 1;
+        }
+        if value.is_some_and(f64::is_finite) {
+            finite += 1;
+        }
+    }
+    if denominator == 0 {
+        return CoverageStats::default();
+    }
     CoverageStats {
-        coverage: present as f64 / values.len() as f64,
-        inf_rate: inf as f64 / values.len() as f64,
+        coverage: present as f64 / denominator as f64,
+        inf_rate: inf as f64 / denominator as f64,
         finite_count: finite,
     }
 }
@@ -213,8 +233,8 @@ pub fn keyed_values(keys: &[String], values: &[f64]) -> BTreeMap<String, f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        coverage_stats, equal_group_weights, group_assignments, long_short_weights,
-        portfolio_return, portfolio_scores,
+        coverage_stats, coverage_stats_with_universe, equal_group_weights, group_assignments,
+        long_short_weights, portfolio_return, portfolio_scores,
     };
 
     fn assert_close(actual: f64, expected: f64) {
@@ -230,6 +250,17 @@ mod tests {
 
         assert_close(stats.coverage, 0.75);
         assert_close(stats.inf_rate, 0.25);
+        assert_eq!(stats.finite_count, 1);
+    }
+
+    #[test]
+    fn coverage_can_use_column_universe_mask() {
+        let values = [Some(1.0), None, Some(2.0), None];
+        let universe = [true, true, false, false];
+        let stats = coverage_stats_with_universe(&values, Some(&universe));
+
+        assert_close(stats.coverage, 0.5);
+        assert_close(stats.inf_rate, 0.0);
         assert_eq!(stats.finite_count, 1);
     }
 

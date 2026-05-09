@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
 use crate::backtest::data::{BacktestInput, BacktestPanel};
-use crate::backtest::ic::{daily_ic_observation, IcObservation};
+use crate::backtest::ic::{daily_ic_observation_with_universe, IcObservation};
 use crate::backtest::metrics::{FactorStatsDaily, PerformancePoint};
 use crate::backtest::preprocess::{
-    coverage_stats, equal_group_weights, group_assignments, keyed_values, long_short_weights,
-    maybe_neutralize, portfolio_return, portfolio_scores, turnover,
+    coverage_stats_with_universe, equal_group_weights, group_assignments, keyed_values,
+    long_short_weights, maybe_neutralize, portfolio_return, portfolio_scores, turnover,
 };
 use crate::backtest::request::{BacktestRunRequest, DEFAULT_DECAY_HORIZON};
 use crate::backtest::schedule::date_after;
@@ -78,12 +78,16 @@ pub fn run_cross_section_backtest(
 
     for factor in &input.factor_metadata {
         let mut processed_by_date = BTreeMap::<i32, Vec<Option<f64>>>::new();
+        let mut factor_universe_by_date = BTreeMap::<i32, Vec<bool>>::new();
         for date in &input.target_dates {
             let Some(date_idx) = input.panel.date_index(*date) else {
                 continue;
             };
             let raw = input.panel.cross_section(&factor.output_column, date_idx)?;
-            let stats = coverage_stats(&raw);
+            let factor_universe = input
+                .panel
+                .cross_section_presence(&factor.output_column, date_idx)?;
+            let stats = coverage_stats_with_universe(&raw, Some(&factor_universe));
             output.factor_stats.push(FactorStatsDaily {
                 factor_id: factor.factor_id.clone(),
                 trade_date: *date,
@@ -105,7 +109,7 @@ pub fn run_cross_section_backtest(
                 .cross_section(&input.label_metadata.output_column, date_idx)?;
             let settle_date =
                 date_after(input.panel.dates(), *date, input.label_metadata.lookahead);
-            output.daily_ic.push(daily_ic_observation(
+            output.daily_ic.push(daily_ic_observation_with_universe(
                 &factor.factor_id,
                 *date,
                 *date,
@@ -113,7 +117,9 @@ pub fn run_cross_section_backtest(
                 None,
                 &processed,
                 &label,
+                Some(&factor_universe),
             ));
+            factor_universe_by_date.insert(*date, factor_universe);
         }
 
         for date in rebalance_dates {
@@ -138,7 +144,7 @@ pub fn run_cross_section_backtest(
                     label_date,
                     input.label_metadata.lookahead,
                 );
-                output.ic_decay.push(daily_ic_observation(
+                output.ic_decay.push(daily_ic_observation_with_universe(
                     &factor.factor_id,
                     *date,
                     label_date,
@@ -146,6 +152,7 @@ pub fn run_cross_section_backtest(
                     Some(horizon),
                     factor_values,
                     &label,
+                    factor_universe_by_date.get(date).map(Vec::as_slice),
                 ));
             }
         }

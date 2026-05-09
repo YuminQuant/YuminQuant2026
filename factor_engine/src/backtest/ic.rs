@@ -1,4 +1,4 @@
-use crate::backtest::preprocess::{coverage_stats, percentile_ranks};
+use crate::backtest::preprocess::{coverage_stats_with_universe, percentile_ranks};
 
 #[derive(Clone, Debug)]
 pub struct IcObservation {
@@ -39,7 +39,29 @@ pub fn daily_ic_observation(
     factor: &[Option<f64>],
     label: &[Option<f64>],
 ) -> IcObservation {
-    let stats = coverage_stats(factor);
+    daily_ic_observation_with_universe(
+        factor_id,
+        factor_date,
+        label_date,
+        settle_date,
+        horizon,
+        factor,
+        label,
+        None,
+    )
+}
+
+pub fn daily_ic_observation_with_universe(
+    factor_id: &str,
+    factor_date: i32,
+    label_date: i32,
+    settle_date: Option<i32>,
+    horizon: Option<usize>,
+    factor: &[Option<f64>],
+    label: &[Option<f64>],
+    universe: Option<&[bool]>,
+) -> IcObservation {
+    let stats = coverage_stats_with_universe(factor, universe);
     let (ic, rank_ic, pair_count) = compute_ic(factor, label);
     IcObservation {
         factor_id: factor_id.to_string(),

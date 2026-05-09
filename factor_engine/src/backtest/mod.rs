@@ -14,10 +14,7 @@ use std::path::PathBuf;
 use crate::backtest::cross_section::{ensure_backtest_inputs, run_cross_section_backtest};
 use crate::backtest::data::load_backtest_input;
 use crate::backtest::ic::IcObservation;
-use crate::backtest::metrics::{
-    summarize_factor_stats, summarize_ic, summarize_performance, FactorStatsSummary, IcSummary,
-    PerformanceSummary,
-};
+use crate::backtest::metrics::{summarize_factor_stats, summarize_ic, IcSummary};
 use crate::backtest::request::BacktestRunRequest;
 use crate::backtest::schedule::rebalance_dates;
 use crate::backtest::storage::{write_detail_outputs, write_summary_outputs};
@@ -58,24 +55,15 @@ impl BacktestEngine {
         let progress = ProgressBar::new("backtest", input.factor_metadata.len(), true);
         let output = run_cross_section_backtest(request, &input, &rebalance_dates, &progress)?;
         progress.finish();
-        let performance_summary = summarize_performance(&output.returns);
         let factor_stats_summary = summarize_factor_stats(&output.factor_stats);
         let ic_summary = summarize_daily_ic(&output.daily_ic);
         let ic_decay_summary = summarize_decay_ic(&output.ic_decay);
-        let output_dir = request.output_dir.clone().unwrap_or_else(|| {
-            default_output_dir(
-                &self.config,
-                request,
-                input
-                    .factor_metadata
-                    .first()
-                    .map(|row| row.factor_id.as_str())
-                    .unwrap_or("factors"),
-            )
-        });
+        let output_dir = request
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| default_output_dir(&self.config, request));
         let summary_files = write_summary_outputs(
             &output_dir,
-            &performance_summary,
             &ic_summary,
             &ic_decay_summary,
             &factor_stats_summary,
@@ -168,33 +156,10 @@ fn summarize_decay_ic(rows: &[IcObservation]) -> Vec<IcSummary> {
         .collect()
 }
 
-fn default_output_dir(
-    config: &EngineConfig,
-    request: &BacktestRunRequest,
-    first_factor_id: &str,
-) -> PathBuf {
-    let factor_label = match (&request.factor_ids, &request.tags) {
-        _ if request.all_factors => "all_factors".to_string(),
-        (Some(ids), _) if ids.len() == 1 => ids[0].clone(),
-        (Some(ids), _) => format!("{}_factors", ids.len()),
-        (_, Some(tags)) => format!("tags_{}", tags.join("_")),
-        _ => first_factor_id.to_string(),
-    };
+fn default_output_dir(config: &EngineConfig, request: &BacktestRunRequest) -> PathBuf {
     config
         .data_root
         .join("backtest")
         .join(request.asset_class.as_str())
         .join(request.frequency.as_str())
-        .join(format!(
-            "{}_{}_{}_{}_g{}_{}",
-            request.start_date,
-            request.end_date,
-            factor_label,
-            request.rebalance.label(),
-            request.groups,
-            request.neutralize.label()
-        ))
 }
-
-#[allow(dead_code)]
-fn _keep_types(_: &[PerformanceSummary], _: &[FactorStatsSummary]) {}

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,11 +9,9 @@ use rayon::prelude::*;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{
-    label_registry_key, AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey,
-    FactorValue, Frequency, IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec,
-    LabelSeries, LabelSpec,
+    label_registry_key, AssetClass, DataRequest, DatasetId, FactorContext, Frequency,
+    IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec, LabelSeries, LabelSpec,
 };
-use crate::data::parquet_io::read_parquet;
 use crate::data::{DataCatalog, DataPool, MarketDataLoader, Table};
 use crate::engine::{BatchProfile, FactorProfile};
 use crate::error::{err, Result};
@@ -238,7 +236,6 @@ impl LabelEngine {
         let progress = ProgressBar::new("label-run", execution_batch_count, true);
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();
-        let mut skipped_dates = BTreeSet::new();
         let mut materialized_intraday_raw_dates = BTreeSet::new();
 
         for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
@@ -258,38 +255,9 @@ impl LabelEngine {
                         .map(|spec| spec.lookahead.trading_days)
                         .max()
                         .unwrap_or(stage.max_lookahead);
-                    let (valid_dates, missing_dates) = label_dates_with_available_future_data(
-                        &loader,
-                        &calendar,
-                        request.asset_class,
-                        &batch_specs,
-                        date_batch,
-                        batch_max_lookahead,
-                    )?;
-                    for missing_date in &missing_dates {
-                        let missing_specs = label_specs_missing_from_output(
-                            &self.config.label_root,
-                            request.asset_class,
-                            request.frequency,
-                            *missing_date,
-                            &batch_specs,
-                        )?;
-                        let empty_results = empty_label_series_for_missing_future_data(
-                            &loader,
-                            request.asset_class,
-                            *missing_date,
-                            &missing_specs,
-                        )?;
-                        if !empty_results.is_empty() {
-                            let written_paths = storage.write_results(&empty_results)?;
-                            output_paths.extend(written_paths);
-                        }
-                        skipped_dates.insert(*missing_date);
-                    }
-
-                    if valid_dates.is_empty() {
+                    if date_batch.is_empty() {
                         progress.tick(format!(
-                            "stage={} dates={}..{} skipped=missing_future_data labels={}",
+                            "stage={} dates={}..{} skipped=empty_date_batch labels={}",
                             stage.name,
                             date_batch.first().copied().unwrap_or_default(),
                             date_batch.last().copied().unwrap_or_default(),
@@ -298,12 +266,12 @@ impl LabelEngine {
                         continue;
                     }
 
-                    let batch_start_date = *valid_dates
+                    let batch_start_date = *date_batch
                         .first()
-                        .expect("valid date batch is not empty after check");
-                    let batch_last_target_date = *valid_dates
+                        .expect("date batch is not empty after check");
+                    let batch_last_target_date = *date_batch
                         .last()
-                        .expect("valid date batch is not empty after check");
+                        .expect("date batch is not empty after check");
                     let batch_load_end_date = calendar
                         .open_date_after(batch_last_target_date, batch_max_lookahead)
                         .expect("target dates are filtered by global lookahead");
@@ -316,7 +284,7 @@ impl LabelEngine {
                         end_date: batch_load_end_date,
                         load_start_date: batch_start_date,
                         load_dates: batch_load_dates,
-                        target_dates: valid_dates.clone(),
+                        target_dates: date_batch.clone(),
                     };
 
                     let raw_ids = raw_ids_for_label_indices(&labels, batch_indices);
@@ -404,7 +372,7 @@ impl LabelEngine {
             label_count: specs.len(),
             output_file_count: output_paths.len(),
             target_dates,
-            skipped_dates: skipped_dates.into_iter().collect(),
+            skipped_dates: Vec::new(),
             effective_start_date: Some(effective_start_date),
             effective_end_date: Some(effective_end_date),
             max_lookahead,
@@ -857,59 +825,6 @@ fn split_dates_by_chunk(dates: &[i32], chunk_size: usize) -> Vec<Vec<i32>> {
         .collect()
 }
 
-fn label_dates_with_available_future_data(
-    loader: &MarketDataLoader,
-    calendar: &TradingCalendar,
-    asset_class: AssetClass,
-    specs: &[LabelSpec],
-    target_dates: &[i32],
-    max_lookahead: usize,
-) -> Result<(Vec<i32>, Vec<i32>)> {
-    if target_dates.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    if !requires_stock_daily_pv(specs) {
-        return Ok((target_dates.to_vec(), Vec::new()));
-    }
-
-    let first_target = *target_dates.first().expect("non-empty target dates");
-    let last_target = *target_dates.last().expect("non-empty target dates");
-    let load_end = calendar
-        .open_date_after(last_target, max_lookahead)
-        .expect("target dates are filtered by global lookahead");
-    let load_dates = calendar.open_dates_between(first_target, load_end);
-    let dataset = match asset_class {
-        AssetClass::Stock => DatasetId::StockDailyPv,
-        AssetClass::Future => DatasetId::FutureDaily,
-    };
-    let table = loader.load_daily_by_dates(dataset, &["open".to_string()], &load_dates)?;
-    let actual_dates = table
-        .required_i32("trade_date")?
-        .iter()
-        .flatten()
-        .copied()
-        .collect::<BTreeSet<_>>();
-
-    let mut valid_dates = Vec::new();
-    let mut missing_dates = Vec::new();
-    for target_date in target_dates {
-        let required_end = calendar
-            .open_date_after(*target_date, max_lookahead)
-            .expect("target dates are filtered by global lookahead");
-        let required_dates = calendar.open_dates_between(*target_date, required_end);
-        if required_dates
-            .iter()
-            .all(|trade_date| actual_dates.contains(trade_date))
-        {
-            valid_dates.push(*target_date);
-        } else {
-            missing_dates.push(*target_date);
-        }
-    }
-
-    Ok((valid_dates, missing_dates))
-}
-
 fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>> {
     match threads {
         Some(0) => Err(err("threads must be greater than 0")),
@@ -939,94 +854,6 @@ fn compute_label_batch(
         None => compute(),
     };
     results.into_iter().collect()
-}
-
-fn empty_label_series_for_missing_future_data(
-    loader: &MarketDataLoader,
-    asset_class: AssetClass,
-    trade_date: i32,
-    specs: &[LabelSpec],
-) -> Result<Vec<LabelSeries>> {
-    if specs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let dataset = match asset_class {
-        AssetClass::Stock => DatasetId::StockDailyPv,
-        AssetClass::Future => DatasetId::FutureDaily,
-    };
-    let table = loader.load_daily_by_dates(dataset, &["open".to_string()], &[trade_date])?;
-    let trade_dates = table.required_i32("trade_date")?;
-    let ts_codes = table.required_utf8("ts_code")?;
-    let keys = trade_dates
-        .iter()
-        .zip(ts_codes)
-        .filter_map(|(date, code)| match (date, code) {
-            (Some(date), Some(code)) if *date == trade_date => Some(FactorRowKey::Daily {
-                trade_date,
-                ts_code: code.clone(),
-            }),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    Ok(specs
-        .iter()
-        .cloned()
-        .map(|spec| LabelSeries {
-            spec,
-            values: keys
-                .iter()
-                .cloned()
-                .map(|key| FactorValue { key, value: None })
-                .collect(),
-        })
-        .collect())
-}
-
-fn label_specs_missing_from_output(
-    label_root: &Path,
-    asset_class: AssetClass,
-    frequency: Frequency,
-    trade_date: i32,
-    specs: &[LabelSpec],
-) -> Result<Vec<LabelSpec>> {
-    let path = label_output_path(label_root, asset_class, frequency, trade_date);
-    if !path.exists() {
-        return Ok(specs.to_vec());
-    }
-    let existing_columns = read_parquet(&path, None)?
-        .column_names()
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    Ok(specs
-        .iter()
-        .filter(|spec| !existing_columns.contains(&spec.output_column()))
-        .cloned()
-        .collect())
-}
-
-fn label_output_path(
-    label_root: &Path,
-    asset_class: AssetClass,
-    frequency: Frequency,
-    trade_date: i32,
-) -> PathBuf {
-    let year = trade_date / 10_000;
-    label_root
-        .join(asset_class.as_str())
-        .join(frequency.as_str())
-        .join(year.to_string())
-        .join(format!("{trade_date}.parquet"))
-}
-
-fn requires_stock_daily_pv(specs: &[LabelSpec]) -> bool {
-    specs.iter().any(|spec| {
-        spec.dependencies
-            .iter()
-            .any(|request| request.dataset == DatasetId::StockDailyPv)
-    })
 }
 
 fn label_requires_minute(spec: &LabelSpec) -> bool {

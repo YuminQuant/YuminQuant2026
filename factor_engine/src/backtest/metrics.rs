@@ -13,23 +13,6 @@ pub struct PerformancePoint {
 }
 
 #[derive(Clone, Debug)]
-pub struct PerformanceSummary {
-    pub factor_id: String,
-    pub scope: String,
-    pub year: Option<i32>,
-    pub portfolio: String,
-    pub observations: i64,
-    pub mean_return: Option<f64>,
-    pub std_return: Option<f64>,
-    pub cumulative_return: Option<f64>,
-    pub annualized_return: Option<f64>,
-    pub annualized_volatility: Option<f64>,
-    pub sharpe: Option<f64>,
-    pub max_drawdown: Option<f64>,
-    pub avg_turnover: Option<f64>,
-}
-
-#[derive(Clone, Debug)]
 pub struct FactorStatsDaily {
     pub factor_id: String,
     pub trade_date: i32,
@@ -76,67 +59,6 @@ pub struct IcSummary {
     pub rank_icir_abs: Option<f64>,
     pub coverage_mean: Option<f64>,
     pub inf_rate_mean: Option<f64>,
-}
-
-pub fn summarize_performance(points: &[PerformancePoint]) -> Vec<PerformanceSummary> {
-    let mut grouped = BTreeMap::<(String, String, Option<i32>), Vec<&PerformancePoint>>::new();
-    for point in points {
-        grouped
-            .entry((point.factor_id.clone(), point.portfolio.clone(), None))
-            .or_default()
-            .push(point);
-        if let Some(year) = point.settle_date.map(|date| date / 10_000) {
-            grouped
-                .entry((point.factor_id.clone(), point.portfolio.clone(), Some(year)))
-                .or_default()
-                .push(point);
-        }
-    }
-    grouped
-        .into_iter()
-        .map(|((factor_id, portfolio, year), rows)| {
-            let returns = rows
-                .iter()
-                .filter_map(|point| point.return_value.filter(|value| value.is_finite()))
-                .collect::<Vec<_>>();
-            let turnovers = rows
-                .iter()
-                .filter_map(|point| point.turnover.filter(|value| value.is_finite()))
-                .collect::<Vec<_>>();
-            let cumulative = cumulative_return(&returns);
-            let avg_return = mean(&returns);
-            let std = std_dev(&returns);
-            let annualized_return = cumulative.map(|value| {
-                if returns.is_empty() {
-                    f64::NAN
-                } else {
-                    (1.0 + value).powf(252.0 / returns.len() as f64) - 1.0
-                }
-            });
-            let annualized_volatility = std.map(|value| value * 252.0_f64.sqrt());
-            let sharpe = match (avg_return, std) {
-                (Some(mean), Some(std)) if std.abs() > f64::EPSILON => {
-                    Some(mean / std * 252.0_f64.sqrt())
-                }
-                _ => None,
-            };
-            PerformanceSummary {
-                factor_id,
-                scope: year.map_or_else(|| "full".to_string(), |_| "year".to_string()),
-                year,
-                portfolio,
-                observations: returns.len() as i64,
-                mean_return: avg_return,
-                std_return: std,
-                cumulative_return: cumulative,
-                annualized_return: annualized_return.filter(|value| value.is_finite()),
-                annualized_volatility,
-                sharpe,
-                max_drawdown: max_drawdown(&returns),
-                avg_turnover: mean(&turnovers),
-            }
-        })
-        .collect()
 }
 
 pub fn summarize_factor_stats(rows: &[FactorStatsDaily]) -> Vec<FactorStatsSummary> {
@@ -236,35 +158,6 @@ fn finite_values(values: &[Option<f64>]) -> Vec<f64> {
         .iter()
         .filter_map(|value| value.filter(|value| value.is_finite()))
         .collect()
-}
-
-fn cumulative_return(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    Some(values.iter().fold(1.0, |nav, value| nav * (1.0 + value)) - 1.0)
-}
-
-fn max_drawdown(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut nav = 1.0;
-    let mut peak = 1.0;
-    let mut max_dd = 0.0;
-    for value in values {
-        nav *= 1.0 + value;
-        if nav > peak {
-            peak = nav;
-        }
-        if peak > 0.0 {
-            let dd = nav / peak - 1.0;
-            if dd < max_dd {
-                max_dd = dd;
-            }
-        }
-    }
-    Some(max_dd)
 }
 
 fn mean(values: &[f64]) -> Option<f64> {

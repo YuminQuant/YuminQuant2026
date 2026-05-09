@@ -2,9 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::backtest::ic::IcObservation;
-use crate::backtest::metrics::{
-    FactorStatsSummary, IcSummary, PerformancePoint, PerformanceSummary,
-};
+use crate::backtest::metrics::{FactorStatsSummary, IcSummary, PerformancePoint};
 use crate::data::parquet_io::write_parquet;
 use crate::data::{ColumnData, Table};
 use crate::error::Result;
@@ -17,16 +15,16 @@ pub struct BacktestOutputFiles {
 
 pub fn write_summary_outputs(
     output_dir: &Path,
-    performance: &[PerformanceSummary],
     ic: &[IcSummary],
     ic_decay: &[IcSummary],
     factor_stats: &[FactorStatsSummary],
 ) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(output_dir)?;
+    let legacy_performance = output_dir.join("performance_summary.parquet");
+    if legacy_performance.exists() {
+        std::fs::remove_file(&legacy_performance)?;
+    }
     let mut written = Vec::new();
-    let path = output_dir.join("performance_summary.parquet");
-    write_parquet(&path, &performance_summary_table(performance)?)?;
-    written.push(path);
     let path = output_dir.join("ic_summary.parquet");
     write_parquet(&path, &ic_summary_table(ic)?)?;
     written.push(path);
@@ -43,69 +41,73 @@ pub fn write_detail_outputs(
     output_dir: &Path,
     returns: &[PerformancePoint],
     daily_ic: &[IcObservation],
-    ic_decay: &[IcObservation],
+    _ic_decay: &[IcObservation],
 ) -> Result<Vec<PathBuf>> {
-    let detail_dir = output_dir.join("detail");
-    std::fs::create_dir_all(&detail_dir)?;
+    remove_legacy_detail_outputs(output_dir)?;
     let mut written = Vec::new();
-    let path = detail_dir.join("daily_returns.parquet");
-    write_parquet(&path, &returns_table(returns)?)?;
-    written.push(path);
-    let path = detail_dir.join("daily_ic.parquet");
-    write_parquet(&path, &ic_observation_table(daily_ic)?)?;
-    written.push(path);
-    let path = detail_dir.join("ic_decay.parquet");
-    write_parquet(&path, &ic_observation_table(ic_decay)?)?;
-    written.push(path);
+    let returns_dir = output_dir.join("returns");
+    std::fs::create_dir_all(&returns_dir)?;
+    for (factor_id, rows) in group_returns_by_factor(returns) {
+        let path = returns_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+        write_parquet(&path, &returns_table(&rows)?)?;
+        written.push(path);
+    }
+
+    let ic_dir = output_dir.join("ic");
+    std::fs::create_dir_all(&ic_dir)?;
+    for (factor_id, rows) in group_ic_by_factor(daily_ic) {
+        let path = ic_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+        write_parquet(&path, &ic_observation_table(&rows)?)?;
+        written.push(path);
+    }
     Ok(written)
 }
 
-fn performance_summary_table(rows: &[PerformanceSummary]) -> Result<Table> {
-    table_from_columns(BTreeMap::from([
-        (
-            "factor_id",
-            utf8(rows.iter().map(|row| Some(row.factor_id.clone()))),
-        ),
-        (
-            "scope",
-            utf8(rows.iter().map(|row| Some(row.scope.clone()))),
-        ),
-        ("year", i32_col(rows.iter().map(|row| row.year))),
-        (
-            "portfolio",
-            utf8(rows.iter().map(|row| Some(row.portfolio.clone()))),
-        ),
-        (
-            "observations",
-            i64_col(rows.iter().map(|row| Some(row.observations))),
-        ),
-        (
-            "mean_return",
-            f64_col(rows.iter().map(|row| row.mean_return)),
-        ),
-        ("std_return", f64_col(rows.iter().map(|row| row.std_return))),
-        (
-            "cumulative_return",
-            f64_col(rows.iter().map(|row| row.cumulative_return)),
-        ),
-        (
-            "annualized_return",
-            f64_col(rows.iter().map(|row| row.annualized_return)),
-        ),
-        (
-            "annualized_volatility",
-            f64_col(rows.iter().map(|row| row.annualized_volatility)),
-        ),
-        ("sharpe", f64_col(rows.iter().map(|row| row.sharpe))),
-        (
-            "max_drawdown",
-            f64_col(rows.iter().map(|row| row.max_drawdown)),
-        ),
-        (
-            "avg_turnover",
-            f64_col(rows.iter().map(|row| row.avg_turnover)),
-        ),
-    ]))
+fn remove_legacy_detail_outputs(output_dir: &Path) -> Result<()> {
+    let legacy_detail = output_dir.join("detail");
+    for name in [
+        "daily_returns.parquet",
+        "daily_ic.parquet",
+        "ic_decay.parquet",
+    ] {
+        let path = legacy_detail.join(name);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+fn group_returns_by_factor(rows: &[PerformancePoint]) -> BTreeMap<String, Vec<PerformancePoint>> {
+    let mut grouped = BTreeMap::<String, Vec<PerformancePoint>>::new();
+    for row in rows {
+        grouped
+            .entry(row.factor_id.clone())
+            .or_default()
+            .push(row.clone());
+    }
+    grouped
+}
+
+fn group_ic_by_factor(rows: &[IcObservation]) -> BTreeMap<String, Vec<IcObservation>> {
+    let mut grouped = BTreeMap::<String, Vec<IcObservation>>::new();
+    for row in rows {
+        grouped
+            .entry(row.factor_id.clone())
+            .or_default()
+            .push(row.clone());
+    }
+    grouped
+}
+
+fn safe_file_stem(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => ch,
+        })
+        .collect()
 }
 
 fn factor_stats_table(rows: &[FactorStatsSummary]) -> Result<Table> {

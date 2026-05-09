@@ -12,6 +12,44 @@ pub struct MarketDataLoader {
     catalog: DataCatalog,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct DisclosureTableCache {
+    yearly_tables: HashMap<DisclosureCacheKey, Table>,
+}
+
+impl DisclosureTableCache {
+    pub fn len(&self) -> usize {
+        self.yearly_tables.len()
+    }
+
+    fn load_year(
+        &mut self,
+        dataset: DatasetId,
+        file: PathBuf,
+        columns: &[String],
+    ) -> Result<&Table> {
+        let key = DisclosureCacheKey {
+            dataset,
+            file,
+            columns: columns.to_vec(),
+        };
+        if !self.yearly_tables.contains_key(&key) {
+            let table = read_parquet(&key.file, Some(columns))?;
+            self.yearly_tables.insert(key.clone(), table);
+        }
+        self.yearly_tables
+            .get(&key)
+            .ok_or_else(|| err("disclosure cache entry disappeared unexpectedly"))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct DisclosureCacheKey {
+    dataset: DatasetId,
+    file: PathBuf,
+    columns: Vec<String>,
+}
+
 impl MarketDataLoader {
     pub fn new(catalog: DataCatalog) -> Self {
         Self { catalog }
@@ -176,6 +214,26 @@ impl MarketDataLoader {
         end_date: i32,
         quarters: usize,
     ) -> Result<Table> {
+        let mut cache = DisclosureTableCache::default();
+        self.load_financial_cached(
+            dataset,
+            requested_columns,
+            start_date,
+            end_date,
+            quarters,
+            &mut cache,
+        )
+    }
+
+    pub fn load_financial_cached(
+        &self,
+        dataset: DatasetId,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+        quarters: usize,
+        cache: &mut DisclosureTableCache,
+    ) -> Result<Table> {
         let columns = with_required_columns(
             requested_columns,
             &[
@@ -198,8 +256,8 @@ impl MarketDataLoader {
         );
         let mut table = Table::empty();
         for file in files {
-            let yearly = read_parquet(&file, Some(&columns))?;
-            let filtered = filter_financial_disclosure_range(&yearly, end_date)?;
+            let yearly = cache.load_year(dataset, file, &columns)?;
+            let filtered = filter_financial_disclosure_range(yearly, end_date)?;
             table.append(&filtered)?;
         }
         Ok(table)
@@ -242,6 +300,17 @@ impl MarketDataLoader {
         start_date: i32,
         end_date: i32,
     ) -> Result<Table> {
+        let mut cache = DisclosureTableCache::default();
+        self.load_stock_analyst_report_cached(requested_columns, start_date, end_date, &mut cache)
+    }
+
+    pub fn load_stock_analyst_report_cached(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+        cache: &mut DisclosureTableCache,
+    ) -> Result<Table> {
         let columns = with_required_columns(
             requested_columns,
             &["ts_code", "report_date", "quarter", "rd"],
@@ -253,8 +322,8 @@ impl MarketDataLoader {
         );
         let mut table = Table::empty();
         for file in files {
-            let yearly = read_parquet(&file, Some(&columns))?;
-            let filtered = filter_analyst_report_range(&yearly, end_date)?;
+            let yearly = cache.load_year(DatasetId::StockAnalystReport, file, &columns)?;
+            let filtered = filter_analyst_report_range(yearly, end_date)?;
             table.append(&filtered)?;
         }
         Ok(table)
@@ -437,6 +506,84 @@ mod tests {
     use crate::data::table::ColumnData;
 
     use super::*;
+
+    #[test]
+    fn disclosure_cache_reuses_raw_financial_year_table_across_end_dates() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_financial_cache_test_{unique}"));
+        let path = root.join("stock_data").join("income").join("2020.parquet");
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000001.SZ".to_string()),
+                ]),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(vec![Some(20200115), Some(20200301)]),
+            ),
+            (
+                "f_ann_date".to_string(),
+                ColumnData::I32(vec![Some(20200115), Some(20200301)]),
+            ),
+            (
+                "end_date".to_string(),
+                ColumnData::I32(vec![Some(20191231), Some(20200331)]),
+            ),
+            (
+                "report_type".to_string(),
+                ColumnData::I64(vec![Some(1), Some(1)]),
+            ),
+            (
+                "update_flag".to_string(),
+                ColumnData::I64(vec![Some(0), Some(0)]),
+            ),
+            (
+                "ebit".to_string(),
+                ColumnData::F64(vec![Some(10.0), Some(20.0)]),
+            ),
+        ]))
+        .expect("financial table");
+        write_parquet(&path, &table).expect("write financial table");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let mut cache = DisclosureTableCache::default();
+        let early = loader
+            .load_financial_cached(
+                DatasetId::StockIncome,
+                &["ebit".to_string()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .expect("load early financial");
+        let later = loader
+            .load_financial_cached(
+                DatasetId::StockIncome,
+                &["ebit".to_string()],
+                20200101,
+                20200331,
+                0,
+                &mut cache,
+            )
+            .expect("load later financial");
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(early.len, 1);
+        assert_eq!(later.len, 2);
+        assert_eq!(
+            later.required_f64_cast("ebit").expect("ebit"),
+            vec![Some(10.0), Some(20.0)]
+        );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[test]
     fn index_daily_loader_reads_code_directory_and_filters_dates() {

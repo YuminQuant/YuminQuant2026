@@ -197,16 +197,20 @@ The Python ML alpha package lives in `ml_alpha/`. It trains and predicts ML
 alphas in Python, then writes standard daily alpha parquet files under
 `data/models/{year}/{trade_date}.parquet`.
 
-Install it in editable mode from the repository root:
+Run it without installing the package by entering the package directory:
 
 ```powershell
-pip install -e .\ml_alpha
+Push-Location .\ml_alpha
 ```
 
 Run an existing-factor combo model:
 
 ```powershell
-python -m yq_ml_alpha run --config ml_alpha\configs\examples\mean_combo_smoke.toml
+python -m yq_ml_alpha run --config configs\examples\mean_combo_smoke.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_lr_36.toml
+pip install xgboost
+python -m yq_ml_alpha run --config configs\examples\monthly_xgb_36.toml
+Pop-Location
 ```
 
 The package supports:

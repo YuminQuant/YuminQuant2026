@@ -167,7 +167,14 @@ fn returns_table(rows: &[PerformancePoint]) -> Result<Table> {
             utf8(rows.iter().map(|row| Some(row.portfolio.clone()))),
         ),
         ("return", f64_col(rows.iter().map(|row| row.return_value))),
-        ("nav", f64_col(rows.iter().map(|row| row.nav))),
+        (
+            "benchmark_return",
+            f64_col(rows.iter().map(|row| row.benchmark_return)),
+        ),
+        (
+            "excess_return",
+            f64_col(rows.iter().map(|row| row.excess_return)),
+        ),
         ("turnover", f64_col(rows.iter().map(|row| row.turnover))),
     ]))
 }

@@ -30,6 +30,7 @@ from data_manager import (
     CIMemberDownloader,
     CIDailyDownloader,
     IndexDailyDownloader,
+    IndexWeightDownloader,
     IndexBasicDownloader,
     IndexClassifyDownloader,
     OptionBasicDownloader,
@@ -61,6 +62,7 @@ DEFAULT_START_DATES = {
     "future_minute": "20100101",
     "etf": "20090101",
     "index_daily": "20090101",
+    "index_weight": "20090101",
     "index_industry_daily": "20090101",
     "option": "20150209",
     "hk_calendar_year": 2000,
@@ -146,6 +148,35 @@ def update_index_daily(args, logger):
                 target_end_date=end_date,
             ),
         )
+
+
+def update_index_weight(args, logger):
+    start_date = args.start_date or DEFAULT_START_DATES["index_weight"]
+    end_date = args.end_date
+    downloader = IndexWeightDownloader()
+    if args.ts_code:
+        run_task(
+            logger,
+            f"index_weight_{args.ts_code.strip().upper()}",
+            lambda: downloader.sync(
+                args.ts_code.strip().upper(),
+                start_date=start_date,
+                target_end_date=end_date,
+            ),
+        )
+    else:
+        for spec in IndexDailyDownloader.DEFAULT_BROAD_BASE_INDEXES:
+            code = spec["ts_code"]
+            list_date = spec.get("list_date", start_date)
+            run_task(
+                logger,
+                f"index_weight_{code}",
+                lambda code=code, list_date=list_date: downloader.sync(
+                    code,
+                    start_date=max(start_date, list_date),
+                    target_end_date=end_date,
+                ),
+            )
 
 
 def update_index_industry_daily(args, logger):
@@ -325,6 +356,7 @@ GROUPS = {
     "stock_static": lambda args, logger: update_stock_static(logger),
     "index_static": lambda args, logger: update_index_static(logger),
     "index_daily": update_index_daily,
+    "index_weight": update_index_weight,
     "index_industry_daily": update_index_industry_daily,
     "etf_static": lambda args, logger: update_etf_static(logger),
     "option_static": lambda args, logger: update_option_static(logger),
@@ -369,7 +401,7 @@ def parse_args():
     )
     parser.add_argument(
         "--end-date",
-        help="YYYYMMDD. Defaults to today's date in Beijing time.",
+        help="YYYYMMDD. Defaults to today's date in Beijing time, except index_weight defaults to the previous complete month end.",
     )
     parser.add_argument(
         "--calendar-end-date",
@@ -377,7 +409,7 @@ def parse_args():
     )
     parser.add_argument(
         "--ts-code",
-        help="Optional single index ts_code for --groups index_daily, e.g. 000016.SH. If omitted, downloads default broad-based indexes.",
+        help="Optional single index ts_code for --groups index_daily/index_weight, e.g. 000016.SH. If omitted, downloads default broad-based indexes.",
     )
     parser.add_argument(
         "--list-date",

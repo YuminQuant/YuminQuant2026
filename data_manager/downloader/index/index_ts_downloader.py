@@ -11,6 +11,12 @@ from data_manager.core import BaseDownloader, ConfigManager
 from data_manager.core.daily_storage import save_daily_dataframe
 
 
+def previous_complete_month_end():
+    today = datetime.now(timezone(timedelta(hours=8)))
+    first_day_this_month = today.replace(day=1)
+    return (first_day_this_month - timedelta(days=1)).strftime("%Y%m%d")
+
+
 class IndexDailyDownloader(BaseDownloader):
     """Download and store index daily bars by index code and year."""
 
@@ -117,7 +123,9 @@ class IndexDailyDownloader(BaseDownloader):
 
 
 class IndexWeightDownloader(BaseDownloader):
-    """Download and store index weights by index code and year."""
+    """Download and store monthly index constituent weights by index code."""
+
+    REQUIRED_COLUMNS = ["index_code", "con_code", "trade_date", "weight"]
 
     def __init__(self):
         config = ConfigManager().config
@@ -126,7 +134,12 @@ class IndexWeightDownloader(BaseDownloader):
 
     def sync(self, index_code, start_date="20100101", target_end_date=None):
         if target_end_date is None:
-            target_end_date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
+            target_end_date = previous_complete_month_end()
+        if start_date > target_end_date:
+            self.logger.info(
+                f"skip index_weight {index_code}: start_date {start_date} > end_date {target_end_date}"
+            )
+            return
 
         self.logger.info(f"=== sync index_weight {index_code}: {start_date} -> {target_end_date} ===")
         code_dir = os.path.join(self.base_save_dir, index_code.replace(".", "_"))
@@ -136,40 +149,45 @@ class IndexWeightDownloader(BaseDownloader):
         end_dt = pd.to_datetime(target_end_date)
         months = pd.date_range(start_dt.replace(day=1), end_dt, freq="MS")
 
-        yearly_data = {}
         for month_start in months:
             m_start = month_start.strftime("%Y%m%d")
             next_month = month_start.replace(day=28) + timedelta(days=4)
             m_end = (next_month - timedelta(days=next_month.day)).strftime("%Y%m%d")
+            if m_end > target_end_date:
+                continue
             year = month_start.strftime("%Y")
-            file_path = os.path.join(code_dir, f"{year}.parquet")
-            if year < target_end_date[:4] and os.path.exists(file_path):
+            month = month_start.strftime("%Y%m")
+            year_dir = os.path.join(code_dir, year)
+            os.makedirs(year_dir, exist_ok=True)
+            file_path = os.path.join(year_dir, f"{month}.parquet")
+            if os.path.exists(file_path):
                 continue
 
             try:
                 df = self.pro.index_weight(index_code=index_code, start_date=m_start, end_date=m_end)
                 self.safe_sleep()
                 if df is not None and not df.empty:
-                    yearly_data.setdefault(year, []).append(df)
+                    written = self._save_month(file_path, df)
+                    self.logger.info(
+                        f"-> index_weight {index_code} {month} saved rows={written}"
+                    )
             except Exception as exc:
                 self.logger.error(f"index_weight {index_code} {m_start} failed: {exc}")
 
-        for year, frames in yearly_data.items():
-            file_path = os.path.join(code_dir, f"{year}.parquet")
-            df_new = pd.concat(frames, ignore_index=True)
-            if os.path.exists(file_path):
-                df_old = pd.read_parquet(file_path)
-                df_new = pd.concat([df_old, df_new], ignore_index=True)
-            df_new.drop_duplicates(subset=["con_code", "trade_date"], keep="last", inplace=True)
+    def _save_month(self, file_path, df):
+        df = df.copy()
+        for column in self.REQUIRED_COLUMNS:
+            if column not in df.columns:
+                df[column] = np.nan
+        df = df[self.REQUIRED_COLUMNS]
+        df.drop_duplicates(subset=["index_code", "con_code", "trade_date"], keep="last", inplace=True)
 
-            if "trade_date" in df_new.columns:
-                df_new["trade_date"] = df_new["trade_date"].astype(np.int32)
-            if "weight" in df_new.columns:
-                df_new["weight"] = pd.to_numeric(df_new["weight"], errors="coerce").astype(np.float32)
+        df["trade_date"] = df["trade_date"].astype(np.int32)
+        df["weight"] = pd.to_numeric(df["weight"], errors="coerce").astype(np.float32)
 
-            df_new.sort_values(by=["trade_date", "con_code"], inplace=True)
-            df_new.to_parquet(file_path, index=False)
-            self.logger.info(f"-> index_weight {index_code} {year} saved rows={len(df_new)}")
+        df.sort_values(by=["trade_date", "con_code"], inplace=True)
+        df.to_parquet(file_path, index=False)
+        return len(df)
 
 
 class IndexMinuteDownloader(BaseDownloader):

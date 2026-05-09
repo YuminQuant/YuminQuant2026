@@ -74,6 +74,7 @@ Cross-sectional backtest workflows:
 
 ```powershell
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors utd --groups 10 --rebalance 5
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors utd --groups 10 --rebalance 5 --universe 000300.SH --benchmark mkt_mean
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance weekly --factor-batch-size 10
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --factor-batch-size 10 --date-batch-size 120 --threads 8
 ```
@@ -85,6 +86,21 @@ data/backtest/stock/daily/returns/{factor_id}.parquet
 data/backtest/stock/daily/ic/{factor_id}.parquet
 data/backtest/stock/daily/factor_stats/{factor_id}.parquet
 ```
+
+Backtest universe and benchmark defaults are `--universe mkt_all` and
+`--benchmark mkt_mean`. `mkt_mean` uses the full-market mean label return as the
+benchmark. Index universes/benchmarks use index weight files under
+`data/index_data/monthly_weight/{index_code}/{year}/{YYYYMM}.parquet`; stored
+weights keep the Tushare percent unit and are divided by `100` during benchmark
+return calculation. Download them with:
+
+```powershell
+python scripts\update_incremental.py --groups index_weight --ts-code 000300.SH
+python scripts\update_incremental.py --groups index_weight --start-date 20090101 --end-date 20260331
+```
+
+Custom universes live at `data/universe/{universe_id}.parquet` with
+`trade_date`, `ts_code`, and optional `weight`.
 
 Useful flags:
 

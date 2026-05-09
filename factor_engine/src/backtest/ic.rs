@@ -62,7 +62,8 @@ pub fn daily_ic_observation_with_universe(
     universe: Option<&[bool]>,
 ) -> IcObservation {
     let stats = coverage_stats_with_universe(factor, universe);
-    let (ic, rank_ic, pair_count) = compute_ic(factor, label);
+    let (factor, label) = apply_universe(factor, label, universe);
+    let (ic, rank_ic, pair_count) = compute_ic(&factor, &label);
     IcObservation {
         factor_id: factor_id.to_string(),
         factor_date,
@@ -75,6 +76,41 @@ pub fn daily_ic_observation_with_universe(
         coverage: stats.coverage,
         inf_rate: stats.inf_rate,
     }
+}
+
+fn apply_universe(
+    factor: &[Option<f64>],
+    label: &[Option<f64>],
+    universe: Option<&[bool]>,
+) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+    let Some(universe) = universe else {
+        return (factor.to_vec(), label.to_vec());
+    };
+    let factor = factor
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            universe
+                .get(idx)
+                .copied()
+                .unwrap_or(false)
+                .then_some(*value)
+                .flatten()
+        })
+        .collect();
+    let label = label
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            universe
+                .get(idx)
+                .copied()
+                .unwrap_or(false)
+                .then_some(*value)
+                .flatten()
+        })
+        .collect();
+    (factor, label)
 }
 
 fn pearson_corr(x: &[Option<f64>], y: &[Option<f64>]) -> Option<f64> {
@@ -114,7 +150,7 @@ fn pearson_corr(x: &[Option<f64>], y: &[Option<f64>]) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_ic;
+    use super::{compute_ic, daily_ic_observation_with_universe};
 
     #[test]
     fn rank_ic_can_use_infinite_factor_after_ranking() {
@@ -125,5 +161,25 @@ mod tests {
         assert!(ic.unwrap() > 0.99);
         assert!(rank_ic.unwrap() > 0.99);
         assert_eq!(pair_count, 2);
+    }
+
+    #[test]
+    fn daily_ic_applies_universe_to_pairs() {
+        let factor = vec![Some(1.0), Some(2.0), Some(100.0)];
+        let label = vec![Some(1.0), Some(2.0), Some(-100.0)];
+        let universe = vec![true, true, false];
+        let row = daily_ic_observation_with_universe(
+            "x",
+            20240101,
+            20240101,
+            None,
+            None,
+            &factor,
+            &label,
+            Some(&universe),
+        );
+
+        assert_eq!(row.pair_count, 2);
+        assert!(row.ic.unwrap() > 0.99);
     }
 }

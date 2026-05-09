@@ -19,6 +19,8 @@ pub struct BacktestInput {
     pub target_dates: Vec<i32>,
     pub all_dates: Vec<i32>,
     pub panel: BacktestPanel,
+    pub universe: BacktestUniverseBatch,
+    pub benchmark: BenchmarkBatch,
     pub sectors: Option<HashMap<i32, Vec<Option<String>>>>,
 }
 
@@ -33,6 +35,44 @@ pub struct BacktestDataPlan {
     barra_columns: Vec<String>,
     barra_table: Option<Table>,
     sector_map: Option<ClassificationMap>,
+    universe: BacktestUniversePlan,
+    benchmark: BenchmarkPlan,
+}
+
+#[derive(Clone, Debug)]
+pub struct BacktestUniversePlan {
+    pub id: String,
+    masks: HashMap<i32, Vec<bool>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BacktestUniverseBatch {
+    pub id: String,
+    pub masks: HashMap<i32, Vec<bool>>,
+}
+
+impl BacktestUniverseBatch {
+    pub fn mask_for(&self, date: i32) -> Option<&[bool]> {
+        self.masks.get(&date).map(Vec::as_slice)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BenchmarkPlan {
+    pub id: String,
+    kind: BenchmarkKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct BenchmarkBatch {
+    pub id: String,
+    pub kind: BenchmarkKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum BenchmarkKind {
+    MarketMean,
+    Weighted(HashMap<i32, Vec<Option<f64>>>),
 }
 
 #[derive(Clone, Debug)]
@@ -126,7 +166,10 @@ pub fn prepare_backtest_data_plan(
     }
 
     let calendar = TradingCalendar::load(&config.data_root, &config.stock_calendar_exchange)?;
-    let target_dates = calendar.open_dates_between(request.start_date, request.end_date);
+    let effective_start = request
+        .start_date
+        .max(universe_list_date_floor(&request.universe).unwrap_or(request.start_date));
+    let target_dates = calendar.open_dates_between(effective_start, request.end_date);
     if target_dates.is_empty() {
         return Err(err("no trading dates in requested backtest range"));
     }
@@ -139,7 +182,7 @@ pub fn prepare_backtest_data_plan(
         .last()
         .and_then(|date| calendar.open_date_after(*date, label_metadata.lookahead))
         .unwrap_or(*target_dates.last().expect("non-empty target dates"));
-    let all_dates = calendar.open_dates_between(request.start_date, label_end);
+    let all_dates = calendar.open_dates_between(effective_start, label_end);
 
     let label_columns = vec![label_metadata.output_column.clone()];
     let label_table = load_output_table(
@@ -152,6 +195,8 @@ pub fn prepare_backtest_data_plan(
         &label_columns,
     )?;
     let instruments = instruments_from_table(&label_table)?;
+    let universe = load_universe_plan(config, &request.universe, &target_dates, &instruments)?;
+    let benchmark = load_benchmark_plan(config, &request.benchmark, &target_dates, &instruments)?;
 
     let barra_columns = request.neutralize.barra_columns();
     let barra_table = if !barra_columns.is_empty() {
@@ -196,6 +241,8 @@ pub fn prepare_backtest_data_plan(
         barra_columns,
         barra_table,
         sector_map,
+        universe,
+        benchmark,
     })
 }
 
@@ -264,8 +311,40 @@ pub fn load_backtest_input_batch(
         target_dates: target_dates.to_vec(),
         all_dates,
         panel,
+        universe: plan.universe.slice(target_dates),
+        benchmark: plan.benchmark.slice(target_dates),
         sectors,
     })
+}
+
+impl BacktestUniversePlan {
+    fn slice(&self, dates: &[i32]) -> BacktestUniverseBatch {
+        BacktestUniverseBatch {
+            id: self.id.clone(),
+            masks: dates
+                .iter()
+                .filter_map(|date| self.masks.get(date).map(|mask| (*date, mask.clone())))
+                .collect(),
+        }
+    }
+}
+
+impl BenchmarkPlan {
+    fn slice(&self, dates: &[i32]) -> BenchmarkBatch {
+        let kind = match &self.kind {
+            BenchmarkKind::MarketMean => BenchmarkKind::MarketMean,
+            BenchmarkKind::Weighted(weights) => BenchmarkKind::Weighted(
+                dates
+                    .iter()
+                    .filter_map(|date| weights.get(date).map(|values| (*date, values.clone())))
+                    .collect(),
+            ),
+        };
+        BenchmarkBatch {
+            id: self.id.clone(),
+            kind,
+        }
+    }
 }
 
 impl BacktestPanel {
@@ -354,6 +433,299 @@ fn instruments_from_table(table: &Table) -> Result<Vec<String>> {
         instrument_set.insert(ts_code.clone());
     }
     Ok(instrument_set.into_iter().collect())
+}
+
+#[derive(Clone, Debug)]
+struct WeightRecord {
+    trade_date: i32,
+    ts_code: String,
+    weight: Option<f64>,
+}
+
+fn load_universe_plan(
+    config: &EngineConfig,
+    universe_id: &str,
+    target_dates: &[i32],
+    instruments: &[String],
+) -> Result<BacktestUniversePlan> {
+    if is_market_all_universe(universe_id) || universe_id.eq_ignore_ascii_case("000985.CSI") {
+        return Ok(BacktestUniversePlan {
+            id: universe_id.to_string(),
+            masks: target_dates
+                .iter()
+                .map(|date| (*date, vec![true; instruments.len()]))
+                .collect(),
+        });
+    }
+    let records = if is_builtin_index(universe_id) {
+        load_index_weight_records(config, universe_id, target_dates)?
+    } else {
+        load_custom_universe_records(config, universe_id, false)?
+    };
+    let weights = effective_weights_by_date(&records, target_dates, instruments);
+    let masks = weights
+        .into_iter()
+        .map(|(date, values)| {
+            (
+                date,
+                values
+                    .into_iter()
+                    .map(|weight| weight.is_some_and(|value| value.is_finite() && value > 0.0))
+                    .collect(),
+            )
+        })
+        .collect();
+    Ok(BacktestUniversePlan {
+        id: universe_id.to_string(),
+        masks,
+    })
+}
+
+fn load_benchmark_plan(
+    config: &EngineConfig,
+    benchmark_id: &str,
+    target_dates: &[i32],
+    instruments: &[String],
+) -> Result<BenchmarkPlan> {
+    if benchmark_id.eq_ignore_ascii_case("mkt_mean") {
+        return Ok(BenchmarkPlan {
+            id: benchmark_id.to_string(),
+            kind: BenchmarkKind::MarketMean,
+        });
+    }
+    let records = if is_builtin_index(benchmark_id) {
+        load_index_weight_records(config, benchmark_id, target_dates)?
+    } else {
+        load_custom_universe_records(config, benchmark_id, true)?
+    };
+    Ok(BenchmarkPlan {
+        id: benchmark_id.to_string(),
+        kind: BenchmarkKind::Weighted(effective_weights_by_date(
+            &records,
+            target_dates,
+            instruments,
+        )),
+    })
+}
+
+fn is_market_all_universe(value: &str) -> bool {
+    value.eq_ignore_ascii_case("mkt_all") || value.eq_ignore_ascii_case("all")
+}
+
+fn is_builtin_index(value: &str) -> bool {
+    matches!(
+        value.to_ascii_uppercase().as_str(),
+        "000300.SH" | "000905.SH" | "000852.SH" | "000985.CSI"
+    )
+}
+
+fn universe_list_date_floor(value: &str) -> Option<i32> {
+    match value.to_ascii_uppercase().as_str() {
+        "000300.SH" => Some(20050408),
+        "000905.SH" => Some(20070115),
+        "000985.CSI" => Some(20110802),
+        "000852.SH" => Some(20141017),
+        _ => None,
+    }
+}
+
+fn load_index_weight_records(
+    config: &EngineConfig,
+    index_code: &str,
+    target_dates: &[i32],
+) -> Result<Vec<WeightRecord>> {
+    let first = target_dates
+        .first()
+        .copied()
+        .ok_or_else(|| err("cannot load index weights for empty date range"))?;
+    let last = target_dates
+        .last()
+        .copied()
+        .ok_or_else(|| err("cannot load index weights for empty date range"))?;
+    let code_dir = config
+        .data_root
+        .join("index_data")
+        .join("monthly_weight")
+        .join(index_code.replace('.', "_"));
+    if !code_dir.exists() {
+        return Err(err(format!(
+            "missing index weight data for {index_code}: expected {}. Run: python scripts\\update_incremental.py --groups index_weight --ts-code {index_code}",
+            code_dir.display()
+        )));
+    }
+    let mut records = Vec::new();
+    for path in collect_parquet_files_recursive(&code_dir)? {
+        if !index_weight_path_may_overlap(&path, first, last) {
+            continue;
+        };
+        let table = read_parquet(
+            &path,
+            Some(&[
+                "trade_date".to_string(),
+                "con_code".to_string(),
+                "weight".to_string(),
+            ]),
+        )?;
+        let dates = table.required_i32_date_cast("trade_date")?;
+        let codes = table.required_utf8("con_code")?;
+        let weights = table.required_f64_cast("weight")?;
+        for row_idx in 0..table.len {
+            let (Some(trade_date), Some(ts_code)) = (dates[row_idx], codes[row_idx].clone()) else {
+                continue;
+            };
+            records.push(WeightRecord {
+                trade_date,
+                ts_code,
+                weight: weights[row_idx].map(index_weight_to_decimal),
+            });
+        }
+    }
+    if records.is_empty() {
+        return Err(err(format!(
+            "index weight directory for {index_code} contains no usable rows: {}",
+            code_dir.display()
+        )));
+    }
+    Ok(records)
+}
+
+fn index_weight_to_decimal(weight_percent: f64) -> f64 {
+    weight_percent / 100.0
+}
+
+fn collect_parquet_files_recursive(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_parquet_files_recursive_into(root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_parquet_files_recursive_into(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_parquet_files_recursive_into(&path, files)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn index_weight_path_may_overlap(path: &Path, first: i32, last: i32) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return true;
+    };
+    if stem.len() == 4 {
+        if let Ok(year) = stem.parse::<i32>() {
+            return year >= first / 10_000 - 1 && year <= last / 10_000;
+        }
+    }
+    if stem.len() == 6 {
+        if let Ok(year_month) = stem.parse::<i32>() {
+            let first_month = first / 100;
+            let last_month = last / 100;
+            return year_month >= first_month - 1 && year_month <= last_month;
+        }
+    }
+    true
+}
+
+fn load_custom_universe_records(
+    config: &EngineConfig,
+    universe_id: &str,
+    require_weight: bool,
+) -> Result<Vec<WeightRecord>> {
+    let path = config
+        .data_root
+        .join("universe")
+        .join(format!("{universe_id}.parquet"));
+    if !path.exists() {
+        return Err(err(format!(
+            "missing custom universe {universe_id}: expected {}",
+            path.display()
+        )));
+    }
+    let table = read_parquet(&path, None)?;
+    let dates = table.required_i32_date_cast("trade_date")?;
+    let codes = table.required_utf8("ts_code")?;
+    let weights = if table.columns.contains_key("weight") {
+        Some(table.required_f64_cast("weight")?)
+    } else if require_weight {
+        return Err(err(format!(
+            "custom benchmark {universe_id} must include a numeric weight column: {}",
+            path.display()
+        )));
+    } else {
+        None
+    };
+    let mut records = Vec::new();
+    for row_idx in 0..table.len {
+        let (Some(trade_date), Some(ts_code)) = (dates[row_idx], codes[row_idx].clone()) else {
+            continue;
+        };
+        records.push(WeightRecord {
+            trade_date,
+            ts_code,
+            weight: weights
+                .as_ref()
+                .map(|values| values[row_idx])
+                .unwrap_or(Some(1.0)),
+        });
+    }
+    if records.is_empty() {
+        return Err(err(format!(
+            "custom universe {universe_id} contains no usable rows: {}",
+            path.display()
+        )));
+    }
+    Ok(records)
+}
+
+fn effective_weights_by_date(
+    records: &[WeightRecord],
+    target_dates: &[i32],
+    instruments: &[String],
+) -> HashMap<i32, Vec<Option<f64>>> {
+    let instrument_lookup = instruments
+        .iter()
+        .enumerate()
+        .map(|(idx, code)| (code.as_str(), idx))
+        .collect::<BTreeMap<_, _>>();
+    let mut records_by_date = BTreeMap::<i32, BTreeMap<String, f64>>::new();
+    for record in records {
+        let Some(weight) = record
+            .weight
+            .filter(|value| value.is_finite() && *value > 0.0)
+        else {
+            continue;
+        };
+        records_by_date
+            .entry(record.trade_date)
+            .or_default()
+            .insert(record.ts_code.clone(), weight);
+    }
+
+    let mut output = HashMap::new();
+    let mut current = BTreeMap::<String, f64>::new();
+    let mut iter = records_by_date.into_iter().peekable();
+    for date in target_dates {
+        while iter
+            .peek()
+            .is_some_and(|(effective_date, _)| effective_date <= date)
+        {
+            let (_, weights) = iter.next().expect("peeked record");
+            current = weights;
+        }
+        let mut values = vec![None; instruments.len()];
+        for (code, weight) in &current {
+            if let Some(idx) = instrument_lookup.get(code.as_str()) {
+                values[*idx] = Some(*weight);
+            }
+        }
+        output.insert(*date, values);
+    }
+    output
 }
 
 fn all_dates_for_batch(plan: &BacktestDataPlan, target_dates: &[i32]) -> Result<Vec<i32>> {
@@ -545,7 +917,11 @@ fn empty_output_table(columns: &[String]) -> Result<Table> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_lookahead;
+    use super::{
+        effective_weights_by_date, index_weight_path_may_overlap, index_weight_to_decimal,
+        parse_lookahead, universe_list_date_floor, WeightRecord,
+    };
+    use std::path::Path;
 
     #[test]
     fn parses_label_lookahead_from_metadata_json() {
@@ -553,5 +929,63 @@ mod tests {
             parse_lookahead(r#"[{"dataset":"x"},{"lookahead_trading_days":2}]"#),
             Some(2)
         );
+    }
+
+    #[test]
+    fn builtin_universe_list_dates_are_known() {
+        assert_eq!(universe_list_date_floor("000300.SH"), Some(20050408));
+        assert_eq!(universe_list_date_floor("000985.CSI"), Some(20110802));
+        assert_eq!(universe_list_date_floor("mkt_all"), None);
+    }
+
+    #[test]
+    fn effective_weights_forward_fill_latest_membership() {
+        let records = vec![
+            WeightRecord {
+                trade_date: 20240101,
+                ts_code: "000001.SZ".to_string(),
+                weight: Some(60.0),
+            },
+            WeightRecord {
+                trade_date: 20240101,
+                ts_code: "000002.SZ".to_string(),
+                weight: Some(40.0),
+            },
+            WeightRecord {
+                trade_date: 20240201,
+                ts_code: "000002.SZ".to_string(),
+                weight: Some(100.0),
+            },
+        ];
+        let instruments = vec!["000001.SZ".to_string(), "000002.SZ".to_string()];
+        let weights = effective_weights_by_date(&records, &[20240115, 20240215], &instruments);
+
+        assert_eq!(weights[&20240115], vec![Some(60.0), Some(40.0)]);
+        assert_eq!(weights[&20240215], vec![None, Some(100.0)]);
+    }
+
+    #[test]
+    fn index_weight_percent_is_converted_to_decimal() {
+        assert_eq!(index_weight_to_decimal(60.0), 0.6);
+        assert_eq!(index_weight_to_decimal(2.5), 0.025);
+    }
+
+    #[test]
+    fn index_weight_path_filter_supports_monthly_and_legacy_year_files() {
+        assert!(index_weight_path_may_overlap(
+            Path::new("000300_SH/2026/202603.parquet"),
+            20260101,
+            20260331,
+        ));
+        assert!(index_weight_path_may_overlap(
+            Path::new("000300_SH/2026.parquet"),
+            20260101,
+            20260331,
+        ));
+        assert!(!index_weight_path_may_overlap(
+            Path::new("000300_SH/2024/202401.parquet"),
+            20260101,
+            20260331,
+        ));
     }
 }

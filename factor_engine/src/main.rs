@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use yq_factor_engine::backtest::request::{
-    BacktestRunRequest, NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL,
+    BacktestRunRequest, NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL, DEFAULT_BENCHMARK,
     DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE,
     DEFAULT_FACTOR_BATCH_SIZE as DEFAULT_BACKTEST_FACTOR_BATCH_SIZE, DEFAULT_GROUPS,
+    DEFAULT_UNIVERSE,
 };
 use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
@@ -439,6 +440,14 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         groups,
         rebalance,
         neutralize,
+        universe: flags
+            .get("universe")
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_UNIVERSE.to_string()),
+        benchmark: flags
+            .get("benchmark")
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_BENCHMARK.to_string()),
         write_detail: flag_enabled(&flags, "write-detail"),
         factor_batch_size,
         date_batch_size,
@@ -977,6 +986,8 @@ fn print_help() {
     println!("  --groups N (backtest default 10)");
     println!("  --rebalance daily|N|weekly|biweekly|monthly|quarterly");
     println!("  --neutralize none|industry|barra:SIZE|barra:SIZE+industry");
+    println!("  --universe mkt_all|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id");
+    println!("  --benchmark mkt_mean|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id");
     println!("  --write-detail true");
     println!("  --output-dir D:/path/to/output");
     println!(
@@ -1003,9 +1014,9 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        flag_enabled, matches_tag_filter, parse_barra_run_request, parse_csv_values, parse_flags,
-        parse_label_run_request, parse_run_request, parse_yyyymmdd, DEFAULT_DATE_BATCH_SIZE,
-        DEFAULT_LABEL_BATCH_SIZE,
+        flag_enabled, matches_tag_filter, parse_backtest_run_request, parse_barra_run_request,
+        parse_csv_values, parse_flags, parse_label_run_request, parse_run_request, parse_yyyymmdd,
+        DEFAULT_DATE_BATCH_SIZE, DEFAULT_LABEL_BATCH_SIZE,
     };
 
     #[test]
@@ -1202,6 +1213,51 @@ mod tests {
         .collect::<Vec<_>>();
         let request = parse_barra_run_request(&args, false).expect("request");
         assert_eq!(request.date_batch_size, 20);
+    }
+
+    #[test]
+    fn backtest_universe_and_benchmark_have_defaults_and_accept_flags() {
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--factors",
+            "utd",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_backtest_run_request(&args).expect("request");
+        assert_eq!(request.universe, "mkt_all");
+        assert_eq!(request.benchmark, "mkt_mean");
+
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--factors",
+            "utd",
+            "--universe",
+            "000300.SH",
+            "--benchmark",
+            "000905.SH",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_backtest_run_request(&args).expect("request");
+        assert_eq!(request.universe, "000300.SH");
+        assert_eq!(request.benchmark, "000905.SH");
     }
 
     #[test]

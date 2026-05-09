@@ -94,6 +94,7 @@ impl BacktestEngine {
                 factor_batches.len(),
                 plan.target_dates.len(),
                 rebalance_dates.len(),
+                request.groups,
             )?;
             output_files.extend(write_backtest_outputs(
                 &output_dir,

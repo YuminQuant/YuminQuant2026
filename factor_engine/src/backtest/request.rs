@@ -4,6 +4,8 @@ use crate::core::{AssetClass, Frequency};
 use crate::error::{err, Result};
 
 pub const DEFAULT_BACKTEST_LABEL: &str = "future_vwap_return_1d";
+pub const DEFAULT_UNIVERSE: &str = "mkt_all";
+pub const DEFAULT_BENCHMARK: &str = "mkt_mean";
 pub const DEFAULT_GROUPS: usize = 10;
 pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 10;
 pub const DEFAULT_DATE_BATCH_SIZE: usize = 120;
@@ -21,6 +23,8 @@ pub struct BacktestRunRequest {
     pub groups: usize,
     pub rebalance: RebalanceRule,
     pub neutralize: NeutralizeSpec,
+    pub universe: String,
+    pub benchmark: String,
     pub write_detail: bool,
     pub factor_batch_size: usize,
     pub date_batch_size: usize,

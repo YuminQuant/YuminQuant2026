@@ -8,7 +8,8 @@ pub struct PerformancePoint {
     pub settle_date: Option<i32>,
     pub portfolio: String,
     pub return_value: Option<f64>,
-    pub nav: Option<f64>,
+    pub benchmark_return: Option<f64>,
+    pub excess_return: Option<f64>,
     pub turnover: Option<f64>,
 }
 

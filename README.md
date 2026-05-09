@@ -148,12 +148,32 @@ Optional controls:
 
 ```text
 --label future_vwap_return_1d
+--universe mkt_all
+--universe 000300.SH
+--benchmark mkt_mean
+--benchmark 000905.SH
 --neutralize none
 --neutralize industry
 --neutralize barra:SIZE
 --neutralize barra:SIZE+industry
 --output-dir data\backtest\stock\daily
 ```
+
+`mkt_all` means the full stock cross-section. `000985.CSI` is treated as
+`mkt_all` when used as a universe; `000300.SH`, `000905.SH`, and `000852.SH`
+use local index weight files under
+`data\index_data\monthly_weight\{index_code_with_underscore}\{year}\{YYYYMM}.parquet`.
+The stored `weight` column keeps the Tushare percent unit and is converted to a
+decimal weight inside backtest benchmark calculations. To download those files:
+
+```powershell
+python scripts\update_incremental.py --groups index_weight --ts-code 000300.SH
+python scripts\update_incremental.py --groups index_weight --start-date 20090101 --end-date 20260331
+```
+
+Custom universes should be stored as `data\universe\{universe_id}.parquet` with
+`trade_date` and `ts_code`; add `weight` if the same id will be used as a
+benchmark. Effective membership uses the latest `trade_date <= factor_date`.
 
 Backtest output is written as one parquet per factor:
 
@@ -163,9 +183,10 @@ data/backtest/stock/daily/ic/{factor_id}.parquet
 data/backtest/stock/daily/factor_stats/{factor_id}.parquet
 ```
 
-The `returns` file contains group portfolios and the `long_short` portfolio.
-The `long_short` return is adjusted by `sign(mean(IC))` from that factor's IC
-series, so the reported long-short direction follows the empirical IC sign.
+The `returns` file contains group portfolios and the `long_short` portfolio,
+plus `benchmark_return` and `excess_return`. `long_short` is adjusted by
+`sign(mean(IC))`; `excess_return` is filled only for `group_N` when IC is
+positive and `group_1` when IC is negative.
 
 ## Git And Data Safety
 

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::backtest::data::{BacktestInput, BacktestPanel};
+use crate::backtest::data::{BacktestInput, BacktestPanel, BenchmarkKind};
 use crate::backtest::ic::{daily_ic_observation_with_universe, IcObservation};
 use crate::backtest::metrics::{daily_factor_stats, FactorStatsDaily, PerformancePoint};
 use crate::backtest::preprocess::{
@@ -105,6 +105,7 @@ pub fn run_cross_section_backtest(
         batch_count,
         input.target_dates.len(),
         rebalance_dates.len(),
+        request.groups,
     )
 }
 
@@ -156,10 +157,11 @@ pub fn finalize_cross_section_backtest(
     batch_count: usize,
     target_date_count: usize,
     rebalance_count: usize,
+    group_count: usize,
 ) -> Result<CrossSectionBacktestOutput> {
     let mut output = CrossSectionBacktestOutput::default();
     for (mut state, factor) in states.into_iter().zip(factors) {
-        finalize_factor_returns(&mut state);
+        finalize_factor_returns(&mut state, group_count);
         output.returns.extend(state.returns);
         output.daily_ic.extend(state.daily_ic);
         output.factor_stats.extend(state.factor_stats);
@@ -183,14 +185,13 @@ fn update_factor_cross_section_state(
             continue;
         };
         let raw = input.panel.cross_section(&factor.output_column, date_idx)?;
-        let factor_universe = input
-            .panel
-            .cross_section_presence(&factor.output_column, date_idx)?;
-        let stats = coverage_stats_with_universe(&raw, Some(&factor_universe));
+        let universe_mask = input.universe.mask_for(*date);
+        let masked_raw = apply_universe_mask(&raw, universe_mask);
+        let stats = coverage_stats_with_universe(&raw, universe_mask);
         state.factor_stats.push(daily_factor_stats(
             factor.factor_id.clone(),
             *date,
-            &raw,
+            &masked_raw,
             stats.coverage,
             stats.inf_rate,
         ));
@@ -200,11 +201,12 @@ fn update_factor_cross_section_state(
             .as_ref()
             .and_then(|by_date| by_date.get(date))
             .map(Vec::as_slice);
-        let processed = maybe_neutralize(&raw, &request.neutralize, &barra, groups);
+        let processed = maybe_neutralize(&masked_raw, &request.neutralize, &barra, groups);
 
         let label = input
             .panel
             .cross_section(&input.label_metadata.output_column, date_idx)?;
+        let benchmark_return = benchmark_return(&input.benchmark.kind, *date, &label);
         let settle_date = date_after(input.panel.dates(), *date, input.label_metadata.lookahead);
         state.daily_ic.push(daily_ic_observation_with_universe(
             &factor.factor_id,
@@ -214,7 +216,7 @@ fn update_factor_cross_section_state(
             None,
             &processed,
             &label,
-            Some(&factor_universe),
+            universe_mask,
         ));
 
         if rebalance_lookup.contains_key(date) {
@@ -236,7 +238,8 @@ fn update_factor_cross_section_state(
                 settle_date,
                 portfolio: portfolio.clone(),
                 return_value,
-                nav: None,
+                benchmark_return,
+                excess_return: None,
                 turnover,
             });
         }
@@ -244,18 +247,79 @@ fn update_factor_cross_section_state(
     Ok(())
 }
 
-fn finalize_factor_returns(state: &mut CrossSectionBacktestState) {
+fn finalize_factor_returns(state: &mut CrossSectionBacktestState, group_count: usize) {
     let long_short_sign = ic_mean_sign(&state.daily_ic);
-    let mut nav = BTreeMap::<String, f64>::new();
+    let selected_long_group = if long_short_sign < 0.0 {
+        group_name(0)
+    } else {
+        group_name(group_count.saturating_sub(1))
+    };
     for row in &mut state.returns {
         if row.portfolio == "long_short" {
             row.return_value = row.return_value.map(|value| value * long_short_sign);
         }
-        let portfolio_nav = nav.entry(row.portfolio.clone()).or_insert(1.0);
-        if let Some(value) = row.return_value {
-            *portfolio_nav *= 1.0 + value;
+        if row.portfolio == selected_long_group {
+            row.excess_return = match (row.return_value, row.benchmark_return) {
+                (Some(value), Some(benchmark)) if value.is_finite() && benchmark.is_finite() => {
+                    Some(value - benchmark)
+                }
+                _ => None,
+            };
         }
-        row.nav = Some(*portfolio_nav);
+    }
+}
+
+fn apply_universe_mask(values: &[Option<f64>], universe: Option<&[bool]>) -> Vec<Option<f64>> {
+    let Some(universe) = universe else {
+        return values.to_vec();
+    };
+    values
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            universe
+                .get(idx)
+                .copied()
+                .unwrap_or(false)
+                .then_some(*value)
+                .flatten()
+        })
+        .collect()
+}
+
+fn benchmark_return(kind: &BenchmarkKind, date: i32, label: &[Option<f64>]) -> Option<f64> {
+    match kind {
+        BenchmarkKind::MarketMean => {
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for value in label
+                .iter()
+                .filter_map(|value| value.filter(|value| value.is_finite()))
+            {
+                sum += value;
+                count += 1;
+            }
+            (count > 0).then_some(sum / count as f64)
+        }
+        BenchmarkKind::Weighted(weights_by_date) => {
+            let weights = weights_by_date.get(&date)?;
+            if weights.len() != label.len() {
+                return None;
+            }
+            let mut numerator = 0.0;
+            let mut denominator = 0.0;
+            for (weight, value) in weights.iter().zip(label) {
+                let (Some(weight), Some(value)) = (
+                    weight.filter(|value| value.is_finite() && *value > 0.0),
+                    value.filter(|value| value.is_finite()),
+                ) else {
+                    continue;
+                };
+                numerator += weight * value;
+                denominator += weight;
+            }
+            (denominator > f64::EPSILON).then_some(numerator / denominator)
+        }
     }
 }
 
@@ -324,6 +388,12 @@ pub fn ensure_backtest_inputs(request: &BacktestRunRequest) -> Result<()> {
     }
     if matches!(request.threads, Some(0)) {
         return Err(err("--threads must be greater than 0"));
+    }
+    if request.universe.trim().is_empty() {
+        return Err(err("--universe cannot be empty"));
+    }
+    if request.benchmark.trim().is_empty() {
+        return Err(err("--benchmark cannot be empty"));
     }
     Ok(())
 }

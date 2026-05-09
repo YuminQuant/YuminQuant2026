@@ -333,6 +333,11 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
 
 fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
     let flags = parse_flags(args)?;
+    if flags.contains_key("write-detail") {
+        return Err(yq_factor_engine::error::err(
+            "--write-detail has been removed; backtest now always writes returns, ic and factor_stats files",
+        ));
+    }
     let asset_class = flags
         .get("asset")
         .and_then(|value| AssetClass::parse(value))
@@ -463,7 +468,6 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
             .map(|value| LimitSide::parse(value))
             .transpose()?
             .unwrap_or(LimitSide::Both),
-        write_detail: flag_enabled(&flags, "write-detail"),
         factor_batch_size,
         date_batch_size,
         threads,
@@ -1018,7 +1022,6 @@ fn print_help() {
     println!("  --exclude-limit true|false (backtest default true)");
     println!("  --exclude-st true|false (backtest default true)");
     println!("  --limit-side both|up|down (backtest default both)");
-    println!("  --write-detail true");
     println!("  --output-dir D:/path/to/output");
     println!(
         "  --factor-batch-size N (run default {}, backtest default {})",
@@ -1339,6 +1342,28 @@ mod tests {
             "--all-factors",
             "--factor-root",
             "data/ml_alpha",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        assert!(parse_backtest_run_request(&args).is_err());
+    }
+
+    #[test]
+    fn backtest_rejects_removed_write_detail_flag() {
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--factors",
+            "utd",
+            "--write-detail",
+            "true",
         ]
         .iter()
         .map(|value| value.to_string())

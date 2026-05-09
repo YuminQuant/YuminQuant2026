@@ -251,18 +251,13 @@ fn update_factor_cross_section_state(
     Ok(())
 }
 
-fn finalize_factor_returns(state: &mut CrossSectionBacktestState, group_count: usize) {
+fn finalize_factor_returns(state: &mut CrossSectionBacktestState, _group_count: usize) {
     let long_short_sign = ic_mean_sign(&state.daily_ic);
-    let selected_long_group = if long_short_sign < 0.0 {
-        group_name(0)
-    } else {
-        group_name(group_count.saturating_sub(1))
-    };
     for row in &mut state.returns {
         if row.portfolio == "long_short" {
             row.return_value = row.return_value.map(|value| value * long_short_sign);
         }
-        if row.portfolio == selected_long_group {
+        if row.portfolio.starts_with("group_") {
             row.excess_return = match (row.return_value, row.benchmark_return) {
                 (Some(value), Some(benchmark)) if value.is_finite() && benchmark.is_finite() => {
                     Some(value - benchmark)
@@ -421,4 +416,54 @@ pub fn ensure_backtest_inputs(request: &BacktestRunRequest) -> Result<()> {
         return Err(err("--benchmark cannot be empty"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{finalize_factor_returns, CrossSectionBacktestState};
+    use crate::backtest::ic::IcObservation;
+    use crate::backtest::metrics::PerformancePoint;
+
+    fn point(portfolio: &str, return_value: f64, benchmark_return: f64) -> PerformancePoint {
+        PerformancePoint {
+            factor_id: "factor_a".to_string(),
+            factor_date: 20260424,
+            trade_date: Some(20260427),
+            settle_date: Some(20260428),
+            portfolio: portfolio.to_string(),
+            return_value: Some(return_value),
+            benchmark_return: Some(benchmark_return),
+            excess_return: None,
+            turnover: None,
+        }
+    }
+
+    #[test]
+    fn finalize_writes_excess_return_for_every_group() {
+        let mut state = CrossSectionBacktestState::new();
+        state.daily_ic.push(IcObservation {
+            factor_id: "factor_a".to_string(),
+            factor_date: 20260424,
+            label_date: 20260424,
+            settle_date: Some(20260428),
+            horizon: None,
+            ic: Some(-0.1),
+            rank_ic: None,
+            pair_count: 10,
+            coverage: 1.0,
+            inf_rate: 0.0,
+        });
+        state.returns = vec![
+            point("group_1", 0.01, 0.005),
+            point("group_2", -0.02, 0.005),
+            point("long_short", 0.03, 0.005),
+        ];
+
+        finalize_factor_returns(&mut state, 2);
+
+        assert_eq!(state.returns[0].excess_return, Some(0.005));
+        assert_eq!(state.returns[1].excess_return, Some(-0.025));
+        assert_eq!(state.returns[2].excess_return, None);
+        assert_eq!(state.returns[2].return_value, Some(-0.03));
+    }
 }

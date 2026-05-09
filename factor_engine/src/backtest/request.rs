@@ -31,7 +31,6 @@ pub struct BacktestRunRequest {
     pub exclude_limit: bool,
     pub exclude_st: bool,
     pub limit_side: LimitSide,
-    pub write_detail: bool,
     pub factor_batch_size: usize,
     pub date_batch_size: usize,
     pub threads: Option<usize>,

@@ -879,12 +879,8 @@ fn print_backtest_report(report: &BacktestRunReport) {
     println!("factors: {}", report.factor_count);
     println!("rebalance dates: {}", report.rebalance_count);
     println!("output_dir: {}", report.output_dir.display());
-    println!("summary files: {}", report.summary_files.len());
-    for path in &report.summary_files {
-        println!("  {}", path.display());
-    }
-    println!("detail files: {}", report.detail_files.len());
-    for path in &report.detail_files {
+    println!("output files: {}", report.output_files.len());
+    for path in &report.output_files {
         println!("  {}", path.display());
     }
     println!("selected factors:");

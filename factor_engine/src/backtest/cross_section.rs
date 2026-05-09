@@ -7,7 +7,7 @@ use crate::backtest::preprocess::{
     coverage_stats_with_universe, equal_group_weights, group_assignments, keyed_values,
     long_short_weights, maybe_neutralize, portfolio_return, portfolio_scores, turnover,
 };
-use crate::backtest::request::{BacktestRunRequest, DEFAULT_DECAY_HORIZON};
+use crate::backtest::request::BacktestRunRequest;
 use crate::backtest::schedule::date_after;
 use crate::error::{err, Result};
 use crate::progress::ProgressBar;
@@ -16,7 +16,6 @@ use crate::progress::ProgressBar;
 pub struct CrossSectionBacktestOutput {
     pub returns: Vec<PerformancePoint>,
     pub daily_ic: Vec<IcObservation>,
-    pub ic_decay: Vec<IcObservation>,
     pub factor_stats: Vec<FactorStatsDaily>,
 }
 
@@ -65,11 +64,6 @@ pub fn run_cross_section_backtest(
     progress: &ProgressBar,
 ) -> Result<CrossSectionBacktestOutput> {
     let mut output = CrossSectionBacktestOutput::default();
-    let target_date_set = input
-        .target_dates
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
     let rebalance_lookup = rebalance_dates
         .iter()
         .enumerate()
@@ -78,7 +72,7 @@ pub fn run_cross_section_backtest(
 
     for factor in &input.factor_metadata {
         let mut processed_by_date = BTreeMap::<i32, Vec<Option<f64>>>::new();
-        let mut factor_universe_by_date = BTreeMap::<i32, Vec<bool>>::new();
+        let daily_ic_start = output.daily_ic.len();
         for date in &input.target_dates {
             let Some(date_idx) = input.panel.date_index(*date) else {
                 continue;
@@ -119,43 +113,8 @@ pub fn run_cross_section_backtest(
                 &label,
                 Some(&factor_universe),
             ));
-            factor_universe_by_date.insert(*date, factor_universe);
         }
-
-        for date in rebalance_dates {
-            let Some(factor_values) = processed_by_date.get(date) else {
-                continue;
-            };
-            for horizon in 1..=DEFAULT_DECAY_HORIZON {
-                let Some(label_date) = date_after(input.panel.dates(), *date, horizon - 1) else {
-                    continue;
-                };
-                if !target_date_set.contains(date) {
-                    continue;
-                }
-                let Some(label_date_idx) = input.panel.date_index(label_date) else {
-                    continue;
-                };
-                let label = input
-                    .panel
-                    .cross_section(&input.label_metadata.output_column, label_date_idx)?;
-                let settle_date = date_after(
-                    input.panel.dates(),
-                    label_date,
-                    input.label_metadata.lookahead,
-                );
-                output.ic_decay.push(daily_ic_observation_with_universe(
-                    &factor.factor_id,
-                    *date,
-                    label_date,
-                    settle_date,
-                    Some(horizon),
-                    factor_values,
-                    &label,
-                    factor_universe_by_date.get(date).map(Vec::as_slice),
-                ));
-            }
-        }
+        let long_short_sign = ic_mean_sign(&output.daily_ic[daily_ic_start..]);
 
         let mut state = PortfolioState::new(request.groups);
         let mut latest_turnovers = BTreeMap::<String, Option<f64>>::new();
@@ -179,7 +138,10 @@ pub fn run_cross_section_backtest(
             let settle_date =
                 date_after(input.panel.dates(), *date, input.label_metadata.lookahead);
             for (portfolio, weights) in &state.weights {
-                let return_value = portfolio_return(weights, &label);
+                let mut return_value = portfolio_return(weights, &label);
+                if portfolio == "long_short" {
+                    return_value = return_value.map(|value| value * long_short_sign);
+                }
                 let nav = state.nav.entry(portfolio.clone()).or_insert(1.0);
                 if let Some(value) = return_value {
                     *nav *= 1.0 + value;
@@ -221,6 +183,22 @@ fn build_portfolio_weights(
     let scores = portfolio_scores(values);
     output.insert("long_short".to_string(), long_short_weights(&scores));
     output
+}
+
+fn ic_mean_sign(rows: &[IcObservation]) -> f64 {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for row in rows {
+        if let Some(value) = row.ic.filter(|value| value.is_finite()) {
+            sum += value;
+            count += 1;
+        }
+    }
+    if count > 0 && sum / (count as f64) < 0.0 {
+        -1.0
+    } else {
+        1.0
+    }
 }
 
 fn group_name(group_idx: usize) -> String {

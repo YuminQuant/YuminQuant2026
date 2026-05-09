@@ -5,7 +5,6 @@ use crate::error::{err, Result};
 
 pub const DEFAULT_BACKTEST_LABEL: &str = "future_vwap_return_1d";
 pub const DEFAULT_GROUPS: usize = 10;
-pub const DEFAULT_DECAY_HORIZON: usize = 20;
 
 #[derive(Clone, Debug)]
 pub struct BacktestRunRequest {

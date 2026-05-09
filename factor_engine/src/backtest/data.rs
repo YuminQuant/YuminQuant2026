@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use crate::backtest::request::{BacktestRunRequest, DEFAULT_DECAY_HORIZON};
+use crate::backtest::request::BacktestRunRequest;
 use crate::barra::engine::DEFAULT_BARRA_MODEL;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
@@ -103,17 +103,16 @@ pub fn load_backtest_input(
     if target_dates.is_empty() {
         return Err(err("no trading dates in requested backtest range"));
     }
-    let label_end = target_dates
-        .last()
-        .and_then(|date| calendar.open_date_after(*date, DEFAULT_DECAY_HORIZON))
-        .unwrap_or(*target_dates.last().expect("non-empty target dates"));
-    let all_dates = calendar.open_dates_between(request.start_date, label_end);
-
     let factor_metadata = select_factors(config, request)?;
     if factor_metadata.is_empty() {
         return Err(err("no factors selected for backtest"));
     }
     let label_metadata = select_label(config, &request.label_id)?;
+    let label_end = target_dates
+        .last()
+        .and_then(|date| calendar.open_date_after(*date, label_metadata.lookahead))
+        .unwrap_or(*target_dates.last().expect("non-empty target dates"));
+    let all_dates = calendar.open_dates_between(request.start_date, label_end);
 
     let factor_columns = factor_metadata
         .iter()

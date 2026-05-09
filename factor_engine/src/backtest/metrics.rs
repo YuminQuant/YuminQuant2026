@@ -38,29 +38,6 @@ pub struct FactorStatsSummary {
     pub inf_rate_mean: Option<f64>,
 }
 
-#[derive(Clone, Debug)]
-pub struct IcSummary {
-    pub factor_id: String,
-    pub scope: String,
-    pub year: Option<i32>,
-    pub horizon: Option<usize>,
-    pub observations: i64,
-    pub ic_mean: Option<f64>,
-    pub ic_std: Option<f64>,
-    pub icir: Option<f64>,
-    pub ic_abs_mean: Option<f64>,
-    pub ic_abs_std: Option<f64>,
-    pub icir_abs: Option<f64>,
-    pub rank_ic_mean: Option<f64>,
-    pub rank_ic_std: Option<f64>,
-    pub rank_icir: Option<f64>,
-    pub rank_ic_abs_mean: Option<f64>,
-    pub rank_ic_abs_std: Option<f64>,
-    pub rank_icir_abs: Option<f64>,
-    pub coverage_mean: Option<f64>,
-    pub inf_rate_mean: Option<f64>,
-}
-
 pub fn summarize_factor_stats(rows: &[FactorStatsDaily]) -> Vec<FactorStatsSummary> {
     let mut grouped = BTreeMap::<(String, Option<i32>), Vec<&FactorStatsDaily>>::new();
     for row in rows {
@@ -99,64 +76,6 @@ pub fn summarize_factor_stats(rows: &[FactorStatsDaily]) -> Vec<FactorStatsSumma
                 inf_rate_mean: mean(&inf_rate),
             }
         })
-        .collect()
-}
-
-pub fn summarize_ic(
-    factor_id: &str,
-    year: Option<i32>,
-    horizon: Option<usize>,
-    ic: &[Option<f64>],
-    rank_ic: &[Option<f64>],
-    coverage: &[f64],
-    inf_rate: &[f64],
-) -> IcSummary {
-    let ic_values = finite_values(ic);
-    let rank_values = finite_values(rank_ic);
-    let ic_abs = ic_values
-        .iter()
-        .map(|value| value.abs())
-        .collect::<Vec<_>>();
-    let rank_abs = rank_values
-        .iter()
-        .map(|value| value.abs())
-        .collect::<Vec<_>>();
-    IcSummary {
-        factor_id: factor_id.to_string(),
-        scope: year.map_or_else(|| "full".to_string(), |_| "year".to_string()),
-        year,
-        horizon,
-        observations: ic_values.len() as i64,
-        ic_mean: mean(&ic_values),
-        ic_std: std_dev(&ic_values),
-        icir: ratio(mean(&ic_values), std_dev(&ic_values)),
-        ic_abs_mean: mean(&ic_abs),
-        ic_abs_std: std_dev(&ic_abs),
-        icir_abs: ratio(mean(&ic_abs), std_dev(&ic_abs)),
-        rank_ic_mean: mean(&rank_values),
-        rank_ic_std: std_dev(&rank_values),
-        rank_icir: ratio(mean(&rank_values), std_dev(&rank_values)),
-        rank_ic_abs_mean: mean(&rank_abs),
-        rank_ic_abs_std: std_dev(&rank_abs),
-        rank_icir_abs: ratio(mean(&rank_abs), std_dev(&rank_abs)),
-        coverage_mean: mean(coverage),
-        inf_rate_mean: mean(inf_rate),
-    }
-}
-
-fn ratio(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
-    match (numerator, denominator) {
-        (Some(numerator), Some(denominator)) if denominator.abs() > f64::EPSILON => {
-            Some(numerator / denominator)
-        }
-        _ => None,
-    }
-}
-
-fn finite_values(values: &[Option<f64>]) -> Vec<f64> {
-    values
-        .iter()
-        .filter_map(|value| value.filter(|value| value.is_finite()))
         .collect()
 }
 

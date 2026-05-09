@@ -2,49 +2,21 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::backtest::ic::IcObservation;
-use crate::backtest::metrics::{FactorStatsSummary, IcSummary, PerformancePoint};
+use crate::backtest::metrics::{FactorStatsSummary, PerformancePoint};
 use crate::data::parquet_io::write_parquet;
 use crate::data::{ColumnData, Table};
 use crate::error::Result;
 
-#[derive(Clone, Debug, Default)]
-pub struct BacktestOutputFiles {
-    pub summary_files: Vec<PathBuf>,
-    pub detail_files: Vec<PathBuf>,
-}
-
-pub fn write_summary_outputs(
-    output_dir: &Path,
-    ic: &[IcSummary],
-    ic_decay: &[IcSummary],
-    factor_stats: &[FactorStatsSummary],
-) -> Result<Vec<PathBuf>> {
-    std::fs::create_dir_all(output_dir)?;
-    let legacy_performance = output_dir.join("performance_summary.parquet");
-    if legacy_performance.exists() {
-        std::fs::remove_file(&legacy_performance)?;
-    }
-    let mut written = Vec::new();
-    let path = output_dir.join("ic_summary.parquet");
-    write_parquet(&path, &ic_summary_table(ic)?)?;
-    written.push(path);
-    let path = output_dir.join("ic_decay_summary.parquet");
-    write_parquet(&path, &ic_summary_table(ic_decay)?)?;
-    written.push(path);
-    let path = output_dir.join("factor_stats.parquet");
-    write_parquet(&path, &factor_stats_table(factor_stats)?)?;
-    written.push(path);
-    Ok(written)
-}
-
-pub fn write_detail_outputs(
+pub fn write_backtest_outputs(
     output_dir: &Path,
     returns: &[PerformancePoint],
     daily_ic: &[IcObservation],
-    _ic_decay: &[IcObservation],
+    factor_stats: &[FactorStatsSummary],
 ) -> Result<Vec<PathBuf>> {
-    remove_legacy_detail_outputs(output_dir)?;
+    std::fs::create_dir_all(output_dir)?;
+    remove_legacy_outputs(output_dir)?;
     let mut written = Vec::new();
+
     let returns_dir = output_dir.join("returns");
     std::fs::create_dir_all(&returns_dir)?;
     for (factor_id, rows) in group_returns_by_factor(returns) {
@@ -60,10 +32,30 @@ pub fn write_detail_outputs(
         write_parquet(&path, &ic_observation_table(&rows)?)?;
         written.push(path);
     }
+
+    let factor_stats_dir = output_dir.join("factor_stats");
+    std::fs::create_dir_all(&factor_stats_dir)?;
+    for (factor_id, rows) in group_factor_stats_by_factor(factor_stats) {
+        let path = factor_stats_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+        write_parquet(&path, &factor_stats_table(&rows)?)?;
+        written.push(path);
+    }
     Ok(written)
 }
 
-fn remove_legacy_detail_outputs(output_dir: &Path) -> Result<()> {
+fn remove_legacy_outputs(output_dir: &Path) -> Result<()> {
+    for name in [
+        "performance_summary.parquet",
+        "ic_summary.parquet",
+        "ic_decay_summary.parquet",
+        "factor_stats.parquet",
+    ] {
+        let path = output_dir.join(name);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+    }
+
     let legacy_detail = output_dir.join("detail");
     for name in [
         "daily_returns.parquet",
@@ -91,6 +83,19 @@ fn group_returns_by_factor(rows: &[PerformancePoint]) -> BTreeMap<String, Vec<Pe
 
 fn group_ic_by_factor(rows: &[IcObservation]) -> BTreeMap<String, Vec<IcObservation>> {
     let mut grouped = BTreeMap::<String, Vec<IcObservation>>::new();
+    for row in rows {
+        grouped
+            .entry(row.factor_id.clone())
+            .or_default()
+            .push(row.clone());
+    }
+    grouped
+}
+
+fn group_factor_stats_by_factor(
+    rows: &[FactorStatsSummary],
+) -> BTreeMap<String, Vec<FactorStatsSummary>> {
+    let mut grouped = BTreeMap::<String, Vec<FactorStatsSummary>>::new();
     for row in rows {
         grouped
             .entry(row.factor_id.clone())
@@ -132,66 +137,6 @@ fn factor_stats_table(rows: &[FactorStatsSummary]) -> Result<Table> {
         ("median", f64_col(rows.iter().map(|row| row.median))),
         ("p75", f64_col(rows.iter().map(|row| row.p75))),
         ("max", f64_col(rows.iter().map(|row| row.max))),
-        (
-            "coverage_mean",
-            f64_col(rows.iter().map(|row| row.coverage_mean)),
-        ),
-        (
-            "inf_rate_mean",
-            f64_col(rows.iter().map(|row| row.inf_rate_mean)),
-        ),
-    ]))
-}
-
-fn ic_summary_table(rows: &[IcSummary]) -> Result<Table> {
-    table_from_columns(BTreeMap::from([
-        (
-            "factor_id",
-            utf8(rows.iter().map(|row| Some(row.factor_id.clone()))),
-        ),
-        (
-            "scope",
-            utf8(rows.iter().map(|row| Some(row.scope.clone()))),
-        ),
-        ("year", i32_col(rows.iter().map(|row| row.year))),
-        (
-            "horizon",
-            i32_col(rows.iter().map(|row| row.horizon.map(|value| value as i32))),
-        ),
-        (
-            "observations",
-            i64_col(rows.iter().map(|row| Some(row.observations))),
-        ),
-        ("ic_mean", f64_col(rows.iter().map(|row| row.ic_mean))),
-        ("ic_std", f64_col(rows.iter().map(|row| row.ic_std))),
-        ("icir", f64_col(rows.iter().map(|row| row.icir))),
-        (
-            "ic_abs_mean",
-            f64_col(rows.iter().map(|row| row.ic_abs_mean)),
-        ),
-        ("ic_abs_std", f64_col(rows.iter().map(|row| row.ic_abs_std))),
-        ("icir_abs", f64_col(rows.iter().map(|row| row.icir_abs))),
-        (
-            "rank_ic_mean",
-            f64_col(rows.iter().map(|row| row.rank_ic_mean)),
-        ),
-        (
-            "rank_ic_std",
-            f64_col(rows.iter().map(|row| row.rank_ic_std)),
-        ),
-        ("rank_icir", f64_col(rows.iter().map(|row| row.rank_icir))),
-        (
-            "rank_ic_abs_mean",
-            f64_col(rows.iter().map(|row| row.rank_ic_abs_mean)),
-        ),
-        (
-            "rank_ic_abs_std",
-            f64_col(rows.iter().map(|row| row.rank_ic_abs_std)),
-        ),
-        (
-            "rank_icir_abs",
-            f64_col(rows.iter().map(|row| row.rank_icir_abs)),
-        ),
         (
             "coverage_mean",
             f64_col(rows.iter().map(|row| row.coverage_mean)),

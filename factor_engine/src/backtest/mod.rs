@@ -8,16 +8,14 @@ pub mod schedule;
 pub mod storage;
 pub mod time_series;
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::backtest::cross_section::{ensure_backtest_inputs, run_cross_section_backtest};
 use crate::backtest::data::load_backtest_input;
-use crate::backtest::ic::IcObservation;
-use crate::backtest::metrics::{summarize_factor_stats, summarize_ic, IcSummary};
+use crate::backtest::metrics::summarize_factor_stats;
 use crate::backtest::request::BacktestRunRequest;
 use crate::backtest::schedule::rebalance_dates;
-use crate::backtest::storage::{write_detail_outputs, write_summary_outputs};
+use crate::backtest::storage::write_backtest_outputs;
 use crate::config::EngineConfig;
 use crate::error::Result;
 use crate::progress::ProgressBar;
@@ -32,8 +30,7 @@ pub struct BacktestRunReport {
     pub factor_count: usize,
     pub selected_factor_ids: Vec<String>,
     pub output_dir: PathBuf,
-    pub summary_files: Vec<PathBuf>,
-    pub detail_files: Vec<PathBuf>,
+    pub output_files: Vec<PathBuf>,
     pub rebalance_count: usize,
 }
 
@@ -56,28 +53,16 @@ impl BacktestEngine {
         let output = run_cross_section_backtest(request, &input, &rebalance_dates, &progress)?;
         progress.finish();
         let factor_stats_summary = summarize_factor_stats(&output.factor_stats);
-        let ic_summary = summarize_daily_ic(&output.daily_ic);
-        let ic_decay_summary = summarize_decay_ic(&output.ic_decay);
         let output_dir = request
             .output_dir
             .clone()
             .unwrap_or_else(|| default_output_dir(&self.config, request));
-        let summary_files = write_summary_outputs(
+        let output_files = write_backtest_outputs(
             &output_dir,
-            &ic_summary,
-            &ic_decay_summary,
+            &output.returns,
+            &output.daily_ic,
             &factor_stats_summary,
         )?;
-        let detail_files = if request.write_detail {
-            write_detail_outputs(
-                &output_dir,
-                &output.returns,
-                &output.daily_ic,
-                &output.ic_decay,
-            )?
-        } else {
-            Vec::new()
-        };
         Ok(BacktestRunReport {
             factor_count: input.factor_metadata.len(),
             selected_factor_ids: input
@@ -86,74 +71,10 @@ impl BacktestEngine {
                 .map(|row| row.factor_id.clone())
                 .collect(),
             output_dir,
-            summary_files,
-            detail_files,
+            output_files,
             rebalance_count: rebalance_dates.len(),
         })
     }
-}
-
-fn summarize_daily_ic(rows: &[IcObservation]) -> Vec<IcSummary> {
-    let mut grouped = BTreeMap::<(String, Option<i32>), Vec<&IcObservation>>::new();
-    for row in rows {
-        grouped
-            .entry((row.factor_id.clone(), None))
-            .or_default()
-            .push(row);
-        grouped
-            .entry((row.factor_id.clone(), Some(row.factor_date / 10_000)))
-            .or_default()
-            .push(row);
-    }
-    grouped
-        .into_iter()
-        .map(|((factor_id, year), rows)| {
-            let ic = rows.iter().map(|row| row.ic).collect::<Vec<_>>();
-            let rank_ic = rows.iter().map(|row| row.rank_ic).collect::<Vec<_>>();
-            let coverage = rows.iter().map(|row| row.coverage).collect::<Vec<_>>();
-            let inf_rate = rows.iter().map(|row| row.inf_rate).collect::<Vec<_>>();
-            summarize_ic(&factor_id, year, None, &ic, &rank_ic, &coverage, &inf_rate)
-        })
-        .collect()
-}
-
-fn summarize_decay_ic(rows: &[IcObservation]) -> Vec<IcSummary> {
-    let mut grouped = BTreeMap::<(String, usize, Option<i32>), Vec<&IcObservation>>::new();
-    for row in rows {
-        let Some(horizon) = row.horizon else {
-            continue;
-        };
-        grouped
-            .entry((row.factor_id.clone(), horizon, None))
-            .or_default()
-            .push(row);
-        grouped
-            .entry((
-                row.factor_id.clone(),
-                horizon,
-                Some(row.factor_date / 10_000),
-            ))
-            .or_default()
-            .push(row);
-    }
-    grouped
-        .into_iter()
-        .map(|((factor_id, horizon, year), rows)| {
-            let ic = rows.iter().map(|row| row.ic).collect::<Vec<_>>();
-            let rank_ic = rows.iter().map(|row| row.rank_ic).collect::<Vec<_>>();
-            let coverage = rows.iter().map(|row| row.coverage).collect::<Vec<_>>();
-            let inf_rate = rows.iter().map(|row| row.inf_rate).collect::<Vec<_>>();
-            summarize_ic(
-                &factor_id,
-                year,
-                Some(horizon),
-                &ic,
-                &rank_ic,
-                &coverage,
-                &inf_rate,
-            )
-        })
-        .collect()
 }
 
 fn default_output_dir(config: &EngineConfig, request: &BacktestRunRequest) -> PathBuf {

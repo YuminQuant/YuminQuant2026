@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
@@ -68,6 +68,17 @@ pub fn read_parquet(path: &Path, columns: Option<&[String]>) -> Result<Table> {
         table.append(&batch_table)?;
     }
     Ok(table)
+}
+
+pub fn parquet_column_names(path: &Path) -> Result<BTreeSet<String>> {
+    let file = File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    Ok(builder
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect())
 }
 
 pub fn write_parquet(path: &Path, table: &Table) -> Result<()> {

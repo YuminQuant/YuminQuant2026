@@ -6,7 +6,7 @@ use crate::barra::engine::DEFAULT_BARRA_MODEL;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{AssetClass, Frequency};
-use crate::data::parquet_io::read_parquet;
+use crate::data::parquet_io::{parquet_column_names, read_parquet};
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
 use crate::factor::common::{ClassificationLevel, ClassificationMap};
@@ -45,6 +45,31 @@ pub struct BacktestDataPlan {
     universe: BacktestUniversePlan,
     trade_filter: BacktestTradeFilterPlan,
     benchmark: BenchmarkPlan,
+}
+
+#[derive(Clone, Debug)]
+pub struct FactorFillState {
+    latest: BTreeMap<String, Vec<Option<f64>>>,
+    initialized: bool,
+}
+
+impl FactorFillState {
+    pub fn new(factor_columns: &[String], instrument_count: usize) -> Self {
+        let latest = factor_columns
+            .iter()
+            .map(|column| (column.clone(), vec![None; instrument_count]))
+            .collect();
+        Self {
+            latest,
+            initialized: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FactorLoadResult {
+    table: Table,
+    present_dates: BTreeMap<String, BTreeSet<i32>>,
 }
 
 #[derive(Clone, Debug)]
@@ -170,12 +195,19 @@ pub fn load_backtest_input(
     request: &BacktestRunRequest,
 ) -> Result<BacktestInput> {
     let plan = prepare_backtest_data_plan(config, request)?;
+    let factor_columns = plan
+        .factor_metadata
+        .iter()
+        .map(|row| row.output_column.clone())
+        .collect::<Vec<_>>();
+    let mut fill_state = FactorFillState::new(&factor_columns, plan.instruments.len());
     load_backtest_input_batch(
         config,
         request,
         &plan,
         &plan.factor_metadata,
         &plan.target_dates,
+        &mut fill_state,
     )
 }
 
@@ -278,6 +310,7 @@ pub fn load_backtest_input_batch(
     plan: &BacktestDataPlan,
     factor_metadata: &[FactorMetadata],
     target_dates: &[i32],
+    factor_fill_state: &mut FactorFillState,
 ) -> Result<BacktestInput> {
     if target_dates.is_empty() {
         return Err(err("cannot load empty backtest date batch"));
@@ -294,7 +327,7 @@ pub fn load_backtest_input_batch(
         .as_deref()
         .unwrap_or(&config.factor_root);
     let factor_layout = factor_root_layout(factor_root, request.asset_class, request.frequency);
-    let factor_table = load_factor_output_table(
+    let factor_load = load_factor_output_table_with_presence(
         factor_root,
         factor_layout,
         request.asset_class,
@@ -302,13 +335,25 @@ pub fn load_backtest_input_batch(
         target_dates,
         &factor_columns,
     )?;
+    if request.factor_fill.is_forward_fill() {
+        initialize_factor_fill_state(
+            factor_root,
+            factor_layout,
+            request.asset_class,
+            request.frequency,
+            target_dates[0],
+            &factor_columns,
+            &plan.instruments,
+            factor_fill_state,
+        )?;
+    }
 
     let label_table = plan.label_table.filter_i32_range(
         "trade_date",
         *all_dates.first().expect("date batch has dates"),
         *all_dates.last().expect("date batch has dates"),
     )?;
-    let mut tables = vec![factor_table, label_table];
+    let mut tables = vec![factor_load.table, label_table];
     if let Some(table) = &plan.barra_table {
         tables.push(table.filter_i32_range(
             "trade_date",
@@ -324,6 +369,15 @@ pub fn load_backtest_input_batch(
     panel.ensure_columns(&factor_columns);
     panel.ensure_columns(&label_columns);
     panel.ensure_columns(&plan.barra_columns);
+    if request.factor_fill.is_forward_fill() {
+        apply_factor_forward_fill(
+            &mut panel,
+            target_dates,
+            &factor_columns,
+            &factor_load.present_dates,
+            factor_fill_state,
+        )?;
+    }
 
     let sectors = if let Some(sector_map) = &plan.sector_map {
         let mut by_date = HashMap::new();
@@ -1074,14 +1128,14 @@ fn load_output_table(
     }
 }
 
-fn load_factor_output_table(
+fn load_factor_output_table_with_presence(
     root: &Path,
     layout: FactorRootLayout,
     asset_class: AssetClass,
     frequency: Frequency,
     dates: &[i32],
     requested_columns: &[String],
-) -> Result<Table> {
+) -> Result<FactorLoadResult> {
     let mut columns = vec!["trade_date".to_string(), "ts_code".to_string()];
     for column in requested_columns {
         if !columns.iter().any(|existing| existing == column) {
@@ -1089,10 +1143,22 @@ fn load_factor_output_table(
         }
     }
     let mut table = Table::empty();
+    let mut present_dates = requested_columns
+        .iter()
+        .map(|column| (column.clone(), BTreeSet::<i32>::new()))
+        .collect::<BTreeMap<_, _>>();
     for date in dates {
         let path = factor_output_path(root, layout, asset_class, frequency, *date);
         if !path.exists() {
             continue;
+        }
+        let schema_columns = parquet_column_names(&path)?;
+        for column in requested_columns {
+            if schema_columns.contains(column) {
+                if let Some(dates) = present_dates.get_mut(column) {
+                    dates.insert(*date);
+                }
+            }
         }
         let mut daily = read_parquet(&path, Some(&columns))?;
         ensure_table_columns(&mut daily, requested_columns)?;
@@ -1102,11 +1168,224 @@ fn load_factor_output_table(
             table.append(&daily)?;
         }
     }
-    if table.columns.is_empty() {
-        empty_output_table(&columns)
+    let table = if table.columns.is_empty() {
+        empty_output_table(&columns)?
     } else {
-        Ok(table)
+        table
+    };
+    Ok(FactorLoadResult {
+        table,
+        present_dates,
+    })
+}
+
+fn initialize_factor_fill_state(
+    root: &Path,
+    layout: FactorRootLayout,
+    asset_class: AssetClass,
+    frequency: Frequency,
+    first_target_date: i32,
+    factor_columns: &[String],
+    instruments: &[String],
+    state: &mut FactorFillState,
+) -> Result<()> {
+    if state.initialized {
+        return Ok(());
     }
+    state.initialized = true;
+    let mut remaining = factor_columns.iter().cloned().collect::<BTreeSet<_>>();
+    if remaining.is_empty() {
+        return Ok(());
+    }
+    let mut dates =
+        available_factor_dates_before(root, layout, asset_class, frequency, first_target_date)?;
+    dates.sort_by(|left, right| right.cmp(left));
+    for date in dates {
+        if remaining.is_empty() {
+            break;
+        }
+        let path = factor_output_path(root, layout, asset_class, frequency, date);
+        if !path.exists() {
+            continue;
+        }
+        let schema_columns = parquet_column_names(&path)?;
+        let columns_to_load = remaining
+            .iter()
+            .filter(|column| schema_columns.contains(*column))
+            .cloned()
+            .collect::<Vec<_>>();
+        if columns_to_load.is_empty() {
+            continue;
+        }
+        update_factor_fill_state_from_path(&path, date, &columns_to_load, instruments, state)?;
+        for column in columns_to_load {
+            remaining.remove(&column);
+        }
+    }
+    Ok(())
+}
+
+fn available_factor_dates_before(
+    root: &Path,
+    layout: FactorRootLayout,
+    asset_class: AssetClass,
+    frequency: Frequency,
+    first_target_date: i32,
+) -> Result<Vec<i32>> {
+    let base = factor_root_base_path(root, layout, asset_class, frequency);
+    let mut dates = Vec::new();
+    collect_parquet_dates_before(&base, first_target_date, &mut dates)?;
+    dates.sort_unstable();
+    dates.dedup();
+    Ok(dates)
+}
+
+fn factor_root_base_path(
+    root: &Path,
+    layout: FactorRootLayout,
+    asset_class: AssetClass,
+    frequency: Frequency,
+) -> PathBuf {
+    match layout {
+        FactorRootLayout::Standard => root.join(asset_class.as_str()).join(frequency.as_str()),
+        FactorRootLayout::DirectDaily => root.to_path_buf(),
+    }
+}
+
+fn collect_parquet_dates_before(
+    path: &Path,
+    first_target_date: i32,
+    dates: &mut Vec<i32>,
+) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_parquet_dates_before(&path, first_target_date, dates)?;
+            continue;
+        }
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !extension.eq_ignore_ascii_case("parquet") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Ok(date) = stem.parse::<i32>() else {
+            continue;
+        };
+        if date < first_target_date {
+            dates.push(date);
+        }
+    }
+    Ok(())
+}
+
+fn update_factor_fill_state_from_path(
+    path: &Path,
+    trade_date: i32,
+    factor_columns: &[String],
+    instruments: &[String],
+    state: &mut FactorFillState,
+) -> Result<()> {
+    let mut columns = vec!["trade_date".to_string(), "ts_code".to_string()];
+    for column in factor_columns {
+        columns.push(column.clone());
+    }
+    let table = read_parquet(path, Some(&columns))?;
+    let trade_dates = table.required_i32_date_cast("trade_date")?;
+    let ts_codes = table.required_utf8("ts_code")?;
+    let instrument_lookup = instruments
+        .iter()
+        .enumerate()
+        .map(|(idx, code)| (code.as_str(), idx))
+        .collect::<BTreeMap<_, _>>();
+    let values_by_column = factor_columns
+        .iter()
+        .map(|column| Ok((column.clone(), table.required_f64_cast(column)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+
+    for column in factor_columns {
+        state
+            .latest
+            .entry(column.clone())
+            .or_insert_with(|| vec![None; instruments.len()]);
+    }
+    for row_idx in 0..table.len {
+        if trade_dates[row_idx] != Some(trade_date) {
+            continue;
+        }
+        let Some(ts_code) = ts_codes[row_idx].as_deref() else {
+            continue;
+        };
+        let Some(instrument_idx) = instrument_lookup.get(ts_code).copied() else {
+            continue;
+        };
+        for column in factor_columns {
+            let value = values_by_column[column]
+                .get(row_idx)
+                .copied()
+                .unwrap_or(None);
+            if let Some(latest) = state.latest.get_mut(column) {
+                latest[instrument_idx] = value;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_factor_forward_fill(
+    panel: &mut BacktestPanel,
+    target_dates: &[i32],
+    factor_columns: &[String],
+    present_dates: &BTreeMap<String, BTreeSet<i32>>,
+    state: &mut FactorFillState,
+) -> Result<()> {
+    let instrument_count = panel.instruments.len();
+    for date in target_dates {
+        let Some(date_idx) = panel.date_index(*date) else {
+            continue;
+        };
+        let start = date_idx * instrument_count;
+        let end = start + instrument_count;
+        for column in factor_columns {
+            state
+                .latest
+                .entry(column.clone())
+                .or_insert_with(|| vec![None; instrument_count]);
+            let has_real_snapshot = present_dates
+                .get(column)
+                .is_some_and(|dates| dates.contains(date));
+            let values = panel
+                .columns
+                .get_mut(column)
+                .ok_or_else(|| err(format!("backtest panel missing factor column {column}")))?;
+            let presence = panel.presence.get_mut(column).ok_or_else(|| {
+                err(format!(
+                    "backtest panel missing factor presence for {column}"
+                ))
+            })?;
+            let latest = state
+                .latest
+                .get_mut(column)
+                .expect("factor fill state was initialized");
+            if has_real_snapshot {
+                latest.copy_from_slice(&values[start..end]);
+            } else {
+                for idx in 0..instrument_count {
+                    let value = latest[idx];
+                    values[start + idx] = value;
+                    presence[start + idx] = value.is_some();
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ensure_table_columns(table: &mut Table, requested_columns: &[String]) -> Result<()> {
@@ -1195,11 +1474,12 @@ fn empty_output_table(columns: &[String]) -> Result<Table> {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_weights_by_date, index_weight_path_may_overlap, index_weight_to_decimal,
-        instruments_from_table, parse_lookahead, universe_list_date_floor, WeightRecord,
+        apply_factor_forward_fill, effective_weights_by_date, index_weight_path_may_overlap,
+        index_weight_to_decimal, instruments_from_table, parse_lookahead, universe_list_date_floor,
+        BacktestPanel, FactorFillState, WeightRecord,
     };
     use crate::data::{ColumnData, Table};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
 
     #[test]
@@ -1290,5 +1570,67 @@ mod tests {
             instruments_from_table(&table).expect("instruments"),
             vec!["000001.SZ".to_string(), "600000.SH".to_string()]
         );
+    }
+
+    #[test]
+    fn factor_forward_fill_fills_missing_date_snapshots() {
+        let mut panel = test_panel(vec![Some(1.0), None, None, None]);
+        let mut present_dates = BTreeMap::new();
+        present_dates.insert("alpha".to_string(), BTreeSet::from([20240101]));
+        let mut state = FactorFillState::new(&["alpha".to_string()], 2);
+
+        apply_factor_forward_fill(
+            &mut panel,
+            &[20240101, 20240102],
+            &["alpha".to_string()],
+            &present_dates,
+            &mut state,
+        )
+        .expect("ffill");
+
+        let values = panel.columns.get("alpha").expect("alpha");
+        assert_eq!(values, &vec![Some(1.0), None, Some(1.0), None]);
+    }
+
+    #[test]
+    fn factor_forward_fill_does_not_patch_stock_level_nulls_on_real_snapshot() {
+        let mut panel = test_panel(vec![None, None, None, Some(2.0)]);
+        let mut present_dates = BTreeMap::new();
+        present_dates.insert("alpha".to_string(), BTreeSet::from([20240102]));
+        let mut state = FactorFillState::new(&["alpha".to_string()], 2);
+        state
+            .latest
+            .insert("alpha".to_string(), vec![Some(9.0), Some(8.0)]);
+
+        apply_factor_forward_fill(
+            &mut panel,
+            &[20240102],
+            &["alpha".to_string()],
+            &present_dates,
+            &mut state,
+        )
+        .expect("ffill");
+
+        let values = panel.columns.get("alpha").expect("alpha");
+        assert_eq!(values, &vec![None, None, None, Some(2.0)]);
+        assert_eq!(state.latest["alpha"], vec![None, Some(2.0)]);
+    }
+
+    fn test_panel(alpha_values: Vec<Option<f64>>) -> BacktestPanel {
+        let dates = vec![20240101, 20240102];
+        let instruments = vec!["000001.SZ".to_string(), "000002.SZ".to_string()];
+        let date_lookup = dates
+            .iter()
+            .enumerate()
+            .map(|(idx, date)| (*date, idx))
+            .collect::<BTreeMap<_, _>>();
+        let presence_values = alpha_values.iter().map(Option::is_some).collect::<Vec<_>>();
+        BacktestPanel {
+            dates,
+            instruments,
+            date_lookup,
+            columns: BTreeMap::from([("alpha".to_string(), alpha_values)]),
+            presence: BTreeMap::from([("alpha".to_string(), presence_values)]),
+        }
     }
 }

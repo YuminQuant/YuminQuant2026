@@ -1,0 +1,54 @@
+run_id = "monthly_lr_36"
+alpha_id = "ml_alpha_lr"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20110101, 20260424]
+valid = [20110101, 20260424]
+predict = [20110101, 20260424]
+
+[sample]
+frequency = "monthly_end"
+train_frequency = "monthly_end"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "monthly_end"
+train_sample_count = 36
+
+[label]
+id = "future_vwap_return_20d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "zscore_log_rank"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd", "gmm_mean", "peer_ds_by_t"]
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/monthly_lr_36/cache"
+
+[model]
+name = "linear_regression"
+class = "yq_ml_alpha.models.linear_model.LinearRegressionAlphaModel"
+artifact_dir = "data/model_workspace/monthly_lr_36/artifacts"
+
+[model.params]
+
+[tuning]
+enabled = false
+method = "none"

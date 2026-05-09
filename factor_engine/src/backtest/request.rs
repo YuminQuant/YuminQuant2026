@@ -34,8 +34,31 @@ pub struct BacktestRunRequest {
     pub factor_batch_size: usize,
     pub date_batch_size: usize,
     pub threads: Option<usize>,
+    pub factor_fill: FactorFill,
     pub output_dir: Option<PathBuf>,
     pub config_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FactorFill {
+    None,
+    ForwardFill,
+}
+
+impl FactorFill {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "none" | "" => Ok(Self::None),
+            "ffill" | "forward_fill" | "forward-fill" => Ok(Self::ForwardFill),
+            _ => Err(err(format!(
+                "--factor-fill must be none|ffill, got {value}"
+            ))),
+        }
+    }
+
+    pub fn is_forward_fill(&self) -> bool {
+        matches!(self, Self::ForwardFill)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

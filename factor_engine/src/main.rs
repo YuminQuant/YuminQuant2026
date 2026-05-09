@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use yq_factor_engine::backtest::request::{
-    BacktestRunRequest, LimitSide, NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL,
-    DEFAULT_BENCHMARK, DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE,
-    DEFAULT_EXCLUDE_LIMIT, DEFAULT_EXCLUDE_ST,
-    DEFAULT_FACTOR_BATCH_SIZE as DEFAULT_BACKTEST_FACTOR_BATCH_SIZE, DEFAULT_GROUPS,
-    DEFAULT_UNIVERSE,
+    BacktestRunRequest, FactorFill, LimitSide, NeutralizeSpec, RebalanceRule,
+    DEFAULT_BACKTEST_LABEL, DEFAULT_BENCHMARK,
+    DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE, DEFAULT_EXCLUDE_LIMIT,
+    DEFAULT_EXCLUDE_ST, DEFAULT_FACTOR_BATCH_SIZE as DEFAULT_BACKTEST_FACTOR_BATCH_SIZE,
+    DEFAULT_GROUPS, DEFAULT_UNIVERSE,
 };
 use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
@@ -437,6 +437,11 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         }
         None => None,
     };
+    let factor_fill = flags
+        .get("factor-fill")
+        .map(|value| FactorFill::parse(value))
+        .transpose()?
+        .unwrap_or(FactorFill::None);
     Ok(BacktestRunRequest {
         asset_class,
         frequency,
@@ -471,6 +476,7 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         factor_batch_size,
         date_batch_size,
         threads,
+        factor_fill,
         output_dir: flags.get("output-dir").map(PathBuf::from),
         config_path: flags.get("config").map(PathBuf::from),
     })
@@ -1019,6 +1025,9 @@ fn print_help() {
     println!("  --neutralize none|industry|barra:SIZE|barra:SIZE+industry");
     println!("  --universe mkt_all|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id");
     println!("  --benchmark mkt_mean|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id");
+    println!(
+        "  --factor-fill none|ffill (backtest default none; ffill supports low-frequency alpha)"
+    );
     println!("  --exclude-limit true|false (backtest default true)");
     println!("  --exclude-st true|false (backtest default true)");
     println!("  --limit-side both|up|down (backtest default both)");
@@ -1049,7 +1058,7 @@ mod tests {
     use super::{
         flag_enabled, matches_tag_filter, parse_backtest_run_request, parse_barra_run_request,
         parse_csv_values, parse_flags, parse_label_run_request, parse_run_request, parse_yyyymmdd,
-        LimitSide, DEFAULT_DATE_BATCH_SIZE, DEFAULT_LABEL_BATCH_SIZE,
+        FactorFill, LimitSide, DEFAULT_DATE_BATCH_SIZE, DEFAULT_LABEL_BATCH_SIZE,
     };
 
     #[test]
@@ -1271,6 +1280,7 @@ mod tests {
         assert!(request.exclude_limit);
         assert!(request.exclude_st);
         assert_eq!(request.limit_side, LimitSide::Both);
+        assert_eq!(request.factor_fill, FactorFill::None);
 
         let args = [
             "--asset",
@@ -1293,6 +1303,8 @@ mod tests {
             "false",
             "--limit-side",
             "up",
+            "--factor-fill",
+            "ffill",
         ]
         .iter()
         .map(|value| value.to_string())
@@ -1303,6 +1315,7 @@ mod tests {
         assert!(!request.exclude_limit);
         assert!(!request.exclude_st);
         assert_eq!(request.limit_side, LimitSide::Up);
+        assert_eq!(request.factor_fill, FactorFill::ForwardFill);
     }
 
     #[test]

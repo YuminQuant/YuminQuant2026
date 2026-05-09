@@ -12,6 +12,7 @@ from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
+from yq_ml_alpha.features.transforms import cross_section_zscore_log_rank, fill_feature_nan
 
 
 @dataclass
@@ -39,6 +40,8 @@ class DatasetBuilder:
             if include_label:
                 labels = read_daily(self.config.label.root, trade_date, [self.config.label.id])
                 frame = frame.merge(labels[["trade_date", "ts_code", self.config.label.id]], on=["trade_date", "ts_code"], how="left")
+            frame = self._preprocess(frame, include_label)
+            if include_label:
                 frame = frame.loc[frame[self.config.label.id].notna()]
             frames.append(frame)
         if frames:
@@ -50,6 +53,21 @@ class DatasetBuilder:
             output = pd.DataFrame(columns=columns)
         self._maybe_cache(output, dates, include_label)
         return DatasetBundle(output, self.feature_provider.feature_columns, self.config.label.id)
+
+    def _preprocess(self, frame: pd.DataFrame, include_label: bool) -> pd.DataFrame:
+        columns = list(self.feature_provider.feature_columns)
+        label_columns = [self.config.label.id] if include_label and self.config.label.id in frame.columns else []
+        transform = self.config.preprocess.cross_section_transform.lower().strip()
+        if transform in {"", "none"}:
+            return fill_feature_nan(frame, columns, self.config.preprocess.feature_fill_value)
+        if transform in {"zscore_log_rank", "log_rank_zscore", "cs_zscore_log_rank"}:
+            return cross_section_zscore_log_rank(
+                frame,
+                [*columns, *label_columns],
+                fill_columns=columns,
+                fill_value=self.config.preprocess.feature_fill_value,
+            )
+        raise ValueError(f"unsupported preprocess.cross_section_transform: {self.config.preprocess.cross_section_transform}")
 
     def _maybe_cache(self, frame: pd.DataFrame, dates: list[int], include_label: bool) -> None:
         if not self.config.materialize.cache_samples or not dates:

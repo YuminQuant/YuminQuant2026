@@ -23,6 +23,8 @@ class DatesConfig:
 @dataclass(frozen=True)
 class SampleConfig:
     frequency: str = "monthly_end"
+    train_frequency: str | None = None
+    predict_frequency: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,13 @@ class TrainSchemeConfig:
     min_train_days: int = 756
     rolling_train_days: int = 756
     valid_days: int = 252
+    train_sample_count: int = 0
+
+
+@dataclass(frozen=True)
+class PreprocessConfig:
+    cross_section_transform: str = "none"
+    feature_fill_value: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -91,6 +100,7 @@ class MlAlphaConfig:
     label: LabelConfig
     universe: UniverseConfig
     filters: FiltersConfig
+    preprocess: PreprocessConfig
     features: FeaturesConfig
     materialize: MaterializeConfig
     model: ModelConfig
@@ -113,6 +123,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     label = raw.get("label", {})
     universe = raw.get("universe", {})
     filters = raw.get("filters", {})
+    preprocess = raw.get("preprocess", {})
     features = raw.get("features", {})
     materialize = raw.get("materialize", {})
     model = raw.get("model", {})
@@ -126,7 +137,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             valid=_date_pair(dates, "valid"),
             predict=_date_pair(dates, "predict"),
         ),
-        sample=SampleConfig(frequency=raw.get("sample", {}).get("frequency", "monthly_end")),
+        sample=_sample_config(raw.get("sample", {})),
         train_scheme=TrainSchemeConfig(**{**TrainSchemeConfig().__dict__, **raw.get("train_scheme", {})}),
         label=LabelConfig(
             id=_required(label, "id", "label.id"),
@@ -137,6 +148,10 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             exclude_limit=bool(filters.get("exclude_limit", True)),
             exclude_st=bool(filters.get("exclude_st", True)),
             exclude_bj=bool(filters.get("exclude_bj", True)),
+        ),
+        preprocess=PreprocessConfig(
+            cross_section_transform=preprocess.get("cross_section_transform", "none"),
+            feature_fill_value=float(preprocess.get("feature_fill_value", 0.0)),
         ),
         features=FeaturesConfig(
             type=_required(features, "type", "features.type"),
@@ -161,6 +176,15 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         ),
         data_root=data_root,
         output_root=output_root,
+    )
+
+
+def _sample_config(section: dict[str, Any]) -> SampleConfig:
+    frequency = section.get("frequency", "monthly_end")
+    return SampleConfig(
+        frequency=frequency,
+        train_frequency=section.get("train_frequency"),
+        predict_frequency=section.get("predict_frequency"),
     )
 
 

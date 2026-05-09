@@ -77,6 +77,7 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors utd --groups 10 --rebalance 5 --universe 000300.SH --benchmark mkt_mean
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance weekly --factor-batch-size 10
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --factor-batch-size 10 --date-batch-size 120 --threads 8
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_monthly_alpha --factor-root data\models --factor-fill ffill
 ```
 
 Backtest outputs are written as one parquet per factor:
@@ -101,6 +102,11 @@ python scripts\update_incremental.py --groups index_weight --start-date 20090101
 
 CSI 300 has a downloader compatibility rule: before 2016-01, index weights are
 queried with `399300.SZ` and stored canonically as `000300.SH` in `000300_SH`.
+
+Low-frequency external alpha can use `--factor-fill ffill`: missing daily
+factor snapshots are filled with the latest previous snapshot for that stock.
+The default is `--factor-fill none`, and label/benchmark/universe/filter data
+are never forward-filled.
 
 Custom universes live at `data/universe/{universe_id}.parquet` with
 `trade_date`, `ts_code`, and optional `weight`.

@@ -15,12 +15,12 @@ def run(config_path: str | Path) -> list[Path]:
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
     outputs = []
-    for split, date_range, include_label in [
-        ("train", config.dates.train, True),
-        ("valid", config.dates.valid, True),
-        ("predict", config.dates.predict, False),
+    for split, date_range, include_label, frequency in [
+        ("train", config.dates.train, True, config.sample.train_frequency or config.sample.frequency),
+        ("valid", config.dates.valid, True, config.sample.train_frequency or config.sample.frequency),
+        ("predict", config.dates.predict, False, config.sample.predict_frequency or config.sample.frequency),
     ]:
-        dates = sample_dates(calendar, date_range, config.sample.frequency)
+        dates = sample_dates(calendar, date_range, frequency)
         if not dates:
             continue
         frame = dataset.load(dates, include_label=include_label).frame

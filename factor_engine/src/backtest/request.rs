@@ -21,6 +21,7 @@ pub struct BacktestRunRequest {
     pub factor_ids: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
     pub all_factors: bool,
+    pub factor_root: Option<PathBuf>,
     pub label_id: String,
     pub groups: usize,
     pub rebalance: RebalanceRule,

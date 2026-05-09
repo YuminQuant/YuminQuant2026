@@ -12,6 +12,12 @@ use crate::error::{err, Result};
 use crate::factor::common::{ClassificationLevel, ClassificationMap};
 use crate::storage::{FactorMetadata, FactorStorage, LabelStorage};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FactorRootLayout {
+    Standard,
+    DirectDaily,
+}
+
 #[derive(Clone, Debug)]
 pub struct BacktestInput {
     pub factor_metadata: Vec<FactorMetadata>,
@@ -283,12 +289,16 @@ pub fn load_backtest_input_batch(
         .map(|row| row.output_column.clone())
         .collect::<Vec<_>>();
     let label_columns = vec![plan.label_metadata.output_column.clone()];
-    let factor_table = load_output_table(
-        &config.factor_root,
+    let factor_root = request
+        .factor_root
+        .as_deref()
+        .unwrap_or(&config.factor_root);
+    let factor_layout = factor_root_layout(factor_root, request.asset_class, request.frequency);
+    let factor_table = load_factor_output_table(
+        factor_root,
+        factor_layout,
         request.asset_class,
         request.frequency,
-        DEFAULT_BARRA_MODEL,
-        false,
         target_dates,
         &factor_columns,
     )?;
@@ -911,6 +921,23 @@ fn select_factors(
     config: &EngineConfig,
     request: &BacktestRunRequest,
 ) -> Result<Vec<FactorMetadata>> {
+    if let Some(root) = &request.factor_root {
+        if !root.exists() {
+            return Err(err(format!(
+                "external factor root not found: {}",
+                root.display()
+            )));
+        }
+        let Some(ids) = &request.factor_ids else {
+            return Err(err("--factor-root requires explicit --factors"));
+        };
+        let rows = ids
+            .iter()
+            .map(|id| external_factor_metadata(id, request.asset_class, request.frequency))
+            .collect::<Vec<_>>();
+        return Ok(dedup_factor_metadata(rows));
+    }
+
     let storage = FactorStorage::new(config.factor_root.clone());
     let metadata = storage.read_metadata()?;
     let selected = match (&request.factor_ids, &request.tags, request.all_factors) {
@@ -951,6 +978,28 @@ fn select_factors(
         }
     };
     Ok(dedup_factor_metadata(selected))
+}
+
+fn external_factor_metadata(
+    factor_id: &str,
+    asset_class: AssetClass,
+    frequency: Frequency,
+) -> FactorMetadata {
+    FactorMetadata {
+        factor_id: factor_id.to_string(),
+        aliases: Vec::new(),
+        aliases_json: "[]".to_string(),
+        version: "external".to_string(),
+        output_column: factor_id.to_string(),
+        name: factor_id.to_string(),
+        asset_class: asset_class.as_str().to_string(),
+        frequency: frequency.as_str().to_string(),
+        tags: vec!["external".to_string()],
+        tags_json: r#"["external"]"#.to_string(),
+        dependencies_json: "[]".to_string(),
+        description: "External factor supplied via --factor-root.".to_string(),
+        updated_at: String::new(),
+    }
 }
 
 fn dedup_factor_metadata(rows: Vec<FactorMetadata>) -> Vec<FactorMetadata> {
@@ -1025,6 +1074,41 @@ fn load_output_table(
     }
 }
 
+fn load_factor_output_table(
+    root: &Path,
+    layout: FactorRootLayout,
+    asset_class: AssetClass,
+    frequency: Frequency,
+    dates: &[i32],
+    requested_columns: &[String],
+) -> Result<Table> {
+    let mut columns = vec!["trade_date".to_string(), "ts_code".to_string()];
+    for column in requested_columns {
+        if !columns.iter().any(|existing| existing == column) {
+            columns.push(column.clone());
+        }
+    }
+    let mut table = Table::empty();
+    for date in dates {
+        let path = factor_output_path(root, layout, asset_class, frequency, *date);
+        if !path.exists() {
+            continue;
+        }
+        let mut daily = read_parquet(&path, Some(&columns))?;
+        ensure_table_columns(&mut daily, requested_columns)?;
+        if table.columns.is_empty() {
+            table = daily;
+        } else {
+            table.append(&daily)?;
+        }
+    }
+    if table.columns.is_empty() {
+        empty_output_table(&columns)
+    } else {
+        Ok(table)
+    }
+}
+
 fn ensure_table_columns(table: &mut Table, requested_columns: &[String]) -> Result<()> {
     for column in requested_columns {
         if !table.columns.contains_key(column) {
@@ -1032,6 +1116,42 @@ fn ensure_table_columns(table: &mut Table, requested_columns: &[String]) -> Resu
         }
     }
     Ok(())
+}
+
+fn factor_root_layout(
+    root: &Path,
+    asset_class: AssetClass,
+    frequency: Frequency,
+) -> FactorRootLayout {
+    if root
+        .join(asset_class.as_str())
+        .join(frequency.as_str())
+        .exists()
+    {
+        FactorRootLayout::Standard
+    } else {
+        FactorRootLayout::DirectDaily
+    }
+}
+
+fn factor_output_path(
+    root: &Path,
+    layout: FactorRootLayout,
+    asset_class: AssetClass,
+    frequency: Frequency,
+    trade_date: i32,
+) -> PathBuf {
+    let year = trade_date / 10_000;
+    match layout {
+        FactorRootLayout::Standard => root
+            .join(asset_class.as_str())
+            .join(frequency.as_str())
+            .join(year.to_string())
+            .join(format!("{trade_date}.parquet")),
+        FactorRootLayout::DirectDaily => root
+            .join(year.to_string())
+            .join(format!("{trade_date}.parquet")),
+    }
 }
 
 fn output_path(

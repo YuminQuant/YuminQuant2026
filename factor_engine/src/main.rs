@@ -368,6 +368,12 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
             "backtest requires --factors, --tags or --all-factors",
         ));
     }
+    let factor_root = flags.get("factor-root").map(PathBuf::from);
+    if factor_root.is_some() && factor_ids.is_none() {
+        return Err(yq_factor_engine::error::err(
+            "--factor-root requires explicit --factors factor_id[,factor_id...]",
+        ));
+    }
     let groups = match flags.get("groups") {
         Some(value) => {
             let parsed = value.parse::<usize>()?;
@@ -434,6 +440,7 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         factor_ids,
         tags,
         all_factors,
+        factor_root,
         label_id: flags
             .get("label")
             .cloned()
@@ -1002,6 +1009,7 @@ fn print_help() {
     println!("  --model CNE6");
     println!("  --tags tag[,tag...]");
     println!("  --label label_id (backtest default future_vwap_return_1d)");
+    println!("  --factor-root D:/path/to/root (backtest external factor root; requires --factors)");
     println!("  --groups N (backtest default 10)");
     println!("  --rebalance daily|N|weekly|biweekly|monthly|quarterly");
     println!("  --neutralize none|industry|barra:SIZE|barra:SIZE+industry");
@@ -1292,6 +1300,50 @@ mod tests {
         assert!(!request.exclude_limit);
         assert!(!request.exclude_st);
         assert_eq!(request.limit_side, LimitSide::Up);
+    }
+
+    #[test]
+    fn backtest_external_factor_root_requires_explicit_factors() {
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--factors",
+            "ml_combo_alpha",
+            "--factor-root",
+            "data/ml_alpha",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_backtest_run_request(&args).expect("request");
+        assert_eq!(
+            request.factor_root.as_deref(),
+            Some(std::path::Path::new("data/ml_alpha"))
+        );
+
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--all-factors",
+            "--factor-root",
+            "data/ml_alpha",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        assert!(parse_backtest_run_request(&args).is_err());
     }
 
     #[test]

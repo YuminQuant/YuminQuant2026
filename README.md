@@ -107,6 +107,66 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stoc
 For factor authoring, data dependencies, and execution details, read
 [factor_engine/FACTOR_DEVELOPMENT_README.md](factor_engine/FACTOR_DEVELOPMENT_README.md).
 
+## Backtest Commands
+
+The Rust engine also provides a lightweight cross-sectional backtest command.
+The default label is `future_vwap_return_1d`, and the default neutralization is
+`none`.
+
+Single factor, rebalance every 5 trading days:
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance 5 --write-detail true
+```
+
+Weekly rebalance:
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance weekly --write-detail true
+```
+
+Other rebalance options:
+
+```text
+--rebalance daily
+--rebalance 5
+--rebalance 10
+--rebalance weekly
+--rebalance biweekly
+--rebalance monthly
+--rebalance quarterly
+```
+
+Run a tag group or all non-deprecated factors:
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance 5 --write-detail true
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --write-detail true
+```
+
+Optional controls:
+
+```text
+--label future_vwap_return_1d
+--neutralize none
+--neutralize industry
+--neutralize barra:SIZE
+--neutralize barra:SIZE+industry
+--output-dir data\backtest\stock\daily
+```
+
+Backtest output is written as one parquet per factor:
+
+```text
+data/backtest/stock/daily/returns/{factor_id}.parquet
+data/backtest/stock/daily/ic/{factor_id}.parquet
+data/backtest/stock/daily/factor_stats/{factor_id}.parquet
+```
+
+The `returns` file contains group portfolios and the `long_short` portfolio.
+The `long_short` return is adjusted by `sign(mean(IC))` from that factor's IC
+series, so the reported long-short direction follows the empirical IC sign.
+
 ## Git And Data Safety
 
 The repository ignores local secrets and generated data:

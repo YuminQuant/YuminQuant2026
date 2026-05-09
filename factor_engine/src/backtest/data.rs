@@ -23,6 +23,19 @@ pub struct BacktestInput {
 }
 
 #[derive(Clone, Debug)]
+pub struct BacktestDataPlan {
+    pub factor_metadata: Vec<FactorMetadata>,
+    pub label_metadata: LabelMetadataInfo,
+    pub target_dates: Vec<i32>,
+    pub all_dates: Vec<i32>,
+    pub instruments: Vec<String>,
+    label_table: Table,
+    barra_columns: Vec<String>,
+    barra_table: Option<Table>,
+    sector_map: Option<ClassificationMap>,
+}
+
+#[derive(Clone, Debug)]
 pub struct LabelMetadataInfo {
     pub label_id: String,
     pub output_column: String,
@@ -92,6 +105,20 @@ pub fn load_backtest_input(
     config: &EngineConfig,
     request: &BacktestRunRequest,
 ) -> Result<BacktestInput> {
+    let plan = prepare_backtest_data_plan(config, request)?;
+    load_backtest_input_batch(
+        config,
+        request,
+        &plan,
+        &plan.factor_metadata,
+        &plan.target_dates,
+    )
+}
+
+pub fn prepare_backtest_data_plan(
+    config: &EngineConfig,
+    request: &BacktestRunRequest,
+) -> Result<BacktestDataPlan> {
     if request.asset_class != AssetClass::Stock || request.frequency != Frequency::Daily {
         return Err(err(
             "backtest v1 only supports --asset stock --frequency daily",
@@ -114,20 +141,7 @@ pub fn load_backtest_input(
         .unwrap_or(*target_dates.last().expect("non-empty target dates"));
     let all_dates = calendar.open_dates_between(request.start_date, label_end);
 
-    let factor_columns = factor_metadata
-        .iter()
-        .map(|row| row.output_column.clone())
-        .collect::<Vec<_>>();
     let label_columns = vec![label_metadata.output_column.clone()];
-    let factor_table = load_output_table(
-        &config.factor_root,
-        request.asset_class,
-        request.frequency,
-        DEFAULT_BARRA_MODEL,
-        false,
-        &target_dates,
-        &factor_columns,
-    )?;
     let label_table = load_output_table(
         &config.label_root,
         request.asset_class,
@@ -137,11 +151,11 @@ pub fn load_backtest_input(
         &all_dates,
         &label_columns,
     )?;
+    let instruments = instruments_from_table(&label_table)?;
 
-    let mut tables = vec![factor_table, label_table];
     let barra_columns = request.neutralize.barra_columns();
-    if !barra_columns.is_empty() {
-        tables.push(load_output_table(
+    let barra_table = if !barra_columns.is_empty() {
+        Some(load_output_table(
             &config.barra_root,
             request.asset_class,
             request.frequency,
@@ -149,14 +163,12 @@ pub fn load_backtest_input(
             true,
             &target_dates,
             &barra_columns,
-        )?);
-    }
-    let mut panel = BacktestPanel::from_tables(all_dates.clone(), tables)?;
-    panel.ensure_columns(&factor_columns);
-    panel.ensure_columns(&label_columns);
-    panel.ensure_columns(&barra_columns);
+        )?)
+    } else {
+        None
+    };
 
-    let sectors = if request.neutralize.uses_industry() {
+    let sector_map = if request.neutralize.uses_industry() {
         let table = read_parquet(
             &config.stock_sw_classification_path,
             Some(&[
@@ -166,9 +178,79 @@ pub fn load_backtest_input(
                 "l1_code".to_string(),
             ]),
         )?;
-        let sector_map = ClassificationMap::from_table(&table, ClassificationLevel::Sector)?;
+        Some(ClassificationMap::from_table(
+            &table,
+            ClassificationLevel::Sector,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(BacktestDataPlan {
+        factor_metadata,
+        label_metadata,
+        target_dates,
+        all_dates,
+        instruments,
+        label_table,
+        barra_columns,
+        barra_table,
+        sector_map,
+    })
+}
+
+pub fn load_backtest_input_batch(
+    config: &EngineConfig,
+    request: &BacktestRunRequest,
+    plan: &BacktestDataPlan,
+    factor_metadata: &[FactorMetadata],
+    target_dates: &[i32],
+) -> Result<BacktestInput> {
+    if target_dates.is_empty() {
+        return Err(err("cannot load empty backtest date batch"));
+    }
+    let factor_metadata = factor_metadata.to_vec();
+    let all_dates = all_dates_for_batch(plan, target_dates)?;
+    let factor_columns = factor_metadata
+        .iter()
+        .map(|row| row.output_column.clone())
+        .collect::<Vec<_>>();
+    let label_columns = vec![plan.label_metadata.output_column.clone()];
+    let factor_table = load_output_table(
+        &config.factor_root,
+        request.asset_class,
+        request.frequency,
+        DEFAULT_BARRA_MODEL,
+        false,
+        target_dates,
+        &factor_columns,
+    )?;
+
+    let label_table = plan.label_table.filter_i32_range(
+        "trade_date",
+        *all_dates.first().expect("date batch has dates"),
+        *all_dates.last().expect("date batch has dates"),
+    )?;
+    let mut tables = vec![factor_table, label_table];
+    if let Some(table) = &plan.barra_table {
+        tables.push(table.filter_i32_range(
+            "trade_date",
+            *target_dates.first().expect("target date batch has dates"),
+            *target_dates.last().expect("target date batch has dates"),
+        )?);
+    }
+    let mut panel = BacktestPanel::from_tables_with_instruments(
+        all_dates.clone(),
+        plan.instruments.clone(),
+        tables,
+    )?;
+    panel.ensure_columns(&factor_columns);
+    panel.ensure_columns(&label_columns);
+    panel.ensure_columns(&plan.barra_columns);
+
+    let sectors = if let Some(sector_map) = &plan.sector_map {
         let mut by_date = HashMap::new();
-        for date in &target_dates {
+        for date in target_dates {
             by_date.insert(*date, sector_map.groups_for(*date, panel.instruments()));
         }
         Some(by_date)
@@ -178,8 +260,8 @@ pub fn load_backtest_input(
 
     Ok(BacktestInput {
         factor_metadata,
-        label_metadata,
-        target_dates,
+        label_metadata: plan.label_metadata.clone(),
+        target_dates: target_dates.to_vec(),
         all_dates,
         panel,
         sectors,
@@ -187,18 +269,11 @@ pub fn load_backtest_input(
 }
 
 impl BacktestPanel {
-    fn from_tables(dates: Vec<i32>, tables: Vec<Table>) -> Result<Self> {
-        let mut instrument_set = BTreeSet::new();
-        for table in &tables {
-            if table.columns.is_empty() {
-                continue;
-            }
-            let ts_codes = table.required_utf8("ts_code")?;
-            for ts_code in ts_codes.iter().flatten() {
-                instrument_set.insert(ts_code.clone());
-            }
-        }
-        let instruments = instrument_set.into_iter().collect::<Vec<_>>();
+    fn from_tables_with_instruments(
+        dates: Vec<i32>,
+        instruments: Vec<String>,
+        tables: Vec<Table>,
+    ) -> Result<Self> {
         let date_lookup = dates
             .iter()
             .enumerate()
@@ -270,6 +345,37 @@ impl BacktestPanel {
             presence,
         })
     }
+}
+
+fn instruments_from_table(table: &Table) -> Result<Vec<String>> {
+    let mut instrument_set = BTreeSet::new();
+    let ts_codes = table.required_utf8("ts_code")?;
+    for ts_code in ts_codes.iter().flatten() {
+        instrument_set.insert(ts_code.clone());
+    }
+    Ok(instrument_set.into_iter().collect())
+}
+
+fn all_dates_for_batch(plan: &BacktestDataPlan, target_dates: &[i32]) -> Result<Vec<i32>> {
+    let first = *target_dates
+        .first()
+        .ok_or_else(|| err("cannot build all_dates for empty target date batch"))?;
+    let last = *target_dates
+        .last()
+        .ok_or_else(|| err("cannot build all_dates for empty target date batch"))?;
+    let start_idx = plan
+        .all_dates
+        .iter()
+        .position(|date| *date == first)
+        .ok_or_else(|| err(format!("date {first} not found in backtest calendar")))?;
+    let end_idx = plan
+        .all_dates
+        .iter()
+        .position(|date| *date == last)
+        .ok_or_else(|| err(format!("date {last} not found in backtest calendar")))?;
+    let forward_days = plan.label_metadata.lookahead.max(1);
+    let label_end_idx = (end_idx + forward_days).min(plan.all_dates.len() - 1);
+    Ok(plan.all_dates[start_idx..=label_end_idx].to_vec())
 }
 
 fn select_factors(

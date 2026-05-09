@@ -70,12 +70,33 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- label-metadata
 cargo run --release --manifest-path factor_engine\Cargo.toml -- label-run --asset stock --frequency daily --start-date 20260101 --end-date 20260130 --profile
 ```
 
+Cross-sectional backtest workflows:
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors utd --groups 10 --rebalance 5
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance weekly --factor-batch-size 10
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --factor-batch-size 10 --date-batch-size 120 --threads 8
+```
+
+Backtest outputs are written as one parquet per factor:
+
+```text
+data/backtest/stock/daily/returns/{factor_id}.parquet
+data/backtest/stock/daily/ic/{factor_id}.parquet
+data/backtest/stock/daily/factor_stats/{factor_id}.parquet
+```
+
 Useful flags:
 
 - `--factor-batch-size N`: number of factors computed together, default `64`.
 - `--threads N`: rayon worker count for factor-level parallelism.
 - `--profile`: print load, compute, write timings plus row and non-null counts.
 - `--refresh-minute-cache`: rebuild minute-to-daily raw cache.
+- Backtest also supports `--factor-batch-size N`, default `10`, and loads only
+  that many factor columns per batch. Backtest `--date-batch-size N` defaults
+  to `120` and limits how many factor dates are held in memory at once. Each
+  factor batch is computed in parallel with rayon; use `--threads N` to cap
+  worker count.
 
 ## Execution Model
 

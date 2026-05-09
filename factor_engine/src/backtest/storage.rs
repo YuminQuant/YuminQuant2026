@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::backtest::ic::IcObservation;
-use crate::backtest::metrics::{FactorStatsSummary, PerformancePoint};
+use crate::backtest::metrics::{FactorStatsDaily, PerformancePoint};
 use crate::data::parquet_io::write_parquet;
 use crate::data::{ColumnData, Table};
 use crate::error::Result;
@@ -11,7 +11,7 @@ pub fn write_backtest_outputs(
     output_dir: &Path,
     returns: &[PerformancePoint],
     daily_ic: &[IcObservation],
-    factor_stats: &[FactorStatsSummary],
+    factor_stats: &[FactorStatsDaily],
 ) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(output_dir)?;
     remove_legacy_outputs(output_dir)?;
@@ -93,9 +93,9 @@ fn group_ic_by_factor(rows: &[IcObservation]) -> BTreeMap<String, Vec<IcObservat
 }
 
 fn group_factor_stats_by_factor(
-    rows: &[FactorStatsSummary],
-) -> BTreeMap<String, Vec<FactorStatsSummary>> {
-    let mut grouped = BTreeMap::<String, Vec<FactorStatsSummary>>::new();
+    rows: &[FactorStatsDaily],
+) -> BTreeMap<String, Vec<FactorStatsDaily>> {
+    let mut grouped = BTreeMap::<String, Vec<FactorStatsDaily>>::new();
     for row in rows {
         grouped
             .entry(row.factor_id.clone())
@@ -115,17 +115,16 @@ fn safe_file_stem(value: &str) -> String {
         .collect()
 }
 
-fn factor_stats_table(rows: &[FactorStatsSummary]) -> Result<Table> {
+fn factor_stats_table(rows: &[FactorStatsDaily]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",
             utf8(rows.iter().map(|row| Some(row.factor_id.clone()))),
         ),
         (
-            "scope",
-            utf8(rows.iter().map(|row| Some(row.scope.clone()))),
+            "trade_date",
+            i32_col(rows.iter().map(|row| Some(row.trade_date))),
         ),
-        ("year", i32_col(rows.iter().map(|row| row.year))),
         (
             "observations",
             i64_col(rows.iter().map(|row| Some(row.observations))),
@@ -138,12 +137,12 @@ fn factor_stats_table(rows: &[FactorStatsSummary]) -> Result<Table> {
         ("p75", f64_col(rows.iter().map(|row| row.p75))),
         ("max", f64_col(rows.iter().map(|row| row.max))),
         (
-            "coverage_mean",
-            f64_col(rows.iter().map(|row| row.coverage_mean)),
+            "coverage",
+            f64_col(rows.iter().map(|row| Some(row.coverage))),
         ),
         (
-            "inf_rate_mean",
-            f64_col(rows.iter().map(|row| row.inf_rate_mean)),
+            "inf_rate",
+            f64_col(rows.iter().map(|row| Some(row.inf_rate))),
         ),
     ]))
 }

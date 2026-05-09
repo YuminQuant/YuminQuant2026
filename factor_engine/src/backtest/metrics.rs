@@ -16,7 +16,14 @@ pub struct PerformancePoint {
 pub struct FactorStatsDaily {
     pub factor_id: String,
     pub trade_date: i32,
-    pub values: Vec<Option<f64>>,
+    pub observations: i64,
+    pub mean: Option<f64>,
+    pub std: Option<f64>,
+    pub min: Option<f64>,
+    pub p25: Option<f64>,
+    pub median: Option<f64>,
+    pub p75: Option<f64>,
+    pub max: Option<f64>,
     pub coverage: f64,
     pub inf_rate: f64,
 }
@@ -38,6 +45,33 @@ pub struct FactorStatsSummary {
     pub inf_rate_mean: Option<f64>,
 }
 
+pub fn daily_factor_stats(
+    factor_id: String,
+    trade_date: i32,
+    values: &[Option<f64>],
+    coverage: f64,
+    inf_rate: f64,
+) -> FactorStatsDaily {
+    let finite = values
+        .iter()
+        .filter_map(|value| value.filter(|value| value.is_finite()))
+        .collect::<Vec<_>>();
+    FactorStatsDaily {
+        factor_id,
+        trade_date,
+        observations: finite.len() as i64,
+        mean: mean(&finite),
+        std: std_dev(&finite),
+        min: finite.iter().copied().reduce(f64::min),
+        p25: quantile(finite.clone(), 0.25),
+        median: quantile(finite.clone(), 0.5),
+        p75: quantile(finite.clone(), 0.75),
+        max: finite.iter().copied().reduce(f64::max),
+        coverage,
+        inf_rate,
+    }
+}
+
 pub fn summarize_factor_stats(rows: &[FactorStatsDaily]) -> Vec<FactorStatsSummary> {
     let mut grouped = BTreeMap::<(String, Option<i32>), Vec<&FactorStatsDaily>>::new();
     for row in rows {
@@ -53,11 +87,7 @@ pub fn summarize_factor_stats(rows: &[FactorStatsDaily]) -> Vec<FactorStatsSumma
     grouped
         .into_iter()
         .map(|((factor_id, year), rows)| {
-            let values = rows
-                .iter()
-                .flat_map(|row| row.values.iter())
-                .filter_map(|value| value.filter(|value| value.is_finite()))
-                .collect::<Vec<_>>();
+            let values = rows.iter().filter_map(|row| row.mean).collect::<Vec<_>>();
             let coverage = rows.iter().map(|row| row.coverage).collect::<Vec<_>>();
             let inf_rate = rows.iter().map(|row| row.inf_rate).collect::<Vec<_>>();
             FactorStatsSummary {

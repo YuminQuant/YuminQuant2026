@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use yq_factor_engine::backtest::request::{
-    BacktestRunRequest, NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL, DEFAULT_GROUPS,
+    BacktestRunRequest, NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL,
+    DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE,
+    DEFAULT_FACTOR_BATCH_SIZE as DEFAULT_BACKTEST_FACTOR_BATCH_SIZE, DEFAULT_GROUPS,
 };
 use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
@@ -386,6 +388,42 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         .map(|value| NeutralizeSpec::parse(value))
         .transpose()?
         .unwrap_or(NeutralizeSpec::None);
+    let factor_batch_size = match flags.get("factor-batch-size") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--factor-batch-size must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_BACKTEST_FACTOR_BATCH_SIZE,
+    };
+    let date_batch_size = match flags.get("date-batch-size") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--date-batch-size must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_BACKTEST_DATE_BATCH_SIZE,
+    };
+    let threads = match flags.get("threads") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--threads must be greater than 0",
+                ));
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
     Ok(BacktestRunRequest {
         asset_class,
         frequency,
@@ -402,6 +440,9 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         rebalance,
         neutralize,
         write_detail: flag_enabled(&flags, "write-detail"),
+        factor_batch_size,
+        date_batch_size,
+        threads,
         output_dir: flags.get("output-dir").map(PathBuf::from),
         config_path: flags.get("config").map(PathBuf::from),
     })
@@ -939,12 +980,12 @@ fn print_help() {
     println!("  --write-detail true");
     println!("  --output-dir D:/path/to/output");
     println!(
-        "  --factor-batch-size N (default {})",
-        DEFAULT_FACTOR_BATCH_SIZE
+        "  --factor-batch-size N (run default {}, backtest default {})",
+        DEFAULT_FACTOR_BATCH_SIZE, DEFAULT_BACKTEST_FACTOR_BATCH_SIZE
     );
     println!(
-        "  --date-batch-size N (default {})",
-        DEFAULT_DATE_BATCH_SIZE
+        "  --date-batch-size N (run default {}, backtest default {})",
+        DEFAULT_DATE_BATCH_SIZE, DEFAULT_BACKTEST_DATE_BATCH_SIZE
     );
     println!(
         "  --label-batch-size N (default {})",

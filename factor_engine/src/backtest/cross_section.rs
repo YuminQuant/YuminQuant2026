@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::backtest::data::{BacktestInput, BacktestPanel};
 use crate::backtest::ic::{daily_ic_observation_with_universe, IcObservation};
-use crate::backtest::metrics::{FactorStatsDaily, PerformancePoint};
+use crate::backtest::metrics::{daily_factor_stats, FactorStatsDaily, PerformancePoint};
 use crate::backtest::preprocess::{
     coverage_stats_with_universe, equal_group_weights, group_assignments, keyed_values,
     long_short_weights, maybe_neutralize, portfolio_return, portfolio_scores, turnover,
@@ -11,6 +11,8 @@ use crate::backtest::request::BacktestRunRequest;
 use crate::backtest::schedule::date_after;
 use crate::error::{err, Result};
 use crate::progress::ProgressBar;
+use crate::storage::FactorMetadata;
+use rayon::prelude::*;
 
 #[derive(Clone, Debug, Default)]
 pub struct CrossSectionBacktestOutput {
@@ -23,20 +25,13 @@ pub struct CrossSectionBacktestOutput {
 struct PortfolioState {
     weights: BTreeMap<String, Vec<f64>>,
     previous_weights: BTreeMap<String, Vec<f64>>,
-    nav: BTreeMap<String, f64>,
 }
 
 impl PortfolioState {
-    fn new(group_count: usize) -> Self {
-        let mut nav = BTreeMap::new();
-        for group_idx in 0..group_count {
-            nav.insert(group_name(group_idx), 1.0);
-        }
-        nav.insert("long_short".to_string(), 1.0);
+    fn new() -> Self {
         Self {
             weights: BTreeMap::new(),
             previous_weights: BTreeMap::new(),
-            nav,
         }
     }
 
@@ -57,117 +52,211 @@ impl PortfolioState {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CrossSectionBacktestState {
+    portfolio: PortfolioState,
+    latest_turnovers: BTreeMap<String, Option<f64>>,
+    returns: Vec<PerformancePoint>,
+    daily_ic: Vec<IcObservation>,
+    factor_stats: Vec<FactorStatsDaily>,
+}
+
+impl CrossSectionBacktestState {
+    fn new() -> Self {
+        Self {
+            portfolio: PortfolioState::new(),
+            latest_turnovers: BTreeMap::new(),
+            returns: Vec::new(),
+            daily_ic: Vec::new(),
+            factor_stats: Vec::new(),
+        }
+    }
+}
+
+pub fn init_cross_section_states(factors: &[FactorMetadata]) -> Vec<CrossSectionBacktestState> {
+    factors
+        .iter()
+        .map(|_| CrossSectionBacktestState::new())
+        .collect()
+}
+
 pub fn run_cross_section_backtest(
     request: &BacktestRunRequest,
     input: &BacktestInput,
     rebalance_dates: &[i32],
     progress: &ProgressBar,
+    thread_pool: Option<&rayon::ThreadPool>,
+    batch_index: usize,
+    batch_count: usize,
 ) -> Result<CrossSectionBacktestOutput> {
-    let mut output = CrossSectionBacktestOutput::default();
+    let mut states = init_cross_section_states(&input.factor_metadata);
+    update_cross_section_backtest_states(
+        request,
+        input,
+        rebalance_dates,
+        &mut states,
+        thread_pool,
+    )?;
+    finalize_cross_section_backtest(
+        states,
+        &input.factor_metadata,
+        progress,
+        batch_index,
+        batch_count,
+        input.target_dates.len(),
+        rebalance_dates.len(),
+    )
+}
+
+pub fn update_cross_section_backtest_states(
+    request: &BacktestRunRequest,
+    input: &BacktestInput,
+    rebalance_dates: &[i32],
+    states: &mut [CrossSectionBacktestState],
+    thread_pool: Option<&rayon::ThreadPool>,
+) -> Result<()> {
+    if states.len() != input.factor_metadata.len() {
+        return Err(err(format!(
+            "backtest state count {} does not match factor count {}",
+            states.len(),
+            input.factor_metadata.len()
+        )));
+    }
     let rebalance_lookup = rebalance_dates
         .iter()
         .enumerate()
         .map(|(idx, date)| (*date, idx))
         .collect::<BTreeMap<_, _>>();
 
-    for factor in &input.factor_metadata {
-        let mut processed_by_date = BTreeMap::<i32, Vec<Option<f64>>>::new();
-        let daily_ic_start = output.daily_ic.len();
-        for date in &input.target_dates {
-            let Some(date_idx) = input.panel.date_index(*date) else {
-                continue;
-            };
-            let raw = input.panel.cross_section(&factor.output_column, date_idx)?;
-            let factor_universe = input
-                .panel
-                .cross_section_presence(&factor.output_column, date_idx)?;
-            let stats = coverage_stats_with_universe(&raw, Some(&factor_universe));
-            output.factor_stats.push(FactorStatsDaily {
-                factor_id: factor.factor_id.clone(),
-                trade_date: *date,
-                values: raw.clone(),
-                coverage: stats.coverage,
-                inf_rate: stats.inf_rate,
-            });
-            let barra = barra_cross_sections(request, input, date_idx)?;
-            let groups = input
-                .sectors
-                .as_ref()
-                .and_then(|by_date| by_date.get(date))
-                .map(Vec::as_slice);
-            let processed = maybe_neutralize(&raw, &request.neutralize, &barra, groups);
-            processed_by_date.insert(*date, processed.clone());
+    let mut compute_batch = || {
+        states
+            .par_iter_mut()
+            .zip(input.factor_metadata.par_iter())
+            .map(|(state, factor)| {
+                update_factor_cross_section_state(request, input, &rebalance_lookup, factor, state)
+            })
+            .collect::<Vec<_>>()
+    };
+    let results = if let Some(pool) = thread_pool {
+        pool.install(compute_batch)
+    } else {
+        compute_batch()
+    };
+    for result in results {
+        result?;
+    }
+    Ok(())
+}
 
-            let label = input
-                .panel
-                .cross_section(&input.label_metadata.output_column, date_idx)?;
-            let settle_date =
-                date_after(input.panel.dates(), *date, input.label_metadata.lookahead);
-            output.daily_ic.push(daily_ic_observation_with_universe(
-                &factor.factor_id,
-                *date,
-                *date,
-                settle_date,
-                None,
-                &processed,
-                &label,
-                Some(&factor_universe),
-            ));
-        }
-        let long_short_sign = ic_mean_sign(&output.daily_ic[daily_ic_start..]);
-
-        let mut state = PortfolioState::new(request.groups);
-        let mut latest_turnovers = BTreeMap::<String, Option<f64>>::new();
-        for date in &input.target_dates {
-            if rebalance_lookup.contains_key(date) {
-                if let Some(scores) = processed_by_date.get(date) {
-                    let weights = build_portfolio_weights(scores, request.groups);
-                    latest_turnovers = state.update_weights(weights);
-                }
-            }
-            if state.weights.is_empty() {
-                continue;
-            }
-            let Some(date_idx) = input.panel.date_index(*date) else {
-                continue;
-            };
-            let label = input
-                .panel
-                .cross_section(&input.label_metadata.output_column, date_idx)?;
-            let trade_date = date_after(input.panel.dates(), *date, 1);
-            let settle_date =
-                date_after(input.panel.dates(), *date, input.label_metadata.lookahead);
-            for (portfolio, weights) in &state.weights {
-                let mut return_value = portfolio_return(weights, &label);
-                if portfolio == "long_short" {
-                    return_value = return_value.map(|value| value * long_short_sign);
-                }
-                let nav = state.nav.entry(portfolio.clone()).or_insert(1.0);
-                if let Some(value) = return_value {
-                    *nav *= 1.0 + value;
-                }
-                let turnover = latest_turnovers.remove(portfolio).flatten();
-                output.returns.push(PerformancePoint {
-                    factor_id: factor.factor_id.clone(),
-                    factor_date: *date,
-                    trade_date,
-                    settle_date,
-                    portfolio: portfolio.clone(),
-                    return_value,
-                    nav: Some(*nav),
-                    turnover,
-                });
-            }
-        }
+pub fn finalize_cross_section_backtest(
+    states: Vec<CrossSectionBacktestState>,
+    factors: &[FactorMetadata],
+    progress: &ProgressBar,
+    batch_index: usize,
+    batch_count: usize,
+    target_date_count: usize,
+    rebalance_count: usize,
+) -> Result<CrossSectionBacktestOutput> {
+    let mut output = CrossSectionBacktestOutput::default();
+    for (mut state, factor) in states.into_iter().zip(factors) {
+        finalize_factor_returns(&mut state);
+        output.returns.extend(state.returns);
+        output.daily_ic.extend(state.daily_ic);
+        output.factor_stats.extend(state.factor_stats);
         progress.tick(format!(
-            "factor={} dates={} rebalance={}",
-            factor.factor_id,
-            input.target_dates.len(),
-            rebalance_dates.len()
+            "batch={}/{} factor={} dates={} rebalance={}",
+            batch_index, batch_count, factor.factor_id, target_date_count, rebalance_count
         ));
     }
-
     Ok(output)
+}
+
+fn update_factor_cross_section_state(
+    request: &BacktestRunRequest,
+    input: &BacktestInput,
+    rebalance_lookup: &BTreeMap<i32, usize>,
+    factor: &FactorMetadata,
+    state: &mut CrossSectionBacktestState,
+) -> Result<()> {
+    for date in &input.target_dates {
+        let Some(date_idx) = input.panel.date_index(*date) else {
+            continue;
+        };
+        let raw = input.panel.cross_section(&factor.output_column, date_idx)?;
+        let factor_universe = input
+            .panel
+            .cross_section_presence(&factor.output_column, date_idx)?;
+        let stats = coverage_stats_with_universe(&raw, Some(&factor_universe));
+        state.factor_stats.push(daily_factor_stats(
+            factor.factor_id.clone(),
+            *date,
+            &raw,
+            stats.coverage,
+            stats.inf_rate,
+        ));
+        let barra = barra_cross_sections(request, input, date_idx)?;
+        let groups = input
+            .sectors
+            .as_ref()
+            .and_then(|by_date| by_date.get(date))
+            .map(Vec::as_slice);
+        let processed = maybe_neutralize(&raw, &request.neutralize, &barra, groups);
+
+        let label = input
+            .panel
+            .cross_section(&input.label_metadata.output_column, date_idx)?;
+        let settle_date = date_after(input.panel.dates(), *date, input.label_metadata.lookahead);
+        state.daily_ic.push(daily_ic_observation_with_universe(
+            &factor.factor_id,
+            *date,
+            *date,
+            settle_date,
+            None,
+            &processed,
+            &label,
+            Some(&factor_universe),
+        ));
+
+        if rebalance_lookup.contains_key(date) {
+            let weights = build_portfolio_weights(&processed, request.groups);
+            state.latest_turnovers = state.portfolio.update_weights(weights);
+        }
+        if state.portfolio.weights.is_empty() {
+            continue;
+        }
+        let trade_date = date_after(input.panel.dates(), *date, 1);
+        let settle_date = date_after(input.panel.dates(), *date, input.label_metadata.lookahead);
+        for (portfolio, weights) in &state.portfolio.weights {
+            let return_value = portfolio_return(weights, &label);
+            let turnover = state.latest_turnovers.remove(portfolio).flatten();
+            state.returns.push(PerformancePoint {
+                factor_id: factor.factor_id.clone(),
+                factor_date: *date,
+                trade_date,
+                settle_date,
+                portfolio: portfolio.clone(),
+                return_value,
+                nav: None,
+                turnover,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn finalize_factor_returns(state: &mut CrossSectionBacktestState) {
+    let long_short_sign = ic_mean_sign(&state.daily_ic);
+    let mut nav = BTreeMap::<String, f64>::new();
+    for row in &mut state.returns {
+        if row.portfolio == "long_short" {
+            row.return_value = row.return_value.map(|value| value * long_short_sign);
+        }
+        let portfolio_nav = nav.entry(row.portfolio.clone()).or_insert(1.0);
+        if let Some(value) = row.return_value {
+            *portfolio_nav *= 1.0 + value;
+        }
+        row.nav = Some(*portfolio_nav);
+    }
 }
 
 fn build_portfolio_weights(
@@ -226,6 +315,15 @@ fn _weights_by_code(panel: &BacktestPanel, weights: &[f64]) -> BTreeMap<String, 
 pub fn ensure_backtest_inputs(request: &BacktestRunRequest) -> Result<()> {
     if request.groups == 0 {
         return Err(err("--groups must be greater than 0"));
+    }
+    if request.factor_batch_size == 0 {
+        return Err(err("--factor-batch-size must be greater than 0"));
+    }
+    if request.date_batch_size == 0 {
+        return Err(err("--date-batch-size must be greater than 0"));
+    }
+    if matches!(request.threads, Some(0)) {
+        return Err(err("--threads must be greater than 0"));
     }
     Ok(())
 }

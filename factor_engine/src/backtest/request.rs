@@ -5,6 +5,8 @@ use crate::error::{err, Result};
 
 pub const DEFAULT_BACKTEST_LABEL: &str = "future_vwap_return_1d";
 pub const DEFAULT_GROUPS: usize = 10;
+pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 10;
+pub const DEFAULT_DATE_BATCH_SIZE: usize = 120;
 
 #[derive(Clone, Debug)]
 pub struct BacktestRunRequest {
@@ -20,6 +22,9 @@ pub struct BacktestRunRequest {
     pub rebalance: RebalanceRule,
     pub neutralize: NeutralizeSpec,
     pub write_detail: bool,
+    pub factor_batch_size: usize,
+    pub date_batch_size: usize,
+    pub threads: Option<usize>,
     pub output_dir: Option<PathBuf>,
     pub config_path: Option<PathBuf>,
 }

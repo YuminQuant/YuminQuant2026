@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 
@@ -36,15 +35,23 @@ def train_only(config_path: str | Path) -> list[Path]:
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
     paths = []
-    for window in build_windows(config, calendar):
+    windows = build_windows(config, calendar)
+    progress = _Progress("ml-alpha train", len(windows))
+    for idx, window in enumerate(windows, start=1):
+        progress.window(idx, window)
         model = _new_model(config)
         context = _context(config, window.window_id)
+        progress.step("load_train")
         train_bundle = dataset.load(window.train_dates, include_label=True)
+        progress.step("load_valid")
         valid_bundle = dataset.load(window.valid_dates, include_label=True)
+        progress.step("fit")
         model.fit(train_bundle.frame, valid_bundle.frame, context)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
+        progress.step("save")
         model.save(path)
         paths.append(path)
+    progress.done()
     return paths
 
 
@@ -54,15 +61,22 @@ def predict_only(config_path: str | Path) -> list[Path]:
     dataset = DatasetBuilder(config)
     frames = []
     model_class = _model_class(config.model.class_path)
-    for window in build_windows(config, calendar):
+    windows = build_windows(config, calendar)
+    progress = _Progress("ml-alpha predict", len(windows))
+    for idx, window in enumerate(windows, start=1):
+        progress.window(idx, window)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
+        progress.step("load_model")
         model = model_class.load(path)
         context = _context(config, window.window_id)
+        progress.step("load_predict")
         predict_bundle = dataset.load(window.predict_dates, include_label=False)
         if predict_bundle.frame.empty:
             continue
+        progress.step("predict")
         score = model.predict(predict_bundle.frame, context)
         frames.append(_prediction_frame(predict_bundle.frame, score))
+    progress.done()
     predictions = pd.concat(frames, ignore_index=True) if frames else _empty_prediction_frame()
     return AlphaWriter(config.output_root, config.alpha_id).write(predictions)
 
@@ -71,19 +85,29 @@ def _fit_predict_all(config: MlAlphaConfig) -> pd.DataFrame:
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
     frames = []
-    for window in build_windows(config, calendar):
+    windows = build_windows(config, calendar)
+    progress = _Progress("ml-alpha run", len(windows))
+    for idx, window in enumerate(windows, start=1):
+        progress.window(idx, window)
         model = _new_model(config)
         context = _context(config, window.window_id)
+        progress.step("load_train")
         train_bundle = dataset.load(window.train_dates, include_label=True)
+        progress.step("load_valid")
         valid_bundle = dataset.load(window.valid_dates, include_label=True)
         if train_bundle.frame.empty:
             continue
+        progress.step("fit")
         model.fit(train_bundle.frame, valid_bundle.frame, context)
+        progress.step("save")
         model.save(window_artifact_path(config.model.artifact_dir, window.window_id))
+        progress.step("load_predict")
         predict_bundle = dataset.load(window.predict_dates, include_label=False)
         if predict_bundle.frame.empty:
             continue
+        progress.step("predict")
         frames.append(_prediction_frame(predict_bundle.frame, model.predict(predict_bundle.frame, context)))
+    progress.done()
     return pd.concat(frames, ignore_index=True) if frames else _empty_prediction_frame()
 
 
@@ -254,3 +278,36 @@ def _prediction_frame(source: pd.DataFrame, score: pd.Series) -> pd.DataFrame:
 
 def _empty_prediction_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=["trade_date", "ts_code", "score"])
+
+
+class _Progress:
+    def __init__(self, label: str, total: int) -> None:
+        self.label = label
+        self.total = total
+        self.current = 0
+
+    def window(self, current: int, window: TrainingWindow) -> None:
+        self.current = current
+        percent = 100.0 * current / self.total if self.total else 100.0
+        predict_span = _date_span(window.predict_dates)
+        print(
+            f"{self.label} [{current}/{self.total} {percent:5.1f}%] "
+            f"window={window.window_id} train={len(window.train_dates)} "
+            f"valid={len(window.valid_dates)} predict={len(window.predict_dates)} "
+            f"predict_dates={predict_span}",
+            flush=True,
+        )
+
+    def step(self, name: str) -> None:
+        print(f"{self.label} [{self.current}/{self.total}] step={name}", flush=True)
+
+    def done(self) -> None:
+        print(f"{self.label} done windows={self.total}", flush=True)
+
+
+def _date_span(dates: list[int]) -> str:
+    if not dates:
+        return "-"
+    if len(dates) == 1:
+        return str(dates[0])
+    return f"{dates[0]}..{dates[-1]}"

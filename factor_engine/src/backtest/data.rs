@@ -20,6 +20,7 @@ pub struct BacktestInput {
     pub all_dates: Vec<i32>,
     pub panel: BacktestPanel,
     pub universe: BacktestUniverseBatch,
+    pub trade_filter: BacktestTradeFilterBatch,
     pub benchmark: BenchmarkBatch,
     pub sectors: Option<HashMap<i32, Vec<Option<String>>>>,
 }
@@ -36,6 +37,7 @@ pub struct BacktestDataPlan {
     barra_table: Option<Table>,
     sector_map: Option<ClassificationMap>,
     universe: BacktestUniversePlan,
+    trade_filter: BacktestTradeFilterPlan,
     benchmark: BenchmarkPlan,
 }
 
@@ -52,6 +54,22 @@ pub struct BacktestUniverseBatch {
 }
 
 impl BacktestUniverseBatch {
+    pub fn mask_for(&self, date: i32) -> Option<&[bool]> {
+        self.masks.get(&date).map(Vec::as_slice)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BacktestTradeFilterPlan {
+    masks: HashMap<i32, Vec<bool>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BacktestTradeFilterBatch {
+    masks: HashMap<i32, Vec<bool>>,
+}
+
+impl BacktestTradeFilterBatch {
     pub fn mask_for(&self, date: i32) -> Option<&[bool]> {
         self.masks.get(&date).map(Vec::as_slice)
     }
@@ -195,11 +213,8 @@ pub fn prepare_backtest_data_plan(
         &label_columns,
     )?;
     let instruments = instruments_from_table(&label_table)?;
-    let mut universe = load_universe_plan(config, &request.universe, &target_dates, &instruments)?;
-    if request.exclude_limit || request.exclude_st {
-        let trade_filters = load_trade_filter_masks(config, request, &target_dates, &instruments)?;
-        universe = universe.with_additional_masks(trade_filters);
-    }
+    let universe = load_universe_plan(config, &request.universe, &target_dates, &instruments)?;
+    let trade_filter = load_trade_filter_plan(config, request, &target_dates, &instruments)?;
     let benchmark = load_benchmark_plan(config, &request.benchmark, &target_dates, &instruments)?;
 
     let barra_columns = request.neutralize.barra_columns();
@@ -246,6 +261,7 @@ pub fn prepare_backtest_data_plan(
         barra_table,
         sector_map,
         universe,
+        trade_filter,
         benchmark,
     })
 }
@@ -316,31 +332,27 @@ pub fn load_backtest_input_batch(
         all_dates,
         panel,
         universe: plan.universe.slice(target_dates),
+        trade_filter: plan.trade_filter.slice(target_dates),
         benchmark: plan.benchmark.slice(target_dates),
         sectors,
     })
 }
 
 impl BacktestUniversePlan {
-    fn with_additional_masks(mut self, extra_masks: HashMap<i32, Vec<bool>>) -> Self {
-        for (date, extra) in extra_masks {
-            match self.masks.get_mut(&date) {
-                Some(base) => {
-                    for (base_value, extra_value) in base.iter_mut().zip(extra) {
-                        *base_value = *base_value && extra_value;
-                    }
-                }
-                None => {
-                    self.masks.insert(date, extra);
-                }
-            }
-        }
-        self
-    }
-
     fn slice(&self, dates: &[i32]) -> BacktestUniverseBatch {
         BacktestUniverseBatch {
             id: self.id.clone(),
+            masks: dates
+                .iter()
+                .filter_map(|date| self.masks.get(date).map(|mask| (*date, mask.clone())))
+                .collect(),
+        }
+    }
+}
+
+impl BacktestTradeFilterPlan {
+    fn slice(&self, dates: &[i32]) -> BacktestTradeFilterBatch {
+        BacktestTradeFilterBatch {
             masks: dates
                 .iter()
                 .filter_map(|date| self.masks.get(date).map(|mask| (*date, mask.clone())))
@@ -572,6 +584,23 @@ fn load_trade_filter_masks(
         masks.insert(*date, mask);
     }
     Ok(masks)
+}
+
+fn load_trade_filter_plan(
+    config: &EngineConfig,
+    request: &BacktestRunRequest,
+    target_dates: &[i32],
+    instruments: &[String],
+) -> Result<BacktestTradeFilterPlan> {
+    let masks = if request.exclude_limit || request.exclude_st {
+        load_trade_filter_masks(config, request, target_dates, instruments)?
+    } else {
+        target_dates
+            .iter()
+            .map(|date| (*date, vec![true; instruments.len()]))
+            .collect()
+    };
+    Ok(BacktestTradeFilterPlan { masks })
 }
 
 fn daily_trade_filter_path(root: &Path, trade_date: i32) -> PathBuf {

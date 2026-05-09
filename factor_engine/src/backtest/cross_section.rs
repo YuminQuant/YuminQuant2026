@@ -186,8 +186,11 @@ fn update_factor_cross_section_state(
         };
         let raw = input.panel.cross_section(&factor.output_column, date_idx)?;
         let universe_mask = input.universe.mask_for(*date);
-        let masked_raw = apply_universe_mask(&raw, universe_mask);
-        let stats = coverage_stats_with_universe(&raw, universe_mask);
+        let trade_filter_mask = input.trade_filter.mask_for(*date);
+        let eligible_mask = combined_mask(universe_mask, trade_filter_mask);
+        let eligible_mask_ref = eligible_mask.as_deref();
+        let masked_raw = apply_universe_mask(&raw, eligible_mask_ref);
+        let stats = coverage_stats_with_universe(&raw, eligible_mask_ref);
         state.factor_stats.push(daily_factor_stats(
             factor.factor_id.clone(),
             *date,
@@ -206,7 +209,8 @@ fn update_factor_cross_section_state(
         let label = input
             .panel
             .cross_section(&input.label_metadata.output_column, date_idx)?;
-        let benchmark_return = benchmark_return(&input.benchmark.kind, *date, &label);
+        let benchmark_return =
+            benchmark_return(&input.benchmark.kind, *date, &label, trade_filter_mask);
         let settle_date = date_after(input.panel.dates(), *date, input.label_metadata.lookahead);
         state.daily_ic.push(daily_ic_observation_with_universe(
             &factor.factor_id,
@@ -216,7 +220,7 @@ fn update_factor_cross_section_state(
             None,
             &processed,
             &label,
-            universe_mask,
+            eligible_mask_ref,
         ));
 
         if rebalance_lookup.contains_key(date) {
@@ -287,15 +291,36 @@ fn apply_universe_mask(values: &[Option<f64>], universe: Option<&[bool]>) -> Vec
         .collect()
 }
 
-fn benchmark_return(kind: &BenchmarkKind, date: i32, label: &[Option<f64>]) -> Option<f64> {
+fn combined_mask(left: Option<&[bool]>, right: Option<&[bool]>) -> Option<Vec<bool>> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(
+            left.iter()
+                .enumerate()
+                .map(|(idx, value)| *value && right.get(idx).copied().unwrap_or(false))
+                .collect(),
+        ),
+        (Some(values), None) | (None, Some(values)) => Some(values.to_vec()),
+        (None, None) => None,
+    }
+}
+
+fn benchmark_return(
+    kind: &BenchmarkKind,
+    date: i32,
+    label: &[Option<f64>],
+    trade_filter: Option<&[bool]>,
+) -> Option<f64> {
     match kind {
         BenchmarkKind::MarketMean => {
             let mut sum = 0.0;
             let mut count = 0usize;
-            for value in label
-                .iter()
-                .filter_map(|value| value.filter(|value| value.is_finite()))
-            {
+            for (idx, value) in label.iter().enumerate() {
+                if trade_filter.is_some_and(|mask| !mask.get(idx).copied().unwrap_or(false)) {
+                    continue;
+                }
+                let Some(value) = value.filter(|value| value.is_finite()) else {
+                    continue;
+                };
                 sum += value;
                 count += 1;
             }

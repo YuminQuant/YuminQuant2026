@@ -1,0 +1,54 @@
+run_id = "lgbm_combo_v1"
+alpha_id = "ml_lgbm_combo_v1"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20110101, 20201231]
+valid = [20210101, 20211231]
+predict = [20220101, 20260424]
+
+[sample]
+# Supports daily, weekly/weekly_end, monthly/monthly_end, 5/20, or every_5_days/every_20_days.
+frequency = "monthly_end"
+
+[train_scheme]
+type = "expanding"
+refit_frequency = "monthly"
+min_train_days = 756
+rolling_train_days = 756
+valid_days = 252
+
+[label]
+id = "future_vwap_return_20d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = true
+exclude_st = true
+exclude_bj = true
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd", "gmm_mean", "peer_ds_by_t"]
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/lgbm_combo_v1/cache"
+
+[model]
+name = "lgbm"
+class = "yq_ml_alpha.models.lgbm_model.LightGBMAlphaModel"
+artifact_dir = "data/model_workspace/lgbm_combo_v1/artifacts"
+
+[model.params]
+objective = "regression"
+learning_rate = 0.03
+num_leaves = 63
+
+[tuning]
+enabled = false
+method = "optuna"

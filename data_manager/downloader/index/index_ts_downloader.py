@@ -126,6 +126,11 @@ class IndexWeightDownloader(BaseDownloader):
     """Download and store monthly index constituent weights by index code."""
 
     REQUIRED_COLUMNS = ["index_code", "con_code", "trade_date", "weight"]
+    CSI300_LEGACY_QUERY_CODE = "399300.SZ"
+    CSI300_CANONICAL_CODE = "000300.SH"
+    CSI300_LEGACY_QUERY_END_MONTH = "201512"
+    CSI1000_CANONICAL_CODE = "000852.SH"
+    CSI1000_FIRST_VALID_MONTH = "201505"
 
     def __init__(self):
         config = ConfigManager().config
@@ -157,30 +162,59 @@ class IndexWeightDownloader(BaseDownloader):
                 continue
             year = month_start.strftime("%Y")
             month = month_start.strftime("%Y%m")
+            if self._skip_month(index_code, month):
+                self.logger.info(f"skip index_weight {index_code} {month}: before first valid month")
+                continue
             year_dir = os.path.join(code_dir, year)
             os.makedirs(year_dir, exist_ok=True)
             file_path = os.path.join(year_dir, f"{month}.parquet")
             if os.path.exists(file_path):
                 continue
 
+            query_code = self._query_index_code(index_code, month)
+
             try:
-                df = self.pro.index_weight(index_code=index_code, start_date=m_start, end_date=m_end)
+                df = self.pro.index_weight(index_code=query_code, start_date=m_start, end_date=m_end)
                 self.safe_sleep()
                 if df is not None and not df.empty:
-                    written = self._save_month(file_path, df)
-                    self.logger.info(
-                        f"-> index_weight {index_code} {month} saved rows={written}"
-                    )
+                    written = self._save_month(file_path, df, canonical_index_code=index_code)
+                    if written:
+                        self.logger.info(
+                            f"-> index_weight {index_code} {month} query={query_code} saved rows={written}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"skip index_weight {index_code} {month} query={query_code}: no valid trade_date rows"
+                        )
             except Exception as exc:
-                self.logger.error(f"index_weight {index_code} {m_start} failed: {exc}")
+                self.logger.error(f"index_weight {index_code} query={query_code} {m_start} failed: {exc}")
 
-    def _save_month(self, file_path, df):
+    def _query_index_code(self, index_code, month):
+        if (
+            index_code.upper() == self.CSI300_CANONICAL_CODE
+            and month <= self.CSI300_LEGACY_QUERY_END_MONTH
+        ):
+            return self.CSI300_LEGACY_QUERY_CODE
+        return index_code
+
+    def _skip_month(self, index_code, month):
+        return (
+            index_code.upper() == self.CSI1000_CANONICAL_CODE
+            and month < self.CSI1000_FIRST_VALID_MONTH
+        )
+
+    def _save_month(self, file_path, df, canonical_index_code):
         df = df.copy()
         for column in self.REQUIRED_COLUMNS:
             if column not in df.columns:
                 df[column] = np.nan
+        df["index_code"] = canonical_index_code
         df = df[self.REQUIRED_COLUMNS]
         df.drop_duplicates(subset=["index_code", "con_code", "trade_date"], keep="last", inplace=True)
+        max_trade_date = pd.to_numeric(df["trade_date"], errors="coerce").max()
+        if pd.isna(max_trade_date):
+            return 0
+        df = df[pd.to_numeric(df["trade_date"], errors="coerce") == max_trade_date].copy()
 
         df["trade_date"] = df["trade_date"].astype(np.int32)
         df["weight"] = pd.to_numeric(df["weight"], errors="coerce").astype(np.float32)

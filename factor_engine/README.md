@@ -99,6 +99,9 @@ python scripts\update_incremental.py --groups index_weight --ts-code 000300.SH
 python scripts\update_incremental.py --groups index_weight --start-date 20090101 --end-date 20260331
 ```
 
+CSI 300 has a downloader compatibility rule: before 2016-01, index weights are
+queried with `399300.SZ` and stored canonically as `000300.SH` in `000300_SH`.
+
 Custom universes live at `data/universe/{universe_id}.parquet` with
 `trade_date`, `ts_code`, and optional `weight`.
 

@@ -462,9 +462,16 @@ fn instruments_from_table(table: &Table) -> Result<Vec<String>> {
     let mut instrument_set = BTreeSet::new();
     let ts_codes = table.required_utf8("ts_code")?;
     for ts_code in ts_codes.iter().flatten() {
+        if is_backtest_excluded_instrument(ts_code) {
+            continue;
+        }
         instrument_set.insert(ts_code.clone());
     }
     Ok(instrument_set.into_iter().collect())
+}
+
+fn is_backtest_excluded_instrument(ts_code: &str) -> bool {
+    ts_code.to_ascii_uppercase().ends_with(".BJ")
 }
 
 #[derive(Clone, Debug)]
@@ -1069,8 +1076,10 @@ fn empty_output_table(columns: &[String]) -> Result<Table> {
 mod tests {
     use super::{
         effective_weights_by_date, index_weight_path_may_overlap, index_weight_to_decimal,
-        parse_lookahead, universe_list_date_floor, WeightRecord,
+        instruments_from_table, parse_lookahead, universe_list_date_floor, WeightRecord,
     };
+    use crate::data::{ColumnData, Table};
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     #[test]
@@ -1137,5 +1146,29 @@ mod tests {
             20260101,
             20260331,
         ));
+    }
+
+    #[test]
+    fn backtest_instruments_exclude_bj_codes() {
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("920087.BJ".to_string()),
+                    Some("600000.SH".to_string()),
+                ]),
+            ),
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260424), Some(20260424), Some(20260424)]),
+            ),
+        ]))
+        .expect("valid table");
+
+        assert_eq!(
+            instruments_from_table(&table).expect("instruments"),
+            vec!["000001.SZ".to_string(), "600000.SH".to_string()]
+        );
     }
 }

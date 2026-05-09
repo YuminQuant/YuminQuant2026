@@ -5,6 +5,6 @@ pub mod pool;
 pub mod table;
 
 pub use catalog::DataCatalog;
-pub use loader::MarketDataLoader;
+pub use loader::{DisclosureTableCache, MarketDataLoader};
 pub use pool::DataPool;
 pub use table::{ColumnData, Table};

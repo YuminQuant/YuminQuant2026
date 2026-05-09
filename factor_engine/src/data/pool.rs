@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::core::{DataRequest, DatasetId, FactorContext, Frequency};
-use crate::data::loader::MarketDataLoader;
+use crate::data::loader::{DisclosureTableCache, MarketDataLoader};
 use crate::data::table::Table;
 use crate::error::{err, Result};
 use crate::factor::common::DailyPanel;
@@ -22,6 +22,16 @@ impl DataPool {
         loader: &MarketDataLoader,
         requests: &[DataRequest],
         context: &FactorContext,
+    ) -> Result<Self> {
+        let mut disclosure_cache = DisclosureTableCache::default();
+        Self::load_with_disclosure_cache(loader, requests, context, &mut disclosure_cache)
+    }
+
+    pub fn load_with_disclosure_cache(
+        loader: &MarketDataLoader,
+        requests: &[DataRequest],
+        context: &FactorContext,
+        disclosure_cache: &mut DisclosureTableCache,
     ) -> Result<Self> {
         let mut grouped: HashMap<(DatasetId, Option<String>), (BTreeSet<String>, Option<usize>)> =
             HashMap::new();
@@ -85,12 +95,13 @@ impl DataPool {
                 dataset,
                 DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow
             ) {
-                let table = loader.load_financial(
+                let table = loader.load_financial_cached(
                     dataset,
                     &columns,
                     context.start_date,
                     context.end_date,
                     financial_quarters.unwrap_or(0),
+                    disclosure_cache,
                 )?;
                 pool.daily.insert(dataset, table);
                 continue;
@@ -105,10 +116,11 @@ impl DataPool {
                 continue;
             }
             if dataset == DatasetId::StockAnalystReport {
-                let table = loader.load_stock_analyst_report(
+                let table = loader.load_stock_analyst_report_cached(
                     &columns,
                     context.load_start_date,
                     context.end_date,
+                    disclosure_cache,
                 )?;
                 pool.daily.insert(dataset, table);
                 continue;

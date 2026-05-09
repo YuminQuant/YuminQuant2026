@@ -11,6 +11,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 DateRange = tuple[int, int]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -114,8 +115,8 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     with config_path.open("rb") as file:
         raw = tomllib.load(file)
 
-    data_root = Path(raw.get("data_root", "data"))
-    output_root = Path(raw.get("output_root", "data/models"))
+    data_root = _project_path(raw.get("data_root", "data"))
+    output_root = _project_path(raw.get("output_root", "data/models"))
     run_id = _required(raw, "run_id")
     alpha_id = _required(raw, "alpha_id")
 
@@ -141,7 +142,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         train_scheme=TrainSchemeConfig(**{**TrainSchemeConfig().__dict__, **raw.get("train_scheme", {})}),
         label=LabelConfig(
             id=_required(label, "id", "label.id"),
-            root=Path(label.get("root", data_root / "label" / "stock" / "daily")),
+            root=_project_path(label.get("root", data_root / "label" / "stock" / "daily")),
         ),
         universe=UniverseConfig(id=universe.get("id", "mkt_all")),
         filters=FiltersConfig(
@@ -155,18 +156,18 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         ),
         features=FeaturesConfig(
             type=_required(features, "type", "features.type"),
-            root=Path(_required(features, "root", "features.root")),
+            root=_project_path(_required(features, "root", "features.root")),
             columns=list(features.get("columns", [])),
             params={key: value for key, value in features.items() if key not in {"type", "root", "columns"}},
         ),
         materialize=MaterializeConfig(
             cache_samples=bool(materialize.get("cache_samples", False)),
-            cache_dir=Path(materialize.get("cache_dir", data_root / "model_workspace" / run_id / "cache")),
+            cache_dir=_project_path(materialize.get("cache_dir", data_root / "model_workspace" / run_id / "cache")),
         ),
         model=ModelConfig(
             name=_required(model, "name", "model.name"),
             class_path=_required(model, "class", "model.class"),
-            artifact_dir=Path(model.get("artifact_dir", data_root / "model_workspace" / run_id / "artifacts")),
+            artifact_dir=_project_path(model.get("artifact_dir", data_root / "model_workspace" / run_id / "artifacts")),
             params=dict(model.get("params", {})),
         ),
         tuning=TuningConfig(
@@ -186,6 +187,11 @@ def _sample_config(section: dict[str, Any]) -> SampleConfig:
         train_frequency=section.get("train_frequency"),
         predict_frequency=section.get("predict_frequency"),
     )
+
+
+def _project_path(value: str | Path) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 def _required(mapping: dict[str, Any], key: str, label: str | None = None) -> Any:

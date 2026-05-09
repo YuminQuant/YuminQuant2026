@@ -11,7 +11,7 @@ use crate::core::{
     FactorSpec, Frequency, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawRequest,
     IntradayDailyRawSpec,
 };
-use crate::data::{DataCatalog, DataPool, MarketDataLoader};
+use crate::data::{DataCatalog, DataPool, DisclosureTableCache, MarketDataLoader};
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
 use crate::factor::{Factor, IntradayRawMaterializeMode};
@@ -308,6 +308,7 @@ impl Engine {
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();
         let mut materialized_intraday_raw_dates = BTreeSet::<(String, i32)>::new();
+        let mut disclosure_cache = DisclosureTableCache::default();
         let progress = ProgressBar::new("run", execution_batch_count, true);
 
         for group in &execution_groups {
@@ -362,7 +363,12 @@ impl Engine {
                             .flat_map(|spec| spec.dependencies.clone()),
                     );
                     let load_started = Instant::now();
-                    let mut pool = DataPool::load(&loader, &batch_requests, &context)?;
+                    let mut pool = DataPool::load_with_disclosure_cache(
+                        &loader,
+                        &batch_requests,
+                        &context,
+                        &mut disclosure_cache,
+                    )?;
                     let load_ms = load_started.elapsed().as_millis();
                     let raw_ids = raw_ids_for_specs(&batch_specs);
                     if !raw_ids.is_empty() {

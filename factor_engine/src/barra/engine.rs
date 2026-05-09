@@ -12,7 +12,7 @@ use crate::config::EngineConfig;
 use crate::core::{
     barra_registry_key, AssetClass, BarraSeries, BarraSpec, DataRequest, FactorContext, Frequency,
 };
-use crate::data::{DataCatalog, DataPool, MarketDataLoader};
+use crate::data::{DataCatalog, DataPool, DisclosureTableCache, MarketDataLoader};
 use crate::engine::{BatchProfile, FactorProfile};
 use crate::error::{err, Result};
 use crate::progress::ProgressBar;
@@ -284,6 +284,7 @@ impl BarraEngine {
         let progress = ProgressBar::new("barra-run", execution_batch_count, true);
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();
+        let mut disclosure_cache = DisclosureTableCache::default();
 
         for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
             let batch_start_date = *date_batch
@@ -331,7 +332,12 @@ impl BarraEngine {
                         .flat_map(|spec| spec.dependencies.clone()),
                 );
                 let load_started = Instant::now();
-                let pool = DataPool::load(&loader, &batch_requests, &context)?;
+                let pool = DataPool::load_with_disclosure_cache(
+                    &loader,
+                    &batch_requests,
+                    &context,
+                    &mut disclosure_cache,
+                )?;
                 let load_ms = load_started.elapsed().as_millis();
                 let compute_started = Instant::now();
                 let results = compute_exposure_batch(

@@ -116,13 +116,13 @@ The default label is `future_vwap_return_1d`, and the default neutralization is
 Single factor, rebalance every 5 trading days:
 
 ```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance 5 --write-detail true
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance 5
 ```
 
 Weekly rebalance:
 
 ```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance weekly --write-detail true
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance weekly
 ```
 
 Other rebalance options:
@@ -140,8 +140,8 @@ Other rebalance options:
 Run a tag group or all non-deprecated factors:
 
 ```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance 5 --write-detail true
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --write-detail true
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance 5
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5
 ```
 
 Optional controls:
@@ -190,6 +190,39 @@ The `returns` file contains group portfolios and the `long_short` portfolio,
 plus `benchmark_return` and `excess_return`. `long_short` is adjusted by
 `sign(mean(IC))`; `excess_return` is filled only for `group_N` when IC is
 positive and `group_1` when IC is negative.
+
+## Python ML Alpha
+
+The Python ML alpha package lives in `ml_alpha/`. It trains and predicts ML
+alphas in Python, then writes standard daily alpha parquet files under
+`data/models/{year}/{trade_date}.parquet`.
+
+Install it in editable mode from the repository root:
+
+```powershell
+pip install -e .\ml_alpha
+```
+
+Run an existing-factor combo model:
+
+```powershell
+python -m yq_ml_alpha run --config ml_alpha\configs\examples\mean_combo_smoke.toml
+```
+
+The package supports:
+
+- `factor_frame` features for combining existing factor columns.
+- `raw_panel` features for end-to-end OHLCV/minute/raw experiments.
+- `static`, `expanding`, and `rolling` training schemes.
+- sample frequencies aligned with backtest-style rebalancing: `daily`,
+  `weekly`, `monthly`, `5`, `20`, or `every_5_days`.
+- model-owned tuning through `python -m yq_ml_alpha tune --config ...`.
+
+ML alpha output is compatible with the Rust backtest direct root layout:
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_mean_combo_smoke --factor-root data\models
+```
 
 ## Git And Data Safety
 

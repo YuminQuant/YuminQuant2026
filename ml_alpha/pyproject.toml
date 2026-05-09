@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yq-ml-alpha"
+version = "0.1.0"
+description = "Python ML alpha training, prediction, and alpha parquet writer for YuminQuant."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "pyarrow",
+  "tomli; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+ml = ["scikit-learn", "lightgbm"]
+torch = ["torch"]
+tune = ["optuna"]
+
+[project.scripts]
+yq-ml-alpha = "yq_ml_alpha.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["yq_ml_alpha*"]

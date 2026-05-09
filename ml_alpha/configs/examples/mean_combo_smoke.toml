@@ -1,0 +1,47 @@
+run_id = "mean_combo_smoke"
+alpha_id = "ml_mean_combo_smoke"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20260105, 20260130]
+valid = [20260202, 20260227]
+predict = [20260302, 20260331]
+
+[sample]
+# Supports daily, weekly/weekly_end, monthly/monthly_end, 5/20, or every_5_days/every_20_days.
+frequency = "monthly_end"
+
+[train_scheme]
+type = "static"
+
+[label]
+id = "future_vwap_return_20d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = true
+exclude_st = true
+exclude_bj = true
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd", "gmm_mean"]
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mean_combo_smoke/cache"
+
+[model]
+name = "mean_feature"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/mean_combo_smoke/artifacts"
+
+[model.params]
+
+[tuning]
+enabled = false
+method = "none"

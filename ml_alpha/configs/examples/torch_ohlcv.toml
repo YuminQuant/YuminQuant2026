@@ -1,0 +1,53 @@
+run_id = "torch_ohlcv_v1"
+alpha_id = "ml_torch_ohlcv_v1"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20180101, 20201231]
+valid = [20210101, 20211231]
+predict = [20220101, 20260424]
+
+[sample]
+# Supports daily, weekly/weekly_end, monthly/monthly_end, 5/20, or every_5_days/every_20_days.
+frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "monthly"
+rolling_train_days = 756
+valid_days = 252
+
+[label]
+id = "future_vwap_return_20d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = true
+exclude_st = true
+exclude_bj = true
+
+[features]
+type = "raw_panel"
+root = "data/stock_data/daily/pv"
+columns = ["open", "high", "low", "close", "vol", "amount"]
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/torch_ohlcv_v1/cache"
+
+[model]
+name = "torch_mlp"
+class = "yq_ml_alpha.models.torch_model.TorchMLPAlphaModel"
+artifact_dir = "data/model_workspace/torch_ohlcv_v1/artifacts"
+
+[model.params]
+hidden = 64
+epochs = 10
+lr = 0.001
+
+[tuning]
+enabled = false
+method = "none"

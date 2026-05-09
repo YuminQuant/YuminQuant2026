@@ -51,6 +51,7 @@ from data_manager import (
     USBasicDownloader,
     USCalendarDownloader,
 )
+from data_manager.processor import StockTradeFilterBuilder
 
 
 DEFAULT_START_DATES = {
@@ -253,9 +254,20 @@ def update_stock_daily(args, logger):
         ("stock_suspend", lambda: StockSuspendDownloader().sync(start_date, end_date)),
         ("stock_moneyflow", lambda: StockMoneyflowDownloader().sync(start_date, end_date)),
         ("stock_st", lambda: StDownloader().sync(args.start_date or DEFAULT_START_DATES["stock_st"], end_date)),
+        ("stock_trade_filter", lambda: StockTradeFilterBuilder().sync(start_date, end_date)),
     ]
     for name, fn in tasks:
         run_task(logger, name, fn)
+
+
+def update_stock_trade_filter(args, logger):
+    start_date = args.start_date or DEFAULT_START_DATES["stock"]
+    end_date = args.end_date or bj_today()
+    run_task(
+        logger,
+        "stock_trade_filter",
+        lambda: StockTradeFilterBuilder().sync(start_date, end_date),
+    )
 
 
 def update_stock_minute(args, logger):
@@ -363,6 +375,7 @@ GROUPS = {
     "hk_static": lambda args, logger: update_hk_static(logger),
     "us_static": lambda args, logger: update_us_static(logger),
     "stock_daily": update_stock_daily,
+    "stock_trade_filter": update_stock_trade_filter,
     "stock_minute": update_stock_minute,
     "stock_financial": update_stock_financial,
     "stock_alt": update_stock_alt,

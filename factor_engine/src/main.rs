@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use yq_factor_engine::backtest::request::{
-    BacktestRunRequest, NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL, DEFAULT_BENCHMARK,
-    DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE,
+    BacktestRunRequest, LimitSide, NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL,
+    DEFAULT_BENCHMARK, DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE,
+    DEFAULT_EXCLUDE_LIMIT, DEFAULT_EXCLUDE_ST,
     DEFAULT_FACTOR_BATCH_SIZE as DEFAULT_BACKTEST_FACTOR_BATCH_SIZE, DEFAULT_GROUPS,
     DEFAULT_UNIVERSE,
 };
@@ -448,6 +449,13 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
             .get("benchmark")
             .cloned()
             .unwrap_or_else(|| DEFAULT_BENCHMARK.to_string()),
+        exclude_limit: flag_bool(&flags, "exclude-limit", DEFAULT_EXCLUDE_LIMIT),
+        exclude_st: flag_bool(&flags, "exclude-st", DEFAULT_EXCLUDE_ST),
+        limit_side: flags
+            .get("limit-side")
+            .map(|value| LimitSide::parse(value))
+            .transpose()?
+            .unwrap_or(LimitSide::Both),
         write_detail: flag_enabled(&flags, "write-detail"),
         factor_batch_size,
         date_batch_size,
@@ -701,6 +709,17 @@ fn flag_enabled(flags: &HashMap<String, String>, name: &str) -> bool {
         .get(name)
         .map(|value| value == "true" || value == "1" || value.eq_ignore_ascii_case("yes"))
         .unwrap_or(false)
+}
+
+fn flag_bool(flags: &HashMap<String, String>, name: &str, default: bool) -> bool {
+    flags
+        .get(name)
+        .map(|value| match value.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "y" => true,
+            "false" | "0" | "no" | "n" => false,
+            _ => default,
+        })
+        .unwrap_or(default)
 }
 
 fn parse_csv_values(value: &str) -> Vec<String> {
@@ -988,6 +1007,9 @@ fn print_help() {
     println!("  --neutralize none|industry|barra:SIZE|barra:SIZE+industry");
     println!("  --universe mkt_all|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id");
     println!("  --benchmark mkt_mean|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id");
+    println!("  --exclude-limit true|false (backtest default true)");
+    println!("  --exclude-st true|false (backtest default true)");
+    println!("  --limit-side both|up|down (backtest default both)");
     println!("  --write-detail true");
     println!("  --output-dir D:/path/to/output");
     println!(
@@ -1016,7 +1038,7 @@ mod tests {
     use super::{
         flag_enabled, matches_tag_filter, parse_backtest_run_request, parse_barra_run_request,
         parse_csv_values, parse_flags, parse_label_run_request, parse_run_request, parse_yyyymmdd,
-        DEFAULT_DATE_BATCH_SIZE, DEFAULT_LABEL_BATCH_SIZE,
+        LimitSide, DEFAULT_DATE_BATCH_SIZE, DEFAULT_LABEL_BATCH_SIZE,
     };
 
     #[test]
@@ -1235,6 +1257,9 @@ mod tests {
         let request = parse_backtest_run_request(&args).expect("request");
         assert_eq!(request.universe, "mkt_all");
         assert_eq!(request.benchmark, "mkt_mean");
+        assert!(request.exclude_limit);
+        assert!(request.exclude_st);
+        assert_eq!(request.limit_side, LimitSide::Both);
 
         let args = [
             "--asset",
@@ -1251,6 +1276,12 @@ mod tests {
             "000300.SH",
             "--benchmark",
             "000905.SH",
+            "--exclude-limit",
+            "false",
+            "--exclude-st",
+            "false",
+            "--limit-side",
+            "up",
         ]
         .iter()
         .map(|value| value.to_string())
@@ -1258,6 +1289,9 @@ mod tests {
         let request = parse_backtest_run_request(&args).expect("request");
         assert_eq!(request.universe, "000300.SH");
         assert_eq!(request.benchmark, "000905.SH");
+        assert!(!request.exclude_limit);
+        assert!(!request.exclude_st);
+        assert_eq!(request.limit_side, LimitSide::Up);
     }
 
     #[test]

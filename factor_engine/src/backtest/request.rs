@@ -9,6 +9,8 @@ pub const DEFAULT_BENCHMARK: &str = "mkt_mean";
 pub const DEFAULT_GROUPS: usize = 10;
 pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 10;
 pub const DEFAULT_DATE_BATCH_SIZE: usize = 120;
+pub const DEFAULT_EXCLUDE_LIMIT: bool = true;
+pub const DEFAULT_EXCLUDE_ST: bool = true;
 
 #[derive(Clone, Debug)]
 pub struct BacktestRunRequest {
@@ -25,12 +27,43 @@ pub struct BacktestRunRequest {
     pub neutralize: NeutralizeSpec,
     pub universe: String,
     pub benchmark: String,
+    pub exclude_limit: bool,
+    pub exclude_st: bool,
+    pub limit_side: LimitSide,
     pub write_detail: bool,
     pub factor_batch_size: usize,
     pub date_batch_size: usize,
     pub threads: Option<usize>,
     pub output_dir: Option<PathBuf>,
     pub config_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LimitSide {
+    Both,
+    Up,
+    Down,
+}
+
+impl LimitSide {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "both" | "all" | "limit" => Ok(Self::Both),
+            "up" | "limit_up" | "limit-up" => Ok(Self::Up),
+            "down" | "limit_down" | "limit-down" => Ok(Self::Down),
+            _ => Err(err(format!(
+                "--limit-side must be both|up|down, got {value}"
+            ))),
+        }
+    }
+
+    pub fn allows(&self, is_limit_up: bool, is_limit_down: bool, is_limit: bool) -> bool {
+        match self {
+            Self::Both => !is_limit,
+            Self::Up => !is_limit_up,
+            Self::Down => !is_limit_down,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -195,7 +195,11 @@ pub fn prepare_backtest_data_plan(
         &label_columns,
     )?;
     let instruments = instruments_from_table(&label_table)?;
-    let universe = load_universe_plan(config, &request.universe, &target_dates, &instruments)?;
+    let mut universe = load_universe_plan(config, &request.universe, &target_dates, &instruments)?;
+    if request.exclude_limit || request.exclude_st {
+        let trade_filters = load_trade_filter_masks(config, request, &target_dates, &instruments)?;
+        universe = universe.with_additional_masks(trade_filters);
+    }
     let benchmark = load_benchmark_plan(config, &request.benchmark, &target_dates, &instruments)?;
 
     let barra_columns = request.neutralize.barra_columns();
@@ -318,6 +322,22 @@ pub fn load_backtest_input_batch(
 }
 
 impl BacktestUniversePlan {
+    fn with_additional_masks(mut self, extra_masks: HashMap<i32, Vec<bool>>) -> Self {
+        for (date, extra) in extra_masks {
+            match self.masks.get_mut(&date) {
+                Some(base) => {
+                    for (base_value, extra_value) in base.iter_mut().zip(extra) {
+                        *base_value = *base_value && extra_value;
+                    }
+                }
+                None => {
+                    self.masks.insert(date, extra);
+                }
+            }
+        }
+        self
+    }
+
     fn slice(&self, dates: &[i32]) -> BacktestUniverseBatch {
         BacktestUniverseBatch {
             id: self.id.clone(),
@@ -479,6 +499,107 @@ fn load_universe_plan(
         id: universe_id.to_string(),
         masks,
     })
+}
+
+fn load_trade_filter_masks(
+    config: &EngineConfig,
+    request: &BacktestRunRequest,
+    target_dates: &[i32],
+    instruments: &[String],
+) -> Result<HashMap<i32, Vec<bool>>> {
+    let instrument_lookup = instruments
+        .iter()
+        .enumerate()
+        .map(|(idx, code)| (code.as_str(), idx))
+        .collect::<BTreeMap<_, _>>();
+    let root = config
+        .data_root
+        .join("stock_data")
+        .join("daily")
+        .join("trade_filter");
+    let mut masks = HashMap::new();
+    for date in target_dates {
+        let required = request.exclude_limit || (request.exclude_st && *date >= 20160101);
+        let path = daily_trade_filter_path(&root, *date);
+        if !path.exists() {
+            if required {
+                return Err(err(format!(
+                    "missing stock trade filter for {date}: expected {}. Run: python scripts\\update_incremental.py --groups stock_trade_filter --start-date {date} --end-date {date}",
+                    path.display()
+                )));
+            }
+            masks.insert(*date, vec![true; instruments.len()]);
+            continue;
+        }
+        let table = read_parquet(
+            &path,
+            Some(&[
+                "trade_date".to_string(),
+                "ts_code".to_string(),
+                "is_limit_up".to_string(),
+                "is_limit_down".to_string(),
+                "is_limit".to_string(),
+                "is_st".to_string(),
+            ]),
+        )?;
+        let trade_dates = table.required_i32_date_cast("trade_date")?;
+        let ts_codes = table.required_utf8("ts_code")?;
+        let is_limit_up = bool_column_cast(&table, "is_limit_up")?;
+        let is_limit_down = bool_column_cast(&table, "is_limit_down")?;
+        let is_limit = bool_column_cast(&table, "is_limit")?;
+        let is_st = bool_column_cast(&table, "is_st")?;
+        let mut mask = vec![true; instruments.len()];
+        for row_idx in 0..table.len {
+            if trade_dates[row_idx] != Some(*date) {
+                continue;
+            }
+            let Some(ts_code) = ts_codes[row_idx].as_deref() else {
+                continue;
+            };
+            let Some(instrument_idx) = instrument_lookup.get(ts_code).copied() else {
+                continue;
+            };
+            let limit_allowed = !request.exclude_limit
+                || request.limit_side.allows(
+                    is_limit_up[row_idx].unwrap_or(false),
+                    is_limit_down[row_idx].unwrap_or(false),
+                    is_limit[row_idx].unwrap_or(false),
+                );
+            let st_allowed =
+                !request.exclude_st || *date < 20160101 || !is_st[row_idx].unwrap_or(false);
+            mask[instrument_idx] = limit_allowed && st_allowed;
+        }
+        masks.insert(*date, mask);
+    }
+    Ok(masks)
+}
+
+fn daily_trade_filter_path(root: &Path, trade_date: i32) -> PathBuf {
+    let year = trade_date / 10_000;
+    root.join(year.to_string())
+        .join(format!("{trade_date}.parquet"))
+}
+
+fn bool_column_cast(table: &Table, name: &str) -> Result<Vec<Option<bool>>> {
+    match table.columns.get(name) {
+        Some(ColumnData::Bool(values)) => Ok(values.clone()),
+        Some(ColumnData::I32(values)) => {
+            Ok(values.iter().map(|value| value.map(|v| v != 0)).collect())
+        }
+        Some(ColumnData::I64(values)) => {
+            Ok(values.iter().map(|value| value.map(|v| v != 0)).collect())
+        }
+        Some(ColumnData::F32(values)) => Ok(values
+            .iter()
+            .map(|value| value.map(|v| v.is_finite() && v != 0.0))
+            .collect()),
+        Some(ColumnData::F64(values)) => Ok(values
+            .iter()
+            .map(|value| value.map(|v| v.is_finite() && v != 0.0))
+            .collect()),
+        Some(_) => Err(err(format!("column {name} cannot be cast to bool"))),
+        None => Err(err(format!("missing required column {name}"))),
+    }
 }
 
 fn load_benchmark_plan(

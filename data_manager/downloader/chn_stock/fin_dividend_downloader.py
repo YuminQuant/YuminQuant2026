@@ -5,6 +5,12 @@ from tqdm import tqdm
 from datetime import datetime, timezone, timedelta
 from data_manager.core import BaseDownloader, ConfigManager
 
+DIVIDEND_FIELDS = (
+    "ts_code,end_date,ann_date,div_proc,stk_div,cash_div,cash_div_tax,"
+    "record_date,ex_date,pay_date,imp_ann_date,stk_co_rate,div_listdate,"
+    "stk_bo_rate,base_date,base_share"
+)
+
 class DividendDownloader(BaseDownloader):
     """分红送股下载器 (终极版：按 ann_date 自然日提取，PIT存储，完美类型清洗)"""
     def __init__(self):
@@ -15,6 +21,15 @@ class DividendDownloader(BaseDownloader):
         
         cal_sub_dir = self.config['paths'].get('calendar_dir', 'chn_stock_data/calendar')
         self.cal_file = os.path.join(self.base_data_dir, cal_sub_dir, 'trade_cal_SSE.parquet')
+
+    def _remove_year_files(self, start_date, end_date):
+        start_year = int(str(start_date)[:4])
+        end_year = int(str(end_date)[:4])
+        for year in range(start_year, end_year + 1):
+            file_path = os.path.join(self.save_dir, f"{year}.parquet")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                self.logger.info(f"removed old dividend parquet for rebuild: {file_path}")
 
     def _get_calendar_dates(self, start_date, end_date):
         if not os.path.exists(self.cal_file):
@@ -86,9 +101,12 @@ class DividendDownloader(BaseDownloader):
             df_save.sort_values(by=['ts_code', 'ann_date', 'end_date'], inplace=True)
             df_save.to_parquet(file_path, index=False)
 
-    def sync(self, start_date='20090101', target_end_date=None):
+    def sync(self, start_date='20090101', target_end_date=None, rebuild=False):
         if target_end_date is None:
             target_end_date = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
+        if rebuild:
+            start_date = f"{str(start_date)[:4]}0101"
+            self._remove_year_files(start_date, target_end_date)
 
         self.logger.info(f"=== 开始同步 [分红送股] (按 ann_date: {start_date} -> {target_end_date}) ===")
 
@@ -110,10 +128,15 @@ class DividendDownloader(BaseDownloader):
                 try:
                     offset = 0
                     while True:
-                        df = self.pro.dividend(ann_date=date, limit=self.page_limit, offset=offset)
-                        df = df.dropna(axis=1, how='all')
+                        df = self.pro.dividend(
+                            ann_date=date,
+                            fields=DIVIDEND_FIELDS,
+                            limit=self.page_limit,
+                            offset=offset,
+                        )
                         if df is None or df.empty: 
                             break
+                        df = df.dropna(axis=1, how='all')
                         yearly_new_data.append(df)
                         if len(df) < self.page_limit: 
                             break

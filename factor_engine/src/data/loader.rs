@@ -281,6 +281,8 @@ impl MarketDataLoader {
                 "div_proc",
                 "cash_div_tax",
                 "ex_date",
+                "base_date",
+                "base_share",
             ],
         );
         let files = self.catalog.daily_year_files(
@@ -412,7 +414,7 @@ fn empty_disclosure_table(columns: &[String]) -> Result<Table> {
     for column in columns {
         let data = match column.as_str() {
             "ts_code" | "quarter" | "div_proc" => ColumnData::Utf8(Vec::new()),
-            "ann_date" | "f_ann_date" | "end_date" | "report_date" | "ex_date" => {
+            "ann_date" | "f_ann_date" | "end_date" | "report_date" | "ex_date" | "base_date" => {
                 ColumnData::I32(Vec::new())
             }
             "report_type" | "update_flag" => ColumnData::I64(Vec::new()),

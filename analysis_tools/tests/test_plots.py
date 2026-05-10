@@ -20,6 +20,7 @@ def test_plot_return_summary_returns_figure() -> None:
             "trade_date": [20250102, 20250103] * 3,
             "portfolio": ["group_1", "group_1", "group_2", "group_2", "long_short", "long_short"],
             "return": [0.01, -0.02, 0.02, 0.01, 0.01, 0.03],
+            "excess_return": [0.005, -0.01, 0.01, 0.004, None, None],
             "turnover": [0.2, 0.1, 0.3, 0.2, None, None],
         }
     )

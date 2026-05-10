@@ -20,7 +20,6 @@ from yq_analysis.metrics import (
     mean_return,
     observation_count,
     sharpe,
-    sortino,
     std_return,
     win_rate,
 )
@@ -52,28 +51,71 @@ def _return_metrics(
     values: pd.Series,
     periods_per_year: int,
     risk_free_rate: float,
+    turnover_values: pd.Series | None = None,
 ) -> dict[str, float | int]:
+    mean = mean_return(values)
+    turnover = clean_series(turnover_values).mean() if turnover_values is not None else np.nan
+    if not np.isfinite(turnover) or abs(turnover) <= np.finfo(float).eps:
+        bp_per_1pct_turnover = np.nan
+    else:
+        bp_per_1pct_turnover = mean * 10000.0 / (turnover * 100.0)
     return {
         "observations": observation_count(values),
-        "cumulative_return": cumulative_return(values),
-        "annual_return": annual_return(values, periods_per_year=periods_per_year),
-        "annual_volatility": annual_volatility(values, periods_per_year=periods_per_year),
-        "sharpe": sharpe(
-            values,
-            periods_per_year=periods_per_year,
-            risk_free_rate=risk_free_rate,
+        "cumulative_return(%)": _round_percent(cumulative_return(values)),
+        "annual_return(%)": _round_percent(annual_return(values, periods_per_year=periods_per_year)),
+        "annual_volatility(%)": _round_percent(
+            annual_volatility(values, periods_per_year=periods_per_year)
         ),
-        "sortino": sortino(
-            values,
-            periods_per_year=periods_per_year,
-            risk_free_rate=risk_free_rate,
+        "sharpe": _round_float(
+            sharpe(
+                values,
+                periods_per_year=periods_per_year,
+                risk_free_rate=risk_free_rate,
+            ),
+            3,
         ),
-        "max_drawdown": max_drawdown(values),
-        "calmar": calmar(values, periods_per_year=periods_per_year),
-        "win_rate": win_rate(values),
-        "mean_return": mean_return(values),
-        "std_return": std_return(values),
+        "max_drawdown(%)": _round_percent(max_drawdown(values)),
+        "calmar": _round_float(calmar(values, periods_per_year=periods_per_year), 3),
+        "win_rate(%)": _round_percent(win_rate(values)),
+        "mean_return_bp_per_1pct_turnover": _round_float(bp_per_1pct_turnover, 3),
+        "turnover_mean(%)": _round_percent(turnover),
     }
+
+
+def _round_float(value: float, digits: int) -> float:
+    if not np.isfinite(value):
+        return float("nan")
+    return round(float(value), digits)
+
+
+def _round_percent(value: float) -> float:
+    if not np.isfinite(value):
+        return float("nan")
+    return round(float(value) * 100.0, 2)
+
+
+def _portfolio_metrics(
+    values: pd.Series,
+    turnover_values: pd.Series | None,
+    periods_per_year: int,
+    risk_free_rate: float,
+) -> dict[str, float | int]:
+    return _return_metrics(values, periods_per_year, risk_free_rate, turnover_values)
+
+
+def _series_metrics(
+    values: pd.Series,
+    periods_per_year: int,
+    risk_free_rate: float,
+) -> dict[str, float | int]:
+    raw = _return_metrics(values, periods_per_year, risk_free_rate, None)
+    raw.pop("mean_return_bp_per_1pct_turnover", None)
+    raw.pop("turnover_mean(%)", None)
+    return raw
+
+
+def _has_valid_column(frame: pd.DataFrame, column: str) -> bool:
+    return column in frame.columns and clean_series(frame[column]).shape[0] > 0
 
 
 def make_return_report(
@@ -88,23 +130,26 @@ def make_return_report(
     """
 
     if isinstance(returns, pd.Series):
-        rows = [{"portfolio": returns.name or "series", **_return_metrics(returns, periods_per_year, risk_free_rate)}]
+        rows = [{"portfolio": returns.name or "series", **_series_metrics(returns, periods_per_year, risk_free_rate)}]
         return pd.DataFrame(rows)
     if returns is None or returns.empty:
         return pd.DataFrame()
 
     if "portfolio" not in returns.columns:
-        rows = [{"portfolio": "series", **_return_metrics(returns[return_col], periods_per_year, risk_free_rate)}]
+        rows = [{"portfolio": "series", **_series_metrics(returns[return_col], periods_per_year, risk_free_rate)}]
         return pd.DataFrame(rows)
 
     rows = []
     for portfolio, group in returns.groupby("portfolio", sort=False):
         row = {
             "portfolio": portfolio,
-            **_return_metrics(group[return_col], periods_per_year, risk_free_rate),
+            **_portfolio_metrics(
+                group[return_col],
+                group["turnover"] if "turnover" in group.columns else None,
+                periods_per_year,
+                risk_free_rate,
+            ),
         }
-        if "turnover" in group.columns:
-            row["turnover_mean"] = clean_series(group["turnover"]).mean()
         rows.append(row)
     return pd.DataFrame(rows).sort_values("portfolio", key=lambda s: s.map(_portfolio_sort_key)).reset_index(drop=True)
 
@@ -133,12 +178,16 @@ def make_return_report_by_year(
         if not isinstance(keys, tuple):
             keys = (keys,)
         key_values = dict(zip(group_cols, keys))
-        rows.append(
-            {
-                **key_values,
-                **_return_metrics(group[return_col], periods_per_year, risk_free_rate),
-            }
-        )
+        if "portfolio" in frame.columns:
+            metrics = _portfolio_metrics(
+                group[return_col],
+                group["turnover"] if "turnover" in group.columns else None,
+                periods_per_year,
+                risk_free_rate,
+            )
+        else:
+            metrics = _series_metrics(group[return_col], periods_per_year, risk_free_rate)
+        rows.append({**key_values, **metrics})
     output = pd.DataFrame(rows)
     if "portfolio" in output.columns:
         output = output.sort_values(
@@ -203,6 +252,8 @@ def make_backtest_report(
     if returns is None:
         portfolio_total = pd.DataFrame()
         portfolio_by_year = pd.DataFrame()
+        excess_total = pd.DataFrame()
+        excess_by_year = pd.DataFrame()
     else:
         portfolio_total = make_return_report(returns, return_col, periods_per_year, risk_free_rate)
         portfolio_by_year = (
@@ -210,9 +261,27 @@ def make_backtest_report(
             if isinstance(returns, pd.DataFrame)
             else pd.DataFrame()
         )
+        if isinstance(returns, pd.DataFrame) and _has_valid_column(returns, "excess_return"):
+            excess_total = make_return_report(
+                returns,
+                "excess_return",
+                periods_per_year,
+                risk_free_rate,
+            )
+            excess_by_year = make_return_report_by_year(
+                returns,
+                "excess_return",
+                periods_per_year,
+                risk_free_rate,
+            )
+        else:
+            excess_total = pd.DataFrame()
+            excess_by_year = pd.DataFrame()
     return {
         "portfolio_total": portfolio_total,
         "portfolio_by_year": portfolio_by_year,
+        "excess_total": excess_total,
+        "excess_by_year": excess_by_year,
         "ic": make_ic_report(ic),
         "factor_stats": make_factor_stats_report(factor_stats),
     }

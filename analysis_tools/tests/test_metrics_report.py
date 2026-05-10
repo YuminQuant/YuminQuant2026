@@ -35,7 +35,7 @@ def test_yearly_report_contains_cumulative_and_annual_return() -> None:
         }
     )
     report = make_return_report_by_year(frame, periods_per_year=240)
-    assert {"cumulative_return", "annual_return", "sharpe", "max_drawdown"}.issubset(report.columns)
+    assert {"cumulative_return(%)", "annual_return(%)", "sharpe", "max_drawdown(%)"}.issubset(report.columns)
     assert report["year"].tolist() == [2025, 2026]
 
 
@@ -45,13 +45,26 @@ def test_backtest_report_accepts_current_schema() -> None:
             "trade_date": [20250102, 20250102, 20250103, 20250103],
             "portfolio": ["group_1", "long_short", "group_1", "long_short"],
             "return": [0.01, 0.02, -0.01, 0.01],
+            "excess_return": [0.005, np.nan, -0.002, np.nan],
             "turnover": [0.2, 0.5, np.nan, np.nan],
         }
     )
     ic = pd.DataFrame({"ic": [0.1, -0.2], "rank_ic": [0.05, 0.01]})
     factor_stats = pd.DataFrame({"factor_id": ["x", "x"], "coverage": [0.8, 0.9], "inf_rate": [0.0, 0.01]})
     report = make_backtest_report(returns, ic, factor_stats)
-    assert set(report) == {"portfolio_total", "portfolio_by_year", "ic", "factor_stats"}
+    assert set(report) == {
+        "portfolio_total",
+        "portfolio_by_year",
+        "excess_total",
+        "excess_by_year",
+        "ic",
+        "factor_stats",
+    }
     assert not report["portfolio_total"].empty
+    assert not report["excess_total"].empty
+    assert "sortino" not in report["portfolio_total"].columns
+    assert "std_return" not in report["portfolio_total"].columns
+    assert "mean_return_bp_per_1pct_turnover" in report["portfolio_total"].columns
+    assert "turnover_mean(%)" in report["portfolio_total"].columns
     assert not report["ic"].empty
     assert "coverage_mean" in report["factor_stats"].columns

@@ -16,7 +16,7 @@ from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.features.transforms import cross_section_zscore_log_rank
 from yq_ml_alpha.models.base import ModelContext
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
-from yq_ml_alpha.models.torch_model import TorchMLPAlphaModel
+from yq_ml_alpha.models.mlp_model import MLPAlphaModel
 from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
 from yq_ml_alpha.pipelines.train import build_windows
@@ -224,7 +224,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             import torch  # noqa: F401
         except ImportError:
             self.skipTest("torch is not installed")
-        model = TorchMLPAlphaModel()
+        model = MLPAlphaModel()
         context = ModelContext(
             run_id="r",
             alpha_id="a",
@@ -256,14 +256,14 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "model.pt"
             model.save(path)
-            loaded = TorchMLPAlphaModel.load(path)
+            loaded = MLPAlphaModel.load(path)
             loaded_pred = loaded.predict(train, context)
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
     def test_monthly_mlp_config_parses(self) -> None:
         config = load_config(Path(__file__).resolve().parents[1] / "configs" / "examples" / "monthly_mlp_36.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_mlp")
-        self.assertEqual(config.model.class_path, "yq_ml_alpha.models.torch_model.TorchMLPAlphaModel")
+        self.assertEqual(config.model.class_path, "yq_ml_alpha.models.mlp_model.MLPAlphaModel")
         self.assertEqual(config.model.params["hidden_layers"], [128, 64])
 
 

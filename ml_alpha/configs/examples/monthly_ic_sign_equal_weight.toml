@@ -38,6 +38,7 @@ columns = "__all__"
 [materialize]
 cache_samples = false
 cache_dir = "data/model_workspace/monthly_ic_sign_equal_weight/cache"
+predict_batch_size = 240
 
 [model]
 name = "ic_sign_equal_weight"

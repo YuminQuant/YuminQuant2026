@@ -69,15 +69,9 @@ def predict_only(config_path: str | Path) -> list[Path]:
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
         progress.step("load_model")
         model = model_class.load(path)
-        progress.step("load_predict")
-        predict_bundle = dataset.load(window.predict_dates, include_label=False)
-        if predict_bundle.frame.empty:
-            continue
-        context = _context(config, window.window_id, predict_bundle.feature_columns)
-        progress.step("predict")
-        score = model.predict(predict_bundle.frame, context)
-        progress.step("write")
-        written.extend(writer.write(_prediction_frame(predict_bundle.frame, score)))
+        written.extend(
+            _predict_write_window(config, dataset, writer, model, window, progress)
+        )
     progress.done()
     return written
 
@@ -103,15 +97,34 @@ def _fit_predict_write_all(config: MlAlphaConfig) -> list[Path]:
         model.fit(train_bundle.frame, valid_bundle.frame, context)
         progress.step("save")
         model.save(window_artifact_path(config.model.artifact_dir, window.window_id))
-        progress.step("load_predict")
-        predict_bundle = dataset.load(window.predict_dates, include_label=False)
+        written.extend(
+            _predict_write_window(config, dataset, writer, model, window, progress, context)
+        )
+    progress.done()
+    return written
+
+
+def _predict_write_window(
+    config: MlAlphaConfig,
+    dataset: DatasetBuilder,
+    writer: AlphaWriter,
+    model: AlphaModel,
+    window: TrainingWindow,
+    progress: "_Progress",
+    context: ModelContext | None = None,
+) -> list[Path]:
+    written: list[Path] = []
+    batches = _chunks(window.predict_dates, config.materialize.predict_batch_size)
+    for batch_idx, dates in enumerate(batches, start=1):
+        progress.step(f"load_predict {batch_idx}/{len(batches)} dates={_date_span(dates)}")
+        predict_bundle = dataset.load(dates, include_label=False)
         if predict_bundle.frame.empty:
             continue
-        progress.step("predict")
-        score = model.predict(predict_bundle.frame, context)
-        progress.step("write")
+        batch_context = context or _context(config, window.window_id, predict_bundle.feature_columns)
+        progress.step(f"predict {batch_idx}/{len(batches)}")
+        score = model.predict(predict_bundle.frame, batch_context)
+        progress.step(f"write {batch_idx}/{len(batches)}")
         written.extend(writer.write(_prediction_frame(predict_bundle.frame, score)))
-    progress.done()
     return written
 
 
@@ -344,6 +357,10 @@ def _prediction_frame(source: pd.DataFrame, score: pd.Series) -> pd.DataFrame:
             "score": score.astype("float32").to_numpy(),
         }
     )
+
+
+def _chunks(values: list[int], size: int) -> list[list[int]]:
+    return [values[idx : idx + size] for idx in range(0, len(values), size)]
 
 
 class _Progress:

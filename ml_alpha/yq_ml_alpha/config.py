@@ -74,6 +74,7 @@ class FeaturesConfig:
 class MaterializeConfig:
     cache_samples: bool = False
     cache_dir: Path = Path("data/model_workspace/cache")
+    predict_batch_size: int = 20
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         materialize=MaterializeConfig(
             cache_samples=bool(materialize.get("cache_samples", False)),
             cache_dir=_project_path(materialize.get("cache_dir", data_root / "model_workspace" / run_id / "cache")),
+            predict_batch_size=max(1, int(materialize.get("predict_batch_size", 20))),
         ),
         model=ModelConfig(
             name=_required(model, "name", "model.name"),

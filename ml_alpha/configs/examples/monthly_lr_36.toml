@@ -40,6 +40,7 @@ columns = "__all__"
 [materialize]
 cache_samples = false
 cache_dir = "data/model_workspace/monthly_lr_36/cache"
+predict_batch_size = 240
 
 [model]
 name = "linear_regression"

@@ -5,11 +5,10 @@ output_root = "data/models"
 
 [dates]
 train = [20110101, 20260424]
-valid = [20110101, 20260424]
+valid = []
 predict = [20110101, 20260424]
 
 [sample]
-frequency = "monthly_end"
 train_frequency = "monthly_end"
 predict_frequency = "daily"
 

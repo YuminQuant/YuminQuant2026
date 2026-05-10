@@ -42,7 +42,6 @@ valid = [20200201, 20200228]
 predict = [20200301, 20200331]
 
 [sample]
-frequency = "monthly_end"
 train_frequency = "monthly_end"
 predict_frequency = "daily"
 
@@ -80,6 +79,73 @@ n_trials = 10
             self.assertEqual(config.train_scheme.train_sample_count, 36)
             self.assertEqual(config.model.params["learning_rate"], 0.03)
             self.assertEqual(config.tuning.params["n_trials"], 10)
+
+    def test_valid_and_predict_dates_can_be_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.toml"
+            path.write_text(
+                """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [20200101, 20200131]
+valid = []
+predict = []
+
+[sample]
+train_frequency = "monthly_end"
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            self.assertIsNone(config.dates.valid)
+            self.assertIsNone(config.dates.predict)
+            self.assertIsNone(config.sample.predict_frequency)
+
+    def test_train_frequency_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.toml"
+            path.write_text(
+                """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [20200101, 20200131]
+
+[sample]
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "sample.train_frequency"):
+                load_config(path)
 
     def test_sample_frequency_accepts_rebalance_style_fixed_days(self) -> None:
         class Calendar:
@@ -149,7 +215,6 @@ valid = [20260101, 20260424]
 predict = [20260301, 20260424]
 
 [sample]
-frequency = "monthly_end"
 train_frequency = "monthly_end"
 predict_frequency = "daily"
 
@@ -179,6 +244,51 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             self.assertEqual(len(windows), 1)
             self.assertEqual(windows[0].train_dates, [20260130, 20260227])
             self.assertEqual(windows[0].predict_dates, [20260401, 20260402])
+
+    def test_train_only_window_when_predict_dates_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.toml"
+            path.write_text(
+                """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [20260101, 20260424]
+valid = []
+predict = []
+
+[sample]
+train_frequency = "monthly_end"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "monthly_end"
+train_sample_count = 2
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            calendar = TradingCalendar([20260130, 20260227, 20260331, 20260424])
+            windows = build_windows(config, calendar)
+            self.assertEqual(len(windows), 1)
+            self.assertEqual(windows[0].window_id, "train_only_20260331")
+            self.assertEqual(windows[0].train_dates, [20260227, 20260331])
+            self.assertEqual(windows[0].valid_dates, [])
+            self.assertEqual(windows[0].predict_dates, [])
 
     def test_alpha_writer_preserves_existing_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

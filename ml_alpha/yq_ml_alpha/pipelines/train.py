@@ -57,6 +57,8 @@ def train_only(config_path: str | Path) -> list[Path]:
 
 def predict_only(config_path: str | Path) -> list[Path]:
     config = load_config(config_path)
+    if config.dates.predict is None:
+        return []
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
     frames = []
@@ -113,14 +115,16 @@ def _fit_predict_all(config: MlAlphaConfig) -> pd.DataFrame:
 
 def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[TrainingWindow]:
     train_frequency = _train_frequency(config)
-    predict_dates = sample_dates(calendar, config.dates.predict, _predict_frequency(config))
+    predict_dates = _predict_dates(config, calendar)
     scheme = config.train_scheme.type.lower()
+    if not predict_dates:
+        return _train_only_windows(config, calendar, scheme, train_frequency)
     if scheme == "static":
         return [
             TrainingWindow(
                 window_id="static",
                 train_dates=sample_dates(calendar, config.dates.train, train_frequency),
-                valid_dates=sample_dates(calendar, config.dates.valid, train_frequency),
+                valid_dates=_valid_dates(config, calendar, train_frequency),
                 predict_dates=predict_dates,
             )
         ]
@@ -140,15 +144,54 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
         train_range, valid_range = _training_ranges(config, calendar, start, scheme)
         if len(calendar.between(train_range[0], train_range[1])) < config.train_scheme.min_train_days:
             continue
+        valid_dates = sample_dates(calendar, valid_range, train_frequency) if valid_range is not None else []
         windows.append(
             TrainingWindow(
                 window_id=f"{idx + 1:04d}_{segment[0]}_{segment[-1]}",
                 train_dates=sample_dates(calendar, train_range, train_frequency),
-                valid_dates=sample_dates(calendar, valid_range, train_frequency),
+                valid_dates=valid_dates,
                 predict_dates=segment,
             )
         )
     return windows
+
+
+def _train_only_windows(
+    config: MlAlphaConfig,
+    calendar: TradingCalendar,
+    scheme: str,
+    train_frequency: str,
+) -> list[TrainingWindow]:
+    train_pool = _train_only_sample_dates(config, calendar, train_frequency)
+    if not train_pool:
+        return []
+    count = int(config.train_scheme.train_sample_count)
+    if count > 0:
+        if len(train_pool) < count:
+            return []
+        if scheme == "rolling":
+            train_dates = train_pool[-count:]
+        elif scheme == "expanding":
+            train_dates = train_pool
+        else:
+            raise ValueError(f"train_sample_count is only supported for rolling/expanding, got {scheme}")
+    else:
+        train_dates = train_pool
+    return [
+        TrainingWindow(
+            window_id=f"train_only_{train_dates[-1]}",
+            train_dates=train_dates,
+            valid_dates=_valid_dates(config, calendar, train_frequency),
+            predict_dates=[],
+        )
+    ]
+
+
+def _train_only_sample_dates(config: MlAlphaConfig, calendar: TradingCalendar, train_frequency: str) -> list[int]:
+    frequency = train_frequency.lower().strip()
+    if frequency in {"monthly", "monthly_end"}:
+        return _actual_refit_dates(calendar, config.dates.train, train_frequency)
+    return sample_dates(calendar, config.dates.train, train_frequency)
 
 
 def _sample_count_windows(
@@ -158,6 +201,7 @@ def _sample_count_windows(
     scheme: str,
     train_frequency: str,
 ) -> list[TrainingWindow]:
+    assert config.dates.predict is not None
     refits = _actual_refit_dates(calendar, config.dates.predict, config.train_scheme.refit_frequency)
     train_pool = sample_dates(calendar, config.dates.train, train_frequency)
     count = int(config.train_scheme.train_sample_count)
@@ -210,11 +254,27 @@ def _is_actual_period_end(calendar: TradingCalendar, date: int, frequency: str) 
 
 
 def _train_frequency(config: MlAlphaConfig) -> str:
-    return config.sample.train_frequency or config.sample.frequency
+    if not config.sample.train_frequency:
+        raise ValueError("sample.train_frequency is required")
+    return config.sample.train_frequency
 
 
 def _predict_frequency(config: MlAlphaConfig) -> str:
-    return config.sample.predict_frequency or config.sample.frequency
+    if not config.sample.predict_frequency:
+        raise ValueError("sample.predict_frequency is required when dates.predict is not empty")
+    return config.sample.predict_frequency
+
+
+def _predict_dates(config: MlAlphaConfig, calendar: TradingCalendar) -> list[int]:
+    if config.dates.predict is None:
+        return []
+    return sample_dates(calendar, config.dates.predict, _predict_frequency(config))
+
+
+def _valid_dates(config: MlAlphaConfig, calendar: TradingCalendar, train_frequency: str) -> list[int]:
+    if config.dates.valid is None:
+        return []
+    return sample_dates(calendar, config.dates.valid, train_frequency)
 
 
 def _iso_week_key(yyyymmdd: int) -> tuple[int, int]:
@@ -231,12 +291,16 @@ def _training_ranges(
     calendar: TradingCalendar,
     predict_start: int,
     scheme: str,
-) -> tuple[tuple[int, int], tuple[int, int]]:
+) -> tuple[tuple[int, int], tuple[int, int] | None]:
     train_end_anchor = calendar.previous_open(predict_start) or config.dates.train[1]
-    valid_days = max(1, int(config.train_scheme.valid_days))
-    valid_start = calendar.offset(train_end_anchor, -(valid_days - 1)) or config.dates.valid[0]
-    valid_range = (valid_start, train_end_anchor)
-    train_end = calendar.previous_open(valid_start) or config.dates.train[1]
+    if config.dates.valid is None:
+        train_end = train_end_anchor
+        valid_range = None
+    else:
+        valid_days = max(1, int(config.train_scheme.valid_days))
+        valid_start = calendar.offset(train_end_anchor, -(valid_days - 1)) or config.dates.valid[0]
+        valid_range = (valid_start, train_end_anchor)
+        train_end = calendar.previous_open(valid_start) or config.dates.train[1]
     if scheme == "rolling":
         start = calendar.offset(train_end, -(max(1, config.train_scheme.rolling_train_days) - 1)) or config.dates.train[0]
     else:

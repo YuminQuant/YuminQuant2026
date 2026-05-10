@@ -5,6 +5,7 @@ config.toml
 
 # Local data lake and generated outputs
 /data/
+/analysis_tools/plots/
 /output.log
 *.log
 

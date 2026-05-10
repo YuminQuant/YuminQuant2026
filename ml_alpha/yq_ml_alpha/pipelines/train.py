@@ -25,9 +25,7 @@ class TrainingWindow:
 
 def run(config_path: str | Path) -> list[Path]:
     config = load_config(config_path)
-    predictions = _fit_predict_all(config)
-    writer = AlphaWriter(config.output_root, config.alpha_id)
-    return writer.write(predictions)
+    return _fit_predict_write_all(config)
 
 
 def train_only(config_path: str | Path) -> list[Path]:
@@ -61,7 +59,8 @@ def predict_only(config_path: str | Path) -> list[Path]:
         return []
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
-    frames = []
+    written: list[Path] = []
+    writer = AlphaWriter(config.output_root, config.alpha_id)
     model_class = _model_class(config.model.class_path)
     windows = build_windows(config, calendar)
     progress = _Progress("ml-alpha predict", len(windows))
@@ -77,16 +76,17 @@ def predict_only(config_path: str | Path) -> list[Path]:
         context = _context(config, window.window_id, predict_bundle.feature_columns)
         progress.step("predict")
         score = model.predict(predict_bundle.frame, context)
-        frames.append(_prediction_frame(predict_bundle.frame, score))
+        progress.step("write")
+        written.extend(writer.write(_prediction_frame(predict_bundle.frame, score)))
     progress.done()
-    predictions = pd.concat(frames, ignore_index=True) if frames else _empty_prediction_frame()
-    return AlphaWriter(config.output_root, config.alpha_id).write(predictions)
+    return written
 
 
-def _fit_predict_all(config: MlAlphaConfig) -> pd.DataFrame:
+def _fit_predict_write_all(config: MlAlphaConfig) -> list[Path]:
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
-    frames = []
+    written: list[Path] = []
+    writer = AlphaWriter(config.output_root, config.alpha_id)
     windows = build_windows(config, calendar)
     progress = _Progress("ml-alpha run", len(windows))
     for idx, window in enumerate(windows, start=1):
@@ -108,9 +108,11 @@ def _fit_predict_all(config: MlAlphaConfig) -> pd.DataFrame:
         if predict_bundle.frame.empty:
             continue
         progress.step("predict")
-        frames.append(_prediction_frame(predict_bundle.frame, model.predict(predict_bundle.frame, context)))
+        score = model.predict(predict_bundle.frame, context)
+        progress.step("write")
+        written.extend(writer.write(_prediction_frame(predict_bundle.frame, score)))
     progress.done()
-    return pd.concat(frames, ignore_index=True) if frames else _empty_prediction_frame()
+    return written
 
 
 def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[TrainingWindow]:
@@ -342,10 +344,6 @@ def _prediction_frame(source: pd.DataFrame, score: pd.Series) -> pd.DataFrame:
             "score": score.astype("float32").to_numpy(),
         }
     )
-
-
-def _empty_prediction_frame() -> pd.DataFrame:
-    return pd.DataFrame(columns=["trade_date", "ts_code", "score"])
 
 
 class _Progress:

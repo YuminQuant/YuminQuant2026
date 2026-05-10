@@ -1,0 +1,53 @@
+run_id = "monthly_ic_sign_equal_weight"
+alpha_id = "ml_alpha_ic_sign_ew"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20110101, 20110131]
+valid = []
+predict = [20110101, 20260424]
+
+[sample]
+train_frequency = "monthly_end"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "static"
+
+[label]
+id = "future_vwap_return_20d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "zscore_log_rank"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/monthly_ic_sign_equal_weight/cache"
+
+[model]
+name = "ic_sign_equal_weight"
+class = "yq_ml_alpha.models.ic_sign_model.ICSignEqualWeightAlphaModel"
+artifact_dir = "data/model_workspace/monthly_ic_sign_equal_weight/artifacts"
+
+[model.params]
+ic_root = "data/backtest/stock/daily/ic"
+ic_metric = "rank_ic"
+
+[tuning]
+enabled = false
+method = "none"

@@ -14,6 +14,7 @@ cd ml_alpha
 python -m yq_ml_alpha run --config configs\examples\monthly_lr_36.toml
 python -m yq_ml_alpha run --config configs\examples\monthly_xgb_36.toml
 python -m yq_ml_alpha run --config configs\examples\monthly_mlp_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_ic_sign_equal_weight.toml
 ```
 
 The MLP example requires PyTorch:
@@ -56,6 +57,10 @@ For the monthly examples:
 - features and labels use `zscore(log(rank))` by date
 - missing features are filled with `0`
 - rows with missing labels are excluded from training
+
+The IC-sign equal-weight example reads existing IC detail files from
+`data/backtest/stock/daily/ic`, orients each feature by `sign(mean(rank_ic))`,
+and then averages the oriented features row-wise.
 
 `[dates].train` is required. `[dates].valid` and `[dates].predict` can be
 omitted or set to `[]`; this is useful when you only want to fit and save a

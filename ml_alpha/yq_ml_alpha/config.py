@@ -66,7 +66,7 @@ class FiltersConfig:
 class FeaturesConfig:
     type: str
     root: Path
-    columns: list[str]
+    columns: list[str] | str
     params: dict[str, Any] = field(default_factory=dict)
 
 
@@ -157,7 +157,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         features=FeaturesConfig(
             type=_required(features, "type", "features.type"),
             root=_project_path(_required(features, "root", "features.root")),
-            columns=list(features.get("columns", [])),
+            columns=_feature_columns(features.get("columns", [])),
             params={key: value for key, value in features.items() if key not in {"type", "root", "columns"}},
         ),
         materialize=MaterializeConfig(
@@ -214,3 +214,11 @@ def _nested_params(section: dict[str, Any], excluded: set[str]) -> dict[str, Any
     if isinstance(section.get("params"), dict):
         return dict(section["params"])
     return {key: value for key, value in section.items() if key not in excluded}
+
+
+def _feature_columns(value: Any) -> list[str] | str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    raise ValueError("features.columns must be a list of column names or the string '__all__'")

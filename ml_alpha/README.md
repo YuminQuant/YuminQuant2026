@@ -57,6 +57,19 @@ For the monthly examples:
 - missing features are filled with `0`
 - rows with missing labels are excluded from training
 
+To train on every factor column under a feature root, use:
+
+```toml
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+```
+
+`__all__` scans the parquet schemas under the root and uses every non-key
+column except `trade_date`, `ts_code`, and `trade_time`. It does not use factor
+metadata, so deprecated metadata flags do not affect ML feature discovery.
+
 ## Add A New Model
 
 Create a new model file, for example:

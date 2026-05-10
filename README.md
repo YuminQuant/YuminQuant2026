@@ -253,6 +253,12 @@ ML alpha output is compatible with the Rust backtest direct root layout:
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_mean_combo_smoke --factor-root data\models
 ```
 
+External factor roots also support schema-based `--all-factors`, for example:
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --factor-root data\barra\stock\daily\CNE6 --groups 10 --rebalance 5
+```
+
 ## Git And Data Safety
 
 The repository ignores local secrets and generated data:

@@ -374,11 +374,6 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         ));
     }
     let factor_root = flags.get("factor-root").map(PathBuf::from);
-    if factor_root.is_some() && factor_ids.is_none() {
-        return Err(yq_factor_engine::error::err(
-            "--factor-root requires explicit --factors factor_id[,factor_id...]",
-        ));
-    }
     let groups = match flags.get("groups") {
         Some(value) => {
             let parsed = value.parse::<usize>()?;
@@ -1019,7 +1014,9 @@ fn print_help() {
     println!("  --model CNE6");
     println!("  --tags tag[,tag...]");
     println!("  --label label_id (backtest default future_vwap_return_1d)");
-    println!("  --factor-root D:/path/to/root (backtest external factor root; requires --factors)");
+    println!(
+        "  --factor-root D:/path/to/root (backtest external factor root; supports --factors or --all-factors)"
+    );
     println!("  --groups N (backtest default 10)");
     println!("  --rebalance daily|N|weekly|biweekly|monthly|quarterly");
     println!("  --neutralize none|industry|barra:SIZE|barra:SIZE+industry");
@@ -1319,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn backtest_external_factor_root_requires_explicit_factors() {
+    fn backtest_external_factor_root_accepts_explicit_or_all_factors() {
         let args = [
             "--asset",
             "stock",
@@ -1342,6 +1339,10 @@ mod tests {
             request.factor_root.as_deref(),
             Some(std::path::Path::new("data/ml_alpha"))
         );
+        assert_eq!(
+            request.factor_ids.as_deref(),
+            Some(&["ml_combo_alpha".to_string()][..])
+        );
 
         let args = [
             "--asset",
@@ -1359,7 +1360,12 @@ mod tests {
         .iter()
         .map(|value| value.to_string())
         .collect::<Vec<_>>();
-        assert!(parse_backtest_run_request(&args).is_err());
+        let request = parse_backtest_run_request(&args).expect("request");
+        assert!(request.all_factors);
+        assert_eq!(
+            request.factor_root.as_deref(),
+            Some(std::path::Path::new("data/ml_alpha"))
+        );
     }
 
     #[test]

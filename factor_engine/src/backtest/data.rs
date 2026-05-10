@@ -982,8 +982,26 @@ fn select_factors(
                 root.display()
             )));
         }
-        let Some(ids) = &request.factor_ids else {
-            return Err(err("--factor-root requires explicit --factors"));
+        if request.tags.is_some() {
+            return Err(err(
+                "--tags cannot be used with --factor-root; use --factors or --all-factors",
+            ));
+        }
+        let ids = match (&request.factor_ids, request.all_factors) {
+            (Some(ids), false) => ids.clone(),
+            (None, true) => {
+                external_factor_ids_from_root(root, request.asset_class, request.frequency)?
+            }
+            (None, false) => {
+                return Err(err(
+                    "--factor-root requires --factors factor_id[,factor_id...] or --all-factors",
+                ));
+            }
+            _ => {
+                return Err(err(
+                    "--factors, --tags and --all-factors cannot be used together",
+                ));
+            }
         };
         let rows = ids
             .iter()
@@ -1032,6 +1050,52 @@ fn select_factors(
         }
     };
     Ok(dedup_factor_metadata(selected))
+}
+
+const EXTERNAL_FACTOR_KEY_COLUMNS: &[&str] = &["trade_date", "trade_time", "ts_code"];
+
+fn external_factor_ids_from_root(
+    root: &Path,
+    asset_class: AssetClass,
+    frequency: Frequency,
+) -> Result<Vec<String>> {
+    let layout = factor_root_layout(root, asset_class, frequency);
+    let base = factor_root_base_path(root, layout, asset_class, frequency);
+    let mut columns = BTreeSet::new();
+    collect_external_factor_columns(&base, &mut columns)?;
+    columns.retain(|column| !EXTERNAL_FACTOR_KEY_COLUMNS.contains(&column.as_str()));
+    if columns.is_empty() {
+        return Err(err(format!(
+            "no factor columns found in external factor root: {}",
+            base.display()
+        )));
+    }
+    Ok(columns.into_iter().collect())
+}
+
+fn collect_external_factor_columns(path: &Path, columns: &mut BTreeSet<String>) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if !path.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_external_factor_columns(&path, columns)?;
+            continue;
+        }
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !extension.eq_ignore_ascii_case("parquet") {
+            continue;
+        }
+        columns.extend(parquet_column_names(&path)?);
+    }
+    Ok(())
 }
 
 fn external_factor_metadata(
@@ -1474,13 +1538,15 @@ fn empty_output_table(columns: &[String]) -> Result<Table> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_factor_forward_fill, effective_weights_by_date, index_weight_path_may_overlap,
-        index_weight_to_decimal, instruments_from_table, parse_lookahead, universe_list_date_floor,
-        BacktestPanel, FactorFillState, WeightRecord,
+        apply_factor_forward_fill, effective_weights_by_date, external_factor_ids_from_root,
+        index_weight_path_may_overlap, index_weight_to_decimal, instruments_from_table,
+        parse_lookahead, universe_list_date_floor, BacktestPanel, FactorFillState, WeightRecord,
     };
+    use crate::core::{AssetClass, Frequency};
+    use crate::data::parquet_io::write_parquet;
     use crate::data::{ColumnData, Table};
     use std::collections::{BTreeMap, BTreeSet};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn parses_label_lookahead_from_metadata_json() {
@@ -1546,6 +1612,43 @@ mod tests {
             20260101,
             20260331,
         ));
+    }
+
+    #[test]
+    fn external_factor_all_factors_scans_non_key_columns() {
+        let root = test_output_dir("external_factor_all_factors_scans_non_key_columns");
+        let path = root.join("2026").join("20260424.parquet");
+        let table = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260424)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            ("bar".to_string(), ColumnData::F64(vec![Some(2.0)])),
+            ("foo".to_string(), ColumnData::F64(vec![Some(1.0)])),
+        ]))
+        .expect("table");
+        write_parquet(&path, &table).expect("write external factor parquet");
+
+        let ids = external_factor_ids_from_root(&root, AssetClass::Stock, Frequency::Daily)
+            .expect("scan external factors");
+        assert_eq!(ids, vec!["bar".to_string(), "foo".to_string()]);
+    }
+
+    fn test_output_dir(name: &str) -> PathBuf {
+        let path = std::env::current_dir()
+            .expect("cwd")
+            .join("target")
+            .join("backtest_tests")
+            .join(name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path).expect("clean test output dir");
+        }
+        std::fs::create_dir_all(&path).expect("create test output dir");
+        path
     }
 
     #[test]

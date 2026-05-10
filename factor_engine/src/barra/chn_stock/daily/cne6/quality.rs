@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::barra::common::{
     align_table_column, average_columns, clean, panel_from_target_stock_map, safe_div, sample_std,
-    slope_over_time, standardize_cross_section, StatementData,
+    slope_over_time, sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
+    zscore_panel_weighted_filled_zero, StatementData,
 };
 use crate::barra::BarraExposure;
 use crate::core::{
@@ -10,12 +11,11 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
-use crate::operators::cs_zscore;
 
 pub struct StockDailyBarraCne6Quality;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.3.0";
 const LOOKBACK: usize = 1260;
 
 pub fn create() -> Box<dyn BarraExposure> {
@@ -62,6 +62,7 @@ impl BarraExposure for StockDailyBarraCne6Quality {
         let basic_table = data.daily(DatasetId::StockDailyBasic)?;
         let total_mv = align_table_column(panel, basic_table, "total_mv")?;
         let close = panel.column("close")?;
+        let weights = sqrt_circ_mv_weights(panel, data)?;
 
         let balance = StatementData::from_table(
             data.daily(DatasetId::StockBalanceSheet)?,
@@ -115,7 +116,8 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 .unwrap_or(0.0);
             safe_div(me + ld, me)
         })?;
-        let market_leverage = market_leverage_raw.cs(standardize_cross_section)?;
+        let market_leverage =
+            standardize_panel_industry_filled_weighted(&market_leverage_raw, &weights, data)?;
 
         let book_leverage_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let offset = panel_offset(panel, trade_date, ts_code)?;
@@ -127,25 +129,32 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 .unwrap_or(0.0);
             safe_div(be + ld, me)
         })?;
-        let book_leverage = book_leverage_raw.cs(standardize_cross_section)?;
+        let book_leverage =
+            standardize_panel_industry_filled_weighted(&book_leverage_raw, &weights, data)?;
 
         let debt_to_asset_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let tl = balance.latest_annual_value(ts_code, trade_date, "total_liab")?;
             let ta = balance.latest_annual_value(ts_code, trade_date, "total_assets")?;
             safe_div(tl, ta)
         })?;
-        let debt_to_asset = debt_to_asset_raw.cs(standardize_cross_section)?;
-        let leverage = average_columns(panel, &[&market_leverage, &book_leverage, &debt_to_asset])?
-            .cs(cs_zscore)?;
+        let debt_to_asset =
+            standardize_panel_industry_filled_weighted(&debt_to_asset_raw, &weights, data)?;
+        let leverage_raw =
+            average_columns(panel, &[&market_leverage, &book_leverage, &debt_to_asset])?;
+        let leverage = zscore_panel_weighted_filled_zero(&leverage_raw, &weights)?;
 
         let variation_sales_raw = annual_cv(panel, &income_annual, "revenue")?;
-        let variation_sales = variation_sales_raw.cs(standardize_cross_section)?;
+        let variation_sales =
+            standardize_panel_industry_filled_weighted(&variation_sales_raw, &weights, data)?;
         let variation_earnings_raw = annual_cv(panel, &income_annual, "n_income_attr_p")?;
-        let variation_earnings = variation_earnings_raw.cs(standardize_cross_section)?;
+        let variation_earnings =
+            standardize_panel_industry_filled_weighted(&variation_earnings_raw, &weights, data)?;
         let variation_cash_flows_raw = annual_cv(panel, &cashflow_annual, "n_incr_cash_cash_equ")?;
-        let variation_cash_flows = variation_cash_flows_raw.cs(standardize_cross_section)?;
+        let variation_cash_flows =
+            standardize_panel_industry_filled_weighted(&variation_cash_flows_raw, &weights, data)?;
         let analyst_forecast_std_raw = analyst_eps_std_column(panel, &close, &analyst_by_stock)?;
-        let analyst_forecast_std = analyst_forecast_std_raw.cs(standardize_cross_section)?;
+        let analyst_forecast_std =
+            standardize_panel_industry_filled_weighted(&analyst_forecast_std_raw, &weights, data)?;
         let earnings_variability = average_columns(
             panel,
             &[
@@ -154,8 +163,9 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 &variation_cash_flows,
                 &analyst_forecast_std,
             ],
-        )?
-        .cs(cs_zscore)?;
+        )?;
+        let earnings_variability =
+            zscore_panel_weighted_filled_zero(&earnings_variability, &weights)?;
 
         let accruals_bs_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let end_date = balance.latest_annual_end_date(ts_code, trade_date)?;
@@ -167,7 +177,8 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 balance.annual_value_for_end_date(ts_code, trade_date, end_date, "total_assets")?;
             safe_div(-(current_noa - prev_noa - da), ta)
         })?;
-        let accruals_bs = accruals_bs_raw.cs(standardize_cross_section)?;
+        let accruals_bs =
+            standardize_panel_industry_filled_weighted(&accruals_bs_raw, &weights, data)?;
         let accruals_cf_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let end_date = balance.latest_annual_end_date(ts_code, trade_date)?;
             let ni = cashflow_annual
@@ -197,16 +208,18 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 balance.annual_value_for_end_date(ts_code, trade_date, end_date, "total_assets")?;
             safe_div(-(ni - (cfo + cfi) + da), ta)
         })?;
-        let accruals_cf = accruals_cf_raw.cs(standardize_cross_section)?;
-        let earnings_quality =
-            average_columns(panel, &[&accruals_bs, &accruals_cf])?.cs(cs_zscore)?;
+        let accruals_cf =
+            standardize_panel_industry_filled_weighted(&accruals_cf_raw, &weights, data)?;
+        let earnings_quality_raw = average_columns(panel, &[&accruals_bs, &accruals_cf])?;
+        let earnings_quality = zscore_panel_weighted_filled_zero(&earnings_quality_raw, &weights)?;
 
         let asset_turnover_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let sales = income.ttm_sum(ts_code, trade_date, "revenue")?;
             let ta = balance.latest_annual_value(ts_code, trade_date, "total_assets")?;
             safe_div(sales, ta)
         })?;
-        let asset_turnover = asset_turnover_raw.cs(standardize_cross_section)?;
+        let asset_turnover =
+            standardize_panel_industry_filled_weighted(&asset_turnover_raw, &weights, data)?;
         let gross_profitability_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let sales = income_annual.latest_annual_value(ts_code, trade_date, "revenue")?;
             let cogs = income_annual
@@ -215,7 +228,8 @@ impl BarraExposure for StockDailyBarraCne6Quality {
             let ta = balance.latest_annual_value(ts_code, trade_date, "total_assets")?;
             safe_div(sales - cogs, ta)
         })?;
-        let gross_profitability = gross_profitability_raw.cs(standardize_cross_section)?;
+        let gross_profitability =
+            standardize_panel_industry_filled_weighted(&gross_profitability_raw, &weights, data)?;
         let gross_profit_margin_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let sales = income_annual.latest_annual_value(ts_code, trade_date, "revenue")?;
             let cogs = income_annual
@@ -223,13 +237,15 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 .unwrap_or(0.0);
             safe_div(sales - cogs, sales)
         })?;
-        let gross_profit_margin = gross_profit_margin_raw.cs(standardize_cross_section)?;
+        let gross_profit_margin =
+            standardize_panel_industry_filled_weighted(&gross_profit_margin_raw, &weights, data)?;
         let return_on_assets_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let earnings = income.ttm_sum(ts_code, trade_date, "n_income_attr_p")?;
             let ta = balance.latest_annual_value(ts_code, trade_date, "total_assets")?;
             safe_div(earnings, ta)
         })?;
-        let return_on_assets = return_on_assets_raw.cs(standardize_cross_section)?;
+        let return_on_assets =
+            standardize_panel_industry_filled_weighted(&return_on_assets_raw, &weights, data)?;
         let profitability = average_columns(
             panel,
             &[
@@ -238,21 +254,24 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 &gross_profit_margin,
                 &return_on_assets,
             ],
-        )?
-        .cs(cs_zscore)?;
+        )?;
+        let profitability = zscore_panel_weighted_filled_zero(&profitability, &weights)?;
 
         let total_assets_growth_raw = annual_slope_ratio(panel, &balance, "total_assets", true)?;
-        let total_assets_growth = total_assets_growth_raw.cs(standardize_cross_section)?;
+        let total_assets_growth =
+            standardize_panel_industry_filled_weighted(&total_assets_growth_raw, &weights, data)?;
         let issuance_growth_raw = annual_slope_ratio(panel, &balance, "total_share", true)?;
-        let issuance_growth = issuance_growth_raw.cs(standardize_cross_section)?;
+        let issuance_growth =
+            standardize_panel_industry_filled_weighted(&issuance_growth_raw, &weights, data)?;
         let capex_growth_raw =
             annual_slope_ratio(panel, &cashflow_annual, "c_pay_acq_const_fiolta", true)?;
-        let capex_growth = capex_growth_raw.cs(standardize_cross_section)?;
+        let capex_growth =
+            standardize_panel_industry_filled_weighted(&capex_growth_raw, &weights, data)?;
         let investment_quality = average_columns(
             panel,
             &[&total_assets_growth, &issuance_growth, &capex_growth],
-        )?
-        .cs(cs_zscore)?;
+        )?;
+        let investment_quality = zscore_panel_weighted_filled_zero(&investment_quality, &weights)?;
 
         let quality = average_columns(
             panel,
@@ -263,8 +282,8 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 &profitability,
                 &investment_quality,
             ],
-        )?
-        .cs(cs_zscore)?;
+        )?;
+        let quality = zscore_panel_weighted_filled_zero(&quality, &weights)?;
 
         let specs = self.specs();
         let columns = vec![
@@ -315,7 +334,8 @@ fn quality_spec(id: &str) -> BarraSpec {
         description: format!("CNE6 QUALITY exposure component {id}."),
         dependencies: vec![
             DataRequest::new(DatasetId::StockDailyPv, &["close"]),
-            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv"]),
+            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv", "circ_mv"]),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::financial_quarters(
                 DatasetId::StockIncome,
                 &["revenue", "oper_cost", "n_income_attr_p"],

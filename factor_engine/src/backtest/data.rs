@@ -10,7 +10,7 @@ use crate::data::parquet_io::{parquet_column_names, read_parquet};
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
 use crate::factor::common::{ClassificationLevel, ClassificationMap};
-use crate::storage::{FactorMetadata, FactorStorage, LabelStorage};
+use crate::storage::{BarraStorage, FactorMetadata, FactorStorage, LabelStorage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FactorRootLayout {
@@ -29,6 +29,7 @@ pub struct BacktestInput {
     pub trade_filter: BacktestTradeFilterBatch,
     pub benchmark: BenchmarkBatch,
     pub sectors: Option<HashMap<i32, Vec<Option<String>>>>,
+    pub barra_columns: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -255,7 +256,7 @@ pub fn prepare_backtest_data_plan(
     let trade_filter = load_trade_filter_plan(config, request, &target_dates, &instruments)?;
     let benchmark = load_benchmark_plan(config, &request.benchmark, &target_dates, &instruments)?;
 
-    let barra_columns = request.neutralize.barra_columns();
+    let barra_columns = resolve_neutralize_barra_columns(config, request)?;
     let barra_table = if !barra_columns.is_empty() {
         Some(load_output_table(
             &config.barra_root,
@@ -302,6 +303,33 @@ pub fn prepare_backtest_data_plan(
         trade_filter,
         benchmark,
     })
+}
+
+fn resolve_neutralize_barra_columns(
+    config: &EngineConfig,
+    request: &BacktestRunRequest,
+) -> Result<Vec<String>> {
+    let mut columns = request.neutralize.barra_columns();
+    if request.neutralize.uses_all_barra() {
+        let metadata = BarraStorage::new(config.barra_root.clone()).read_metadata()?;
+        columns.extend(
+            metadata
+                .into_iter()
+                .filter(|item| item.model.eq_ignore_ascii_case(DEFAULT_BARRA_MODEL))
+                .filter(|item| item.asset_class == request.asset_class.as_str())
+                .filter(|item| item.frequency == request.frequency.as_str())
+                .map(|item| item.output_column),
+        );
+    }
+    columns.sort();
+    columns.dedup();
+    if request.neutralize.uses_all_barra() && columns.is_empty() {
+        return Err(err(format!(
+            "no Barra exposures found in metadata for model {}. Run `barra-metadata` first.",
+            DEFAULT_BARRA_MODEL
+        )));
+    }
+    Ok(columns)
 }
 
 pub fn load_backtest_input_batch(
@@ -395,6 +423,7 @@ pub fn load_backtest_input_batch(
         target_dates: target_dates.to_vec(),
         all_dates,
         panel,
+        barra_columns: plan.barra_columns.clone(),
         universe: plan.universe.slice(target_dates),
         trade_filter: plan.trade_filter.slice(target_dates),
         benchmark: plan.benchmark.slice(target_dates),

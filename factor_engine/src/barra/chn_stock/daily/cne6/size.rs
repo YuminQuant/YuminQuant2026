@@ -1,15 +1,16 @@
+use crate::barra::common::standardize_panel_industry_filled_weighted;
 use crate::barra::BarraExposure;
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::operators::{cs_neutralize_regression, cs_winsorize_quantile};
+use crate::operators::cs_neutralize_regression;
 
 pub struct StockDailyBarraCne6Size;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 
 pub fn create() -> Box<dyn BarraExposure> {
     Box::new(StockDailyBarraCne6Size)
@@ -46,13 +47,13 @@ impl BarraExposure for StockDailyBarraCne6Size {
         let sqrt_mv = circ_mv.map_values(sqrt_market_value);
         let raw_size = circ_mv
             .map_values(|value| clean(value).and_then(|value| (value > 0.0).then_some(value.ln())));
-        let size = raw_size.cs_binary(&sqrt_mv, standardize_cross_section_weighted)?;
+        let size = standardize_panel_industry_filled_weighted(&raw_size, &sqrt_mv, data)?;
 
         let mid_raw = size.map_values(|value| clean(value).map(|value| value.powi(3)));
         let mid_residual = mid_raw.cs_ternary(&size, &sqrt_mv, |mid, size, weight| {
             cs_neutralize_regression(mid, &[size], None, Some(weight))
         })?;
-        let mid_cap = mid_residual.cs_binary(&sqrt_mv, standardize_cross_section_weighted)?;
+        let mid_cap = standardize_panel_industry_filled_weighted(&mid_residual, &sqrt_mv, data)?;
 
         let composite_raw = size.zip_binary(&mid_cap, |size, mid_cap| {
             match (clean(size), clean(mid_cap)) {
@@ -61,7 +62,7 @@ impl BarraExposure for StockDailyBarraCne6Size {
             }
         })?;
         let composite_size =
-            composite_raw.cs_binary(&sqrt_mv, standardize_cross_section_weighted)?;
+            standardize_panel_industry_filled_weighted(&composite_raw, &sqrt_mv, data)?;
 
         let specs = self.specs();
         Ok(vec![
@@ -86,55 +87,12 @@ fn size_spec(id: &str, name: &str, description: &str) -> BarraSpec {
             .map(|value| value.to_string())
             .collect(),
         description: description.to_string(),
-        dependencies: vec![DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"])],
+        dependencies: vec![
+            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
+        ],
         lookback: Lookback { trading_days: 0 },
     }
-}
-
-fn standardize_cross_section_weighted(
-    values: &[Option<f64>],
-    weights: &[Option<f64>],
-) -> Vec<Option<f64>> {
-    let winsorized = cs_winsorize_quantile(values, 0.01, 0.99);
-    weighted_zscore(&winsorized, weights)
-}
-
-fn weighted_zscore(values: &[Option<f64>], weights: &[Option<f64>]) -> Vec<Option<f64>> {
-    if values.len() != weights.len() {
-        return vec![None; values.len()];
-    }
-    let mut rows = Vec::new();
-    let mut weight_sum = 0.0;
-    let mut weighted_sum = 0.0;
-    for idx in 0..values.len() {
-        let (Some(value), Some(weight)) = (clean(values[idx]), clean(weights[idx])) else {
-            continue;
-        };
-        if !value.is_finite() || !weight.is_finite() || weight <= 0.0 {
-            continue;
-        }
-        rows.push((idx, value, weight));
-        weight_sum += weight;
-        weighted_sum += weight * value;
-    }
-    if rows.is_empty() || weight_sum <= f64::EPSILON {
-        return vec![None; values.len()];
-    }
-    let mean = weighted_sum / weight_sum;
-    let variance = rows
-        .iter()
-        .map(|(_, value, weight)| weight * (value - mean).powi(2))
-        .sum::<f64>()
-        / weight_sum;
-    if variance <= f64::EPSILON {
-        return vec![None; values.len()];
-    }
-    let std = variance.sqrt();
-    let mut output = vec![None; values.len()];
-    for (idx, value, _) in rows {
-        output[idx] = Some((value - mean) / std);
-    }
-    output
 }
 
 fn sqrt_market_value(value: Option<f64>) -> Option<f64> {
@@ -147,9 +105,10 @@ fn clean(value: Option<f64>) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use crate::barra::common::standardize_cross_section_weighted;
     use crate::operators::cs_winsorize_quantile;
 
-    use super::{sqrt_market_value, standardize_cross_section_weighted, StockDailyBarraCne6Size};
+    use super::{sqrt_market_value, StockDailyBarraCne6Size};
     use crate::barra::BarraExposure;
 
     fn assert_close(actual: f64, expected: f64) {

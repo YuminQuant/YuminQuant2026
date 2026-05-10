@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+use crate::barra::common::{
+    sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
+    zscore_panel_weighted_filled_zero,
+};
 use crate::barra::BarraExposure;
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
@@ -7,14 +11,12 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
 use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel, PanelColumn};
-use crate::operators::{
-    cs_winsorize_quantile, cs_zscore, ts_ew_regression_alpha_beta_residual_sigma, ts_ew_sum,
-};
+use crate::operators::{ts_ew_regression_alpha_beta_residual_sigma, ts_ew_sum};
 
 pub struct StockDailyBarraCne6Momentum;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.3.0";
 const MARKET_INDEX: &str = "000300.SH";
 const STREV_WINDOW: usize = 21;
 const STREV_HALF_LIFE: f64 = 5.0;
@@ -94,6 +96,7 @@ impl BarraExposure for StockDailyBarraCne6Momentum {
             data.daily(DatasetId::StockCiClassification)?,
             ClassificationLevel::Sector,
         )?;
+        let weights = sqrt_circ_mv_weights(stock_panel, data)?;
 
         let close = stock_panel.column("close")?;
         let pre_close = stock_panel.column("pre_close")?;
@@ -105,18 +108,22 @@ impl BarraExposure for StockDailyBarraCne6Momentum {
             .zip_binary(&index_panel.column("pre_close")?, arithmetic_return)?;
         let market_returns = expand_index_column(stock_panel, index_panel, &index_returns)?;
 
-        let short_term_reversal = stock_log_returns
-            .ts(short_term_reversal_raw)?
-            .cs(standardize_cross_section)?;
-        let seasonality = stock_log_returns
-            .ts(seasonality_raw)?
-            .cs(standardize_cross_section)?;
-        let relative_strength = stock_log_returns
-            .ts(relative_strength_raw)?
-            .cs(standardize_cross_section)?;
-        let historical_alpha = stock_returns
-            .ts_binary(&market_returns, historical_alpha_raw)?
-            .cs(standardize_cross_section)?;
+        let short_term_reversal_raw_col = stock_log_returns.ts(short_term_reversal_raw)?;
+        let short_term_reversal = standardize_panel_industry_filled_weighted(
+            &short_term_reversal_raw_col,
+            &weights,
+            data,
+        )?;
+        let seasonality_raw_col = stock_log_returns.ts(seasonality_raw)?;
+        let seasonality =
+            standardize_panel_industry_filled_weighted(&seasonality_raw_col, &weights, data)?;
+        let relative_strength_raw_col = stock_log_returns.ts(relative_strength_raw)?;
+        let relative_strength =
+            standardize_panel_industry_filled_weighted(&relative_strength_raw_col, &weights, data)?;
+        let historical_alpha_raw_col =
+            stock_returns.ts_binary(&market_returns, historical_alpha_raw)?;
+        let historical_alpha =
+            standardize_panel_industry_filled_weighted(&historical_alpha_raw_col, &weights, data)?;
 
         let industry_rs = stock_log_returns.ts(industry_relative_strength_raw)?;
         let circ_mv = align_daily_table_column(
@@ -128,12 +135,13 @@ impl BarraExposure for StockDailyBarraCne6Momentum {
             (Some(_), Some(mv)) if mv > 0.0 => Some(mv.sqrt()),
             _ => None,
         })?;
+        let industry_momentum_raw =
+            industry_momentum_column(stock_panel, &industry_rs, &sqrt_mv, &ci_map)?;
         let industry_momentum =
-            industry_momentum_column(stock_panel, &industry_rs, &sqrt_mv, &ci_map)?
-                .cs(standardize_cross_section)?;
+            standardize_panel_industry_filled_weighted(&industry_momentum_raw, &weights, data)?;
 
         let momentum_raw = historical_alpha.zip_binary(&relative_strength, average_two_values)?;
-        let momentum = momentum_raw.cs(cs_zscore)?;
+        let momentum = zscore_panel_weighted_filled_zero(&momentum_raw, &weights)?;
 
         let style_raw = short_term_reversal.zip_quaternary(
             &seasonality,
@@ -141,7 +149,7 @@ impl BarraExposure for StockDailyBarraCne6Momentum {
             &momentum,
             average_four_values,
         )?;
-        let style = style_raw.cs(cs_zscore)?;
+        let style = zscore_panel_weighted_filled_zero(&style_raw, &weights)?;
 
         let specs = self.specs();
         Ok(vec![
@@ -175,6 +183,7 @@ fn momentum_spec(id: &str, aliases: &[&str], name: &str, description: &str) -> B
             DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
             DataRequest::index_daily(MARKET_INDEX, &["close", "pre_close"]),
             DataRequest::new(DatasetId::StockCiClassification, &["l1_code"]),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
         ],
         lookback: Lookback {
             trading_days: MAX_LOOKBACK,
@@ -448,10 +457,6 @@ fn average_four_values(
         }
         _ => None,
     }
-}
-
-fn standardize_cross_section(values: &[Option<f64>]) -> Vec<Option<f64>> {
-    cs_zscore(&cs_winsorize_quantile(values, 0.01, 0.99))
 }
 
 fn clean(value: Option<f64>) -> Option<f64> {

@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+use crate::barra::common::{
+    sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
+    zscore_panel_weighted_filled_zero,
+};
 use crate::barra::BarraExposure;
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
@@ -7,14 +11,12 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::{DailyPanel, PanelColumn};
-use crate::operators::{
-    cs_winsorize_quantile, cs_zscore, ts_ew_regression_beta_residual_sigma, ts_ew_std_dev,
-};
+use crate::operators::{ts_ew_regression_beta_residual_sigma, ts_ew_std_dev};
 
 pub struct StockDailyBarraCne6Volatility;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.4.0";
 const MARKET_INDEX: &str = "000300.SH";
 const WINDOW: usize = 252;
 const MIN_PERIODS: usize = 1;
@@ -76,6 +78,7 @@ impl BarraExposure for StockDailyBarraCne6Volatility {
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let stock_panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let index_panel = data.index_daily_panel(MARKET_INDEX)?;
+        let weights = sqrt_circ_mv_weights(stock_panel, data)?;
 
         let stock_returns = stock_panel.column("close")?.zip_binary(
             &stock_panel.column("pre_close")?,
@@ -89,14 +92,15 @@ impl BarraExposure for StockDailyBarraCne6Volatility {
 
         let (beta_raw, historical_sigma_raw) =
             beta_and_historical_sigma(stock_panel, &stock_returns, &market_returns)?;
-        let beta = beta_raw.cs(standardize_cross_section)?;
-        let historical_sigma = historical_sigma_raw.cs(standardize_cross_section)?;
-        let daily_std = stock_returns
-            .ts(|values| ts_ew_std_dev(values, WINDOW, MIN_PERIODS, DASTD_HALF_LIFE))?
-            .cs(standardize_cross_section)?;
-        let cumulative_range = stock_returns
-            .ts(cumulative_range_12m)?
-            .cs(standardize_cross_section)?;
+        let beta = standardize_panel_industry_filled_weighted(&beta_raw, &weights, data)?;
+        let historical_sigma =
+            standardize_panel_industry_filled_weighted(&historical_sigma_raw, &weights, data)?;
+        let daily_std_raw = stock_returns
+            .ts(|values| ts_ew_std_dev(values, WINDOW, MIN_PERIODS, DASTD_HALF_LIFE))?;
+        let daily_std = standardize_panel_industry_filled_weighted(&daily_std_raw, &weights, data)?;
+        let cumulative_range_raw = stock_returns.ts(cumulative_range_12m)?;
+        let cumulative_range =
+            standardize_panel_industry_filled_weighted(&cumulative_range_raw, &weights, data)?;
 
         let residual_raw = historical_sigma.zip_ternary(
             &daily_std,
@@ -112,7 +116,7 @@ impl BarraExposure for StockDailyBarraCne6Volatility {
                 _ => None,
             },
         )?;
-        let residual_volatility = residual_raw.cs(cs_zscore)?;
+        let residual_volatility = zscore_panel_weighted_filled_zero(&residual_raw, &weights)?;
 
         let volatility_raw =
             beta.zip_binary(&residual_volatility, |beta, residual_volatility| {
@@ -123,7 +127,7 @@ impl BarraExposure for StockDailyBarraCne6Volatility {
                     _ => None,
                 }
             })?;
-        let volatility = volatility_raw.cs(cs_zscore)?;
+        let volatility = zscore_panel_weighted_filled_zero(&volatility_raw, &weights)?;
 
         let specs = self.specs();
         Ok(vec![
@@ -153,6 +157,8 @@ fn volatility_spec(id: &str, aliases: &[&str], name: &str, description: &str) ->
         description: description.to_string(),
         dependencies: vec![
             DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]),
+            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::index_daily(MARKET_INDEX, &["close", "pre_close"]),
         ],
         lookback: Lookback {
@@ -269,10 +275,6 @@ fn cumulative_range_12m(values: &[Option<f64>]) -> Vec<Option<f64>> {
         }
     }
     output
-}
-
-fn standardize_cross_section(values: &[Option<f64>]) -> Vec<Option<f64>> {
-    cs_zscore(&cs_winsorize_quantile(values, 0.01, 0.99))
 }
 
 fn clean(value: Option<f64>) -> Option<f64> {

@@ -140,6 +140,7 @@ pub enum NeutralizeSpec {
     Barra {
         columns: Vec<String>,
         industry: bool,
+        all: bool,
     },
 }
 
@@ -158,6 +159,7 @@ impl NeutralizeSpec {
             )));
         };
         let mut industry = false;
+        let mut all = false;
         let mut columns = Vec::new();
         for part in rest
             .split('+')
@@ -173,27 +175,46 @@ impl NeutralizeSpec {
                 .map(str::trim)
                 .filter(|item| !item.is_empty())
             {
+                if matches!(
+                    column.to_ascii_lowercase().as_str(),
+                    "all" | "*" | "__all__"
+                ) {
+                    all = true;
+                    continue;
+                }
                 columns.push(column.to_string());
             }
         }
         columns.sort();
         columns.dedup();
-        if columns.is_empty() && !industry {
+        if columns.is_empty() && !industry && !all {
             return Err(err(
-                "--neutralize barra: requires at least one Barra column or +industry",
+                "--neutralize barra: requires at least one Barra column, all, or +industry",
             ));
         }
-        Ok(Self::Barra { columns, industry })
+        Ok(Self::Barra {
+            columns,
+            industry,
+            all,
+        })
     }
 
     pub fn label(&self) -> String {
         match self {
             Self::None => "none".to_string(),
             Self::Industry => "industry".to_string(),
-            Self::Barra { columns, industry } => {
-                let mut label = format!("barra_{}", columns.join("_"));
+            Self::Barra {
+                columns,
+                industry,
+                all,
+            } => {
+                let mut label = if *all {
+                    "barra_all".to_string()
+                } else {
+                    format!("barra_{}", columns.join("_"))
+                };
                 if *industry {
-                    if columns.is_empty() {
+                    if columns.is_empty() && !*all {
                         label = "barra_industry".to_string();
                     } else {
                         label.push_str("_industry");
@@ -213,5 +234,9 @@ impl NeutralizeSpec {
 
     pub fn uses_industry(&self) -> bool {
         matches!(self, Self::Industry | Self::Barra { industry: true, .. })
+    }
+
+    pub fn uses_all_barra(&self) -> bool {
+        matches!(self, Self::Barra { all: true, .. })
     }
 }

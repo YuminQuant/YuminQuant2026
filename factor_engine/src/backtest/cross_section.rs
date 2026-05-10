@@ -198,7 +198,7 @@ fn update_factor_cross_section_state(
             stats.coverage,
             stats.inf_rate,
         ));
-        let barra = barra_cross_sections(request, input, date_idx)?;
+        let barra = barra_cross_sections(input, date_idx, &factor.output_column)?;
         let groups = input
             .sectors
             .as_ref()
@@ -379,14 +379,14 @@ fn group_name(group_idx: usize) -> String {
 }
 
 fn barra_cross_sections(
-    request: &BacktestRunRequest,
     input: &BacktestInput,
     date_idx: usize,
+    target_column: &str,
 ) -> Result<Vec<Vec<Option<f64>>>> {
-    request
-        .neutralize
-        .barra_columns()
+    input
+        .barra_columns
         .iter()
+        .filter(|column| column.as_str() != target_column)
         .map(|column| input.panel.cross_section(column, date_idx))
         .collect()
 }

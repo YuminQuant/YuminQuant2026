@@ -20,6 +20,7 @@ from yq_ml_alpha.features.transforms import (
     cross_section_zscore_log_rank,
 )
 from yq_ml_alpha.models.base import ModelContext
+from yq_ml_alpha.models.ic_sign_model import ICSignEqualWeightAlphaModel
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
 from yq_ml_alpha.models.mlp_model import MLPAlphaModel
 from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
@@ -380,6 +381,64 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         pred = model.predict(train, context)
         self.assertEqual(len(pred), 3)
 
+    def test_ic_sign_equal_weight_uses_rankic_signs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ic_root = Path(tmp) / "ic"
+            ic_root.mkdir()
+            pd.DataFrame({"rank_ic": [0.1, 0.2, np.nan]}).to_parquet(ic_root / "pos.parquet", index=False)
+            pd.DataFrame({"rank_ic": [-0.1, -0.3]}).to_parquet(ic_root / "neg.parquet", index=False)
+            pd.DataFrame({"rank_ic": [np.nan, np.nan]}).to_parquet(ic_root / "nan.parquet", index=False)
+            pd.DataFrame({"rank_ic": [0.1, -0.1]}).to_parquet(ic_root / "zero.parquet", index=False)
+            context = ModelContext(
+                run_id="r",
+                alpha_id="a",
+                feature_columns=["pos", "neg", "missing", "nan", "zero"],
+                label_column="y",
+                artifact_dir=Path("tmp"),
+                model_params={"ic_root": str(ic_root), "ic_metric": "rank_ic"},
+                tuning_params={},
+            )
+            model = ICSignEqualWeightAlphaModel()
+            model.fit(pd.DataFrame(), pd.DataFrame(), context)
+            self.assertEqual(model.signs, {"pos": 1.0, "neg": -1.0})
+
+            data = pd.DataFrame(
+                {
+                    "trade_date": [1, 1],
+                    "ts_code": ["a", "b"],
+                    "pos": [1.0, 2.0],
+                    "neg": [10.0, 20.0],
+                    "missing": [100.0, 200.0],
+                    "nan": [3.0, 4.0],
+                    "zero": [5.0, 6.0],
+                }
+            )
+            pred = model.predict(data, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), [-4.5, -9.0], atol=1e-7))
+
+            path = Path(tmp) / "model.pkl"
+            model.save(path)
+            loaded = ICSignEqualWeightAlphaModel.load(path)
+            loaded_pred = loaded.predict(data, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
+    def test_ic_sign_equal_weight_errors_when_no_valid_ic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ic_root = Path(tmp) / "ic"
+            ic_root.mkdir()
+            pd.DataFrame({"rank_ic": [np.nan]}).to_parquet(ic_root / "a.parquet", index=False)
+            context = ModelContext(
+                run_id="r",
+                alpha_id="a",
+                feature_columns=["a", "b"],
+                label_column="y",
+                artifact_dir=Path("tmp"),
+                model_params={"ic_root": str(ic_root), "ic_metric": "rank_ic"},
+                tuning_params={},
+            )
+            with self.assertRaisesRegex(ValueError, "no valid IC signs"):
+                ICSignEqualWeightAlphaModel().fit(pd.DataFrame(), pd.DataFrame(), context)
+
     def test_torch_mlp_smoke_when_installed(self) -> None:
         try:
             import torch  # noqa: F401
@@ -427,6 +486,15 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.mlp_model.MLPAlphaModel")
         self.assertEqual(config.model.params["hidden_layers"], [128, 64])
+
+    def test_monthly_ic_sign_config_parses(self) -> None:
+        config = load_config(
+            Path(__file__).resolve().parents[1] / "configs" / "examples" / "monthly_ic_sign_equal_weight.toml"
+        )
+        self.assertEqual(config.alpha_id, "ml_alpha_ic_sign_ew")
+        self.assertEqual(config.features.columns, "__all__")
+        self.assertEqual(config.model.class_path, "yq_ml_alpha.models.ic_sign_model.ICSignEqualWeightAlphaModel")
+        self.assertEqual(config.model.params["ic_metric"], "rank_ic")
 
 
 if __name__ == "__main__":

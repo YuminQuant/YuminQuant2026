@@ -199,7 +199,7 @@ def plot_return_summary(
     _plot_annual_bars(ax_ann, returns, group_names, return_col, "Annual return by group")
     _plot_annual_bars(ax_excess_ann, returns, group_names, "excess_return", "Annual excess return by group")
 
-    _plot_turnover_bars(ax_turnover, returns, group_names)
+    _plot_turnover_lines(ax_turnover, returns, group_names)
 
     return fig
 
@@ -226,26 +226,25 @@ def _plot_annual_bars(ax, returns: pd.DataFrame, group_names: list[str], value_c
     _pad_single_axis(ax, report["annual_return(%)"].tolist())
 
 
-def _plot_turnover_bars(ax, returns: pd.DataFrame, group_names: list[str]) -> None:
+def _plot_turnover_lines(ax, returns: pd.DataFrame, group_names: list[str]) -> None:
     if not group_names or "turnover" not in returns.columns:
         ax.text(0.5, 0.5, "No turnover data", transform=ax.transAxes, ha="center", va="center")
         ax.set_axis_off()
         return
     selected = [group_names[0], group_names[-1]] if len(group_names) > 1 else [group_names[0]]
-    means = []
-    labels = []
-    for name in selected:
+    values: list[float] = []
+    for name, color in zip(selected, ["#3b6fb6", "#b63b3b"]):
         series = _series_by_portfolio(returns, name, "turnover")
         if series.empty:
             continue
-        means.append(series.mean() * 100.0)
-        labels.append(name)
-    if not means:
+        series = series * 100.0
+        ax.plot(series.index, series.values, linewidth=1.3, marker="o", markersize=2.0, label=f"{name} turnover", color=color)
+        values.extend(series.values.tolist())
+    if not values:
         ax.text(0.5, 0.5, "No turnover data", transform=ax.transAxes, ha="center", va="center")
         ax.set_axis_off()
         return
-    colors = ["#3b6fb6", "#b63b3b"][: len(means)]
-    ax.bar(labels, means, color=colors, width=0.45)
-    ax.set_ylabel("Mean turnover (%)")
-    ax.set_title("End group mean turnover")
-    _pad_single_axis(ax, means)
+    ax.set_ylabel("Turnover (%)")
+    ax.set_title("End group turnover")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.12), ncol=min(len(selected), 2), frameon=False)
+    _pad_single_axis(ax, values)

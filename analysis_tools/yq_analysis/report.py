@@ -212,11 +212,11 @@ def make_ic_report(ic: pd.DataFrame | None) -> pd.DataFrame:
             {
                 "metric": label,
                 "observations": observation_count(values),
-                "mean": ic_mean(values),
-                "std": std_return(values),
-                "ir": icir(values),
-                "abs_mean": ic_abs_mean(values),
-                "abs_ir": ic_abs_ir(values),
+                "mean": _round_float(ic_mean(values), 3),
+                "std": _round_float(std_return(values), 3),
+                "ir": _round_float(icir(values), 3),
+                "abs_mean": _round_float(ic_abs_mean(values), 3),
+                "abs_ir": _round_float(ic_abs_ir(values), 3),
             }
         )
     return pd.DataFrame(rows)

@@ -10,7 +10,8 @@ predict = [20220101, 20260424]
 
 [sample]
 # Supports daily, weekly/weekly_end, monthly/monthly_end, 5/20, or every_5_days/every_20_days.
-frequency = "monthly_end"
+train_frequency = "monthly_end"
+predict_frequency = "daily"
 
 [train_scheme]
 type = "expanding"

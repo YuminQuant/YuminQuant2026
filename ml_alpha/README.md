@@ -57,6 +57,21 @@ For the monthly examples:
 - missing features are filled with `0`
 - rows with missing labels are excluded from training
 
+`[dates].train` is required. `[dates].valid` and `[dates].predict` can be
+omitted or set to `[]`; this is useful when you only want to fit and save a
+model for later live prediction. In `[sample]`, `train_frequency` is required.
+`predict_frequency` is required only when `[dates].predict` is non-empty.
+
+```toml
+[dates]
+train = [20110101, 20260424]
+valid = []
+predict = []
+
+[sample]
+train_frequency = "monthly_end"
+```
+
 To train on every factor column under a feature root, use:
 
 ```toml

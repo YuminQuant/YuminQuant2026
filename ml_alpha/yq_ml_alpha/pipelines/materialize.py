@@ -6,6 +6,7 @@ from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.data.sampler import sample_dates
+from yq_ml_alpha.pipelines.train import _predict_frequency, _train_frequency
 
 
 def run(config_path: str | Path) -> list[Path]:
@@ -15,11 +16,12 @@ def run(config_path: str | Path) -> list[Path]:
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
     outputs = []
-    for split, date_range, include_label, frequency in [
-        ("train", config.dates.train, True, config.sample.train_frequency or config.sample.frequency),
-        ("valid", config.dates.valid, True, config.sample.train_frequency or config.sample.frequency),
-        ("predict", config.dates.predict, False, config.sample.predict_frequency or config.sample.frequency),
-    ]:
+    splits = [("train", config.dates.train, True, _train_frequency(config))]
+    if config.dates.valid is not None:
+        splits.append(("valid", config.dates.valid, True, _train_frequency(config)))
+    if config.dates.predict is not None:
+        splits.append(("predict", config.dates.predict, False, _predict_frequency(config)))
+    for split, date_range, include_label, frequency in splits:
         dates = sample_dates(calendar, date_range, frequency)
         if not dates:
             continue

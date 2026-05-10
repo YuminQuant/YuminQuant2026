@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yq-analysis"
+version = "0.1.0"
+description = "Portfolio, IC, and backtest result analysis helpers for YuminQuant."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "pyarrow",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["yq_analysis*"]

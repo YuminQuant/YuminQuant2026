@@ -191,6 +191,31 @@ plus `benchmark_return` and `excess_return`. `long_short` is adjusted by
 `sign(mean(IC))`; `excess_return` is filled only for `group_N` when IC is
 positive and `group_1` when IC is negative.
 
+## Python Analysis Tools
+
+The `analysis_tools/` package provides Python helpers for backtest and strategy
+return analysis. It can be used without installation by adding the package root
+to `sys.path`:
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path("analysis_tools").resolve()))
+
+from yq_analysis.io import load_backtest_result
+from yq_analysis.report import make_backtest_report
+from yq_analysis.plots import plot_return_summary
+
+result = load_backtest_result(r"data/backtest/stock/daily", "acf")
+report = make_backtest_report(result["returns"], result["ic"], result["factor_stats"])
+
+display(report["portfolio_total"])
+display(report["portfolio_by_year"])
+
+fig = plot_return_summary(result["returns"], groups=10)
+```
+
 ## Python ML Alpha
 
 The Python ML alpha package lives in `ml_alpha/`. It trains and predicts ML

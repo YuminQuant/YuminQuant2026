@@ -260,6 +260,9 @@ impl MarketDataLoader {
             let filtered = filter_financial_disclosure_range(yearly, end_date)?;
             table.append(&filtered)?;
         }
+        if table.columns.is_empty() {
+            return empty_disclosure_table(&columns);
+        }
         Ok(table)
     }
 
@@ -290,6 +293,9 @@ impl MarketDataLoader {
             let yearly = read_parquet(&file, Some(&columns))?;
             let filtered = filter_dividend_range(&yearly, end_date)?;
             table.append(&filtered)?;
+        }
+        if table.columns.is_empty() {
+            return empty_disclosure_table(&columns);
         }
         Ok(table)
     }
@@ -325,6 +331,9 @@ impl MarketDataLoader {
             let yearly = cache.load_year(DatasetId::StockAnalystReport, file, &columns)?;
             let filtered = filter_analyst_report_range(yearly, end_date)?;
             table.append(&filtered)?;
+        }
+        if table.columns.is_empty() {
+            return empty_disclosure_table(&columns);
         }
         Ok(table)
     }
@@ -391,6 +400,22 @@ fn empty_daily_keyed_table(columns: &[String]) -> Result<Table> {
         let data = match column.as_str() {
             "trade_date" => ColumnData::I32(Vec::new()),
             "ts_code" => ColumnData::Utf8(Vec::new()),
+            _ => ColumnData::F64(Vec::new()),
+        };
+        values.insert(column.clone(), data);
+    }
+    Table::new(values)
+}
+
+fn empty_disclosure_table(columns: &[String]) -> Result<Table> {
+    let mut values = BTreeMap::new();
+    for column in columns {
+        let data = match column.as_str() {
+            "ts_code" | "quarter" | "div_proc" => ColumnData::Utf8(Vec::new()),
+            "ann_date" | "f_ann_date" | "end_date" | "report_date" | "ex_date" => {
+                ColumnData::I32(Vec::new())
+            }
+            "report_type" | "update_flag" => ColumnData::I64(Vec::new()),
             _ => ColumnData::F64(Vec::new()),
         };
         values.insert(column.clone(), data);
@@ -506,6 +531,42 @@ mod tests {
     use crate::data::table::ColumnData;
 
     use super::*;
+
+    #[test]
+    fn empty_disclosure_table_preserves_requested_schema() {
+        let table = empty_disclosure_table(&[
+            "ts_code".to_string(),
+            "report_date".to_string(),
+            "quarter".to_string(),
+            "report_type".to_string(),
+            "eps".to_string(),
+        ])
+        .expect("empty disclosure table");
+
+        assert_eq!(table.len, 0);
+        assert!(matches!(
+            table.columns.get("ts_code"),
+            Some(ColumnData::Utf8(_))
+        ));
+        assert!(matches!(
+            table.columns.get("report_date"),
+            Some(ColumnData::I32(_))
+        ));
+        assert!(matches!(
+            table.columns.get("quarter"),
+            Some(ColumnData::Utf8(_))
+        ));
+        assert!(matches!(
+            table.columns.get("report_type"),
+            Some(ColumnData::I64(_))
+        ));
+        assert!(matches!(table.columns.get("eps"), Some(ColumnData::F64(_))));
+        assert!(table.required_utf8("ts_code").is_ok());
+        assert!(table.required_i32_date_cast("report_date").is_ok());
+        assert!(table.required_utf8("quarter").is_ok());
+        assert!(table.required_i64_cast("report_type").is_ok());
+        assert!(table.required_f64_cast("eps").is_ok());
+    }
 
     #[test]
     fn disclosure_cache_reuses_raw_financial_year_table_across_end_dates() {

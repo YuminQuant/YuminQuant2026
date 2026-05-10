@@ -14,9 +14,10 @@ use crate::operators::{
 pub struct StockDailyBarraCne6Volatility;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const MARKET_INDEX: &str = "000300.SH";
 const WINDOW: usize = 252;
+const MIN_PERIODS: usize = 1;
 const BETA_HALF_LIFE: f64 = 63.0;
 const DASTD_HALF_LIFE: f64 = 42.0;
 const TRADING_DAYS_PER_MONTH: usize = 21;
@@ -37,25 +38,25 @@ impl BarraExposure for StockDailyBarraCne6Volatility {
                 "Historical_Sigma",
                 &["HSIGMA"],
                 "CNE6 historical sigma",
-                "EW residual return volatility from the 252-day Beta regression against CSI 300.",
+                "EW residual return volatility from the 252-day Beta regression against CSI 300 with min_periods=1.",
             ),
             volatility_spec(
                 "Daily_Std",
                 &["DASTD"],
                 "CNE6 daily standard deviation",
-                "EW standard deviation of daily stock returns over 252 trading days with half-life 42.",
+                "EW standard deviation of daily stock returns over 252 trading days with half-life 42 and min_periods=1.",
             ),
             volatility_spec(
                 "Cumulative_Range",
                 &["CMRA"],
                 "CNE6 cumulative range",
-                "Max minus min of the past 12 monthly cumulative log returns.",
+                "Max minus min of up to the past 12 monthly cumulative log returns with min_periods=1.",
             ),
             volatility_spec(
                 "Beta",
                 &[],
                 "CNE6 Beta",
-                "EW 252-day regression slope of stock returns on CSI 300 returns with half-life 63.",
+                "EW 252-day regression slope of stock returns on CSI 300 returns with half-life 63 and min_periods=1.",
             ),
             volatility_spec(
                 "Residual_Volatility",
@@ -91,7 +92,7 @@ impl BarraExposure for StockDailyBarraCne6Volatility {
         let beta = beta_raw.cs(standardize_cross_section)?;
         let historical_sigma = historical_sigma_raw.cs(standardize_cross_section)?;
         let daily_std = stock_returns
-            .ts(|values| ts_ew_std_dev(values, WINDOW, WINDOW, DASTD_HALF_LIFE))?
+            .ts(|values| ts_ew_std_dev(values, WINDOW, MIN_PERIODS, DASTD_HALF_LIFE))?
             .cs(standardize_cross_section)?;
         let cumulative_range = stock_returns
             .ts(cumulative_range_12m)?
@@ -218,7 +219,7 @@ fn beta_and_historical_sigma(
             &stock_series,
             &market_series,
             WINDOW,
-            WINDOW,
+            MIN_PERIODS,
             BETA_HALF_LIFE,
         );
         for date_idx in 0..date_count {
@@ -248,21 +249,17 @@ fn cumulative_range_12m(values: &[Option<f64>]) -> Vec<Option<f64>> {
     }
 
     for idx in 0..values.len() {
-        if idx + 1 < WINDOW {
-            continue;
-        }
         let mut month_values = Vec::with_capacity(MONTHS_PER_YEAR);
-        let mut valid = true;
-        for month in 1..=MONTHS_PER_YEAR {
-            let start = idx + 1 - month * TRADING_DAYS_PER_MONTH;
-            let end = idx + 1;
-            if prefix_count[end] - prefix_count[start] != month * TRADING_DAYS_PER_MONTH {
-                valid = false;
-                break;
+        let end = idx + 1;
+        let available_months = end.div_ceil(TRADING_DAYS_PER_MONTH).min(MONTHS_PER_YEAR);
+        for month in 1..=available_months {
+            let window_len = (month * TRADING_DAYS_PER_MONTH).min(end);
+            let start = end - window_len;
+            if prefix_count[end] - prefix_count[start] >= MIN_PERIODS {
+                month_values.push(prefix_sum[end] - prefix_sum[start]);
             }
-            month_values.push(prefix_sum[end] - prefix_sum[start]);
         }
-        if valid {
+        if !month_values.is_empty() {
             let min = month_values.iter().copied().reduce(f64::min);
             let max = month_values.iter().copied().reduce(f64::max);
             output[idx] = match (min, max) {
@@ -311,14 +308,15 @@ mod tests {
     }
 
     #[test]
-    fn cumulative_range_requires_full_year_of_valid_returns() {
+    fn cumulative_range_uses_available_history_with_min_periods_one() {
         let mut values = vec![Some(0.001); WINDOW];
         let output = cumulative_range_12m(&values);
-        assert_eq!(output[WINDOW - 2], None);
+        assert!(output[0].is_some());
+        assert!(output[WINDOW - 2].is_some());
         assert!(output[WINDOW - 1].is_some());
 
         values[0] = None;
         let output = cumulative_range_12m(&values);
-        assert_eq!(output[WINDOW - 1], None);
+        assert!(output[WINDOW - 1].is_some());
     }
 }

@@ -252,7 +252,7 @@ fn update_factor_cross_section_state(
 }
 
 fn finalize_factor_returns(state: &mut CrossSectionBacktestState, _group_count: usize) {
-    let long_short_sign = ic_mean_sign(&state.daily_ic);
+    let long_short_sign = rank_ic_mean_sign(&state.daily_ic);
     for row in &mut state.returns {
         if row.portfolio == "long_short" {
             row.return_value = row.return_value.map(|value| value * long_short_sign);
@@ -358,11 +358,11 @@ fn build_portfolio_weights(
     output
 }
 
-fn ic_mean_sign(rows: &[IcObservation]) -> f64 {
+fn rank_ic_mean_sign(rows: &[IcObservation]) -> f64 {
     let mut sum = 0.0;
     let mut count = 0usize;
     for row in rows {
-        if let Some(value) = row.ic.filter(|value| value.is_finite()) {
+        if let Some(value) = row.rank_ic.filter(|value| value.is_finite()) {
             sum += value;
             count += 1;
         }
@@ -447,8 +447,8 @@ mod tests {
             label_date: 20260424,
             settle_date: Some(20260428),
             horizon: None,
-            ic: Some(-0.1),
-            rank_ic: None,
+            ic: Some(0.1),
+            rank_ic: Some(-0.1),
             pair_count: 10,
             coverage: 1.0,
             inf_rate: 0.0,

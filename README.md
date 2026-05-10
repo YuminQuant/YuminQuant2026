@@ -188,8 +188,7 @@ data/backtest/stock/daily/factor_stats/{factor_id}.parquet
 
 The `returns` file contains group portfolios and the `long_short` portfolio,
 plus `benchmark_return` and `excess_return`. `long_short` is adjusted by
-`sign(mean(IC))`; `excess_return` is filled only for `group_N` when IC is
-positive and `group_1` when IC is negative.
+`sign(mean(RankIC))`; `excess_return` is filled for every group portfolio.
 
 ## Python Analysis Tools
 

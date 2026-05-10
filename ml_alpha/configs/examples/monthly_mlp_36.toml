@@ -44,7 +44,7 @@ cache_dir = "data/model_workspace/monthly_mlp_36/cache"
 
 [model]
 name = "mlp"
-class = "yq_ml_alpha.models.torch_model.TorchMLPAlphaModel"
+class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
 artifact_dir = "data/model_workspace/monthly_mlp_36/artifacts"
 
 [model.params]

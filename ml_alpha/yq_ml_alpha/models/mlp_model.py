@@ -9,7 +9,7 @@ import pandas as pd
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
 
 
-class TorchMLPAlphaModel(AlphaModel):
+class MLPAlphaModel(AlphaModel):
     """PyTorch MLP regressor for factor-frame alpha combination."""
 
     def __init__(self) -> None:
@@ -102,7 +102,7 @@ class TorchMLPAlphaModel(AlphaModel):
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "TorchMLPAlphaModel":
+    def load(cls, path: str | Path) -> "MLPAlphaModel":
         torch, nn = _torch_modules()
         checkpoint = torch.load(Path(path), map_location="cpu")
         model = cls()
@@ -160,7 +160,7 @@ def _torch_modules():
         import torch
         from torch import nn
     except ImportError as exc:  # pragma: no cover - depends on optional local package
-        raise ImportError("TorchMLPAlphaModel requires installing the optional torch package") from exc
+        raise ImportError("MLPAlphaModel requires installing the optional torch package") from exc
     return torch, nn
 
 

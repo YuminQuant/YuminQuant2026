@@ -40,7 +40,7 @@ cache_dir = "data/model_workspace/torch_ohlcv_v1/cache"
 
 [model]
 name = "torch_mlp"
-class = "yq_ml_alpha.models.torch_model.TorchMLPAlphaModel"
+class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
 artifact_dir = "data/model_workspace/torch_ohlcv_v1/artifacts"
 
 [model.params]

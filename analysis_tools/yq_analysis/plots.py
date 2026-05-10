@@ -161,7 +161,7 @@ def plot_return_summary(
     returns: pd.DataFrame,
     groups: int | None = None,
     return_col: str = "return",
-    figsize: tuple[float, float] = (13.0, 10.0),
+    figsize: tuple[float, float] = (12.0, 10.0),
     title: str | None = None,
     save: bool = True,
     save_dir: str | Path | None = None,
@@ -177,12 +177,12 @@ def plot_return_summary(
 
     plt = _require_matplotlib()
     fig = plt.figure(figsize=figsize, constrained_layout=False)
-    fig.subplots_adjust(left=0.06, right=0.84, top=0.94 if title else 0.97, bottom=0.06, hspace=0.55, wspace=0.12)
+    fig.subplots_adjust(left=0.06, right=0.84, top=0.94 if title else 0.97, bottom=0.06, hspace=0.62, wspace=0.12)
     if title:
         fig.suptitle(title, y=0.985, fontsize=13)
     grid = fig.add_gridspec(4, 2, height_ratios=[2.2, 2.0, 2.0, 1.8], width_ratios=[1, 1])
     ax_ret = fig.add_subplot(grid[0, :])
-    ax_excess = fig.add_subplot(grid[1, :])
+    ax_excess = fig.add_subplot(grid[1, :], sharex=ax_ret)
     ax_ann = fig.add_subplot(grid[2, 0])
     ax_excess_ann = fig.add_subplot(grid[2, 1])
     ax_turnover = fig.add_subplot(grid[3, :])
@@ -201,19 +201,18 @@ def plot_return_summary(
             ls_curve.index,
             ls_curve.values,
             color="#1f1f1f",
-            linewidth=2.2,
+            linewidth=1.4,
             label="long_short",
         )
         right_values.extend(ls_curve.values.tolist())
 
-    if left_values and right_values:
-        _set_zero_aligned_limits(ax_ret, ax_ls, left_values, right_values)
-    elif left_values:
+    if left_values:
         _pad_single_axis(ax_ret, left_values)
-    elif right_values:
+    if right_values:
         _pad_single_axis(ax_ls, right_values)
     ax_ret.axhline(0.0, color="#888888", linewidth=0.8, linestyle="--")
     ax_ret.set_title("Cumulative returns")
+    ax_ret.tick_params(axis="x", labelbottom=False)
 
     handles_left, labels_left = ax_ret.get_legend_handles_labels()
     handles_right, labels_right = ax_ls.get_legend_handles_labels()
@@ -293,5 +292,5 @@ def _plot_turnover_lines(ax, returns: pd.DataFrame, group_names: list[str]) -> N
         ax.text(0.5, 0.5, "No turnover data", transform=ax.transAxes, ha="center", va="center")
         ax.set_axis_off()
         return
-    ax.set_title("End group turnover")
+    ax.set_title("End group turnover", pad=12)
     _pad_single_axis(ax, values)

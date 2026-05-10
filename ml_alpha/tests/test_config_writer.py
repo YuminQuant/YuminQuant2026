@@ -16,6 +16,7 @@ from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.features.transforms import cross_section_zscore_log_rank
 from yq_ml_alpha.models.base import ModelContext
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
+from yq_ml_alpha.models.torch_model import TorchMLPAlphaModel
 from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
 from yq_ml_alpha.pipelines.train import build_windows
@@ -217,6 +218,53 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         model.fit(train, pd.DataFrame(), context)
         pred = model.predict(train, context)
         self.assertEqual(len(pred), 3)
+
+    def test_torch_mlp_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        model = TorchMLPAlphaModel()
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "hidden_layers": [4, 2],
+                "epochs": 3,
+                "batch_size": 2,
+                "patience": 0,
+                "seed": 7,
+            },
+            tuning_params={},
+        )
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1],
+                "ts_code": ["a", "b", "c", "d"],
+                "x1": [1.0, 2.0, 3.0, 4.0],
+                "x2": [4.0, 3.0, 2.0, 1.0],
+                "y": [0.1, 0.2, 0.3, 0.4],
+            }
+        )
+        model.fit(train, pd.DataFrame(), context)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), 4)
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.pt"
+            model.save(path)
+            loaded = TorchMLPAlphaModel.load(path)
+            loaded_pred = loaded.predict(train, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
+    def test_monthly_mlp_config_parses(self) -> None:
+        config = load_config(Path(__file__).resolve().parents[1] / "configs" / "examples" / "monthly_mlp_36.toml")
+        self.assertEqual(config.alpha_id, "ml_alpha_mlp")
+        self.assertEqual(config.model.class_path, "yq_ml_alpha.models.torch_model.TorchMLPAlphaModel")
+        self.assertEqual(config.model.params["hidden_layers"], [128, 64])
 
 
 if __name__ == "__main__":

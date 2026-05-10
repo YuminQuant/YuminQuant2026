@@ -301,6 +301,20 @@ def update_stock_financial(args, logger):
             )
 
 
+def update_stock_dividend(args, logger):
+    start_date = args.start_date or DEFAULT_START_DATES["stock"]
+    end_date = args.end_date or bj_today()
+    run_task(
+        logger,
+        "stock_dividend",
+        lambda: DividendDownloader().sync(
+            start_date=start_date,
+            target_end_date=end_date,
+            rebuild=args.rebuild,
+        ),
+    )
+
+
 def update_stock_alt(args, logger):
     start_date = args.start_date or DEFAULT_START_DATES["stock_alt"]
     end_date = args.end_date or bj_today()
@@ -378,6 +392,7 @@ GROUPS = {
     "stock_trade_filter": update_stock_trade_filter,
     "stock_minute": update_stock_minute,
     "stock_financial": update_stock_financial,
+    "stock_dividend": update_stock_dividend,
     "stock_alt": update_stock_alt,
     "future_static": lambda args, logger: update_future_static(logger),
     "future_daily": update_future_daily,
@@ -427,6 +442,11 @@ def parse_args():
     parser.add_argument(
         "--list-date",
         help="Optional YYYYMMDD list date for --ts-code; effective start is max(start-date, list-date).",
+    )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Rebuild supported groups from scratch for the requested date range, e.g. stock_dividend.",
     )
     return parser.parse_args()
 

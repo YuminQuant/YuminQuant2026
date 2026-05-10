@@ -12,7 +12,7 @@ use crate::operators::{cs_winsorize_quantile, cs_zscore};
 pub struct StockDailyBarraCne6DividendYield;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const LOOKBACK: usize = 252;
 const IMPLEMENTED_DIV_PROC: &str = "\u{5b9e}\u{65bd}";
 
@@ -31,7 +31,7 @@ impl BarraExposure for StockDailyBarraCne6DividendYield {
                 "DTOP",
                 &[],
                 "CNE6 dividend-to-price",
-                "Past 12 natural months cash dividend per share divided by prior month-end close.",
+                "Past 12 natural months implemented cash dividend amount divided by target-date total market value.",
             ),
             dividend_yield_spec(
                 "DTOPF",
@@ -50,11 +50,12 @@ impl BarraExposure for StockDailyBarraCne6DividendYield {
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let close = panel.column("close")?;
+        let total_mv =
+            panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
         let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
         let analyst_reports = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
 
-        let dtop_raw = dtop_column(panel, &close, &dividends)?;
+        let dtop_raw = dtop_column(panel, &total_mv, &dividends)?;
         let dtop = dtop_raw.cs(standardize_cross_section)?;
         let dtopf_raw = dtopf_column(panel, &analyst_reports)?;
         let dtopf = dtopf_raw.cs(standardize_cross_section)?;
@@ -85,7 +86,8 @@ fn dividend_yield_spec(id: &str, aliases: &[&str], name: &str, description: &str
             .collect(),
         description: description.to_string(),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+            DataRequest::new(DatasetId::StockDailyPv, &[]),
+            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv"]),
             DataRequest::new(
                 DatasetId::StockDividend,
                 &[
@@ -95,6 +97,8 @@ fn dividend_yield_spec(id: &str, aliases: &[&str], name: &str, description: &str
                     "div_proc",
                     "cash_div_tax",
                     "ex_date",
+                    "base_date",
+                    "base_share",
                 ],
             ),
             DataRequest::new(
@@ -114,6 +118,7 @@ struct DividendRecord {
     ann_date: i32,
     ex_date: i32,
     cash_div_tax: f64,
+    base_share: f64,
     implemented: bool,
 }
 
@@ -131,14 +136,16 @@ fn parse_dividend_records(table: &Table) -> Result<Vec<DividendRecord>> {
     let div_proc = table.required_utf8("div_proc")?;
     let cash_div_tax = table.required_f64_cast("cash_div_tax")?;
     let ex_dates = table.required_i32_date_cast("ex_date")?;
+    let base_share = table.required_f64_cast("base_share")?;
 
     let mut records = Vec::new();
     for idx in 0..table.len {
-        let (Some(ts_code), Some(ann_date), Some(ex_date), Some(cash_div_tax)) = (
+        let (Some(ts_code), Some(ann_date), Some(ex_date), Some(cash_div_tax), Some(base_share)) = (
             ts_codes[idx].clone(),
             ann_dates[idx],
             ex_dates[idx],
             clean(cash_div_tax[idx]),
+            clean(base_share[idx]).filter(|value| *value > 0.0),
         ) else {
             continue;
         };
@@ -147,6 +154,7 @@ fn parse_dividend_records(table: &Table) -> Result<Vec<DividendRecord>> {
             ann_date,
             ex_date,
             cash_div_tax,
+            base_share,
             implemented: div_proc[idx]
                 .as_deref()
                 .is_some_and(|value| value.trim() == IMPLEMENTED_DIV_PROC),
@@ -183,7 +191,7 @@ fn parse_analyst_records(table: &Table) -> Result<Vec<AnalystRecord>> {
 
 fn dtop_column(
     panel: &DailyPanel,
-    close: &PanelColumn,
+    total_mv: &PanelColumn,
     records: &[DividendRecord],
 ) -> Result<PanelColumn> {
     let instrument_count = panel.instruments().len();
@@ -193,22 +201,17 @@ fn dtop_column(
         if !panel.is_target_date(trade_date) {
             continue;
         }
-        let Some(previous_month_date_idx) =
-            previous_month_last_trade_date_idx(panel.dates(), trade_date)
-        else {
-            continue;
-        };
         let start_date = add_months(trade_date, -12);
         let dividend_sum = dividend_sum_by_stock(records, start_date, trade_date);
 
         for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let close_offset = previous_month_date_idx * instrument_count + instrument_idx;
-            let Some(price) = clean(close.values()[close_offset]).filter(|value| *value > 0.0)
+            let offset = date_idx * instrument_count + instrument_idx;
+            let Some(market_value) = clean(total_mv.values()[offset]).filter(|value| *value > 0.0)
             else {
                 continue;
             };
             let cash = dividend_sum.get(ts_code.as_str()).copied().unwrap_or(0.0);
-            values[date_idx * instrument_count + instrument_idx] = Some(cash / price);
+            values[offset] = Some(cash / market_value);
         }
     }
 
@@ -229,7 +232,8 @@ fn dividend_sum_by_stock(
         {
             continue;
         }
-        *sums.entry(record.ts_code.as_str()).or_default() += record.cash_div_tax;
+        *sums.entry(record.ts_code.as_str()).or_default() +=
+            record.cash_div_tax * record.base_share;
     }
     sums
 }
@@ -276,20 +280,6 @@ fn forecast_mean_by_stock<'a>(
     sums.into_iter()
         .map(|(ts_code, (sum, count))| (ts_code, (count > 0).then_some(sum / count as f64)))
         .collect()
-}
-
-fn previous_month_last_trade_date_idx(dates: &[i32], trade_date: i32) -> Option<usize> {
-    let previous_month_date = add_months(trade_date, -1);
-    let (target_year, target_month, _) = ymd(previous_month_date);
-    dates
-        .iter()
-        .enumerate()
-        .filter(|(_, date)| {
-            let (year, month, _) = ymd(**date);
-            year == target_year && month == target_month && **date < trade_date
-        })
-        .map(|(idx, _)| idx)
-        .last()
 }
 
 fn fy1_quarter(trade_date: i32) -> String {
@@ -352,10 +342,11 @@ fn clean(value: Option<f64>) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use crate::factor::common::DailyPanel;
+
     use super::{
-        add_months, composite_available, dividend_sum_by_stock, forecast_mean_by_stock,
-        fy1_quarter, previous_month_last_trade_date_idx, AnalystRecord, DividendRecord,
-        IMPLEMENTED_DIV_PROC,
+        add_months, composite_available, dividend_sum_by_stock, dtop_column,
+        forecast_mean_by_stock, fy1_quarter, AnalystRecord, DividendRecord, IMPLEMENTED_DIV_PROC,
     };
 
     fn assert_close(actual: f64, expected: f64) {
@@ -376,15 +367,6 @@ mod tests {
     }
 
     #[test]
-    fn previous_month_price_uses_last_trading_date_in_previous_natural_month() {
-        let dates = vec![20260227, 20260228, 20260302, 20260331, 20260401];
-        assert_eq!(
-            previous_month_last_trade_date_idx(&dates, 20260424),
-            Some(3)
-        );
-    }
-
-    #[test]
     fn dtop_uses_only_implemented_announced_ex_date_records_in_past_year() {
         let records = vec![
             DividendRecord {
@@ -392,6 +374,7 @@ mod tests {
                 ann_date: 20260101,
                 ex_date: 20260301,
                 cash_div_tax: 0.2,
+                base_share: 100.0,
                 implemented: true,
             },
             DividendRecord {
@@ -399,6 +382,7 @@ mod tests {
                 ann_date: 20260101,
                 ex_date: 20260302,
                 cash_div_tax: 0.3,
+                base_share: 100.0,
                 implemented: false,
             },
             DividendRecord {
@@ -406,6 +390,7 @@ mod tests {
                 ann_date: 20260101,
                 ex_date: 20270301,
                 cash_div_tax: 0.4,
+                base_share: 100.0,
                 implemented: true,
             },
             DividendRecord {
@@ -413,13 +398,51 @@ mod tests {
                 ann_date: 20260101,
                 ex_date: 20260301,
                 cash_div_tax: 0.5,
+                base_share: 200.0,
                 implemented: IMPLEMENTED_DIV_PROC == "\u{5b9e}\u{65bd}",
             },
         ];
         let sums = dividend_sum_by_stock(&records, 20250424, 20260424);
 
-        assert_close(*sums.get("000001.SZ").unwrap(), 0.2);
-        assert_close(*sums.get("000002.SZ").unwrap(), 0.5);
+        assert_close(*sums.get("000001.SZ").unwrap(), 20.0);
+        assert_close(*sums.get("000002.SZ").unwrap(), 100.0);
+    }
+
+    #[test]
+    fn dtop_uses_target_date_total_market_value() {
+        let panel = DailyPanel::from_index(
+            vec![20260424],
+            vec!["000001.SZ".to_string(), "000002.SZ".to_string()],
+            &[20260424],
+            vec![true, true],
+        )
+        .unwrap();
+        let total_mv = panel
+            .column_from_values(vec![Some(1000.0), Some(0.0)])
+            .unwrap();
+        let records = vec![
+            DividendRecord {
+                ts_code: "000001.SZ".to_string(),
+                ann_date: 20260101,
+                ex_date: 20260301,
+                cash_div_tax: 0.2,
+                base_share: 100.0,
+                implemented: true,
+            },
+            DividendRecord {
+                ts_code: "000002.SZ".to_string(),
+                ann_date: 20260101,
+                ex_date: 20260301,
+                cash_div_tax: 0.5,
+                base_share: 200.0,
+                implemented: true,
+            },
+        ];
+
+        let dtop = dtop_column(&panel, &total_mv, &records).unwrap();
+
+        assert_close(dtop.values()[0].unwrap(), 0.02);
+        assert_eq!(dtop.values()[1], None);
     }
 
     #[test]

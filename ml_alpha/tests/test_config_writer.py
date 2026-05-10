@@ -13,7 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import load_config
 from yq_ml_alpha.data.sampler import sample_dates
-from yq_ml_alpha.features.transforms import cross_section_zscore_log_rank
+from yq_ml_alpha.features.factor_frame import FactorFrameProvider
+from yq_ml_alpha.features.transforms import (
+    apply_cross_section_transform,
+    available_transforms,
+    cross_section_zscore_log_rank,
+)
 from yq_ml_alpha.models.base import ModelContext
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
 from yq_ml_alpha.models.mlp_model import MLPAlphaModel
@@ -110,6 +115,26 @@ n_trials = 10
         self.assertAlmostEqual(float(output["label"].dropna().mean()), 0.0, places=7)
         self.assertAlmostEqual(float(output["label"].dropna().std(ddof=0)), 1.0, places=7)
 
+    def test_transform_registry_dispatches_aliases(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "trade_date": [20260131, 20260131, 20260131],
+                "ts_code": ["a", "b", "c"],
+                "f": [1.0, 2.0, np.nan],
+                "label": [0.1, 0.2, 0.3],
+            }
+        )
+        self.assertIn("zscore_log_rank", available_transforms())
+        output = apply_cross_section_transform(
+            frame,
+            "cs_zscore_log_rank",
+            ["f"],
+            label_columns=["label"],
+            feature_fill_value=0.0,
+        )
+        self.assertEqual(output.loc[2, "f"], 0.0)
+        self.assertAlmostEqual(float(output["label"].mean()), 0.0, places=7)
+
     def test_monthly_rolling_sample_count_predicts_after_refit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "run.toml"
@@ -182,6 +207,32 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             self.assertIn("alpha_a", table.columns)
             self.assertIn("alpha_b", table.columns)
             self.assertEqual(str(table["alpha_a"].dtype), "float32")
+
+    def test_factor_frame_all_columns_discovers_union_and_fills_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "2026").mkdir()
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105],
+                    "ts_code": ["000001.SZ"],
+                    "factor_a": [1.0],
+                }
+            ).to_parquet(root / "2026" / "20260105.parquet", index=False)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260106],
+                    "ts_code": ["000001.SZ"],
+                    "factor_a": [2.0],
+                    "factor_b": [3.0],
+                }
+            ).to_parquet(root / "2026" / "20260106.parquet", index=False)
+
+            provider = FactorFrameProvider(root, "__all__")
+            self.assertEqual(provider.feature_columns, ["factor_a", "factor_b"])
+            frame = provider.load(20260105)
+            self.assertEqual(list(frame.columns), ["trade_date", "ts_code", "factor_a", "factor_b"])
+            self.assertTrue(pd.isna(frame.loc[0, "factor_b"]))
 
     def test_linear_regression_model_fits_simple_relation(self) -> None:
         model = LinearRegressionAlphaModel()
@@ -263,6 +314,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
     def test_monthly_mlp_config_parses(self) -> None:
         config = load_config(Path(__file__).resolve().parents[1] / "configs" / "examples" / "monthly_mlp_36.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_mlp")
+        self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.mlp_model.MLPAlphaModel")
         self.assertEqual(config.model.params["hidden_layers"], [128, 64])
 

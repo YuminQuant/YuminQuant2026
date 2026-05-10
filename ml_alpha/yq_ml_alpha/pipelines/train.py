@@ -40,11 +40,11 @@ def train_only(config_path: str | Path) -> list[Path]:
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
         model = _new_model(config)
-        context = _context(config, window.window_id)
         progress.step("load_train")
         train_bundle = dataset.load(window.train_dates, include_label=True)
         progress.step("load_valid")
         valid_bundle = dataset.load(window.valid_dates, include_label=True)
+        context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         model.fit(train_bundle.frame, valid_bundle.frame, context)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
@@ -68,11 +68,11 @@ def predict_only(config_path: str | Path) -> list[Path]:
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
         progress.step("load_model")
         model = model_class.load(path)
-        context = _context(config, window.window_id)
         progress.step("load_predict")
         predict_bundle = dataset.load(window.predict_dates, include_label=False)
         if predict_bundle.frame.empty:
             continue
+        context = _context(config, window.window_id, predict_bundle.feature_columns)
         progress.step("predict")
         score = model.predict(predict_bundle.frame, context)
         frames.append(_prediction_frame(predict_bundle.frame, score))
@@ -90,13 +90,13 @@ def _fit_predict_all(config: MlAlphaConfig) -> pd.DataFrame:
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
         model = _new_model(config)
-        context = _context(config, window.window_id)
         progress.step("load_train")
         train_bundle = dataset.load(window.train_dates, include_label=True)
         progress.step("load_valid")
         valid_bundle = dataset.load(window.valid_dates, include_label=True)
         if train_bundle.frame.empty:
             continue
+        context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         model.fit(train_bundle.frame, valid_bundle.frame, context)
         progress.step("save")
@@ -254,11 +254,15 @@ def _model_class(class_path: str):
     return getattr(module, class_name)
 
 
-def _context(config: MlAlphaConfig, window_id: str) -> ModelContext:
+def _context(config: MlAlphaConfig, window_id: str, feature_columns: list[str] | None = None) -> ModelContext:
+    if feature_columns is None:
+        if isinstance(config.features.columns, str):
+            raise ValueError("features.columns='__all__' must be resolved by DatasetBuilder before creating context")
+        feature_columns = list(config.features.columns)
     return ModelContext(
         run_id=config.run_id,
         alpha_id=config.alpha_id,
-        feature_columns=config.features.columns,
+        feature_columns=feature_columns,
         label_column=config.label.id,
         artifact_dir=Path(config.model.artifact_dir) / window_id,
         model_params=config.model.params,

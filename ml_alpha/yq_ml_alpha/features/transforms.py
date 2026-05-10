@@ -1,7 +1,45 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
+
+
+TransformFn = Callable[[pd.DataFrame, list[str], list[str], float], pd.DataFrame]
+TRANSFORM_REGISTRY: dict[str, TransformFn] = {}
+
+
+def _normalize_transform_name(name: str) -> str:
+    return str(name).strip().lower()
+
+
+def register_transform(*names: str) -> Callable[[TransformFn], TransformFn]:
+    def decorator(func: TransformFn) -> TransformFn:
+        for name in names:
+            TRANSFORM_REGISTRY[_normalize_transform_name(name)] = func
+        return func
+
+    return decorator
+
+
+def apply_cross_section_transform(
+    frame: pd.DataFrame,
+    transform_name: str,
+    feature_columns: list[str],
+    label_columns: list[str] | None = None,
+    feature_fill_value: float = 0.0,
+) -> pd.DataFrame:
+    name = _normalize_transform_name(transform_name)
+    transform = TRANSFORM_REGISTRY.get(name)
+    if transform is None:
+        supported = ", ".join(available_transforms())
+        raise ValueError(f"unsupported preprocess.cross_section_transform: {transform_name}; supported: {supported}")
+    return transform(frame, feature_columns, label_columns or [], feature_fill_value)
+
+
+def available_transforms() -> list[str]:
+    return sorted(TRANSFORM_REGISTRY)
 
 
 def cross_section_rank(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -32,6 +70,31 @@ def cross_section_zscore_log_rank(
         existing = [column for column in fill_columns if column in output.columns]
         output[existing] = output[existing].replace([np.inf, -np.inf], np.nan).fillna(fill_value)
     return output
+
+
+@register_transform("", "none")
+def _transform_none(
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+    label_columns: list[str],
+    feature_fill_value: float,
+) -> pd.DataFrame:
+    return fill_feature_nan(frame, feature_columns, feature_fill_value)
+
+
+@register_transform("zscore_log_rank", "log_rank_zscore", "cs_zscore_log_rank")
+def _transform_zscore_log_rank(
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+    label_columns: list[str],
+    feature_fill_value: float,
+) -> pd.DataFrame:
+    return cross_section_zscore_log_rank(
+        frame,
+        [*feature_columns, *label_columns],
+        fill_columns=feature_columns,
+        fill_value=feature_fill_value,
+    )
 
 
 def _zscore_log_rank_series(values: pd.Series) -> pd.Series:

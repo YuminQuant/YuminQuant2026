@@ -176,13 +176,11 @@ def plot_return_summary(
         raise ValueError("returns must contain a portfolio column")
 
     plt = _require_matplotlib()
-    fig = plt.figure(figsize=figsize, constrained_layout=True)
-    layout_engine = fig.get_layout_engine()
-    if layout_engine is not None:
-        layout_engine.set(h_pad=0.05, w_pad=0.05, hspace=0.08, wspace=0.08, rect=(0.0, 0.0, 0.84, 1.0))
+    fig = plt.figure(figsize=figsize, constrained_layout=False)
+    fig.subplots_adjust(left=0.06, right=0.84, top=0.94 if title else 0.97, bottom=0.06, hspace=0.55, wspace=0.12)
     if title:
-        fig.suptitle(title, y=1.01, fontsize=13)
-    grid = fig.add_gridspec(4, 2, height_ratios=[2.2, 2.0, 2.0, 1.8])
+        fig.suptitle(title, y=0.985, fontsize=13)
+    grid = fig.add_gridspec(4, 2, height_ratios=[2.2, 2.0, 2.0, 1.8], width_ratios=[1, 1])
     ax_ret = fig.add_subplot(grid[0, :])
     ax_excess = fig.add_subplot(grid[1, :])
     ax_ann = fig.add_subplot(grid[2, 0])
@@ -223,7 +221,7 @@ def plot_return_summary(
         handles_left + handles_right,
         labels_left + labels_right,
         loc="center left",
-        bbox_to_anchor=(0.86, 0.58),
+        bbox_to_anchor=(0.855, 0.58),
         ncol=1,
         frameon=False,
     )
@@ -244,6 +242,7 @@ def plot_return_summary(
 
     if save:
         _save_figure(fig, returns, title, save_dir, factor_name, dpi)
+        plt.close(fig)
 
     return fig
 

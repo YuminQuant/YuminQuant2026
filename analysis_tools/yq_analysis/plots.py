@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import Iterable
 
@@ -100,17 +101,60 @@ def _pad_single_axis(ax, values: Iterable[float]) -> None:
     ax.set_ylim(lower - pad, upper + pad)
 
 
-def _plot_group_curves(ax, returns: pd.DataFrame, group_names: list[str], value_col: str, cmap) -> list[float]:
+def _group_color_map(group_names: list[str], cmap) -> dict[str, object]:
+    return {
+        name: cmap(idx / max(len(group_names) - 1, 1))
+        for idx, name in enumerate(group_names)
+    }
+
+
+def _plot_group_curves(
+    ax,
+    returns: pd.DataFrame,
+    group_names: list[str],
+    value_col: str,
+    color_map: dict[str, object],
+) -> list[float]:
     values: list[float] = []
-    for idx, name in enumerate(group_names):
+    for name in group_names:
         series = _series_by_portfolio(returns, name, value_col)
         curve = cumulative_curve(series)
         if curve.empty:
             continue
-        color = cmap(idx / max(len(group_names) - 1, 1))
-        ax.plot(curve.index, curve.values, color=color, linewidth=1.1, alpha=0.9, label=name)
+        ax.plot(curve.index, curve.values, color=color_map[name], linewidth=1.1, alpha=0.9, label=name)
         values.extend(curve.values.tolist())
     return values
+
+
+def _infer_factor_name(returns: pd.DataFrame, title: str | None) -> str:
+    if "factor_id" in returns.columns:
+        values = returns["factor_id"].dropna().unique()
+        if len(values) == 1:
+            return str(values[0])
+    if title:
+        return title
+    return "backtest_summary"
+
+
+def _safe_filename(value: str) -> str:
+    name = re.sub(r"[^0-9A-Za-z_\-.]+", "_", value).strip("._")
+    return name or "backtest_summary"
+
+
+def _save_figure(
+    fig,
+    returns: pd.DataFrame,
+    title: str | None,
+    save_dir: str | Path | None,
+    factor_name: str | None,
+    dpi: int,
+) -> Path:
+    output_dir = Path(save_dir) if save_dir is not None else Path(__file__).resolve().parents[1] / "plots"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = _safe_filename(factor_name or _infer_factor_name(returns, title))
+    path = output_dir / f"{stem}.jpg"
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    return path
 
 
 def plot_return_summary(
@@ -119,6 +163,10 @@ def plot_return_summary(
     return_col: str = "return",
     figsize: tuple[float, float] = (13.0, 10.0),
     title: str | None = None,
+    save: bool = True,
+    save_dir: str | Path | None = None,
+    factor_name: str | None = None,
+    dpi: int = 150,
 ):
     """Plot group, excess, annual return, and turnover summaries."""
 
@@ -129,6 +177,11 @@ def plot_return_summary(
 
     plt = _require_matplotlib()
     fig = plt.figure(figsize=figsize, constrained_layout=True)
+    layout_engine = fig.get_layout_engine()
+    if layout_engine is not None:
+        layout_engine.set(h_pad=0.05, w_pad=0.05, hspace=0.08, wspace=0.08, rect=(0.0, 0.0, 0.84, 1.0))
+    if title:
+        fig.suptitle(title, y=1.01, fontsize=13)
     grid = fig.add_gridspec(4, 2, height_ratios=[2.2, 2.0, 2.0, 1.8])
     ax_ret = fig.add_subplot(grid[0, :])
     ax_excess = fig.add_subplot(grid[1, :])
@@ -139,7 +192,8 @@ def plot_return_summary(
 
     group_names = _group_names(returns, groups)
     cmap = plt.get_cmap("coolwarm")
-    left_values = _plot_group_curves(ax_ret, returns, group_names, return_col, cmap)
+    color_map = _group_color_map(group_names, cmap)
+    left_values = _plot_group_curves(ax_ret, returns, group_names, return_col, color_map)
 
     ls_series = _series_by_portfolio(returns, "long_short", return_col)
     ls_curve = cumulative_curve(ls_series)
@@ -161,50 +215,47 @@ def plot_return_summary(
     elif right_values:
         _pad_single_axis(ax_ls, right_values)
     ax_ret.axhline(0.0, color="#888888", linewidth=0.8, linestyle="--")
-    ax_ret.set_ylabel("Group cumulative return")
-    ax_ls.set_ylabel("Long-short cumulative return")
-    ax_ret.set_title(title or "Backtest cumulative returns")
+    ax_ret.set_title("Cumulative returns")
 
     handles_left, labels_left = ax_ret.get_legend_handles_labels()
     handles_right, labels_right = ax_ls.get_legend_handles_labels()
-    ax_ret.legend(
+    fig.legend(
         handles_left + handles_right,
         labels_left + labels_right,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.18),
-        ncol=min(max(len(labels_left + labels_right), 1), 6),
+        loc="center left",
+        bbox_to_anchor=(0.86, 0.58),
+        ncol=1,
         frameon=False,
     )
 
     if "excess_return" in returns.columns:
-        excess_values = _plot_group_curves(ax_excess, returns, group_names, "excess_return", cmap)
+        excess_values = _plot_group_curves(ax_excess, returns, group_names, "excess_return", color_map)
         _pad_single_axis(ax_excess, excess_values)
         ax_excess.axhline(0.0, color="#888888", linewidth=0.8, linestyle="--")
         ax_excess.set_title("Group excess cumulative returns")
-        ax_excess.set_ylabel("Excess cumulative return")
-        handles, labels = ax_excess.get_legend_handles_labels()
-        if handles:
-            ax_excess.legend(
-                handles,
-                labels,
-                loc="upper center",
-                bbox_to_anchor=(0.5, 1.18),
-                ncol=min(max(len(labels), 1), 6),
-                frameon=False,
-            )
     else:
         ax_excess.text(0.5, 0.5, "No excess_return data", transform=ax_excess.transAxes, ha="center", va="center")
         ax_excess.set_axis_off()
 
-    _plot_annual_bars(ax_ann, returns, group_names, return_col, "Annual return by group")
-    _plot_annual_bars(ax_excess_ann, returns, group_names, "excess_return", "Annual excess return by group")
+    _plot_annual_bars(ax_ann, returns, group_names, return_col, "Annual return by group", color_map)
+    _plot_annual_bars(ax_excess_ann, returns, group_names, "excess_return", "Annual excess return by group", color_map)
 
     _plot_turnover_lines(ax_turnover, returns, group_names)
+
+    if save:
+        _save_figure(fig, returns, title, save_dir, factor_name, dpi)
 
     return fig
 
 
-def _plot_annual_bars(ax, returns: pd.DataFrame, group_names: list[str], value_col: str, title: str) -> None:
+def _plot_annual_bars(
+    ax,
+    returns: pd.DataFrame,
+    group_names: list[str],
+    value_col: str,
+    title: str,
+    color_map: dict[str, object],
+) -> None:
     if value_col not in returns.columns:
         ax.text(0.5, 0.5, f"No {value_col} data", transform=ax.transAxes, ha="center", va="center")
         ax.set_axis_off()
@@ -216,12 +267,11 @@ def _plot_annual_bars(ax, returns: pd.DataFrame, group_names: list[str], value_c
         return
     report = report[report["portfolio"].isin(group_names)]
     x = np.arange(len(report))
-    colors = _require_matplotlib().get_cmap("coolwarm")(np.linspace(0, 1, max(len(report), 1)))
+    colors = [color_map[name] for name in report["portfolio"]]
     ax.bar(x, report["annual_return(%)"], color=colors, width=0.72)
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels(report["portfolio"], rotation=45, ha="right")
-    ax.set_ylabel("Annual return (%)")
     ax.set_title(title)
     _pad_single_axis(ax, report["annual_return(%)"].tolist())
 
@@ -244,7 +294,5 @@ def _plot_turnover_lines(ax, returns: pd.DataFrame, group_names: list[str]) -> N
         ax.text(0.5, 0.5, "No turnover data", transform=ax.transAxes, ha="center", va="center")
         ax.set_axis_off()
         return
-    ax.set_ylabel("Turnover (%)")
     ax.set_title("End group turnover")
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.12), ncol=min(len(selected), 2), frameon=False)
     _pad_single_axis(ax, values)

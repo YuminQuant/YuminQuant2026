@@ -62,6 +62,7 @@ def test_backtest_report_accepts_current_schema() -> None:
     }
     assert not report["portfolio_total"].empty
     assert not report["excess_total"].empty
+    assert "long_short" not in set(report["excess_total"]["portfolio"])
     assert "sortino" not in report["portfolio_total"].columns
     assert "std_return" not in report["portfolio_total"].columns
     assert "mean_return_bp_per_1pct_turnover" in report["portfolio_total"].columns

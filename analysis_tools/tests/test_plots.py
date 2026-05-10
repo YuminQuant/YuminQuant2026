@@ -28,13 +28,16 @@ def test_plot_return_summary_returns_figure() -> None:
 
     from yq_analysis.plots import plot_return_summary
 
-    fig = plot_return_summary(_sample_returns(), groups=2)
+    fig = plot_return_summary(_sample_returns(), groups=2, save=False)
     assert isinstance(fig, Figure)
 
 
 def test_plot_return_summary_can_save_jpg(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
+    import matplotlib.pyplot as plt
+
     from yq_analysis.plots import plot_return_summary
 
-    plot_return_summary(_sample_returns(), groups=2, save=True, save_dir=tmp_path)
+    fig = plot_return_summary(_sample_returns(), groups=2, save=True, save_dir=tmp_path)
     assert (tmp_path / "sample.jpg").exists()
+    assert not plt.fignum_exists(fig.number)

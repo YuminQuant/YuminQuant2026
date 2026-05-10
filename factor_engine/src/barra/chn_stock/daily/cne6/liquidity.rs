@@ -1,15 +1,18 @@
+use crate::barra::common::{
+    sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
+    zscore_panel_weighted_filled_zero,
+};
 use crate::barra::BarraExposure;
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::operators::{cs_winsorize_quantile, cs_zscore};
 
 pub struct StockDailyBarraCne6Liquidity;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.3.0";
 const TRADING_DAYS_PER_MONTH: usize = 21;
 const TRADING_DAYS_PER_YEAR: usize = 252;
 const ATVR_HALF_LIFE: f64 = 63.0;
@@ -65,21 +68,19 @@ impl BarraExposure for StockDailyBarraCne6Liquidity {
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyBasic)?;
+        let weights = sqrt_circ_mv_weights(panel, data)?;
         let turnover = panel.column("turnover_rate_f")?.map_values(|value| {
             clean(value).and_then(|value| (value >= 0.0).then_some(value / 100.0))
         });
 
         let monthly_raw = turnover.ts(stom_raw)?;
-        let monthly = monthly_raw.cs(standardize_cross_section)?;
-        let quarterly = monthly_raw
-            .ts(|values| stoq_or_stoa_from_stom(values, 3))?
-            .cs(standardize_cross_section)?;
-        let annual = monthly_raw
-            .ts(|values| stoq_or_stoa_from_stom(values, 12))?
-            .cs(standardize_cross_section)?;
-        let atvr = turnover
-            .ts(annualized_traded_value_ratio)?
-            .cs(standardize_cross_section)?;
+        let monthly = standardize_panel_industry_filled_weighted(&monthly_raw, &weights, data)?;
+        let quarterly_raw = monthly_raw.ts(|values| stoq_or_stoa_from_stom(values, 3))?;
+        let quarterly = standardize_panel_industry_filled_weighted(&quarterly_raw, &weights, data)?;
+        let annual_raw = monthly_raw.ts(|values| stoq_or_stoa_from_stom(values, 12))?;
+        let annual = standardize_panel_industry_filled_weighted(&annual_raw, &weights, data)?;
+        let atvr_raw = turnover.ts(annualized_traded_value_ratio)?;
+        let atvr = standardize_panel_industry_filled_weighted(&atvr_raw, &weights, data)?;
 
         let composite_raw = monthly.zip_quaternary(
             &quarterly,
@@ -97,7 +98,7 @@ impl BarraExposure for StockDailyBarraCne6Liquidity {
                 _ => None,
             },
         )?;
-        let liquidity = composite_raw.cs(cs_zscore)?;
+        let liquidity = zscore_panel_weighted_filled_zero(&composite_raw, &weights)?;
 
         let specs = self.specs();
         Ok(vec![
@@ -138,10 +139,10 @@ fn liquidity_spec(
         .map(|value| value.to_string())
         .collect(),
         description: description.to_string(),
-        dependencies: vec![DataRequest::new(
-            DatasetId::StockDailyBasic,
-            &["turnover_rate_f"],
-        )],
+        dependencies: vec![
+            DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f", "circ_mv"]),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
+        ],
         lookback: Lookback {
             trading_days: lookback,
         },
@@ -221,10 +222,6 @@ fn annualized_traded_value_ratio(values: &[Option<f64>]) -> Vec<Option<f64>> {
         }
     }
     output
-}
-
-fn standardize_cross_section(values: &[Option<f64>]) -> Vec<Option<f64>> {
-    cs_zscore(&cs_winsorize_quantile(values, 0.01, 0.99))
 }
 
 fn clean(value: Option<f64>) -> Option<f64> {

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::barra::common::{
     add_months, average_columns, clean, fy_quarter, panel_from_target_stock_map, safe_div,
-    slope_over_time, standardize_cross_section, StatementData,
+    slope_over_time, sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
+    zscore_panel_weighted_filled_zero, StatementData,
 };
 use crate::barra::BarraExposure;
 use crate::core::{
@@ -10,12 +11,11 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
-use crate::operators::cs_zscore;
 
 pub struct StockDailyBarraCne6Growth;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.3.0";
 const LOOKBACK: usize = 1260;
 
 pub fn create() -> Box<dyn BarraExposure> {
@@ -53,15 +53,17 @@ impl BarraExposure for StockDailyBarraCne6Growth {
         )?;
         let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
         let analyst_by_stock = index_analyst_records(&analyst_records);
+        let weights = sqrt_circ_mv_weights(panel, data)?;
 
         let predicted_raw = predicted_growth_column(panel, &analyst_by_stock)?;
-        let predicted = predicted_raw.cs(standardize_cross_section)?;
+        let predicted = standardize_panel_industry_filled_weighted(&predicted_raw, &weights, data)?;
         let eps_growth_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let values = income.annual_values(ts_code, trade_date, "basic_eps", 5)?;
             let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
             slope_over_time(&values).and_then(|slope| safe_div(slope, mean))
         })?;
-        let eps_growth = eps_growth_raw.cs(standardize_cross_section)?;
+        let eps_growth =
+            standardize_panel_industry_filled_weighted(&eps_growth_raw, &weights, data)?;
         let sales_growth_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let revenue = income.annual_values(ts_code, trade_date, "revenue", 5)?;
             let shares = balance.annual_values(ts_code, trade_date, "total_share", 5)?;
@@ -73,9 +75,10 @@ impl BarraExposure for StockDailyBarraCne6Growth {
             let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
             slope_over_time(&values).and_then(|slope| safe_div(slope, mean))
         })?;
-        let sales_growth = sales_growth_raw.cs(standardize_cross_section)?;
-        let growth =
-            average_columns(panel, &[&predicted, &eps_growth, &sales_growth])?.cs(cs_zscore)?;
+        let sales_growth =
+            standardize_panel_industry_filled_weighted(&sales_growth_raw, &weights, data)?;
+        let growth_raw = average_columns(panel, &[&predicted, &eps_growth, &sales_growth])?;
+        let growth = zscore_panel_weighted_filled_zero(&growth_raw, &weights)?;
 
         let specs = self.specs();
         Ok(vec![
@@ -103,6 +106,8 @@ fn growth_spec(id: &str) -> BarraSpec {
         description: format!("CNE6 GROWTH exposure component {id}."),
         dependencies: vec![
             DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::financial_quarters(DatasetId::StockIncome, &["basic_eps", "revenue"], 24),
             DataRequest::financial_quarters(DatasetId::StockBalanceSheet, &["total_share"], 24),
             DataRequest::new(

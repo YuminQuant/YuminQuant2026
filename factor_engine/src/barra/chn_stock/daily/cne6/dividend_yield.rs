@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+use crate::barra::common::{
+    sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
+    zscore_panel_weighted_filled_zero,
+};
 use crate::barra::BarraExposure;
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
@@ -7,12 +11,11 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{DailyPanel, PanelColumn};
-use crate::operators::{cs_winsorize_quantile, cs_zscore};
 
 pub struct StockDailyBarraCne6DividendYield;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.4.0";
 const LOOKBACK: usize = 252;
 const IMPLEMENTED_DIV_PROC: &str = "\u{5b9e}\u{65bd}";
 
@@ -54,13 +57,14 @@ impl BarraExposure for StockDailyBarraCne6DividendYield {
             panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
         let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
         let analyst_reports = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
+        let weights = sqrt_circ_mv_weights(panel, data)?;
 
         let dtop_raw = dtop_column(panel, &total_mv, &dividends)?;
-        let dtop = dtop_raw.cs(standardize_cross_section)?;
+        let dtop = standardize_panel_industry_filled_weighted(&dtop_raw, &weights, data)?;
         let dtopf_raw = dtopf_column(panel, &analyst_reports)?;
-        let dtopf = dtopf_raw.cs(standardize_cross_section)?;
+        let dtopf = standardize_panel_industry_filled_weighted(&dtopf_raw, &weights, data)?;
         let composite_raw = dtop.zip_binary(&dtopf, composite_available)?;
-        let dividend_yield = composite_raw.cs(cs_zscore)?;
+        let dividend_yield = zscore_panel_weighted_filled_zero(&composite_raw, &weights)?;
 
         let specs = self.specs();
         Ok(vec![
@@ -87,7 +91,8 @@ fn dividend_yield_spec(id: &str, aliases: &[&str], name: &str, description: &str
         description: description.to_string(),
         dependencies: vec![
             DataRequest::new(DatasetId::StockDailyPv, &[]),
-            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv"]),
+            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv", "circ_mv"]),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::new(
                 DatasetId::StockDividend,
                 &[
@@ -330,10 +335,6 @@ fn composite_available(dtop: Option<f64>, dtopf: Option<f64>) -> Option<f64> {
         (None, Some(dtopf)) => Some(dtopf),
         _ => None,
     }
-}
-
-fn standardize_cross_section(values: &[Option<f64>]) -> Vec<Option<f64>> {
-    cs_zscore(&cs_winsorize_quantile(values, 0.01, 0.99))
 }
 
 fn clean(value: Option<f64>) -> Option<f64> {

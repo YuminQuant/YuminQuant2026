@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::barra::common::{
     add_months, average_columns, clean, fy_quarter, panel_from_target_stock_map, safe_div,
-    standardize_cross_section,
+    sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
+    zscore_panel_weighted_filled_zero,
 };
 use crate::barra::BarraExposure;
 use crate::core::{
@@ -10,12 +11,11 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
-use crate::operators::cs_zscore;
 
 pub struct StockDailyBarraCne6Sentiment;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.3.0";
 const LOOKBACK: usize = 252;
 
 pub fn create() -> Box<dyn BarraExposure> {
@@ -43,21 +43,23 @@ impl BarraExposure for StockDailyBarraCne6Sentiment {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
         let records_by_stock = index_analyst_records(&records);
+        let weights = sqrt_circ_mv_weights(panel, data)?;
 
         let revision_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             revision_ratio(&records_by_stock, ts_code, trade_date)
         })?;
-        let revision = revision_raw.cs(standardize_cross_section)?;
+        let revision = standardize_panel_industry_filled_weighted(&revision_raw, &weights, data)?;
         let ep_change_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             weighted_forecast_change(&records_by_stock, ts_code, trade_date, ForecastField::Ep)
         })?;
-        let ep_change = ep_change_raw.cs(standardize_cross_section)?;
+        let ep_change = standardize_panel_industry_filled_weighted(&ep_change_raw, &weights, data)?;
         let eps_change_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             weighted_forecast_change(&records_by_stock, ts_code, trade_date, ForecastField::Eps)
         })?;
-        let eps_change = eps_change_raw.cs(standardize_cross_section)?;
-        let sentiment =
-            average_columns(panel, &[&revision, &ep_change, &eps_change])?.cs(cs_zscore)?;
+        let eps_change =
+            standardize_panel_industry_filled_weighted(&eps_change_raw, &weights, data)?;
+        let sentiment_raw = average_columns(panel, &[&revision, &ep_change, &eps_change])?;
+        let sentiment = zscore_panel_weighted_filled_zero(&sentiment_raw, &weights)?;
 
         let specs = self.specs();
         Ok(vec![
@@ -85,6 +87,8 @@ fn sentiment_spec(id: &str) -> BarraSpec {
         description: format!("CNE6 SENTIMENT exposure component {id}."),
         dependencies: vec![
             DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::new(
                 DatasetId::StockAnalystReport,
                 &["ts_code", "report_date", "quarter", "eps", "pe"],

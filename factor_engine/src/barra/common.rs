@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
+use crate::core::DatasetId;
+use crate::data::DataPool;
 use crate::data::Table;
 use crate::error::{err, Result};
-use crate::factor::common::{DailyPanel, PanelColumn};
+use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel, PanelColumn};
 use crate::operators::{cs_winsorize_quantile, cs_zscore};
 
 #[derive(Clone, Debug)]
@@ -223,6 +225,183 @@ pub fn safe_div(numerator: f64, denominator: f64) -> Option<f64> {
 
 pub fn standardize_cross_section(values: &[Option<f64>]) -> Vec<Option<f64>> {
     cs_zscore(&cs_winsorize_quantile(values, 0.01, 0.99))
+}
+
+pub fn zscore_cross_section_filled_zero(values: &[Option<f64>]) -> Vec<Option<f64>> {
+    fill_standardized_missing_with_zero(&cs_zscore(values))
+}
+
+pub fn sqrt_circ_mv_weights(panel: &DailyPanel, data: &DataPool) -> Result<PanelColumn> {
+    let circ_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "circ_mv")?;
+    Ok(circ_mv
+        .map_values(|value| clean(value).and_then(|value| (value > 0.0).then_some(value.sqrt()))))
+}
+
+pub fn standardize_panel_industry_filled_weighted(
+    values: &PanelColumn,
+    weights: &PanelColumn,
+    data: &DataPool,
+) -> Result<PanelColumn> {
+    let sector_map = ClassificationMap::from_table(
+        data.daily(DatasetId::StockSwClassification)?,
+        ClassificationLevel::Sector,
+    )?;
+    let filled = values.cs_by_group(
+        |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),
+        fill_missing_with_group_median,
+    )?;
+    let standardized = filled.cs_binary(weights, standardize_cross_section_weighted)?;
+    Ok(standardized.map_values(fill_standardized_value))
+}
+
+pub fn zscore_panel_weighted_filled_zero(
+    values: &PanelColumn,
+    weights: &PanelColumn,
+) -> Result<PanelColumn> {
+    let standardized = values.cs_binary(weights, zscore_cross_section_weighted)?;
+    Ok(standardized.map_values(fill_standardized_value))
+}
+
+pub fn standardize_cross_section_weighted(
+    values: &[Option<f64>],
+    weights: &[Option<f64>],
+) -> Vec<Option<f64>> {
+    let winsorized = cs_winsorize_quantile(values, 0.01, 0.99);
+    zscore_cross_section_weighted(&winsorized, weights)
+}
+
+pub fn zscore_cross_section_weighted(
+    values: &[Option<f64>],
+    weights: &[Option<f64>],
+) -> Vec<Option<f64>> {
+    if values.len() != weights.len() {
+        return vec![None; values.len()];
+    }
+    let mut rows = Vec::new();
+    let mut weight_sum = 0.0;
+    let mut weighted_sum = 0.0;
+    for idx in 0..values.len() {
+        let (Some(value), Some(weight)) = (clean(values[idx]), clean(weights[idx])) else {
+            continue;
+        };
+        if !value.is_finite() || !weight.is_finite() || weight <= 0.0 {
+            continue;
+        }
+        rows.push((idx, value, weight));
+        weight_sum += weight;
+        weighted_sum += weight * value;
+    }
+    if rows.is_empty() || weight_sum <= f64::EPSILON {
+        return vec![None; values.len()];
+    }
+    let mean = weighted_sum / weight_sum;
+    let variance = rows
+        .iter()
+        .map(|(_, value, weight)| weight * (value - mean).powi(2))
+        .sum::<f64>()
+        / weight_sum;
+    if variance <= f64::EPSILON {
+        return vec![None; values.len()];
+    }
+    let std = variance.sqrt();
+    let mut output = vec![None; values.len()];
+    for (idx, value, _) in rows {
+        output[idx] = Some((value - mean) / std);
+    }
+    output
+}
+
+pub fn standardize_panel_industry_filled(
+    values: &PanelColumn,
+    data: &DataPool,
+) -> Result<PanelColumn> {
+    let sector_map = ClassificationMap::from_table(
+        data.daily(DatasetId::StockSwClassification)?,
+        ClassificationLevel::Sector,
+    )?;
+    values.cs_by_group(
+        |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),
+        standardize_cross_section_industry_filled,
+    )
+}
+
+pub fn standardize_cross_section_industry_filled(
+    values: &[Option<f64>],
+    groups: &[Option<String>],
+) -> Vec<Option<f64>> {
+    let filled = fill_missing_with_group_median(values, groups);
+    fill_standardized_missing_with_zero(&standardize_cross_section(&filled))
+}
+
+pub fn fill_standardized_missing_with_zero(values: &[Option<f64>]) -> Vec<Option<f64>> {
+    values
+        .iter()
+        .map(|value| fill_standardized_value(*value))
+        .collect()
+}
+
+fn fill_standardized_value(value: Option<f64>) -> Option<f64> {
+    match value {
+        Some(value) if value.is_finite() => Some(value),
+        _ => Some(0.0),
+    }
+}
+
+pub fn fill_missing_with_group_median(
+    values: &[Option<f64>],
+    groups: &[Option<String>],
+) -> Vec<Option<f64>> {
+    let global_median = median_finite(values);
+    let mut grouped_values: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    for (value, group) in values.iter().zip(groups) {
+        let (Some(value), Some(group)) = (finite_value(*value), group.as_deref()) else {
+            continue;
+        };
+        grouped_values.entry(group).or_default().push(value);
+    }
+    let group_medians = grouped_values
+        .into_iter()
+        .filter_map(|(group, values)| median_finite_slice(values).map(|median| (group, median)))
+        .collect::<BTreeMap<_, _>>();
+    values
+        .iter()
+        .zip(groups)
+        .map(|(value, group)| {
+            finite_value(*value)
+                .or_else(|| {
+                    group
+                        .as_deref()
+                        .and_then(|group| group_medians.get(group).copied())
+                })
+                .or(global_median)
+        })
+        .collect()
+}
+
+fn finite_value(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite())
+}
+
+fn median_finite(values: &[Option<f64>]) -> Option<f64> {
+    median_finite_slice(
+        values
+            .iter()
+            .filter_map(|value| finite_value(*value))
+            .collect(),
+    )
+}
+
+fn median_finite_slice(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        Some(values[mid])
+    } else {
+        Some((values[mid - 1] + values[mid]) * 0.5)
+    }
 }
 
 pub fn average_available(values: &[Option<f64>]) -> Option<f64> {

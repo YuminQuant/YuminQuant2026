@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::barra::common::{
     add_months, align_table_column, arithmetic_return, average_columns, clean, expand_index_column,
-    fy1_quarter, log_return, panel_from_target_stock_map, safe_div, standardize_cross_section,
-    StatementData,
+    fy1_quarter, log_return, panel_from_target_stock_map, safe_div, sqrt_circ_mv_weights,
+    standardize_panel_industry_filled_weighted, zscore_panel_weighted_filled_zero, StatementData,
 };
 use crate::barra::BarraExposure;
 use crate::core::{
@@ -12,12 +12,12 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::DailyPanel;
-use crate::operators::{cs_zscore, ts_ew_regression_alpha_beta_residual_sigma, ts_ew_sum};
+use crate::operators::{ts_ew_regression_alpha_beta_residual_sigma, ts_ew_sum};
 
 pub struct StockDailyBarraCne6Value;
 
 const MODEL: &str = "CNE6";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.3.0";
 const MARKET_INDEX: &str = "000300.SH";
 const LONG_WINDOW: usize = 1040;
 const LONG_HALF_LIFE: f64 = 260.0;
@@ -102,21 +102,22 @@ impl BarraExposure for StockDailyBarraCne6Value {
         let pb = align_table_column(panel, basic_table, "pb")?;
         let pe_ttm = align_table_column(panel, basic_table, "pe_ttm")?;
         let total_mv = align_table_column(panel, basic_table, "total_mv")?;
-        let btop = pb
-            .map_values(|value| {
-                clean(value).and_then(|value| (value.abs() > f64::EPSILON).then_some(1.0 / value))
-            })
-            .cs(standardize_cross_section)?;
-        let trailing_ep = pe_ttm
-            .map_values(|value| {
-                clean(value).and_then(|value| (value.abs() > f64::EPSILON).then_some(1.0 / value))
-            })
-            .cs(standardize_cross_section)?;
+        let weights = sqrt_circ_mv_weights(panel, data)?;
+        let btop_raw = pb.map_values(|value| {
+            clean(value).and_then(|value| (value.abs() > f64::EPSILON).then_some(1.0 / value))
+        });
+        let btop = standardize_panel_industry_filled_weighted(&btop_raw, &weights, data)?;
+        let trailing_ep_raw = pe_ttm.map_values(|value| {
+            clean(value).and_then(|value| (value.abs() > f64::EPSILON).then_some(1.0 / value))
+        });
+        let trailing_ep =
+            standardize_panel_industry_filled_weighted(&trailing_ep_raw, &weights, data)?;
 
         let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
         let analyst_by_stock = index_analyst_records(&analyst_records);
         let analyst_ep_raw = analyst_ep_column(panel, &analyst_by_stock)?;
-        let analyst_ep = analyst_ep_raw.cs(standardize_cross_section)?;
+        let analyst_ep =
+            standardize_panel_industry_filled_weighted(&analyst_ep_raw, &weights, data)?;
 
         let cashflow = StatementData::from_table(
             data.daily(DatasetId::StockCashFlow)?,
@@ -129,7 +130,7 @@ impl BarraExposure for StockDailyBarraCne6Value {
             let mv = total_mv.values()[offset]?;
             clean(Some(mv)).and_then(|mv| safe_div(cash, mv))
         })?;
-        let cash_ep = cash_ep_raw.cs(standardize_cross_section)?;
+        let cash_ep = standardize_panel_industry_filled_weighted(&cash_ep_raw, &weights, data)?;
 
         let income =
             StatementData::from_table(data.daily(DatasetId::StockIncome)?, &["ebit"], &[1, 4])?;
@@ -151,7 +152,7 @@ impl BarraExposure for StockDailyBarraCne6Value {
             let ev = clean(Some(mv))? + total_liab - money_cap;
             safe_div(ebit, ev)
         })?;
-        let ebit_ev = ebit_ev_raw.cs(standardize_cross_section)?;
+        let ebit_ev = standardize_panel_industry_filled_weighted(&ebit_ev_raw, &weights, data)?;
 
         let stock_returns = panel
             .column("close")?
@@ -164,20 +165,28 @@ impl BarraExposure for StockDailyBarraCne6Value {
             .zip_binary(&index_panel.column("pre_close")?, arithmetic_return)?;
         let market_returns = expand_index_column(panel, index_panel, &index_returns)?;
 
-        let long_relative_strength = stock_log_returns
-            .ts(long_relative_strength_raw)?
-            .cs(standardize_cross_section)?;
-        let long_historical_alpha = stock_returns
-            .ts_binary(&market_returns, long_historical_alpha_raw)?
-            .cs(standardize_cross_section)?;
+        let long_relative_strength_raw_col = stock_log_returns.ts(long_relative_strength_raw)?;
+        let long_relative_strength = standardize_panel_industry_filled_weighted(
+            &long_relative_strength_raw_col,
+            &weights,
+            data,
+        )?;
+        let long_historical_alpha_raw_col =
+            stock_returns.ts_binary(&market_returns, long_historical_alpha_raw)?;
+        let long_historical_alpha = standardize_panel_industry_filled_weighted(
+            &long_historical_alpha_raw_col,
+            &weights,
+            data,
+        )?;
+        let long_term_reversal_raw =
+            average_columns(panel, &[&long_relative_strength, &long_historical_alpha])?;
         let long_term_reversal =
-            average_columns(panel, &[&long_relative_strength, &long_historical_alpha])?
-                .cs(cs_zscore)?;
-        let earnings_yield =
-            average_columns(panel, &[&trailing_ep, &analyst_ep, &cash_ep, &ebit_ev])?
-                .cs(cs_zscore)?;
-        let value = average_columns(panel, &[&btop, &earnings_yield, &long_term_reversal])?
-            .cs(cs_zscore)?;
+            zscore_panel_weighted_filled_zero(&long_term_reversal_raw, &weights)?;
+        let earnings_yield_raw =
+            average_columns(panel, &[&trailing_ep, &analyst_ep, &cash_ep, &ebit_ev])?;
+        let earnings_yield = zscore_panel_weighted_filled_zero(&earnings_yield_raw, &weights)?;
+        let value_raw = average_columns(panel, &[&btop, &earnings_yield, &long_term_reversal])?;
+        let value = zscore_panel_weighted_filled_zero(&value_raw, &weights)?;
 
         let specs = self.specs();
         Ok(vec![
@@ -211,7 +220,11 @@ fn value_spec(id: &str, name: &str, description: &str, lookback: usize) -> Barra
         description: description.to_string(),
         dependencies: vec![
             DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]),
-            DataRequest::new(DatasetId::StockDailyBasic, &["pb", "pe_ttm", "total_mv"]),
+            DataRequest::new(
+                DatasetId::StockDailyBasic,
+                &["pb", "pe_ttm", "total_mv", "circ_mv"],
+            ),
+            DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::financial_quarters(DatasetId::StockIncome, &["ebit"], 24),
             DataRequest::financial_quarters(DatasetId::StockCashFlow, &["n_cashflow_act"], 8),
             DataRequest::financial_quarters(

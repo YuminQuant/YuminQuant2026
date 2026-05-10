@@ -118,6 +118,12 @@ def _has_valid_column(frame: pd.DataFrame, column: str) -> bool:
     return column in frame.columns and clean_series(frame[column]).shape[0] > 0
 
 
+def _group_only(frame: pd.DataFrame) -> pd.DataFrame:
+    if "portfolio" not in frame.columns:
+        return frame
+    return frame[frame["portfolio"].astype(str).str.match(r"^group_\d+$", na=False)].copy()
+
+
 def make_return_report(
     returns: pd.DataFrame | pd.Series,
     return_col: str = "return",
@@ -262,14 +268,15 @@ def make_backtest_report(
             else pd.DataFrame()
         )
         if isinstance(returns, pd.DataFrame) and _has_valid_column(returns, "excess_return"):
+            excess_frame = _group_only(returns)
             excess_total = make_return_report(
-                returns,
+                excess_frame,
                 "excess_return",
                 periods_per_year,
                 risk_free_rate,
             )
             excess_by_year = make_return_report_by_year(
-                returns,
+                excess_frame,
                 "excess_return",
                 periods_per_year,
                 risk_free_rate,

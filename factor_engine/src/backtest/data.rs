@@ -1525,9 +1525,19 @@ fn factor_output_path(
             .join(frequency.as_str())
             .join(year.to_string())
             .join(format!("{trade_date}.parquet")),
-        FactorRootLayout::DirectDaily => root
-            .join(year.to_string())
-            .join(format!("{trade_date}.parquet")),
+        FactorRootLayout::DirectDaily => direct_daily_output_path(root, trade_date),
+    }
+}
+
+fn direct_daily_output_path(root: &Path, trade_date: i32) -> PathBuf {
+    let year = trade_date / 10_000;
+    let nested = root
+        .join(year.to_string())
+        .join(format!("{trade_date}.parquet"));
+    if nested.exists() {
+        nested
+    } else {
+        root.join(format!("{trade_date}.parquet"))
     }
 }
 
@@ -1573,9 +1583,9 @@ fn empty_output_table(columns: &[String]) -> Result<Table> {
 mod tests {
     use super::{
         apply_factor_forward_fill, effective_weights_by_date, external_factor_ids_from_root,
-        index_weight_path_may_overlap, index_weight_to_decimal, instruments_from_table,
-        is_cne6_primary_barra_column, parse_lookahead, universe_list_date_floor, BacktestPanel,
-        FactorFillState, WeightRecord,
+        factor_output_path, index_weight_path_may_overlap, index_weight_to_decimal,
+        instruments_from_table, is_cne6_primary_barra_column, parse_lookahead,
+        universe_list_date_floor, BacktestPanel, FactorFillState, FactorRootLayout, WeightRecord,
     };
     use crate::core::{AssetClass, Frequency};
     use crate::data::parquet_io::write_parquet;
@@ -1671,6 +1681,35 @@ mod tests {
         let ids = external_factor_ids_from_root(&root, AssetClass::Stock, Frequency::Daily)
             .expect("scan external factors");
         assert_eq!(ids, vec!["bar".to_string(), "foo".to_string()]);
+    }
+
+    #[test]
+    fn direct_daily_factor_output_path_supports_flat_root() {
+        let root = test_output_dir("direct_daily_factor_output_path_supports_flat_root");
+        assert_eq!(
+            factor_output_path(
+                &root,
+                FactorRootLayout::DirectDaily,
+                AssetClass::Stock,
+                Frequency::Daily,
+                20260424,
+            ),
+            root.join("20260424.parquet")
+        );
+
+        let nested_path = root.join("2026").join("20260424.parquet");
+        std::fs::create_dir_all(nested_path.parent().expect("parent")).expect("create year dir");
+        std::fs::write(&nested_path, b"placeholder").expect("write nested placeholder");
+        assert_eq!(
+            factor_output_path(
+                &root,
+                FactorRootLayout::DirectDaily,
+                AssetClass::Stock,
+                Frequency::Daily,
+                20260424,
+            ),
+            nested_path
+        );
     }
 
     #[test]

@@ -1019,7 +1019,7 @@ fn print_help() {
     );
     println!("  --groups N (backtest default 10)");
     println!("  --rebalance daily|N|weekly|biweekly|monthly|quarterly");
-    println!("  --neutralize none|sector|barra:SIZE|barra:SIZE+sector|barra:all+sector");
+    println!("  --neutralize none|sector|barra:SIZE|barra:SIZE+sector|barra:all+sector (all = primary Barra style exposures)");
     println!("  --universe mkt_all|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id");
     println!("  --benchmark mkt_mean|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id");
     println!(

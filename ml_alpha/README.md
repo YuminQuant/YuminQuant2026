@@ -17,10 +17,13 @@ python -m yq_ml_alpha run --config configs\examples\monthly_mlp_36.toml
 python -m yq_ml_alpha run --config configs\examples\monthly_ic_sign_equal_weight.toml
 ```
 
-The MLP example requires PyTorch:
+If you want to use the local Python 3.8.3 GPU environment from the repository
+root, call the interpreter explicitly and set `PYTHONPATH` for that shell:
 
 ```powershell
-python -m pip install torch
+cd D:\yuminwu_workspace\Internship\YuminQuant
+$env:PYTHONPATH = "D:\yuminwu_workspace\Internship\YuminQuant\ml_alpha"
+D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config ml_alpha\configs\examples\monthly_mlp_36.toml
 ```
 
 The outputs are standard daily alpha parquet files:
@@ -35,7 +38,22 @@ You can backtest them with the Rust backtest CLI:
 cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_alpha_mlp --factor-root data\models --groups 10 --rebalance 5
 ```
 
-## Workflow
+## CLI Entry Points
+
+```powershell
+python -m yq_ml_alpha run --config configs\examples\monthly_mlp_36.toml
+python -m yq_ml_alpha train --config configs\examples\monthly_mlp_36.toml
+python -m yq_ml_alpha predict --config configs\examples\monthly_mlp_36.toml
+python -m yq_ml_alpha materialize --config configs\examples\monthly_mlp_36.toml
+python -m yq_ml_alpha tune --config configs\examples\monthly_mlp_36.toml
+```
+
+`run` trains, predicts, and writes alpha files. `train` only fits and saves
+artifacts. `predict` loads saved artifacts and writes predictions. `materialize`
+builds sample data for inspection. `tune` delegates hyperparameter search to the
+model implementation.
+
+## Workflow And Config
 
 The current v1 flow is:
 
@@ -62,6 +80,46 @@ The IC-sign equal-weight example reads existing IC detail files from
 `data/backtest/stock/daily/ic`, orients each feature by `sign(mean(rank_ic))`,
 and then averages the oriented features row-wise.
 
+Important TOML sections:
+
+```toml
+run_id = "monthly_mlp_36"
+alpha_id = "ml_alpha_mlp"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20110101, 20260424]
+valid = []
+predict = [20110101, 20260424]
+
+[sample]
+train_frequency = "monthly_end"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"              # static | expanding | rolling
+refit_frequency = "monthly_end"
+train_sample_count = 36
+
+[label]
+id = "future_vwap_return_20d"
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[preprocess]
+cross_section_transform = "zscore_log_rank"
+feature_fill_value = 0.0
+
+[model]
+name = "mlp"
+class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
+artifact_dir = "data/model_workspace/monthly_mlp_36/artifacts"
+```
+
 `[dates].train` is required. `[dates].valid` and `[dates].predict` can be
 omitted or set to `[]`; this is useful when you only want to fit and save a
 model for later live prediction. In `[sample]`, `train_frequency` is required.
@@ -77,6 +135,19 @@ predict = []
 train_frequency = "monthly_end"
 ```
 
+Supported sampling/refit frequencies:
+
+```text
+daily
+weekly or weekly_end
+monthly or monthly_end
+5, 10, 20, ...
+every_5_days, every_20_days, ...
+```
+
+For Python 3.8, prefer numeric forms such as `"5"` over `"every_5_days"` unless
+the string helper compatibility patch has been applied in your environment.
+
 To train on every factor column under a feature root, use:
 
 ```toml
@@ -89,6 +160,33 @@ columns = "__all__"
 `__all__` scans the parquet schemas under the root and uses every non-key
 column except `trade_date`, `ts_code`, and `trade_time`. It does not use factor
 metadata, so deprecated metadata flags do not affect ML feature discovery.
+
+## Built-In Model Modules
+
+Current model modules live under `yq_ml_alpha/models/`:
+
+```text
+linear_model.py     LinearRegressionAlphaModel, ordinary least squares via numpy.
+xgb_model.py        XGBoostAlphaModel, wraps xgboost.XGBRegressor.
+mlp_model.py        MLPAlphaModel, PyTorch MLP for factor-frame alpha combination.
+ic_sign_model.py    ICSignEqualWeightAlphaModel, equal-weight features by RankIC sign.
+lgbm_model.py       LightGBMAlphaModel placeholder/wrapper for LightGBM style configs.
+sklearn_model.py    Generic sklearn-style wrapper utilities.
+base.py             AlphaModel and ModelContext interfaces.
+```
+
+Built-in configs:
+
+```text
+configs/examples/monthly_lr_36.toml
+configs/examples/monthly_xgb_36.toml
+configs/examples/monthly_mlp_36.toml
+configs/examples/monthly_ic_sign_equal_weight.toml
+```
+
+Model-specific parameters go under `[model.params]` and are passed through as
+`context.model_params`. The shared pipeline does not interpret loss functions,
+metrics, or search spaces.
 
 ## Add A New Model
 
@@ -125,3 +223,43 @@ learning_rate = 0.03
 
 `model.params` is passed through as `context.model_params`; the shared pipeline
 does not interpret model-specific loss, metrics, or hyperparameters.
+
+## Preprocess Transforms
+
+Transforms are registered in `yq_ml_alpha/features/transforms.py`. The config
+uses:
+
+```toml
+[preprocess]
+cross_section_transform = "zscore_log_rank"
+feature_fill_value = 0.0
+```
+
+To add a transform, implement a function in `transforms.py` and decorate it
+with `@register_transform("your_name")`. Then use `your_name` in TOML. This
+keeps transform lookup centralized and avoids editing the training pipeline.
+
+## Output And Backtest
+
+`AlphaWriter` writes or updates one daily parquet per date:
+
+```text
+data/models/{year}/{trade_date}.parquet
+columns: trade_date, ts_code, alpha_id_1, alpha_id_2, ...
+```
+
+Parquet cannot append a single column in-place, so if a date file already
+exists, the writer reads it, merges or replaces the alpha column, and rewrites
+the file.
+
+Backtest ML alpha with:
+
+```powershell
+cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_alpha_mlp --factor-root data\models --groups 10 --rebalance 5
+```
+
+If an alpha is lower frequency, use forward fill:
+
+```powershell
+cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_monthly_alpha --factor-root data\models --factor-fill ffill
+```

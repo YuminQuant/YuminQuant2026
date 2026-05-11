@@ -113,7 +113,9 @@ The Rust engine also provides a lightweight cross-sectional backtest command.
 The default label is `future_vwap_return_1d`, and the default neutralization is
 `none`.
 
-Single factor, rebalance every 5 trading days:
+### Common Runs
+
+Single formal factor, rebalance every 5 trading days:
 
 ```powershell
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance 5
@@ -144,20 +146,67 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5
 ```
 
-Optional controls:
+External factor roots, such as ML alphas or Barra output, use direct daily
+layout `{factor_root}\{year}\{trade_date}.parquet` and each file must contain
+`trade_date`, `ts_code`, and one or more factor columns:
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_alpha_mlp --factor-root data\models --groups 10 --rebalance 5
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --factor-root data\barra\stock\daily\CNE6 --groups 10 --rebalance 5
+```
+
+### Important Parameters
 
 ```text
+--factors a,b,c              Explicit factor columns.
+--tags XYZQ                  Formal factor metadata tag selection.
+--all-factors                All formal non-deprecated factors, or all non-key columns under --factor-root.
+--factor-root data\models    External direct daily factor root.
+--factor-fill none|ffill     Forward-fill low-frequency alpha date snapshots; default none.
+
 --label future_vwap_return_1d
---universe mkt_all
---universe 000300.SH
---benchmark mkt_mean
---benchmark 000905.SH
+--label future_vwap_return_20d
+--groups 5|10|20
+--rebalance daily|5|10|weekly|biweekly|monthly|quarterly
+
+--factor-batch-size 10       Number of factors loaded per batch.
+--date-batch-size 120        Number of dates loaded per factor batch.
+--threads N                  Optional Rayon worker count for per-factor parallelism.
+
+--universe mkt_all|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id
+--benchmark mkt_mean|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id
+
+--exclude-limit true|false   Default true.
+--exclude-st true|false      Default true.
+--limit-side both|up|down    Default both.
+
 --neutralize none
---neutralize industry
+--neutralize sector
 --neutralize barra:SIZE
---neutralize barra:SIZE+industry
---output-dir data\backtest\stock\daily
+--neutralize barra:SIZE+sector
+--neutralize barra:all+sector
 ```
+
+`sector` means Shenwan level-1 sector. `industry` is not accepted by the CLI,
+because second-level industry neutralization is not implemented yet.
+
+`barra:all` means the nine primary CNE6 style exposures only:
+
+```text
+DIVIDEND_YIELD, GROWTH, LIQUIDITY, MOMENTUM, QUALITY, SENTIMENT, SIZE, VALUE, VOLATILITY
+```
+
+It does not include secondary or tertiary columns such as `DTOP`, `BTOP`,
+`Size`, `Beta`, or `Residual_Volatility`. If the target factor is also in the
+right-hand-side control list, it is removed from the regression controls before
+neutralization.
+
+`--factor-fill ffill` is useful for weekly or monthly alpha files. It only fills
+missing date snapshots from the latest previous factor snapshot; it does not
+patch stock-level nulls inside a real snapshot.
+
+Backtest loads factor data and Barra neutralization controls by
+`factor-batch-size x date-batch-size`. Label data is loaded once and reused.
 
 `mkt_all` means the full stock cross-section. `000985.CSI` is treated as
 `mkt_all` when used as a universe; `000300.SH`, `000905.SH`, and `000852.SH`

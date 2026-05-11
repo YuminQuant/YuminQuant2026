@@ -40,6 +40,7 @@ columns = "__all__"
 [materialize]
 cache_samples = false
 cache_dir = "data/model_workspace/monthly_mlp_36/cache"
+predict_batch_size = 20
 
 [model]
 name = "mlp"
@@ -51,7 +52,7 @@ hidden_layers = [128, 64]
 dropout = 0.10
 epochs = 50
 batch_size = 8192
-lr = 0.001
+lr = 0.01
 weight_decay = 0.00001
 seed = 42
 device = "auto"

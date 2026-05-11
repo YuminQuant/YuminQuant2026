@@ -18,6 +18,18 @@ enum FactorRootLayout {
     DirectDaily,
 }
 
+const CNE6_PRIMARY_BARRA_COLUMNS: &[&str] = &[
+    "DIVIDEND_YIELD",
+    "GROWTH",
+    "LIQUIDITY",
+    "MOMENTUM",
+    "QUALITY",
+    "SENTIMENT",
+    "SIZE",
+    "VALUE",
+    "VOLATILITY",
+];
+
 #[derive(Clone, Debug)]
 pub struct BacktestInput {
     pub factor_metadata: Vec<FactorMetadata>,
@@ -302,6 +314,7 @@ fn resolve_neutralize_barra_columns(
                 .filter(|item| item.model.eq_ignore_ascii_case(DEFAULT_BARRA_MODEL))
                 .filter(|item| item.asset_class == request.asset_class.as_str())
                 .filter(|item| item.frequency == request.frequency.as_str())
+                .filter(|item| is_cne6_primary_barra_column(&item.output_column))
                 .map(|item| item.output_column),
         );
     }
@@ -314,6 +327,10 @@ fn resolve_neutralize_barra_columns(
         )));
     }
     Ok(columns)
+}
+
+fn is_cne6_primary_barra_column(column: &str) -> bool {
+    CNE6_PRIMARY_BARRA_COLUMNS.contains(&column)
 }
 
 pub fn load_backtest_input_batch(
@@ -1557,7 +1574,8 @@ mod tests {
     use super::{
         apply_factor_forward_fill, effective_weights_by_date, external_factor_ids_from_root,
         index_weight_path_may_overlap, index_weight_to_decimal, instruments_from_table,
-        parse_lookahead, universe_list_date_floor, BacktestPanel, FactorFillState, WeightRecord,
+        is_cne6_primary_barra_column, parse_lookahead, universe_list_date_floor, BacktestPanel,
+        FactorFillState, WeightRecord,
     };
     use crate::core::{AssetClass, Frequency};
     use crate::data::parquet_io::write_parquet;
@@ -1653,6 +1671,17 @@ mod tests {
         let ids = external_factor_ids_from_root(&root, AssetClass::Stock, Frequency::Daily)
             .expect("scan external factors");
         assert_eq!(ids, vec!["bar".to_string(), "foo".to_string()]);
+    }
+
+    #[test]
+    fn barra_all_neutralization_means_primary_style_exposures_only() {
+        assert!(is_cne6_primary_barra_column("DIVIDEND_YIELD"));
+        assert!(is_cne6_primary_barra_column("SIZE"));
+        assert!(is_cne6_primary_barra_column("VOLATILITY"));
+        assert!(!is_cne6_primary_barra_column("DTOP"));
+        assert!(!is_cne6_primary_barra_column("Size"));
+        assert!(!is_cne6_primary_barra_column("Beta"));
+        assert!(!is_cne6_primary_barra_column("Residual_Volatility"));
     }
 
     fn test_output_dir(name: &str) -> PathBuf {

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from typing import Callable, List
 
 import numpy as np
 import pandas as pd
 
 
-TransformFn = Callable[[pd.DataFrame, list[str], list[str], float], pd.DataFrame]
+TransformFn = Callable[[pd.DataFrame, List[str], List[str], float], pd.DataFrame]
 TRANSFORM_REGISTRY: dict[str, TransformFn] = {}
 
 

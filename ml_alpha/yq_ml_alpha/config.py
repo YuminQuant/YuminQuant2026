@@ -2,16 +2,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Tuple
 
 try:
-    import tomllib
+    import tomllib as _tomllib
+
+    _TOML_BINARY_LOAD = True
 except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib
+    try:
+        import tomli as _tomllib
+
+        _TOML_BINARY_LOAD = True
+    except ModuleNotFoundError:
+        import toml as _tomllib
+
+        _TOML_BINARY_LOAD = False
 
 
-DateRange = tuple[int, int]
-OptionalDateRange = DateRange | None
+DateRange = Tuple[int, int]
+OptionalDateRange = Optional[DateRange]
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -113,8 +122,11 @@ class MlAlphaConfig:
 
 def load_config(path: str | Path) -> MlAlphaConfig:
     config_path = Path(path)
-    with config_path.open("rb") as file:
-        raw = tomllib.load(file)
+    if _TOML_BINARY_LOAD:
+        with config_path.open("rb") as file:
+            raw = _tomllib.load(file)
+    else:
+        raw = _tomllib.load(str(config_path))
 
     data_root = _project_path(raw.get("data_root", "data"))
     output_root = _project_path(raw.get("output_root", "data/models"))

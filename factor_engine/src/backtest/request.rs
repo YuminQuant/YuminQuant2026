@@ -136,10 +136,10 @@ impl RebalanceRule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NeutralizeSpec {
     None,
-    Industry,
+    Sector,
     Barra {
         columns: Vec<String>,
-        industry: bool,
+        sector: bool,
         all: bool,
     },
 }
@@ -150,15 +150,15 @@ impl NeutralizeSpec {
         if value.is_empty() || value.eq_ignore_ascii_case("none") {
             return Ok(Self::None);
         }
-        if value.eq_ignore_ascii_case("industry") || value.eq_ignore_ascii_case("sector") {
-            return Ok(Self::Industry);
+        if value.eq_ignore_ascii_case("sector") {
+            return Ok(Self::Sector);
         }
         let Some(rest) = value.strip_prefix("barra:") else {
             return Err(err(format!(
-                "--neutralize must be none|industry|barra:COL[,COL][+industry], got {value}"
+                "--neutralize must be none|sector|barra:COL[,COL][+sector], got {value}"
             )));
         };
-        let mut industry = false;
+        let mut sector = false;
         let mut all = false;
         let mut columns = Vec::new();
         for part in rest
@@ -166,8 +166,8 @@ impl NeutralizeSpec {
             .map(str::trim)
             .filter(|part| !part.is_empty())
         {
-            if part.eq_ignore_ascii_case("industry") || part.eq_ignore_ascii_case("sector") {
-                industry = true;
+            if part.eq_ignore_ascii_case("sector") {
+                sector = true;
                 continue;
             }
             for column in part
@@ -187,14 +187,14 @@ impl NeutralizeSpec {
         }
         columns.sort();
         columns.dedup();
-        if columns.is_empty() && !industry && !all {
+        if columns.is_empty() && !sector && !all {
             return Err(err(
-                "--neutralize barra: requires at least one Barra column, all, or +industry",
+                "--neutralize barra: requires at least one Barra column, all, or +sector",
             ));
         }
         Ok(Self::Barra {
             columns,
-            industry,
+            sector,
             all,
         })
     }
@@ -202,10 +202,10 @@ impl NeutralizeSpec {
     pub fn label(&self) -> String {
         match self {
             Self::None => "none".to_string(),
-            Self::Industry => "industry".to_string(),
+            Self::Sector => "sector".to_string(),
             Self::Barra {
                 columns,
-                industry,
+                sector,
                 all,
             } => {
                 let mut label = if *all {
@@ -213,11 +213,11 @@ impl NeutralizeSpec {
                 } else {
                     format!("barra_{}", columns.join("_"))
                 };
-                if *industry {
+                if *sector {
                     if columns.is_empty() && !*all {
-                        label = "barra_industry".to_string();
+                        label = "barra_sector".to_string();
                     } else {
-                        label.push_str("_industry");
+                        label.push_str("_sector");
                     }
                 }
                 label
@@ -232,8 +232,8 @@ impl NeutralizeSpec {
         }
     }
 
-    pub fn uses_industry(&self) -> bool {
-        matches!(self, Self::Industry | Self::Barra { industry: true, .. })
+    pub fn uses_sector(&self) -> bool {
+        matches!(self, Self::Sector | Self::Barra { sector: true, .. })
     }
 
     pub fn uses_all_barra(&self) -> bool {

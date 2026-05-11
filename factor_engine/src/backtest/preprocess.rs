@@ -58,7 +58,7 @@ pub fn maybe_neutralize(
 ) -> Vec<Option<f64>> {
     match spec {
         NeutralizeSpec::None => values.to_vec(),
-        NeutralizeSpec::Industry => {
+        NeutralizeSpec::Sector => {
             let clean_y = finite_only(values);
             cs_neutralize_regression(&clean_y, &[], groups, None)
         }

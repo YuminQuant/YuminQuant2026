@@ -41,7 +41,6 @@ pub struct BacktestDataPlan {
     pub instruments: Vec<String>,
     label_table: Table,
     barra_columns: Vec<String>,
-    barra_table: Option<Table>,
     sector_map: Option<ClassificationMap>,
     universe: BacktestUniversePlan,
     trade_filter: BacktestTradeFilterPlan,
@@ -257,21 +256,7 @@ pub fn prepare_backtest_data_plan(
     let benchmark = load_benchmark_plan(config, &request.benchmark, &target_dates, &instruments)?;
 
     let barra_columns = resolve_neutralize_barra_columns(config, request)?;
-    let barra_table = if !barra_columns.is_empty() {
-        Some(load_output_table(
-            &config.barra_root,
-            request.asset_class,
-            request.frequency,
-            DEFAULT_BARRA_MODEL,
-            true,
-            &target_dates,
-            &barra_columns,
-        )?)
-    } else {
-        None
-    };
-
-    let sector_map = if request.neutralize.uses_industry() {
+    let sector_map = if request.neutralize.uses_sector() {
         let table = read_parquet(
             &config.stock_sw_classification_path,
             Some(&[
@@ -297,7 +282,6 @@ pub fn prepare_backtest_data_plan(
         instruments,
         label_table,
         barra_columns,
-        barra_table,
         sector_map,
         universe,
         trade_filter,
@@ -382,11 +366,15 @@ pub fn load_backtest_input_batch(
         *all_dates.last().expect("date batch has dates"),
     )?;
     let mut tables = vec![factor_load.table, label_table];
-    if let Some(table) = &plan.barra_table {
-        tables.push(table.filter_i32_range(
-            "trade_date",
-            *target_dates.first().expect("target date batch has dates"),
-            *target_dates.last().expect("target date batch has dates"),
+    if !plan.barra_columns.is_empty() {
+        tables.push(load_output_table(
+            &config.barra_root,
+            request.asset_class,
+            request.frequency,
+            DEFAULT_BARRA_MODEL,
+            true,
+            target_dates,
+            &plan.barra_columns,
         )?);
     }
     let mut panel = BacktestPanel::from_tables_with_instruments(

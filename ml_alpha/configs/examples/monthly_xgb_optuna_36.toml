@@ -1,0 +1,64 @@
+run_id = "monthly_xgb_optuna_36"
+alpha_id = "ml_alpha_xgb_optuna"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20110101, 20260424]
+valid = []
+predict = [20110101, 20260424]
+
+[sample]
+train_frequency = "monthly_end"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "monthly_end"
+train_sample_count = 36
+
+[label]
+id = "future_vwap_return_20d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "zscore_log_rank"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/monthly_xgb_optuna_36/cache"
+predict_batch_size = 20
+
+[model]
+name = "xgboost_optuna"
+class = "yq_ml_alpha.models.xgb_optuna_model.XGBoostOptunaAlphaModel"
+artifact_dir = "data/model_workspace/monthly_xgb_optuna_36/artifacts"
+
+[model.params]
+objective = "reg:squarederror"
+tree_method = "hist"
+random_state = 42
+n_jobs = -1
+
+[model.params.search]
+n_trials = 50
+valid_fraction = 0.2
+random_state = 42
+show_progress_bar = false
+
+[tuning]
+enabled = false
+method = "none"

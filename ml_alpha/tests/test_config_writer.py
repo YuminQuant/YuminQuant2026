@@ -20,9 +20,19 @@ from yq_ml_alpha.features.transforms import (
     cross_section_zscore_log_rank,
 )
 from yq_ml_alpha.models.base import ModelContext
+from yq_ml_alpha.models.cnn_model import CNNAlphaModel
 from yq_ml_alpha.models.ic_sign_model import ICSignEqualWeightAlphaModel
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
+from yq_ml_alpha.models.lgbm_optuna_model import LightGBMOptunaAlphaModel
 from yq_ml_alpha.models.mlp_model import MLPAlphaModel
+from yq_ml_alpha.models.regularized_linear_model import (
+    ElasticNetAlphaModel,
+    LassoAlphaModel,
+    RidgeAlphaModel,
+)
+from yq_ml_alpha.models.sequence_model import GRUAlphaModel, LSTMAlphaModel, RNNAlphaModel
+from yq_ml_alpha.models.tree_model import RandomForestAlphaModel
+from yq_ml_alpha.models.xgb_optuna_model import XGBoostOptunaAlphaModel
 from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
 from yq_ml_alpha.pipelines.train import build_windows
@@ -361,6 +371,108 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         pred = model.predict(train, context)
         self.assertTrue(np.allclose(pred.to_numpy(), [3.0, 5.0, 7.0], atol=1e-5))
 
+    def test_regularized_linear_models_fit_search_and_save(self) -> None:
+        try:
+            import sklearn  # noqa: F401
+        except ImportError:
+            self.skipTest("scikit-learn is not installed")
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1, 1, 1],
+                "ts_code": ["a", "b", "c", "d", "e", "f"],
+                "x1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                "x2": [6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+                "y": [0.1, 0.3, 0.5, 0.7, 0.9, 1.1],
+            }
+        )
+        base = dict(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            tuning_params={},
+        )
+        models = [
+            (
+                LassoAlphaModel(),
+                {
+                    "search": {
+                        "enabled": True,
+                        "method": "random",
+                        "cv": 2,
+                        "n_iter": 2,
+                        "params": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
+                    }
+                },
+            ),
+            (
+                RidgeAlphaModel(),
+                {
+                    "search": {
+                        "enabled": True,
+                        "method": "grid",
+                        "cv": 2,
+                        "params": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
+                    }
+                },
+            ),
+            (
+                ElasticNetAlphaModel(),
+                {
+                    "search": {
+                        "enabled": True,
+                        "method": "random",
+                        "cv": 2,
+                        "n_iter": 2,
+                        "params": {"alpha": [0.001, 0.01], "l1_ratio": [0.2, 0.8]},
+                    }
+                },
+            ),
+        ]
+        for model, params in models:
+            context = ModelContext(model_params=params, **base)
+            model.fit(train, pd.DataFrame(), context)
+            self.assertIsNotNone(model.best_params_)
+            pred = model.predict(train, context)
+            self.assertEqual(len(pred), len(train))
+            self.assertTrue(np.isfinite(pred.to_numpy()).all())
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "model.pkl"
+                model.save(path)
+                loaded = type(model).load(path)
+                loaded_pred = loaded.predict(train, context)
+                self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
+    def test_random_forest_model_smoke_when_installed(self) -> None:
+        try:
+            import sklearn  # noqa: F401
+        except ImportError:
+            self.skipTest("scikit-learn is not installed")
+        model = RandomForestAlphaModel()
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={"n_estimators": 5, "min_samples_leaf": 1, "min_samples_split": 2, "random_state": 7},
+            tuning_params={},
+        )
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1],
+                "ts_code": ["a", "b", "c", "d"],
+                "x1": [1.0, 2.0, 3.0, 4.0],
+                "x2": [4.0, 3.0, 2.0, 1.0],
+                "y": [0.1, 0.2, 0.3, 0.4],
+            }
+        )
+        model.fit(train, pd.DataFrame(), context)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), 4)
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+
     def test_xgboost_model_smoke_when_installed(self) -> None:
         try:
             import xgboost  # noqa: F401
@@ -380,6 +492,79 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         model.fit(train, pd.DataFrame(), context)
         pred = model.predict(train, context)
         self.assertEqual(len(pred), 3)
+
+    def test_xgboost_optuna_model_smoke_when_installed(self) -> None:
+        try:
+            import optuna  # noqa: F401
+            import xgboost  # noqa: F401
+        except ImportError:
+            self.skipTest("optuna or xgboost is not installed")
+        model = XGBoostOptunaAlphaModel()
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "n_estimators": 2,
+                "max_depth": 1,
+                "tree_method": "hist",
+                "search": {"n_trials": 1, "valid_fraction": 0.25, "random_state": 7},
+            },
+            tuning_params={},
+        )
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1, 1, 1],
+                "ts_code": ["a", "b", "c", "d", "e", "f"],
+                "x1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                "x2": [6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+                "y": [0.1, 0.3, 0.5, 0.7, 0.9, 1.1],
+            }
+        )
+        model.fit(train, pd.DataFrame(), context)
+        self.assertIsNotNone(model.best_params_)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), len(train))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+
+    def test_lightgbm_optuna_model_smoke_when_installed(self) -> None:
+        try:
+            import lightgbm  # noqa: F401
+            import optuna  # noqa: F401
+        except ImportError:
+            self.skipTest("lightgbm or optuna is not installed")
+        model = LightGBMOptunaAlphaModel()
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "n_estimators": 2,
+                "num_leaves": 3,
+                "min_child_samples": 1,
+                "verbosity": -1,
+                "search": {"n_trials": 1, "valid_fraction": 0.25, "random_state": 7},
+            },
+            tuning_params={},
+        )
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1, 1, 1],
+                "ts_code": ["a", "b", "c", "d", "e", "f"],
+                "x1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                "x2": [6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+                "y": [0.1, 0.3, 0.5, 0.7, 0.9, 1.1],
+            }
+        )
+        model.fit(train, pd.DataFrame(), context)
+        self.assertIsNotNone(model.best_params_)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), len(train))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
 
     def test_ic_sign_equal_weight_uses_rankic_signs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -480,6 +665,99 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             loaded_pred = loaded.predict(train, context)
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
+    def test_sequence_models_smoke_and_pad_features_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1],
+                "ts_code": ["a", "b", "c", "d"],
+                "x1": [1.0, 2.0, 3.0, 4.0],
+                "x2": [4.0, 3.0, 2.0, 1.0],
+                "x3": [0.5, 0.4, 0.3, 0.2],
+                "x4": [0.1, 0.2, 0.3, 0.4],
+                "x5": [2.0, 2.0, 2.0, 2.0],
+                "y": [0.1, 0.2, 0.3, 0.4],
+            }
+        )
+        base_context = dict(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2", "x3", "x4", "x5"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "sequence_length": 6,
+                "hidden_size": 4,
+                "num_layers": 1,
+                "epochs": 2,
+                "batch_size": 2,
+                "patience": 0,
+                "seed": 7,
+            },
+            tuning_params={},
+        )
+        for model_cls in [RNNAlphaModel, LSTMAlphaModel, GRUAlphaModel]:
+            model = model_cls()
+            context = ModelContext(**base_context)
+            model.fit(train, pd.DataFrame(), context)
+            pred = model.predict(train, context)
+            self.assertEqual(len(pred), 4)
+            self.assertTrue(np.isfinite(pred.to_numpy()).all())
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "model.pt"
+                model.save(path)
+                loaded = model_cls.load(path)
+                loaded_pred = loaded.predict(train, context)
+                self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
+    def test_cnn_model_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        model = CNNAlphaModel()
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2", "x3", "x4"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "channels": [4],
+                "kernel_size": 3,
+                "hidden_size": 4,
+                "epochs": 2,
+                "batch_size": 2,
+                "patience": 0,
+                "seed": 7,
+            },
+            tuning_params={},
+        )
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1],
+                "ts_code": ["a", "b", "c", "d"],
+                "x1": [1.0, 2.0, 3.0, 4.0],
+                "x2": [4.0, 3.0, 2.0, 1.0],
+                "x3": [0.5, 0.4, 0.3, 0.2],
+                "x4": [0.1, 0.2, 0.3, 0.4],
+                "y": [0.1, 0.2, 0.3, 0.4],
+            }
+        )
+        model.fit(train, pd.DataFrame(), context)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), 4)
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.pt"
+            model.save(path)
+            loaded = CNNAlphaModel.load(path)
+            loaded_pred = loaded.predict(train, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
     def test_monthly_mlp_config_parses(self) -> None:
         config = load_config(Path(__file__).resolve().parents[1] / "configs" / "examples" / "monthly_mlp_36.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_mlp")
@@ -495,6 +773,28 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.ic_sign_model.ICSignEqualWeightAlphaModel")
         self.assertEqual(config.model.params["ic_metric"], "rank_ic")
+
+    def test_new_model_configs_parse(self) -> None:
+        config_dir = Path(__file__).resolve().parents[1] / "configs" / "examples"
+        expected = {
+            "monthly_lasso_36.toml": ("ml_alpha_lasso", "LassoAlphaModel"),
+            "monthly_ridge_36.toml": ("ml_alpha_ridge", "RidgeAlphaModel"),
+            "monthly_elasticnet_36.toml": ("ml_alpha_elasticnet", "ElasticNetAlphaModel"),
+            "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
+            "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
+            "monthly_lstm_36.toml": ("ml_alpha_lstm", "LSTMAlphaModel"),
+            "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
+            "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),
+            "monthly_xgb_optuna_36.toml": ("ml_alpha_xgb_optuna", "XGBoostOptunaAlphaModel"),
+            "monthly_lgbm_optuna_36.toml": ("ml_alpha_lgbm_optuna", "LightGBMOptunaAlphaModel"),
+        }
+        for filename, (alpha_id, class_name) in expected.items():
+            config = load_config(config_dir / filename)
+            self.assertEqual(config.alpha_id, alpha_id)
+            self.assertTrue(config.model.class_path.endswith(class_name))
+            self.assertEqual(config.features.columns, "__all__")
+            if class_name in {"RNNAlphaModel", "LSTMAlphaModel", "GRUAlphaModel"}:
+                self.assertEqual(config.model.params["sequence_length"], 6)
 
 
 if __name__ == "__main__":

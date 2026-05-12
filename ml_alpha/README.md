@@ -13,8 +13,18 @@ installing it:
 cd ml_alpha
 python -m yq_ml_alpha run --config configs\examples\monthly_lr_36.toml
 python -m yq_ml_alpha run --config configs\examples\monthly_xgb_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_xgb_optuna_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_lgbm_optuna_36.toml
 python -m yq_ml_alpha run --config configs\examples\monthly_mlp_36.toml
 python -m yq_ml_alpha run --config configs\examples\monthly_ic_sign_equal_weight.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_lasso_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_ridge_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_elasticnet_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_rf_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_lstm_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_gru_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_rnn_36.toml
+python -m yq_ml_alpha run --config configs\examples\monthly_cnn_36.toml
 ```
 
 If you want to use the local Python 3.8.3 GPU environment from the repository
@@ -167,8 +177,22 @@ Current model modules live under `yq_ml_alpha/models/`:
 
 ```text
 linear_model.py     LinearRegressionAlphaModel, ordinary least squares via numpy.
+regularized_linear_model.py
+                    LassoAlphaModel, RidgeAlphaModel, ElasticNetAlphaModel with
+                    optional GridSearchCV or RandomizedSearchCV inside fit().
+tree_model.py       RandomForestAlphaModel, wraps sklearn RandomForestRegressor.
 xgb_model.py        XGBoostAlphaModel, wraps xgboost.XGBRegressor.
+xgb_optuna_model.py
+                    XGBoostOptunaAlphaModel, runs Optuna TPE tuning inside
+                    each fit window, then trains a final XGBoost regressor.
+lgbm_optuna_model.py
+                    LightGBMOptunaAlphaModel, Optuna-tuned LightGBM regressor.
 mlp_model.py        MLPAlphaModel, PyTorch MLP for factor-frame alpha combination.
+sequence_model.py   RNNAlphaModel, LSTMAlphaModel, GRUAlphaModel. Current
+                    factor-frame inputs are reshaped by feature order; examples
+                    use sequence_length=6.
+cnn_model.py        CNNAlphaModel, 1D CNN over feature dimension. Pooling code is
+                    present but disabled by default.
 ic_sign_model.py    ICSignEqualWeightAlphaModel, equal-weight features by RankIC sign.
 lgbm_model.py       LightGBMAlphaModel placeholder/wrapper for LightGBM style configs.
 sklearn_model.py    Generic sklearn-style wrapper utilities.
@@ -179,14 +203,71 @@ Built-in configs:
 
 ```text
 configs/examples/monthly_lr_36.toml
+configs/examples/monthly_lasso_36.toml
+configs/examples/monthly_ridge_36.toml
+configs/examples/monthly_elasticnet_36.toml
+configs/examples/monthly_rf_36.toml
 configs/examples/monthly_xgb_36.toml
+configs/examples/monthly_xgb_optuna_36.toml
+configs/examples/monthly_lgbm_optuna_36.toml
 configs/examples/monthly_mlp_36.toml
+configs/examples/monthly_rnn_36.toml
+configs/examples/monthly_lstm_36.toml
+configs/examples/monthly_gru_36.toml
+configs/examples/monthly_cnn_36.toml
 configs/examples/monthly_ic_sign_equal_weight.toml
 ```
 
 Model-specific parameters go under `[model.params]` and are passed through as
 `context.model_params`. The shared pipeline does not interpret loss functions,
 metrics, or search spaces.
+
+Lasso/Ridge/ElasticNet can tune themselves during each rolling window. The
+example configs enable `RandomizedSearchCV`:
+
+```toml
+[model.params.search]
+enabled = true
+method = "random"  # random | grid
+cv = 3
+n_iter = 40
+scoring = "neg_mean_squared_error"
+n_jobs = -1
+random_state = 42
+```
+
+To use an explicit search space, add `params` below the search block:
+
+```toml
+[model.params.search.params]
+alpha = [0.001, 0.01, 0.1]
+fit_intercept = [true, false]
+```
+
+For RNN/LSTM/GRU configs, `sequence_length = 6` means the current factor-frame
+feature vector is padded if needed and reshaped into six pseudo time steps. This
+is a compatibility layer for factor combination, not a true six-date history
+input. True time-series/raw-panel inputs should use a later raw-panel model.
+
+XGBoost and LightGBM also have Optuna-tuned variants. They live in separate
+model paths so the plain configs stay fast:
+
+```toml
+[model]
+name = "xgboost_optuna"
+class = "yq_ml_alpha.models.xgb_optuna_model.XGBoostOptunaAlphaModel"
+
+[model.params.search]
+n_trials = 50
+valid_fraction = 0.2
+random_state = 42
+show_progress_bar = false
+```
+
+If `[dates].valid` is provided, the Optuna objective evaluates on that valid
+window. If `valid = []`, the model internally carves out `valid_fraction` of the
+current training window for tuning, then fits the final model on the full
+training window.
 
 ## Add A New Model
 

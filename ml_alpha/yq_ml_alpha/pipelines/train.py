@@ -182,21 +182,25 @@ def _train_only_windows(
         return []
     count = int(config.train_scheme.train_sample_count)
     if count > 0:
-        if len(train_pool) < count:
+        valid_count = max(0, int(config.train_scheme.validation_sample_count))
+        if len(train_pool) < count + valid_count:
             return []
+        valid_dates = train_pool[-valid_count:] if valid_count > 0 else _valid_dates(config, calendar, train_frequency)
+        train_candidates = train_pool[:-valid_count] if valid_count > 0 else train_pool
         if scheme == "rolling":
-            train_dates = train_pool[-count:]
+            train_dates = train_candidates[-count:]
         elif scheme == "expanding":
-            train_dates = train_pool
+            train_dates = train_candidates
         else:
             raise ValueError(f"train_sample_count is only supported for rolling/expanding, got {scheme}")
     else:
         train_dates = train_pool
+        valid_dates = _valid_dates(config, calendar, train_frequency)
     return [
         TrainingWindow(
             window_id=f"train_only_{train_dates[-1]}",
             train_dates=train_dates,
-            valid_dates=_valid_dates(config, calendar, train_frequency),
+            valid_dates=valid_dates,
             predict_dates=[],
         )
     ]
@@ -220,13 +224,18 @@ def _sample_count_windows(
     refits = _actual_refit_dates(calendar, config.dates.predict, config.train_scheme.refit_frequency)
     train_pool = sample_dates(calendar, config.dates.train, train_frequency)
     count = int(config.train_scheme.train_sample_count)
+    valid_count = max(0, int(config.train_scheme.validation_sample_count))
     windows = []
     for idx, refit in enumerate(refits):
         next_refit = refits[idx + 1] if idx + 1 < len(refits) else None
         segment = [date for date in predict_dates if date > refit and (next_refit is None or date <= next_refit)]
         if not segment:
             continue
-        candidates = [date for date in train_pool if date < refit]
+        eligible = [date for date in train_pool if date <= refit] if valid_count > 0 else [date for date in train_pool if date < refit]
+        if len(eligible) < count + valid_count:
+            continue
+        valid_dates = eligible[-valid_count:] if valid_count > 0 else []
+        candidates = eligible[:-valid_count] if valid_count > 0 else eligible
         if len(candidates) < count:
             continue
         if scheme == "rolling":
@@ -239,7 +248,7 @@ def _sample_count_windows(
             TrainingWindow(
                 window_id=f"{len(windows) + 1:04d}_{segment[0]}_{segment[-1]}",
                 train_dates=train_dates,
-                valid_dates=[],
+                valid_dates=valid_dates,
                 predict_dates=segment,
             )
         )

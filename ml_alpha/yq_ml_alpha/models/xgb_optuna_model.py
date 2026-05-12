@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
+from yq_ml_alpha.models.optuna_space import suggest_params
 
 
 class XGBoostOptunaAlphaModel(AlphaModel):
@@ -34,7 +35,7 @@ class XGBoostOptunaAlphaModel(AlphaModel):
         study = optuna.create_study(direction="minimize", sampler=sampler)
 
         def objective(trial):
-            params = {**base_params, **_suggest_xgb_params(trial)}
+            params = {**base_params, **suggest_params(trial, search.get("space"), _default_xgb_space())}
             model = xgb.XGBRegressor(**params)
             fit_kwargs = {}
             if x_valid is not None:
@@ -110,17 +111,17 @@ def _search_params(raw: dict[str, Any]) -> dict[str, Any]:
     return search
 
 
-def _suggest_xgb_params(trial) -> dict[str, Any]:
+def _default_xgb_space() -> dict[str, Any]:
     return {
-        "n_estimators": trial.suggest_int("n_estimators", 100, 800, step=50),
-        "max_depth": trial.suggest_int("max_depth", 2, 8),
-        "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.2, log=True),
-        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-        "min_child_weight": trial.suggest_float("min_child_weight", 1e-2, 100.0, log=True),
-        "gamma": trial.suggest_float("gamma", 1e-8, 10.0, log=True),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 100.0, log=True),
+        "n_estimators": {"type": "int", "low": 100, "high": 800, "step": 50},
+        "max_depth": {"type": "int", "low": 2, "high": 8},
+        "learning_rate": {"type": "float", "low": 0.005, "high": 0.2, "log": True},
+        "subsample": {"type": "float", "low": 0.5, "high": 1.0},
+        "colsample_bytree": {"type": "float", "low": 0.5, "high": 1.0},
+        "min_child_weight": {"type": "float", "low": 1e-2, "high": 100.0, "log": True},
+        "gamma": {"type": "float", "low": 1e-8, "high": 10.0, "log": True},
+        "reg_alpha": {"type": "float", "low": 1e-8, "high": 10.0, "log": True},
+        "reg_lambda": {"type": "float", "low": 1e-4, "high": 100.0, "log": True},
     }
 
 

@@ -25,6 +25,7 @@ from yq_ml_alpha.models.ic_sign_model import ICSignEqualWeightAlphaModel
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
 from yq_ml_alpha.models.lgbm_optuna_model import LightGBMOptunaAlphaModel
 from yq_ml_alpha.models.mlp_model import MLPAlphaModel
+from yq_ml_alpha.models.optuna_space import suggest_params
 from yq_ml_alpha.models.regularized_linear_model import (
     ElasticNetAlphaModel,
     LassoAlphaModel,
@@ -88,6 +89,7 @@ n_trials = 10
             self.assertEqual(config.sample.train_frequency, "monthly_end")
             self.assertEqual(config.sample.predict_frequency, "daily")
             self.assertEqual(config.train_scheme.train_sample_count, 36)
+            self.assertEqual(config.train_scheme.validation_sample_count, 0)
             self.assertEqual(config.model.params["learning_rate"], 0.03)
             self.assertEqual(config.tuning.params["n_trials"], 10)
 
@@ -254,6 +256,53 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             windows = build_windows(config, calendar)
             self.assertEqual(len(windows), 1)
             self.assertEqual(windows[0].train_dates, [20260130, 20260227])
+            self.assertEqual(windows[0].valid_dates, [])
+            self.assertEqual(windows[0].predict_dates, [20260401, 20260402])
+
+    def test_monthly_rolling_sample_count_can_use_next_sample_as_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.toml"
+            path.write_text(
+                """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [20260101, 20260424]
+valid = []
+predict = [20260301, 20260424]
+
+[sample]
+train_frequency = "monthly_end"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "monthly_end"
+train_sample_count = 2
+validation_sample_count = 1
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            calendar = TradingCalendar([20260130, 20260227, 20260331, 20260401, 20260402, 20260430])
+            windows = build_windows(config, calendar)
+            self.assertEqual(len(windows), 1)
+            self.assertEqual(windows[0].train_dates, [20260130, 20260227])
+            self.assertEqual(windows[0].valid_dates, [20260331])
             self.assertEqual(windows[0].predict_dates, [20260401, 20260402])
 
     def test_train_only_window_when_predict_dates_empty(self) -> None:
@@ -443,6 +492,51 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 loaded = type(model).load(path)
                 loaded_pred = loaded.predict(train, context)
                 self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
+    def test_regularized_linear_search_uses_explicit_validation_when_available(self) -> None:
+        try:
+            import sklearn  # noqa: F401
+        except ImportError:
+            self.skipTest("scikit-learn is not installed")
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1],
+                "ts_code": ["a", "b", "c", "d"],
+                "x": [1.0, 2.0, 3.0, 4.0],
+                "y": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        valid = pd.DataFrame(
+            {
+                "trade_date": [2, 2],
+                "ts_code": ["e", "f"],
+                "x": [5.0, 6.0],
+                "y": [5.0, 6.0],
+            }
+        )
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "search": {
+                    "enabled": True,
+                    "method": "grid",
+                    "cv": 3,
+                    "params": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
+                }
+            },
+            tuning_params={},
+        )
+        model = RidgeAlphaModel()
+        model.fit(train, valid, context)
+        self.assertIsNotNone(model.best_params_)
+        self.assertEqual(len(model.cv_results_["mean_test_score"]), 2)
+        pred = model.predict(valid, context)
+        self.assertEqual(len(pred), len(valid))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
 
     def test_random_forest_model_smoke_when_installed(self) -> None:
         try:
@@ -793,8 +887,56 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             self.assertEqual(config.alpha_id, alpha_id)
             self.assertTrue(config.model.class_path.endswith(class_name))
             self.assertEqual(config.features.columns, "__all__")
+            if filename in {
+                "monthly_lasso_36.toml",
+                "monthly_ridge_36.toml",
+                "monthly_elasticnet_36.toml",
+                "monthly_xgb_optuna_36.toml",
+                "monthly_lgbm_optuna_36.toml",
+            }:
+                self.assertEqual(config.train_scheme.validation_sample_count, 1)
+            else:
+                self.assertEqual(config.train_scheme.validation_sample_count, 0)
             if class_name in {"RNNAlphaModel", "LSTMAlphaModel", "GRUAlphaModel"}:
                 self.assertEqual(config.model.params["sequence_length"], 6)
+
+    def test_tuned_configs_expose_search_space(self) -> None:
+        config_dir = Path(__file__).resolve().parents[1] / "configs" / "examples"
+        lasso = load_config(config_dir / "monthly_lasso_36.toml")
+        self.assertIn("alpha", lasso.model.params["search"]["params"])
+        self.assertIn("fit_intercept", lasso.model.params["search"]["params"])
+
+        xgb = load_config(config_dir / "monthly_xgb_optuna_36.toml")
+        self.assertIn("space", xgb.model.params["search"])
+        self.assertEqual(xgb.model.params["search"]["space"]["n_estimators"]["type"], "int")
+        self.assertTrue(xgb.model.params["search"]["space"]["learning_rate"]["log"])
+
+        lgbm = load_config(config_dir / "monthly_lgbm_optuna_36.toml")
+        self.assertIn("num_leaves", lgbm.model.params["search"]["space"])
+
+    def test_optuna_space_supports_toml_distributions(self) -> None:
+        class FakeTrial:
+            def suggest_int(self, name, low, high, **kwargs):
+                return ("int", name, low, high, kwargs)
+
+            def suggest_float(self, name, low, high, **kwargs):
+                return ("float", name, low, high, kwargs)
+
+            def suggest_categorical(self, name, choices):
+                return ("categorical", name, choices)
+
+        params = suggest_params(
+            FakeTrial(),
+            {
+                "a": {"type": "int", "low": 1, "high": 5, "step": 2},
+                "b": {"type": "float", "low": 0.1, "high": 1.0, "log": True},
+                "c": {"choices": ["x", "y"]},
+            },
+            {},
+        )
+        self.assertEqual(params["a"], ("int", "a", 1, 5, {"step": 2}))
+        self.assertEqual(params["b"], ("float", "b", 0.1, 1.0, {"log": True}))
+        self.assertEqual(params["c"], ("categorical", "c", ["x", "y"]))
 
 
 if __name__ == "__main__":

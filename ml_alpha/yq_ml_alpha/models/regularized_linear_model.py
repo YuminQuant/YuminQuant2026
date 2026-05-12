@@ -21,7 +21,7 @@ class _RegularizedLinearAlphaModel(AlphaModel):
         sklearn_linear = _sklearn_linear_module()
         estimator_cls = getattr(sklearn_linear, self.estimator_name)
         params = _estimator_params(context.model_params)
-        search_config = _search_config(context.model_params)
+        search_config = _search_config(context.model_search)
         x = _features(train_data, context.feature_columns)
         y = train_data[context.label_column].astype(float).to_numpy()
         validation = _explicit_validation(valid_data, context)
@@ -43,14 +43,6 @@ class _RegularizedLinearAlphaModel(AlphaModel):
             raise RuntimeError("model is not fitted")
         score = self.model.predict(_features(data, context.feature_columns))
         return pd.Series(score, index=data.index, dtype="float32")
-
-    def tune(self, data_factory, context: ModelContext) -> dict[str, Any]:
-        train_data, _ = data_factory()
-        self.fit(train_data, pd.DataFrame(), context)
-        return {
-            "best_params": self.best_params_,
-            "cv_results": self.cv_results_,
-        }
 
 
 class LassoAlphaModel(_RegularizedLinearAlphaModel):
@@ -96,7 +88,8 @@ def _estimator_params(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _search_config(raw: dict[str, Any]) -> dict[str, Any]:
-    search = dict(raw.get("search", {}))
+    raw = dict(raw)
+    search = dict(raw.get("search", raw))
     if "enabled" not in search:
         search["enabled"] = False
     search.setdefault("method", "random")
@@ -175,7 +168,7 @@ def _explicit_validation(valid_data: pd.DataFrame, context: ModelContext) -> tup
 
 
 def _param_space(search: dict[str, Any], estimator_name: str) -> dict[str, list[Any]]:
-    configured = search.get("param_grid") or search.get("param_distributions") or search.get("params")
+    configured = search.get("space") or search.get("param_grid") or search.get("param_distributions") or search.get("params")
     if isinstance(configured, dict) and configured:
         return {key: _as_list(value) for key, value in configured.items()}
     if estimator_name == "Lasso":

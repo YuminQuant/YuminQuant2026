@@ -49,6 +49,3 @@ artifact_dir = "data/model_workspace/monthly_lr_36/artifacts"
 
 [model.params]
 
-[tuning]
-enabled = false
-method = "none"

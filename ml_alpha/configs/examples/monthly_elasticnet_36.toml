@@ -50,7 +50,7 @@ artifact_dir = "data/model_workspace/monthly_elasticnet_36/artifacts"
 
 [model.params]
 
-[model.params.search]
+[model.search]
 enabled = true
 method = "random"
 cv = 3
@@ -59,7 +59,7 @@ scoring = "neg_mean_squared_error"
 n_jobs = -1
 random_state = 42
 
-[model.params.search.params]
+[model.search.space]
 alpha = [0.00001, 0.00003, 0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]
 l1_ratio = [0.05, 0.15, 0.3, 0.5, 0.7, 0.85, 0.95]
 fit_intercept = [true, false]
@@ -68,6 +68,3 @@ tol = [0.00001, 0.0001, 0.001]
 selection = ["cyclic", "random"]
 positive = [false, true]
 
-[tuning]
-enabled = false
-method = "none"

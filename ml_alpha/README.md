@@ -55,13 +55,12 @@ python -m yq_ml_alpha run --config configs\examples\monthly_mlp_36.toml
 python -m yq_ml_alpha train --config configs\examples\monthly_mlp_36.toml
 python -m yq_ml_alpha predict --config configs\examples\monthly_mlp_36.toml
 python -m yq_ml_alpha materialize --config configs\examples\monthly_mlp_36.toml
-python -m yq_ml_alpha tune --config configs\examples\monthly_mlp_36.toml
 ```
 
 `run` trains, predicts, and writes alpha files. `train` only fits and saves
 artifacts. `predict` loads saved artifacts and writes predictions. `materialize`
-builds sample data for inspection. `tune` delegates hyperparameter search to the
-model implementation.
+builds sample data for inspection. Hyperparameter search is handled inside each
+model during `train` or `run`.
 
 ## Workflow And Config
 
@@ -219,9 +218,10 @@ configs/examples/monthly_cnn_36.toml
 configs/examples/monthly_ic_sign_equal_weight.toml
 ```
 
-Model-specific parameters go under `[model.params]` and are passed through as
-`context.model_params`. The shared pipeline does not interpret loss functions,
-metrics, or search spaces.
+Model-specific fit parameters go under `[model.params]` and are passed through
+as `context.model_params`. Hyperparameter-search settings go under
+`[model.search]` and are passed through as `context.model_search`. The shared
+pipeline does not interpret loss functions, metrics, or search spaces.
 
 Lasso/Ridge/ElasticNet can tune themselves during each rolling window. The
 example configs enable `RandomizedSearchCV` and use a 36+1 monthly split:
@@ -240,7 +240,7 @@ The explicit validation month is preferred for parameter selection. If it is
 empty after label filtering, the models fall back to their internal CV setting.
 
 ```toml
-[model.params.search]
+[model.search]
 enabled = true
 method = "random"  # random | grid
 cv = 3
@@ -250,10 +250,10 @@ n_jobs = -1
 random_state = 42
 ```
 
-To use an explicit search space, add `params` below the search block:
+To use an explicit search space, add `space` below the search block:
 
 ```toml
-[model.params.search.params]
+[model.search.space]
 alpha = [0.001, 0.01, 0.1]
 fit_intercept = [true, false]
 ```
@@ -274,19 +274,19 @@ model paths so the plain configs stay fast:
 name = "xgboost_optuna"
 class = "yq_ml_alpha.models.xgb_optuna_model.XGBoostOptunaAlphaModel"
 
-[model.params.search]
+[model.search]
 n_trials = 50
 valid_fraction = 0.2
 random_state = 42
 show_progress_bar = false
 
-[model.params.search.space.n_estimators]
+[model.search.space.n_estimators]
 type = "int"
 low = 100
 high = 800
 step = 50
 
-[model.params.search.space.learning_rate]
+[model.search.space.learning_rate]
 type = "float"
 low = 0.005
 high = 0.2

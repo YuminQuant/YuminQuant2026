@@ -50,7 +50,7 @@ artifact_dir = "data/model_workspace/monthly_ridge_36/artifacts"
 
 [model.params]
 
-[model.params.search]
+[model.search]
 enabled = true
 method = "random"
 cv = 3
@@ -59,13 +59,10 @@ scoring = "neg_mean_squared_error"
 n_jobs = -1
 random_state = 42
 
-[model.params.search.params]
+[model.search.space]
 alpha = [0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0]
 fit_intercept = [true, false]
 solver = ["auto", "svd", "cholesky", "lsqr", "sag", "saga"]
 tol = [0.00001, 0.0001, 0.001]
 max_iter = [3000, 10000]
 
-[tuning]
-enabled = false
-method = "none"

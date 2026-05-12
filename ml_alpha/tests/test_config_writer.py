@@ -40,7 +40,7 @@ from yq_ml_alpha.pipelines.train import build_windows
 
 
 class ConfigAndWriterTests(unittest.TestCase):
-    def test_config_preserves_model_and_tuning_params(self) -> None:
+    def test_config_preserves_model_params(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "run.toml"
             path.write_text(
@@ -77,10 +77,6 @@ artifact_dir = "data/model_workspace/r1/artifacts"
 [model.params]
 learning_rate = 0.03
 
-[tuning]
-enabled = true
-method = "optuna"
-n_trials = 10
 """,
                 encoding="utf-8",
             )
@@ -91,7 +87,6 @@ n_trials = 10
             self.assertEqual(config.train_scheme.train_sample_count, 36)
             self.assertEqual(config.train_scheme.validation_sample_count, 0)
             self.assertEqual(config.model.params["learning_rate"], 0.03)
-            self.assertEqual(config.tuning.params["n_trials"], 10)
 
     def test_valid_and_predict_dates_can_be_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -268,9 +263,9 @@ run_id = "r1"
 alpha_id = "a1"
 
 [dates]
-train = [20260101, 20260424]
+train = [20260101, 20260529]
 valid = []
-predict = [20260301, 20260424]
+predict = [20260301, 20260504]
 
 [sample]
 train_frequency = "monthly_end"
@@ -298,12 +293,14 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 encoding="utf-8",
             )
             config = load_config(path)
-            calendar = TradingCalendar([20260130, 20260227, 20260331, 20260401, 20260402, 20260430])
+            calendar = TradingCalendar(
+                [20260130, 20260227, 20260331, 20260401, 20260402, 20260430, 20260501, 20260504, 20260529]
+            )
             windows = build_windows(config, calendar)
             self.assertEqual(len(windows), 1)
             self.assertEqual(windows[0].train_dates, [20260130, 20260227])
             self.assertEqual(windows[0].valid_dates, [20260331])
-            self.assertEqual(windows[0].predict_dates, [20260401, 20260402])
+            self.assertEqual(windows[0].predict_dates, [20260501, 20260504])
 
     def test_train_only_window_when_predict_dates_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -413,7 +410,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             label_column="y",
             artifact_dir=Path("tmp"),
             model_params={},
-            tuning_params={},
+            model_search={},
         )
         train = pd.DataFrame({"trade_date": [1, 1, 1], "ts_code": ["a", "b", "c"], "x": [1.0, 2.0, 3.0], "y": [3.0, 5.0, 7.0]})
         model.fit(train, pd.DataFrame(), context)
@@ -440,7 +437,6 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             feature_columns=["x1", "x2"],
             label_column="y",
             artifact_dir=Path("tmp"),
-            tuning_params={},
         )
         models = [
             (
@@ -451,7 +447,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                         "method": "random",
                         "cv": 2,
                         "n_iter": 2,
-                        "params": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
+                        "space": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
                     }
                 },
             ),
@@ -462,7 +458,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                         "enabled": True,
                         "method": "grid",
                         "cv": 2,
-                        "params": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
+                        "space": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
                     }
                 },
             ),
@@ -474,13 +470,13 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                         "method": "random",
                         "cv": 2,
                         "n_iter": 2,
-                        "params": {"alpha": [0.001, 0.01], "l1_ratio": [0.2, 0.8]},
+                        "space": {"alpha": [0.001, 0.01], "l1_ratio": [0.2, 0.8]},
                     }
                 },
             ),
         ]
         for model, params in models:
-            context = ModelContext(model_params=params, **base)
+            context = ModelContext(model_params={}, model_search=params["search"], **base)
             model.fit(train, pd.DataFrame(), context)
             self.assertIsNotNone(model.best_params_)
             pred = model.predict(train, context)
@@ -520,15 +516,13 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             feature_columns=["x"],
             label_column="y",
             artifact_dir=Path("tmp"),
-            model_params={
-                "search": {
-                    "enabled": True,
-                    "method": "grid",
-                    "cv": 3,
-                    "params": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
-                }
+            model_params={},
+            model_search={
+                "enabled": True,
+                "method": "grid",
+                "cv": 3,
+                "space": {"alpha": [0.001, 0.01], "fit_intercept": [True]},
             },
-            tuning_params={},
         )
         model = RidgeAlphaModel()
         model.fit(train, valid, context)
@@ -551,7 +545,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             label_column="y",
             artifact_dir=Path("tmp"),
             model_params={"n_estimators": 5, "min_samples_leaf": 1, "min_samples_split": 2, "random_state": 7},
-            tuning_params={},
+            model_search={},
         )
         train = pd.DataFrame(
             {
@@ -580,7 +574,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             label_column="y",
             artifact_dir=Path("tmp"),
             model_params={"n_estimators": 2, "max_depth": 1},
-            tuning_params={},
+            model_search={},
         )
         train = pd.DataFrame({"trade_date": [1, 1, 1], "ts_code": ["a", "b", "c"], "x": [1.0, 2.0, 3.0], "y": [3.0, 5.0, 7.0]})
         model.fit(train, pd.DataFrame(), context)
@@ -604,9 +598,8 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 "n_estimators": 2,
                 "max_depth": 1,
                 "tree_method": "hist",
-                "search": {"n_trials": 1, "valid_fraction": 0.25, "random_state": 7},
             },
-            tuning_params={},
+            model_search={"n_trials": 1, "valid_fraction": 0.25, "random_state": 7},
         )
         train = pd.DataFrame(
             {
@@ -641,9 +634,8 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 "num_leaves": 3,
                 "min_child_samples": 1,
                 "verbosity": -1,
-                "search": {"n_trials": 1, "valid_fraction": 0.25, "random_state": 7},
             },
-            tuning_params={},
+            model_search={"n_trials": 1, "valid_fraction": 0.25, "random_state": 7},
         )
         train = pd.DataFrame(
             {
@@ -675,7 +667,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 label_column="y",
                 artifact_dir=Path("tmp"),
                 model_params={"ic_root": str(ic_root), "ic_metric": "rank_ic"},
-                tuning_params={},
+                model_search={},
             )
             model = ICSignEqualWeightAlphaModel()
             model.fit(pd.DataFrame(), pd.DataFrame(), context)
@@ -713,7 +705,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 label_column="y",
                 artifact_dir=Path("tmp"),
                 model_params={"ic_root": str(ic_root), "ic_metric": "rank_ic"},
-                tuning_params={},
+                model_search={},
             )
             with self.assertRaisesRegex(ValueError, "no valid IC signs"):
                 ICSignEqualWeightAlphaModel().fit(pd.DataFrame(), pd.DataFrame(), context)
@@ -737,7 +729,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 "patience": 0,
                 "seed": 7,
             },
-            tuning_params={},
+            model_search={},
         )
         train = pd.DataFrame(
             {
@@ -791,7 +783,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 "patience": 0,
                 "seed": 7,
             },
-            tuning_params={},
+            model_search={},
         )
         for model_cls in [RNNAlphaModel, LSTMAlphaModel, GRUAlphaModel]:
             model = model_cls()
@@ -828,7 +820,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 "patience": 0,
                 "seed": 7,
             },
-            tuning_params={},
+            model_search={},
         )
         train = pd.DataFrame(
             {
@@ -903,16 +895,15 @@ artifact_dir = "data/model_workspace/r1/artifacts"
     def test_tuned_configs_expose_search_space(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs" / "examples"
         lasso = load_config(config_dir / "monthly_lasso_36.toml")
-        self.assertIn("alpha", lasso.model.params["search"]["params"])
-        self.assertIn("fit_intercept", lasso.model.params["search"]["params"])
+        self.assertIn("alpha", lasso.model.search["space"])
 
         xgb = load_config(config_dir / "monthly_xgb_optuna_36.toml")
-        self.assertIn("space", xgb.model.params["search"])
-        self.assertEqual(xgb.model.params["search"]["space"]["n_estimators"]["type"], "int")
-        self.assertTrue(xgb.model.params["search"]["space"]["learning_rate"]["log"])
+        self.assertIn("space", xgb.model.search)
+        self.assertEqual(xgb.model.search["space"]["n_estimators"]["type"], "int")
+        self.assertTrue(xgb.model.search["space"]["learning_rate"]["log"])
 
         lgbm = load_config(config_dir / "monthly_lgbm_optuna_36.toml")
-        self.assertIn("num_leaves", lgbm.model.params["search"]["space"])
+        self.assertIn("num_leaves", lgbm.model.search["space"])
 
     def test_optuna_space_supports_toml_distributions(self) -> None:
         class FakeTrial:

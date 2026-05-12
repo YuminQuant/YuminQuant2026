@@ -231,7 +231,11 @@ def _sample_count_windows(
         segment = [date for date in predict_dates if date > refit and (next_refit is None or date <= next_refit)]
         if not segment:
             continue
-        eligible = [date for date in train_pool if date <= refit] if valid_count > 0 else [date for date in train_pool if date < refit]
+        # The refit date anchors the prediction segment that starts after it.
+        # For forward-return labels, the refit-date sample itself would use
+        # returns inside the prediction segment, so train/valid samples must be
+        # strictly earlier than the refit anchor.
+        eligible = [date for date in train_pool if date < refit]
         if len(eligible) < count + valid_count:
             continue
         valid_dates = eligible[-valid_count:] if valid_count > 0 else []
@@ -354,7 +358,7 @@ def _context(config: MlAlphaConfig, window_id: str, feature_columns: list[str] |
         label_column=config.label.id,
         artifact_dir=Path(config.model.artifact_dir) / window_id,
         model_params=config.model.params,
-        tuning_params=config.tuning.params,
+        model_search=config.model.search,
     )
 
 

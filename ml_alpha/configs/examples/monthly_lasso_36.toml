@@ -49,20 +49,15 @@ class = "yq_ml_alpha.models.regularized_linear_model.LassoAlphaModel"
 artifact_dir = "data/model_workspace/monthly_lasso_36/artifacts"
 
 [model.params]
+fit_intercept = true
 
-[model.params.search]
+[model.search]
 enabled = true
 method = "random"
 cv = 3
 scoring = "neg_mean_squared_error"
 n_jobs = -1
 random_state = 42
-fit_intercept = true
 
-[model.params.search.params]
+[model.search.space]
 alpha = [0.0001, 0.001, 0.01, 0.1, 1, 10]
-selection = ["cyclic", "random"]
-
-[tuning]
-enabled = false
-method = "none"

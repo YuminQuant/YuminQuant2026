@@ -20,7 +20,7 @@ class LightGBMOptunaAlphaModel(AlphaModel):
         lgb = _lightgbm_module()
         optuna = _optuna_module()
         base_params = _base_params(context.model_params)
-        search = _search_params(context.model_params)
+        search = _search_params(context.model_search)
         x_train_all = _features(train_data, context.feature_columns)
         y_train_all = _label(train_data, context.label_column)
         x_fit, y_fit, x_valid, y_valid = _validation_split(
@@ -67,15 +67,6 @@ class LightGBMOptunaAlphaModel(AlphaModel):
         score = self.model.predict(_features(data, context.feature_columns))
         return pd.Series(score, index=data.index, dtype="float32")
 
-    def tune(self, data_factory, context: ModelContext) -> dict[str, Any]:
-        train_data, valid_data = data_factory()
-        self.fit(train_data, valid_data, context)
-        return {
-            "best_params": self.best_params_,
-            "best_value": self.best_value_,
-            "study_summary": self.study_summary_,
-        }
-
 
 def _features(frame: pd.DataFrame, columns: list[str]) -> np.ndarray:
     return (
@@ -101,7 +92,8 @@ def _base_params(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _search_params(raw: dict[str, Any]) -> dict[str, Any]:
-    search = dict(raw.get("search", {}))
+    raw = dict(raw)
+    search = dict(raw.get("search", raw))
     search.setdefault("n_trials", 50)
     search.setdefault("timeout", None)
     search.setdefault("valid_fraction", 0.2)

@@ -93,13 +93,7 @@ class ModelConfig:
     class_path: str
     artifact_dir: Path
     params: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class TuningConfig:
-    enabled: bool = False
-    method: str = "optuna"
-    params: dict[str, Any] = field(default_factory=dict)
+    search: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -116,7 +110,6 @@ class MlAlphaConfig:
     features: FeaturesConfig
     materialize: MaterializeConfig
     model: ModelConfig
-    tuning: TuningConfig
     data_root: Path = Path("data")
     output_root: Path = Path("data/models")
 
@@ -142,7 +135,10 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     features = raw.get("features", {})
     materialize = raw.get("materialize", {})
     model = raw.get("model", {})
-    tuning = raw.get("tuning", {})
+
+    model_params = dict(model.get("params", {}))
+    legacy_search = model_params.pop("search", {})
+    model_search = dict(model.get("search", legacy_search))
 
     return MlAlphaConfig(
         run_id=run_id,
@@ -183,12 +179,8 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             name=_required(model, "name", "model.name"),
             class_path=_required(model, "class", "model.class"),
             artifact_dir=_project_path(model.get("artifact_dir", data_root / "model_workspace" / run_id / "artifacts")),
-            params=dict(model.get("params", {})),
-        ),
-        tuning=TuningConfig(
-            enabled=bool(tuning.get("enabled", False)),
-            method=tuning.get("method", "optuna"),
-            params=_nested_params(tuning, {"enabled", "method"}),
+            params=model_params,
+            search=model_search,
         ),
         data_root=data_root,
         output_root=output_root,
@@ -239,12 +231,6 @@ def _parse_date_pair(value: Any, label: str, allow_empty: bool) -> OptionalDateR
     if start > end:
         raise ValueError(f"{label} start must be <= end")
     return start, end
-
-
-def _nested_params(section: dict[str, Any], excluded: set[str]) -> dict[str, Any]:
-    if isinstance(section.get("params"), dict):
-        return dict(section["params"])
-    return {key: value for key, value in section.items() if key not in excluded}
 
 
 def _feature_columns(value: Any) -> list[str] | str:

@@ -55,6 +55,3 @@ subsample = 0.8
 colsample_bytree = 0.8
 tree_method = "hist"
 
-[tuning]
-enabled = false
-method = "none"

@@ -111,6 +111,7 @@ predict_frequency = "daily"
 type = "rolling"              # static | expanding | rolling
 refit_frequency = "monthly_end"
 train_sample_count = 36
+validation_sample_count = 0
 
 [label]
 id = "future_vwap_return_20d"
@@ -223,7 +224,20 @@ Model-specific parameters go under `[model.params]` and are passed through as
 metrics, or search spaces.
 
 Lasso/Ridge/ElasticNet can tune themselves during each rolling window. The
-example configs enable `RandomizedSearchCV`:
+example configs enable `RandomizedSearchCV` and use a 36+1 monthly split:
+the previous 36 completed month-end samples are used for fitting, and the
+next month-end sample is used as the explicit validation set.
+
+```toml
+[train_scheme]
+type = "rolling"
+refit_frequency = "monthly_end"
+train_sample_count = 36
+validation_sample_count = 1
+```
+
+The explicit validation month is preferred for parameter selection. If it is
+empty after label filtering, the models fall back to their internal CV setting.
 
 ```toml
 [model.params.search]
@@ -244,6 +258,9 @@ alpha = [0.001, 0.01, 0.1]
 fit_intercept = [true, false]
 ```
 
+The built-in tuned configs expose their full default search grids in TOML, so
+you can edit ranges without touching model code.
+
 For RNN/LSTM/GRU configs, `sequence_length = 6` means the current factor-frame
 feature vector is padded if needed and reshaped into six pseudo time steps. This
 is a compatibility layer for factor combination, not a true six-date history
@@ -262,12 +279,25 @@ n_trials = 50
 valid_fraction = 0.2
 random_state = 42
 show_progress_bar = false
+
+[model.params.search.space.n_estimators]
+type = "int"
+low = 100
+high = 800
+step = 50
+
+[model.params.search.space.learning_rate]
+type = "float"
+low = 0.005
+high = 0.2
+log = true
 ```
 
-If `[dates].valid` is provided, the Optuna objective evaluates on that valid
-window. If `valid = []`, the model internally carves out `valid_fraction` of the
-current training window for tuning, then fits the final model on the full
-training window.
+For the tuned monthly examples, `validation_sample_count = 1` supplies the
+Optuna objective with the month immediately after the 36 training samples. If no
+valid rows survive label filtering, the model internally carves out
+`valid_fraction` of the current training window for tuning, then fits the final
+model on the full training window.
 
 ## Add A New Model
 

@@ -24,11 +24,16 @@ class _RegularizedLinearAlphaModel(AlphaModel):
         search_config = _search_config(context.model_params)
         x = _features(train_data, context.feature_columns)
         y = train_data[context.label_column].astype(float).to_numpy()
+        validation = _explicit_validation(valid_data, context)
         if bool(search_config.get("enabled", False)):
-            self.model = _fit_search(estimator_cls, params, search_config, x, y, self.estimator_name)
-            self.best_params_ = dict(getattr(self.model, "best_params_", {}))
-            self.cv_results_ = _compact_cv_results(getattr(self.model, "cv_results_", {}))
-            self.model = self.model.best_estimator_
+            search_model = _fit_search(estimator_cls, params, search_config, x, y, self.estimator_name, validation)
+            self.best_params_ = dict(getattr(search_model, "best_params_", {}))
+            self.cv_results_ = _compact_cv_results(getattr(search_model, "cv_results_", {}))
+            if hasattr(search_model, "best_estimator_"):
+                self.model = search_model.best_estimator_
+            else:
+                self.model = estimator_cls(**{**params, **self.best_params_})
+                self.model.fit(x, y)
         else:
             self.model = estimator_cls(**params)
             self.model.fit(x, y)
@@ -80,10 +85,10 @@ def _sklearn_linear_module():
 
 def _search_modules():
     try:
-        from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+        from sklearn.model_selection import GridSearchCV, PredefinedSplit, RandomizedSearchCV
     except ImportError as exc:  # pragma: no cover - depends on optional local package
         raise ImportError("regularized linear alpha model search requires installing scikit-learn") from exc
-    return GridSearchCV, RandomizedSearchCV
+    return GridSearchCV, PredefinedSplit, RandomizedSearchCV
 
 
 def _estimator_params(raw: dict[str, Any]) -> dict[str, Any]:
@@ -104,18 +109,44 @@ def _search_config(raw: dict[str, Any]) -> dict[str, Any]:
     return search
 
 
-def _fit_search(estimator_cls, params: dict[str, Any], search: dict[str, Any], x, y, estimator_name: str):
-    GridSearchCV, RandomizedSearchCV = _search_modules()
+def _fit_search(
+    estimator_cls,
+    params: dict[str, Any],
+    search: dict[str, Any],
+    x,
+    y,
+    estimator_name: str,
+    validation: tuple[np.ndarray, np.ndarray] | None = None,
+):
+    GridSearchCV, PredefinedSplit, RandomizedSearchCV = _search_modules()
     method = str(search.get("method", "random")).lower()
     param_space = _param_space(search, estimator_name)
     base = estimator_cls(**params)
+    fit_x = x
+    fit_y = y
+    cv = int(search["cv"])
+    refit = True
+    if validation is not None:
+        valid_x, valid_y = validation
+        fit_x = np.vstack([x, valid_x])
+        fit_y = np.concatenate([y, valid_y])
+        cv = PredefinedSplit(
+            np.concatenate(
+                [
+                    np.full(x.shape[0], -1, dtype="int32"),
+                    np.zeros(valid_x.shape[0], dtype="int32"),
+                ]
+            )
+        )
+        refit = False
     common = {
         "estimator": base,
         "scoring": search["scoring"],
-        "cv": int(search["cv"]),
+        "cv": cv,
         "n_jobs": int(search["n_jobs"]),
         "verbose": int(search["verbose"]),
         "error_score": search.get("error_score", np.nan),
+        "refit": refit,
     }
     if method == "grid":
         model = GridSearchCV(param_grid=param_space, **common)
@@ -129,8 +160,18 @@ def _fit_search(estimator_cls, params: dict[str, Any], search: dict[str, Any], x
         )
     else:
         raise ValueError(f"unsupported regularized linear search.method: {method}")
-    model.fit(x, y)
+    model.fit(fit_x, fit_y)
     return model
+
+
+def _explicit_validation(valid_data: pd.DataFrame, context: ModelContext) -> tuple[np.ndarray, np.ndarray] | None:
+    if valid_data.empty or context.label_column not in valid_data.columns:
+        return None
+    x_valid = _features(valid_data, context.feature_columns)
+    y_valid = valid_data[context.label_column].astype(float).to_numpy()
+    if x_valid.shape[0] == 0 or y_valid.shape[0] == 0:
+        return None
+    return x_valid, y_valid
 
 
 def _param_space(search: dict[str, Any], estimator_name: str) -> dict[str, list[Any]]:

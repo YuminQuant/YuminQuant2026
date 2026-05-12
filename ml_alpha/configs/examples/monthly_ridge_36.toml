@@ -16,6 +16,7 @@ predict_frequency = "daily"
 type = "rolling"
 refit_frequency = "monthly_end"
 train_sample_count = 36
+validation_sample_count = 1
 
 [label]
 id = "future_vwap_return_20d"
@@ -57,6 +58,13 @@ n_iter = 40
 scoring = "neg_mean_squared_error"
 n_jobs = -1
 random_state = 42
+
+[model.params.search.params]
+alpha = [0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0]
+fit_intercept = [true, false]
+solver = ["auto", "svd", "cholesky", "lsqr", "sag", "saga"]
+tol = [0.00001, 0.0001, 0.001]
+max_iter = [3000, 10000]
 
 [tuning]
 enabled = false

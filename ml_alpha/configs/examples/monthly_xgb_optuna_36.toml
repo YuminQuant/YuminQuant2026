@@ -16,6 +16,7 @@ predict_frequency = "daily"
 type = "rolling"
 refit_frequency = "monthly_end"
 train_sample_count = 36
+validation_sample_count = 1
 
 [label]
 id = "future_vwap_return_20d"
@@ -58,6 +59,57 @@ n_trials = 50
 valid_fraction = 0.2
 random_state = 42
 show_progress_bar = false
+
+[model.params.search.space.n_estimators]
+type = "int"
+low = 100
+high = 800
+step = 50
+
+[model.params.search.space.max_depth]
+type = "int"
+low = 2
+high = 8
+
+[model.params.search.space.learning_rate]
+type = "float"
+low = 0.005
+high = 0.2
+log = true
+
+[model.params.search.space.subsample]
+type = "float"
+low = 0.5
+high = 1.0
+
+[model.params.search.space.colsample_bytree]
+type = "float"
+low = 0.5
+high = 1.0
+
+[model.params.search.space.min_child_weight]
+type = "float"
+low = 0.01
+high = 100.0
+log = true
+
+[model.params.search.space.gamma]
+type = "float"
+low = 0.00000001
+high = 10.0
+log = true
+
+[model.params.search.space.reg_alpha]
+type = "float"
+low = 0.00000001
+high = 10.0
+log = true
+
+[model.params.search.space.reg_lambda]
+type = "float"
+low = 0.0001
+high = 100.0
+log = true
 
 [tuning]
 enabled = false

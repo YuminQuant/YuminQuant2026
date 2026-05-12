@@ -16,6 +16,7 @@ predict_frequency = "daily"
 type = "rolling"
 refit_frequency = "monthly_end"
 train_sample_count = 36
+validation_sample_count = 1
 
 [label]
 id = "future_vwap_return_20d"
@@ -53,10 +54,14 @@ artifact_dir = "data/model_workspace/monthly_lasso_36/artifacts"
 enabled = true
 method = "random"
 cv = 3
-n_iter = 40
 scoring = "neg_mean_squared_error"
 n_jobs = -1
 random_state = 42
+fit_intercept = true
+
+[model.params.search.params]
+alpha = [0.0001, 0.001, 0.01, 0.1, 1, 10]
+selection = ["cyclic", "random"]
 
 [tuning]
 enabled = false

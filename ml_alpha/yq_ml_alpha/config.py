@@ -45,6 +45,7 @@ class TrainSchemeConfig:
     rolling_train_days: int = 756
     valid_days: int = 252
     train_sample_count: int = 0
+    validation_sample_count: int = 0
 
 
 @dataclass(frozen=True)

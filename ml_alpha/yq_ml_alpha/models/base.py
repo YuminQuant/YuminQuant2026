@@ -17,7 +17,7 @@ class ModelContext:
     label_column: str
     artifact_dir: Path
     model_params: dict[str, Any]
-    tuning_params: dict[str, Any]
+    model_search: dict[str, Any]
 
 
 class AlphaModel:
@@ -37,10 +37,6 @@ class AlphaModel:
     def load(cls, path: str | Path) -> "AlphaModel":
         with Path(path).open("rb") as file:
             return pickle.load(file)
-
-    def tune(self, data_factory, context: ModelContext) -> dict[str, Any]:
-        raise NotImplementedError("tuning is implemented by each concrete model")
-
 
 class MeanFeatureAlphaModel(AlphaModel):
     """Dependency-free smoke-test model that scores by row-wise feature mean."""

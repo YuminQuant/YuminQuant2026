@@ -19,7 +19,7 @@ dependencies = [
 ml = ["scikit-learn", "lightgbm"]
 xgb = ["xgboost"]
 torch = ["torch"]
-tune = ["optuna"]
+optuna = ["optuna"]
 
 [project.scripts]
 yq-ml-alpha = "yq_ml_alpha.cli:main"

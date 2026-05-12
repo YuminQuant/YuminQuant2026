@@ -49,6 +49,3 @@ artifact_dir = "data/model_workspace/monthly_ic_sign_equal_weight/artifacts"
 ic_root = "data/backtest/stock/daily/ic"
 ic_metric = "rank_ic"
 
-[tuning]
-enabled = false
-method = "none"

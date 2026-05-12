@@ -49,7 +49,3 @@ artifact_dir = "data/model_workspace/lgbm_combo_v1/artifacts"
 objective = "regression"
 learning_rate = 0.03
 num_leaves = 63
-
-[tuning]
-enabled = false
-method = "optuna"

@@ -43,6 +43,3 @@ artifact_dir = "data/model_workspace/mean_combo_smoke/artifacts"
 
 [model.params]
 
-[tuning]
-enabled = false
-method = "none"

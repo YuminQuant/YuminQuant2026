@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ class ModelContext:
     artifact_dir: Path
     model_params: dict[str, Any]
     model_search: dict[str, Any]
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class AlphaModel:
@@ -32,6 +33,9 @@ class AlphaModel:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("wb") as file:
             pickle.dump(self, file)
+
+    def write_diagnostics(self, context: ModelContext) -> list[Path]:
+        return []
 
     @classmethod
     def load(cls, path: str | Path) -> "AlphaModel":

@@ -11,20 +11,20 @@ installing it:
 
 ```powershell
 cd ml_alpha
-python -m yq_ml_alpha run --config configs\examples\monthly_lr_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_xgb_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_xgb_optuna_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_lgbm_optuna_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_mlp_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_ic_sign_equal_weight.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_lasso_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_ridge_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_elasticnet_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_rf_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_lstm_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_gru_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_rnn_36.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_cnn_36.toml
+python -m yq_ml_alpha run --config configs\monthly_lr_36.toml
+python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml
+python -m yq_ml_alpha run --config configs\monthly_xgb_optuna_36.toml
+python -m yq_ml_alpha run --config configs\monthly_lgbm_optuna_36.toml
+python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
+python -m yq_ml_alpha run --config configs\monthly_ic_sign_equal_weight.toml
+python -m yq_ml_alpha run --config configs\monthly_lasso_36.toml
+python -m yq_ml_alpha run --config configs\monthly_ridge_36.toml
+python -m yq_ml_alpha run --config configs\monthly_elasticnet_36.toml
+python -m yq_ml_alpha run --config configs\monthly_rf_36.toml
+python -m yq_ml_alpha run --config configs\monthly_lstm_36.toml
+python -m yq_ml_alpha run --config configs\monthly_gru_36.toml
+python -m yq_ml_alpha run --config configs\monthly_rnn_36.toml
+python -m yq_ml_alpha run --config configs\monthly_cnn_36.toml
 ```
 
 If you want to use the local Python 3.8.3 GPU environment from the repository
@@ -33,7 +33,7 @@ root, call the interpreter explicitly and set `PYTHONPATH` for that shell:
 ```powershell
 cd D:\yuminwu_workspace\Internship\YuminQuant
 $env:PYTHONPATH = "D:\yuminwu_workspace\Internship\YuminQuant\ml_alpha"
-D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config ml_alpha\configs\examples\monthly_mlp_36.toml
+D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config ml_alpha\configs\monthly_mlp_36.toml
 ```
 
 The outputs are standard daily alpha parquet files:
@@ -51,16 +51,47 @@ cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --as
 ## CLI Entry Points
 
 ```powershell
-python -m yq_ml_alpha run --config configs\examples\monthly_mlp_36.toml
-python -m yq_ml_alpha train --config configs\examples\monthly_mlp_36.toml
-python -m yq_ml_alpha predict --config configs\examples\monthly_mlp_36.toml
-python -m yq_ml_alpha materialize --config configs\examples\monthly_mlp_36.toml
+python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
+python -m yq_ml_alpha train --config configs\monthly_mlp_36.toml
+python -m yq_ml_alpha predict --config configs\monthly_mlp_36.toml
+python -m yq_ml_alpha materialize --config configs\monthly_mlp_36.toml
 ```
 
 `run` trains, predicts, and writes alpha files. `train` only fits and saves
 artifacts. `predict` loads saved artifacts and writes predictions. `materialize`
 builds sample data for inspection. Hyperparameter search is handled inside each
 model during `train` or `run`.
+
+## Diagnostics
+
+Diagnostics are off unless the TOML explicitly enables them. MLP diagnostics are
+currently supported:
+
+```toml
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+```
+
+When enabled, each training window writes:
+
+```text
+data/model_workspace/{run_id}/artifacts/{window_id}/loss_history.parquet
+data/model_workspace/{run_id}/artifacts/{window_id}/model_info.json
+```
+
+Aggregate files are written to:
+
+```text
+data/model_workspace/{run_id}/diagnostics/loss_history.parquet
+data/model_workspace/{run_id}/diagnostics/window_summary.parquet
+```
+
+`print_epoch = true` prints a compact epoch line during MLP training. Other
+models ignore these switches unless they implement diagnostics themselves.
 
 ## Workflow And Config
 
@@ -202,20 +233,20 @@ base.py             AlphaModel and ModelContext interfaces.
 Built-in configs:
 
 ```text
-configs/examples/monthly_lr_36.toml
-configs/examples/monthly_lasso_36.toml
-configs/examples/monthly_ridge_36.toml
-configs/examples/monthly_elasticnet_36.toml
-configs/examples/monthly_rf_36.toml
-configs/examples/monthly_xgb_36.toml
-configs/examples/monthly_xgb_optuna_36.toml
-configs/examples/monthly_lgbm_optuna_36.toml
-configs/examples/monthly_mlp_36.toml
-configs/examples/monthly_rnn_36.toml
-configs/examples/monthly_lstm_36.toml
-configs/examples/monthly_gru_36.toml
-configs/examples/monthly_cnn_36.toml
-configs/examples/monthly_ic_sign_equal_weight.toml
+configs/monthly_lr_36.toml
+configs/monthly_lasso_36.toml
+configs/monthly_ridge_36.toml
+configs/monthly_elasticnet_36.toml
+configs/monthly_rf_36.toml
+configs/monthly_xgb_36.toml
+configs/monthly_xgb_optuna_36.toml
+configs/monthly_lgbm_optuna_36.toml
+configs/monthly_mlp_36.toml
+configs/monthly_rnn_36.toml
+configs/monthly_lstm_36.toml
+configs/monthly_gru_36.toml
+configs/monthly_cnn_36.toml
+configs/monthly_ic_sign_equal_weight.toml
 ```
 
 Model-specific fit parameters go under `[model.params]` and are passed through

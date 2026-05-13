@@ -49,7 +49,7 @@ class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
 artifact_dir = "data/model_workspace/monthly_mlp_36/artifacts"
 
 [model.params]
-hidden_layers = [256, 128]
+hidden_layers = [256, 128, 64]
 dropout = 0.10
 epochs = 50
 batch_size = 4500

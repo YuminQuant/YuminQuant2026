@@ -67,6 +67,14 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
             f64_col(rows.iter().map(|row| Some(row.net_market_value))),
         ),
         (
+            "margin_required".to_string(),
+            f64_col(rows.iter().map(|row| Some(row.margin_required))),
+        ),
+        (
+            "available_margin".to_string(),
+            f64_col(rows.iter().map(|row| Some(row.available_margin))),
+        ),
+        (
             "position_count".to_string(),
             i64_col(rows.iter().map(|row| Some(row.position_count))),
         ),
@@ -81,6 +89,17 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
         (
             "quantities_json".to_string(),
             utf8(rows.iter().map(|row| Some(row.quantities_json.clone()))),
+        ),
+        (
+            "signed_quantities_json".to_string(),
+            utf8(
+                rows.iter()
+                    .map(|row| Some(row.signed_quantities_json.clone())),
+            ),
+        ),
+        (
+            "directions_json".to_string(),
+            utf8(rows.iter().map(|row| Some(row.directions_json.clone()))),
         ),
         (
             "avg_costs_json".to_string(),
@@ -100,6 +119,18 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
                 rows.iter()
                     .map(|row| Some(row.unrealized_pnls_json.clone())),
             ),
+        ),
+        (
+            "multipliers_json".to_string(),
+            utf8(rows.iter().map(|row| Some(row.multipliers_json.clone()))),
+        ),
+        (
+            "margin_ratios_json".to_string(),
+            utf8(rows.iter().map(|row| Some(row.margin_ratios_json.clone()))),
+        ),
+        (
+            "margin_values_json".to_string(),
+            utf8(rows.iter().map(|row| Some(row.margin_values_json.clone()))),
         ),
         (
             "trade_symbols_json".to_string(),

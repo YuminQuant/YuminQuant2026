@@ -14,6 +14,8 @@ pub struct Bar {
     pub high: f64,
     pub low: f64,
     pub close: f64,
+    pub settle: Option<f64>,
+    pub multiplier: f64,
     pub volume: Option<f64>,
     pub amount: Option<f64>,
     pub is_limit_up: bool,
@@ -68,6 +70,15 @@ impl MarketSnapshot {
     pub fn close_price(&self, symbol: &str) -> Option<f64> {
         clean_positive(self.bars.get(symbol)?.close)
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct FutureContractMeta {
+    pub ts_code: String,
+    pub fut_code: Option<String>,
+    pub multiplier: f64,
+    pub list_date: Option<i32>,
+    pub delist_date: Option<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +143,8 @@ pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<Ma
                 high,
                 low,
                 close,
+                settle: None,
+                multiplier: 1.0,
                 volume: finite(volume[idx]),
                 amount: finite(amount[idx]),
                 is_limit_up,
@@ -208,6 +221,8 @@ pub fn load_stock_minute_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<M
                 high,
                 low,
                 close,
+                settle: None,
+                multiplier: 1.0,
                 volume: finite(volume[idx]),
                 amount: finite(amount[idx]),
                 is_limit_up,
@@ -231,6 +246,242 @@ pub fn load_stock_minute_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<M
     Ok(frames)
 }
 
+pub fn load_future_daily_frames(
+    data_root: &Path,
+    dates: &[i32],
+    meta: &BTreeMap<String, FutureContractMeta>,
+) -> Result<Vec<MarketFrame>> {
+    let mut frames = Vec::new();
+    for trade_date in dates {
+        let path = future_daily_date_path(data_root, *trade_date);
+        let table = if path.exists() {
+            read_future_daily_table(&path)?
+        } else {
+            let annual = future_daily_annual_path(data_root, *trade_date);
+            if !annual.exists() {
+                continue;
+            }
+            read_future_daily_table(&annual)?.filter_i32_range(
+                "trade_date",
+                *trade_date,
+                *trade_date,
+            )?
+        };
+        let trade_dates = table.required_i32_date_cast("trade_date")?;
+        let codes = table.required_utf8("ts_code")?;
+        let open = table.required_f64_cast("open")?;
+        let high = table.required_f64_cast("high")?;
+        let low = table.required_f64_cast("low")?;
+        let close = table.required_f64_cast("close")?;
+        let settle = table.required_f64_cast("settle")?;
+        let volume = table.required_f64_cast("vol")?;
+        let amount = table.required_f64_cast("amount")?;
+        let mut bars = Vec::new();
+        for idx in 0..table.len {
+            if trade_dates[idx] != Some(*trade_date) {
+                continue;
+            }
+            let Some(symbol) = codes[idx].clone() else {
+                continue;
+            };
+            let Some(open) = clean_positive_opt(open[idx]) else {
+                continue;
+            };
+            let Some(high) = clean_positive_opt(high[idx]) else {
+                continue;
+            };
+            let Some(low) = clean_positive_opt(low[idx]) else {
+                continue;
+            };
+            let Some(close) = clean_positive_opt(close[idx]) else {
+                continue;
+            };
+            let multiplier = meta
+                .get(&symbol)
+                .map(|item| item.multiplier)
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or(1.0);
+            bars.push(Bar {
+                symbol,
+                trade_date: *trade_date,
+                trade_time: "daily".to_string(),
+                open,
+                high,
+                low,
+                close,
+                settle: clean_positive_opt(settle[idx]),
+                multiplier,
+                volume: finite(volume[idx]),
+                amount: finite(amount[idx]),
+                is_limit_up: false,
+                is_limit_down: false,
+            });
+        }
+        frames.push(MarketFrame {
+            event: BarEvent {
+                trade_date: *trade_date,
+                trade_time: "daily".to_string(),
+                bar_frequency: BarFrequency::Daily,
+                is_session_first: true,
+                is_session_end: true,
+            },
+            bars,
+        });
+    }
+    Ok(frames)
+}
+
+pub fn load_future_minute_frames(
+    data_root: &Path,
+    dates: &[i32],
+    meta: &BTreeMap<String, FutureContractMeta>,
+) -> Result<Vec<MarketFrame>> {
+    let mut frames = Vec::new();
+    for trade_date in dates {
+        let path = future_minute_path(data_root, *trade_date);
+        if !path.exists() {
+            continue;
+        }
+        let columns = vec![
+            "trade_date".to_string(),
+            "ts_code".to_string(),
+            "trade_time".to_string(),
+            "open".to_string(),
+            "high".to_string(),
+            "low".to_string(),
+            "close".to_string(),
+            "vol".to_string(),
+            "amount".to_string(),
+        ];
+        let table = read_parquet(&path, Some(&columns))?;
+        let trade_dates = table.required_i32_date_cast("trade_date")?;
+        let codes = table.required_utf8("ts_code")?;
+        let times = table.required_utf8("trade_time")?;
+        let open = table.required_f64_cast("open")?;
+        let high = table.required_f64_cast("high")?;
+        let low = table.required_f64_cast("low")?;
+        let close = table.required_f64_cast("close")?;
+        let volume = table.required_f64_cast("vol")?;
+        let amount = table.required_f64_cast("amount")?;
+        let mut grouped = BTreeMap::<String, Vec<Bar>>::new();
+        for idx in 0..table.len {
+            if trade_dates[idx] != Some(*trade_date) {
+                continue;
+            }
+            let Some(symbol) = codes[idx].clone() else {
+                continue;
+            };
+            let Some(trade_time) = times[idx].clone() else {
+                continue;
+            };
+            let Some(open) = clean_positive_opt(open[idx]) else {
+                continue;
+            };
+            let Some(high) = clean_positive_opt(high[idx]) else {
+                continue;
+            };
+            let Some(low) = clean_positive_opt(low[idx]) else {
+                continue;
+            };
+            let Some(close) = clean_positive_opt(close[idx]) else {
+                continue;
+            };
+            let multiplier = meta
+                .get(&symbol)
+                .map(|item| item.multiplier)
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or(1.0);
+            grouped.entry(trade_time.clone()).or_default().push(Bar {
+                symbol,
+                trade_date: *trade_date,
+                trade_time,
+                open,
+                high,
+                low,
+                close,
+                settle: None,
+                multiplier,
+                volume: finite(volume[idx]),
+                amount: finite(amount[idx]),
+                is_limit_up: false,
+                is_limit_down: false,
+            });
+        }
+        let total = grouped.len();
+        for (idx, (trade_time, bars)) in grouped.into_iter().enumerate() {
+            frames.push(MarketFrame {
+                event: BarEvent {
+                    trade_date: *trade_date,
+                    trade_time,
+                    bar_frequency: BarFrequency::Minute,
+                    is_session_first: idx == 0,
+                    is_session_end: idx + 1 == total,
+                },
+                bars,
+            });
+        }
+    }
+    Ok(frames)
+}
+
+pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureContractMeta>> {
+    let path = data_root
+        .join("future_data")
+        .join("basic")
+        .join("fut_basic.parquet");
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let columns = vec![
+        "ts_code".to_string(),
+        "fut_code".to_string(),
+        "multiplier".to_string(),
+        "list_date".to_string(),
+        "delist_date".to_string(),
+    ];
+    let table = read_parquet(&path, Some(&columns))?;
+    let codes = table.required_utf8("ts_code")?;
+    let fut_codes = table.required_utf8("fut_code")?;
+    let multiplier = table.required_f64_cast("multiplier")?;
+    let list_date = table.required_i32_date_cast("list_date")?;
+    let delist_date = table.required_i32_date_cast("delist_date")?;
+    let mut out = BTreeMap::new();
+    for idx in 0..table.len {
+        let Some(ts_code) = codes[idx].clone() else {
+            continue;
+        };
+        let multiplier = multiplier[idx]
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(1.0);
+        out.insert(
+            ts_code.clone(),
+            FutureContractMeta {
+                ts_code,
+                fut_code: fut_codes[idx].clone(),
+                multiplier,
+                list_date: list_date[idx],
+                delist_date: delist_date[idx],
+            },
+        );
+    }
+    Ok(out)
+}
+
+fn read_future_daily_table(path: &Path) -> Result<crate::data::Table> {
+    let columns = vec![
+        "trade_date".to_string(),
+        "ts_code".to_string(),
+        "open".to_string(),
+        "high".to_string(),
+        "low".to_string(),
+        "close".to_string(),
+        "settle".to_string(),
+        "vol".to_string(),
+        "amount".to_string(),
+    ];
+    read_parquet(path, Some(&columns))
+}
+
 fn daily_pv_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
     data_root
         .join("stock_data")
@@ -243,6 +494,29 @@ fn daily_pv_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
 fn minute_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
     data_root
         .join("stock_data")
+        .join("minute")
+        .join((trade_date / 10_000).to_string())
+        .join(format!("{trade_date}.parquet"))
+}
+
+fn future_daily_date_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
+    data_root
+        .join("future_data")
+        .join("daily")
+        .join((trade_date / 10_000).to_string())
+        .join(format!("{trade_date}.parquet"))
+}
+
+fn future_daily_annual_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
+    data_root
+        .join("future_data")
+        .join("daily")
+        .join(format!("{}.parquet", trade_date / 10_000))
+}
+
+fn future_minute_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
+    data_root
+        .join("future_data")
         .join("minute")
         .join((trade_date / 10_000).to_string())
         .join(format!("{trade_date}.parquet"))

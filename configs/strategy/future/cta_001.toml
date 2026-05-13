@@ -1,0 +1,31 @@
+asset_class = "future"
+strategy_id = "cta_001"
+strategy_class = "future::cta_001"
+
+start_date = 20260401
+end_date = 20260424
+initial_cash = 1000000.0
+
+[clock]
+bar_frequency = "daily"
+
+[execution]
+fill_price = "next_open"
+commission_bps = 1.0
+stamp_tax_bps = 0.0
+slippage_bps = 1.0
+lot_size = 1
+
+[future]
+default_margin_ratio = 0.12
+mark_price = "close"
+
+[future.margin_by_product]
+IF = 0.12
+IC = 0.12
+IM = 0.12
+
+[strategy]
+symbol = "IF2605.CFX"
+target_quantity = 1
+rebalance_days = 1

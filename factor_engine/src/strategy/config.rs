@@ -67,6 +67,39 @@ impl FillPrice {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FutureMarkPrice {
+    Close,
+    Settle,
+}
+
+impl FutureMarkPrice {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "close" => Some(Self::Close),
+            "settle" => Some(Self::Settle),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FutureConfig {
+    pub default_margin_ratio: f64,
+    pub mark_price: FutureMarkPrice,
+    pub margin_by_product: BTreeMap<String, f64>,
+}
+
+impl Default for FutureConfig {
+    fn default() -> Self {
+        Self {
+            default_margin_ratio: 0.12,
+            mark_price: FutureMarkPrice::Close,
+            margin_by_product: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StrategyRunConfig {
     pub asset_class: StrategyAssetClass,
@@ -84,6 +117,7 @@ pub struct StrategyRunConfig {
     pub data_root: PathBuf,
     pub model_root: PathBuf,
     pub factor_root: PathBuf,
+    pub future: FutureConfig,
     pub strategy_params: BTreeMap<String, String>,
 }
 
@@ -122,6 +156,26 @@ impl StrategyRunConfig {
             .string("paths", "model_root")
             .map(PathBuf::from)
             .unwrap_or_else(|| data_root.join("models"));
+        let mut future = FutureConfig::default();
+        future.default_margin_ratio = doc
+            .f64("future", "default_margin_ratio")
+            .unwrap_or(future.default_margin_ratio)
+            .max(0.0);
+        future.mark_price = doc
+            .string("future", "mark_price")
+            .and_then(|value| FutureMarkPrice::parse(&value))
+            .unwrap_or(future.mark_price);
+        future.margin_by_product = doc
+            .section_values("future.margin_by_product")
+            .into_iter()
+            .filter_map(|(product, value)| {
+                value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|ratio| ratio.is_finite() && *ratio >= 0.0)
+                    .map(|ratio| (product.to_ascii_uppercase(), ratio))
+            })
+            .collect();
 
         Ok(Self {
             asset_class,
@@ -139,6 +193,7 @@ impl StrategyRunConfig {
             data_root,
             model_root,
             factor_root,
+            future,
             strategy_params: doc.section_values("strategy"),
         })
     }
@@ -148,6 +203,29 @@ impl StrategyRunConfig {
             .join("strategy")
             .join(self.asset_class.as_str())
             .join(&self.strategy_id)
+    }
+
+    pub fn future_margin_ratio(&self, symbol: &str) -> f64 {
+        let product = future_product_from_symbol(symbol);
+        self.future
+            .margin_by_product
+            .get(&product)
+            .copied()
+            .unwrap_or(self.future.default_margin_ratio)
+            .max(0.0)
+    }
+}
+
+pub fn future_product_from_symbol(symbol: &str) -> String {
+    let head = symbol.split('.').next().unwrap_or(symbol);
+    let product = head
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphabetic())
+        .collect::<String>();
+    if product.is_empty() {
+        head.to_ascii_uppercase()
+    } else {
+        product.to_ascii_uppercase()
     }
 }
 
@@ -218,6 +296,8 @@ mod tests {
             start_date = 20200101
             [clock]
             bar_frequency = "daily"
+            [future.margin_by_product]
+            IF = 0.12
             "#,
         );
         assert_eq!(doc.string("", "strategy_id").as_deref(), Some("s1"));
@@ -226,6 +306,12 @@ mod tests {
             doc.string("clock", "bar_frequency")
                 .and_then(|value| BarFrequency::parse(&value)),
             Some(BarFrequency::Daily)
+        );
+        assert_eq!(
+            doc.section_values("future.margin_by_product")
+                .get("IF")
+                .map(String::as_str),
+            Some("0.12")
         );
     }
 }

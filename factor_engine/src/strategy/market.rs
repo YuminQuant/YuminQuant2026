@@ -1,0 +1,299 @@
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use crate::data::parquet_io::read_parquet;
+use crate::error::Result;
+use crate::strategy::config::BarFrequency;
+
+#[derive(Clone, Debug)]
+pub struct Bar {
+    pub symbol: String,
+    pub trade_date: i32,
+    pub trade_time: String,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: Option<f64>,
+    pub amount: Option<f64>,
+    pub is_limit_up: bool,
+    pub is_limit_down: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct BarEvent {
+    pub trade_date: i32,
+    pub trade_time: String,
+    pub bar_frequency: BarFrequency,
+    pub is_session_first: bool,
+    pub is_session_end: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionOpenEvent {
+    pub trade_date: i32,
+    pub trade_time: String,
+    pub bar_frequency: BarFrequency,
+}
+
+#[derive(Clone, Debug)]
+pub struct MarketSnapshot {
+    pub event: BarEvent,
+    bars: BTreeMap<String, Bar>,
+}
+
+impl MarketSnapshot {
+    pub fn new(event: BarEvent, bars: Vec<Bar>) -> Self {
+        Self {
+            event,
+            bars: bars
+                .into_iter()
+                .map(|bar| (bar.symbol.clone(), bar))
+                .collect(),
+        }
+    }
+
+    pub fn bar(&self, symbol: &str) -> Option<&Bar> {
+        self.bars.get(symbol)
+    }
+
+    pub fn symbols(&self) -> impl Iterator<Item = &String> {
+        self.bars.keys()
+    }
+
+    pub fn open_price(&self, symbol: &str) -> Option<f64> {
+        clean_positive(self.bars.get(symbol)?.open)
+    }
+
+    pub fn close_price(&self, symbol: &str) -> Option<f64> {
+        clean_positive(self.bars.get(symbol)?.close)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MarketFrame {
+    pub event: BarEvent,
+    pub bars: Vec<Bar>,
+}
+
+pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<MarketFrame>> {
+    let mut frames = Vec::new();
+    for trade_date in dates {
+        let path = daily_pv_path(data_root, *trade_date);
+        if !path.exists() {
+            continue;
+        }
+        let columns = vec![
+            "trade_date".to_string(),
+            "ts_code".to_string(),
+            "open".to_string(),
+            "high".to_string(),
+            "low".to_string(),
+            "close".to_string(),
+            "vol".to_string(),
+            "amount".to_string(),
+        ];
+        let table = read_parquet(&path, Some(&columns))?;
+        let trade_dates = table.required_i32_date_cast("trade_date")?;
+        let codes = table.required_utf8("ts_code")?;
+        let open = table.required_f64_cast("open")?;
+        let high = table.required_f64_cast("high")?;
+        let low = table.required_f64_cast("low")?;
+        let close = table.required_f64_cast("close")?;
+        let volume = table.required_f64_cast("vol")?;
+        let amount = table.required_f64_cast("amount")?;
+        let limits = load_trade_filter(data_root, *trade_date).unwrap_or_default();
+        let mut bars = Vec::new();
+        for idx in 0..table.len {
+            if trade_dates[idx] != Some(*trade_date) {
+                continue;
+            }
+            let Some(symbol) = codes[idx].clone() else {
+                continue;
+            };
+            let Some(open) = clean_positive_opt(open[idx]) else {
+                continue;
+            };
+            let Some(high) = clean_positive_opt(high[idx]) else {
+                continue;
+            };
+            let Some(low) = clean_positive_opt(low[idx]) else {
+                continue;
+            };
+            let Some(close) = clean_positive_opt(close[idx]) else {
+                continue;
+            };
+            let (is_limit_up, is_limit_down) = limits.get(&symbol).copied().unwrap_or_default();
+            bars.push(Bar {
+                symbol,
+                trade_date: *trade_date,
+                trade_time: "daily".to_string(),
+                open,
+                high,
+                low,
+                close,
+                volume: finite(volume[idx]),
+                amount: finite(amount[idx]),
+                is_limit_up,
+                is_limit_down,
+            });
+        }
+        frames.push(MarketFrame {
+            event: BarEvent {
+                trade_date: *trade_date,
+                trade_time: "daily".to_string(),
+                bar_frequency: BarFrequency::Daily,
+                is_session_first: true,
+                is_session_end: true,
+            },
+            bars,
+        });
+    }
+    Ok(frames)
+}
+
+pub fn load_stock_minute_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<MarketFrame>> {
+    let mut frames = Vec::new();
+    for trade_date in dates {
+        let path = minute_path(data_root, *trade_date);
+        if !path.exists() {
+            continue;
+        }
+        let columns = vec![
+            "ts_code".to_string(),
+            "trade_time".to_string(),
+            "open".to_string(),
+            "high".to_string(),
+            "low".to_string(),
+            "close".to_string(),
+            "vol".to_string(),
+            "amount".to_string(),
+        ];
+        let table = read_parquet(&path, Some(&columns))?;
+        let codes = table.required_utf8("ts_code")?;
+        let times = table.required_utf8("trade_time")?;
+        let open = table.required_f64_cast("open")?;
+        let high = table.required_f64_cast("high")?;
+        let low = table.required_f64_cast("low")?;
+        let close = table.required_f64_cast("close")?;
+        let volume = table.required_f64_cast("vol")?;
+        let amount = table.required_f64_cast("amount")?;
+        let limits = load_trade_filter(data_root, *trade_date).unwrap_or_default();
+        let mut grouped = BTreeMap::<String, Vec<Bar>>::new();
+        for idx in 0..table.len {
+            let Some(symbol) = codes[idx].clone() else {
+                continue;
+            };
+            let Some(trade_time) = times[idx].clone() else {
+                continue;
+            };
+            let Some(open) = clean_positive_opt(open[idx]) else {
+                continue;
+            };
+            let Some(high) = clean_positive_opt(high[idx]) else {
+                continue;
+            };
+            let Some(low) = clean_positive_opt(low[idx]) else {
+                continue;
+            };
+            let Some(close) = clean_positive_opt(close[idx]) else {
+                continue;
+            };
+            let (is_limit_up, is_limit_down) = limits.get(&symbol).copied().unwrap_or_default();
+            grouped.entry(trade_time.clone()).or_default().push(Bar {
+                symbol,
+                trade_date: *trade_date,
+                trade_time,
+                open,
+                high,
+                low,
+                close,
+                volume: finite(volume[idx]),
+                amount: finite(amount[idx]),
+                is_limit_up,
+                is_limit_down,
+            });
+        }
+        let total = grouped.len();
+        for (idx, (trade_time, bars)) in grouped.into_iter().enumerate() {
+            frames.push(MarketFrame {
+                event: BarEvent {
+                    trade_date: *trade_date,
+                    trade_time,
+                    bar_frequency: BarFrequency::Minute,
+                    is_session_first: idx == 0,
+                    is_session_end: idx + 1 == total,
+                },
+                bars,
+            });
+        }
+    }
+    Ok(frames)
+}
+
+fn daily_pv_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
+    data_root
+        .join("stock_data")
+        .join("daily")
+        .join("pv")
+        .join((trade_date / 10_000).to_string())
+        .join(format!("{trade_date}.parquet"))
+}
+
+fn minute_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
+    data_root
+        .join("stock_data")
+        .join("minute")
+        .join((trade_date / 10_000).to_string())
+        .join(format!("{trade_date}.parquet"))
+}
+
+fn load_trade_filter(data_root: &Path, trade_date: i32) -> Result<BTreeMap<String, (bool, bool)>> {
+    let path = data_root
+        .join("stock_data")
+        .join("daily")
+        .join("trade_filter")
+        .join((trade_date / 10_000).to_string())
+        .join(format!("{trade_date}.parquet"));
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let columns = vec![
+        "trade_date".to_string(),
+        "ts_code".to_string(),
+        "is_limit_up".to_string(),
+        "is_limit_down".to_string(),
+    ];
+    let table = read_parquet(&path, Some(&columns))?;
+    let dates = table.required_i32_date_cast("trade_date")?;
+    let codes = table.required_utf8("ts_code")?;
+    let up = match table.columns.get("is_limit_up") {
+        Some(crate::data::ColumnData::Bool(values)) => values.clone(),
+        _ => vec![None; table.len],
+    };
+    let down = match table.columns.get("is_limit_down") {
+        Some(crate::data::ColumnData::Bool(values)) => values.clone(),
+        _ => vec![None; table.len],
+    };
+    let mut out = BTreeMap::new();
+    for idx in 0..table.len {
+        if dates[idx] == Some(trade_date) {
+            if let Some(code) = codes[idx].clone() {
+                out.insert(code, (up[idx].unwrap_or(false), down[idx].unwrap_or(false)));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn clean_positive(value: f64) -> Option<f64> {
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
+fn clean_positive_opt(value: Option<f64>) -> Option<f64> {
+    clean_positive(value?)
+}
+
+fn finite(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite())
+}

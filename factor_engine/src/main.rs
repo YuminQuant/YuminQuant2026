@@ -12,9 +12,10 @@ use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
 use yq_factor_engine::core::{AssetClass, Frequency};
 use yq_factor_engine::engine::{DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE};
+use yq_factor_engine::strategy::request::StrategyRunRequest;
 use yq_factor_engine::{
     BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest, Engine, LabelEngine,
-    LabelRunRequest, Result, RunRequest,
+    LabelRunRequest, Result, RunRequest, StrategyEngine, StrategyRunReport,
 };
 
 const DEFAULT_LABEL_BATCH_SIZE: usize = 5;
@@ -225,6 +226,12 @@ fn run_cli() -> Result<()> {
             let report = engine.run(&request)?;
             print_backtest_report(&report);
         }
+        "strategy-run" => {
+            let request = parse_strategy_run_request(&args[1..])?;
+            let engine = StrategyEngine::from_request(&request)?;
+            let report = engine.run(&request)?;
+            print_strategy_report(&report);
+        }
         command => {
             return Err(yq_factor_engine::error::err(format!(
                 "unknown command: {command}"
@@ -232,6 +239,18 @@ fn run_cli() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_strategy_run_request(args: &[String]) -> Result<StrategyRunRequest> {
+    let flags = parse_flags(args)?;
+    let config_path = flags
+        .get("config")
+        .map(PathBuf::from)
+        .ok_or_else(|| yq_factor_engine::error::err("strategy-run requires --config path"))?;
+    Ok(StrategyRunRequest {
+        config_path,
+        project_config_path: flags.get("project-config").map(PathBuf::from),
+    })
 }
 
 fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunRequest> {
@@ -989,6 +1008,17 @@ fn print_backtest_report(report: &BacktestRunReport) {
     }
 }
 
+fn print_strategy_report(report: &StrategyRunReport) {
+    println!("strategy-run complete");
+    println!("strategy_id: {}", report.strategy_id);
+    println!("asset_class: {}", report.asset_class);
+    println!("trades: {}", report.trade_count);
+    println!("output files: {}", report.output_files.len());
+    for path in &report.output_files {
+        println!("  {}", path.display());
+    }
+}
+
 fn print_help() {
     println!("YuminQuant factor engine MVP");
     println!();
@@ -1016,6 +1046,7 @@ fn print_help() {
     println!(
         "  backtest --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD --factors factor_id[,factor_id...]"
     );
+    println!("  strategy-run --config configs/strategy/stock/strategy_001.toml");
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
@@ -1064,6 +1095,7 @@ fn print_help() {
     println!("  --refresh-minute-cache");
     println!("  --refresh-label-cache");
     println!("  --config D:/path/to/config.toml");
+    println!("  --project-config D:/path/to/config.toml (strategy-run project config)");
 }
 
 #[cfg(test)]

@@ -188,9 +188,9 @@ xgb_optuna_model.py
 lgbm_optuna_model.py
                     LightGBMOptunaAlphaModel, Optuna-tuned LightGBM regressor.
 mlp_model.py        MLPAlphaModel, PyTorch MLP for factor-frame alpha combination.
-sequence_model.py   RNNAlphaModel, LSTMAlphaModel, GRUAlphaModel. Current
-                    factor-frame inputs are reshaped by feature order; examples
-                    use sequence_length=6.
+sequence_model.py   RNNAlphaModel, LSTMAlphaModel, GRUAlphaModel. Factor-frame
+                    inputs use real historical sample dates; examples use the
+                    past 6 month-end cross-sections.
 cnn_model.py        CNNAlphaModel, 1D CNN over feature dimension. Pooling code is
                     present but disabled by default.
 ic_sign_model.py    ICSignEqualWeightAlphaModel, equal-weight features by RankIC sign.
@@ -261,10 +261,20 @@ fit_intercept = [true, false]
 The built-in tuned configs expose their full default search grids in TOML, so
 you can edit ranges without touching model code.
 
-For RNN/LSTM/GRU configs, `sequence_length = 6` means the current factor-frame
-feature vector is padded if needed and reshaped into six pseudo time steps. This
-is a compatibility layer for factor combination, not a true six-date history
-input. True time-series/raw-panel inputs should use a later raw-panel model.
+For RNN/LSTM/GRU configs, `sequence_length = 6` means each target sample uses
+the previous six sampled factor cross-sections. With the monthly examples, the
+tensor shape is:
+
+```text
+N x 6 x F
+```
+
+where `N` is the number of target stock-date samples and `F` is the number of
+features. `sequence_frequency` can be set under `[model.params]`; if omitted it
+uses `sample.train_frequency`, so the monthly examples use `monthly_end`.
+The neural-network monthly examples also use `validation_sample_count = 1`, so
+early stopping and best-checkpoint selection use the month immediately after the
+36 training samples.
 
 XGBoost and LightGBM also have Optuna-tuned variants. They live in separate
 model paths so the plain configs stay fast:

@@ -39,9 +39,9 @@ def train_only(config_path: str | Path) -> list[Path]:
         progress.window(idx, window)
         model = _new_model(config)
         progress.step("load_train")
-        train_bundle = dataset.load(window.train_dates, include_label=True)
+        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True)
         progress.step("load_valid")
-        valid_bundle = dataset.load(window.valid_dates, include_label=True)
+        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True)
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         model.fit(train_bundle.frame, valid_bundle.frame, context)
@@ -70,7 +70,7 @@ def predict_only(config_path: str | Path) -> list[Path]:
         progress.step("load_model")
         model = model_class.load(path)
         written.extend(
-            _predict_write_window(config, dataset, writer, model, window, progress)
+            _predict_write_window(config, dataset, writer, model, window, progress, calendar)
         )
     progress.done()
     return written
@@ -87,9 +87,9 @@ def _fit_predict_write_all(config: MlAlphaConfig) -> list[Path]:
         progress.window(idx, window)
         model = _new_model(config)
         progress.step("load_train")
-        train_bundle = dataset.load(window.train_dates, include_label=True)
+        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True)
         progress.step("load_valid")
-        valid_bundle = dataset.load(window.valid_dates, include_label=True)
+        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True)
         if train_bundle.frame.empty:
             continue
         context = _context(config, window.window_id, train_bundle.feature_columns)
@@ -98,7 +98,7 @@ def _fit_predict_write_all(config: MlAlphaConfig) -> list[Path]:
         progress.step("save")
         model.save(window_artifact_path(config.model.artifact_dir, window.window_id))
         written.extend(
-            _predict_write_window(config, dataset, writer, model, window, progress, context)
+            _predict_write_window(config, dataset, writer, model, window, progress, calendar, context)
         )
     progress.done()
     return written
@@ -111,13 +111,14 @@ def _predict_write_window(
     model: AlphaModel,
     window: TrainingWindow,
     progress: "_Progress",
+    calendar: TradingCalendar,
     context: ModelContext | None = None,
 ) -> list[Path]:
     written: list[Path] = []
     batches = _chunks(window.predict_dates, config.materialize.predict_batch_size)
     for batch_idx, dates in enumerate(batches, start=1):
         progress.step(f"load_predict {batch_idx}/{len(batches)} dates={_date_span(dates)}")
-        predict_bundle = dataset.load(dates, include_label=False)
+        predict_bundle = _load_bundle(config, dataset, calendar, dates, include_label=False)
         if predict_bundle.frame.empty:
             continue
         batch_context = context or _context(config, window.window_id, predict_bundle.feature_columns)
@@ -169,6 +170,28 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
             )
         )
     return windows
+
+
+def _load_bundle(
+    config: MlAlphaConfig,
+    dataset: DatasetBuilder,
+    calendar: TradingCalendar,
+    dates: list[int],
+    include_label: bool,
+):
+    if _uses_sequence_dataset(config):
+        sequence_length = int(config.model.params.get("sequence_length", 6))
+        sequence_frequency = str(config.model.params.get("sequence_frequency", config.sample.train_frequency))
+        return dataset.load_sequence(dates, include_label, calendar, sequence_length, sequence_frequency)
+    return dataset.load(dates, include_label)
+
+
+def _uses_sequence_dataset(config: MlAlphaConfig) -> bool:
+    return config.model.class_path in {
+        "yq_ml_alpha.models.sequence_model.RNNAlphaModel",
+        "yq_ml_alpha.models.sequence_model.LSTMAlphaModel",
+        "yq_ml_alpha.models.sequence_model.GRUAlphaModel",
+    }
 
 
 def _train_only_windows(

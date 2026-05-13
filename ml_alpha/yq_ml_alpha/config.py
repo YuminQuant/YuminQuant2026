@@ -88,6 +88,15 @@ class MaterializeConfig:
 
 
 @dataclass(frozen=True)
+class DiagnosticsConfig:
+    enabled: bool = False
+    print_epoch: bool = False
+    write_loss_history: bool = False
+    write_model_info: bool = False
+    write_window_summary: bool = False
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     name: str
     class_path: str
@@ -109,6 +118,7 @@ class MlAlphaConfig:
     preprocess: PreprocessConfig
     features: FeaturesConfig
     materialize: MaterializeConfig
+    diagnostics: DiagnosticsConfig
     model: ModelConfig
     data_root: Path = Path("data")
     output_root: Path = Path("data/models")
@@ -134,6 +144,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     preprocess = raw.get("preprocess", {})
     features = raw.get("features", {})
     materialize = raw.get("materialize", {})
+    diagnostics = raw.get("diagnostics", {})
     model = raw.get("model", {})
 
     model_params = dict(model.get("params", {}))
@@ -174,6 +185,13 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             cache_samples=bool(materialize.get("cache_samples", False)),
             cache_dir=_project_path(materialize.get("cache_dir", data_root / "model_workspace" / run_id / "cache")),
             predict_batch_size=max(1, int(materialize.get("predict_batch_size", 20))),
+        ),
+        diagnostics=DiagnosticsConfig(
+            enabled=bool(diagnostics.get("enabled", False)),
+            print_epoch=bool(diagnostics.get("print_epoch", False)),
+            write_loss_history=bool(diagnostics.get("write_loss_history", False)),
+            write_model_info=bool(diagnostics.get("write_model_info", False)),
+            write_window_summary=bool(diagnostics.get("write_window_summary", False)),
         ),
         model=ModelConfig(
             name=_required(model, "name", "model.name"),

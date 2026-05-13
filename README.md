@@ -288,10 +288,10 @@ Push-Location .\ml_alpha
 Run an existing-factor combo model:
 
 ```powershell
-python -m yq_ml_alpha run --config configs\examples\mean_combo_smoke.toml
-python -m yq_ml_alpha run --config configs\examples\monthly_lr_36.toml
+python -m yq_ml_alpha run --config configs\mean_combo_smoke.toml
+python -m yq_ml_alpha run --config configs\monthly_lr_36.toml
 pip install xgboost
-python -m yq_ml_alpha run --config configs\examples\monthly_xgb_36.toml
+python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml
 Pop-Location
 ```
 

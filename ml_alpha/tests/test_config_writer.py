@@ -929,23 +929,29 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
     def test_monthly_mlp_config_parses(self) -> None:
-        config = load_config(Path(__file__).resolve().parents[1] / "configs" / "examples" / "monthly_mlp_36.toml")
+        config = load_config(Path(__file__).resolve().parents[1] / "configs" / "monthly_mlp_36.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_mlp")
         self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.mlp_model.MLPAlphaModel")
-        self.assertEqual(config.model.params["hidden_layers"], [256, 128])
+        self.assertEqual(config.model.params["hidden_layers"], [256, 128, 64])
+        self.assertTrue(config.diagnostics.enabled)
+        self.assertTrue(config.diagnostics.print_epoch)
+        self.assertTrue(config.diagnostics.write_loss_history)
+        self.assertTrue(config.diagnostics.write_model_info)
+        self.assertTrue(config.diagnostics.write_window_summary)
 
     def test_monthly_ic_sign_config_parses(self) -> None:
         config = load_config(
-            Path(__file__).resolve().parents[1] / "configs" / "examples" / "monthly_ic_sign_equal_weight.toml"
+            Path(__file__).resolve().parents[1] / "configs" / "monthly_ic_sign_equal_weight.toml"
         )
         self.assertEqual(config.alpha_id, "ml_alpha_ic_sign_ew")
         self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.ic_sign_model.ICSignEqualWeightAlphaModel")
         self.assertEqual(config.model.params["ic_metric"], "rank_ic")
+        self.assertFalse(config.diagnostics.enabled)
 
     def test_new_model_configs_parse(self) -> None:
-        config_dir = Path(__file__).resolve().parents[1] / "configs" / "examples"
+        config_dir = Path(__file__).resolve().parents[1] / "configs"
         expected = {
             "monthly_lasso_36.toml": ("ml_alpha_lasso", "LassoAlphaModel"),
             "monthly_ridge_36.toml": ("ml_alpha_ridge", "RidgeAlphaModel"),
@@ -982,7 +988,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertEqual(config.model.params["sequence_length"], 6)
 
     def test_tuned_configs_expose_search_space(self) -> None:
-        config_dir = Path(__file__).resolve().parents[1] / "configs" / "examples"
+        config_dir = Path(__file__).resolve().parents[1] / "configs"
         lasso = load_config(config_dir / "monthly_lasso_36.toml")
         self.assertIn("alpha", lasso.model.search["space"])
 

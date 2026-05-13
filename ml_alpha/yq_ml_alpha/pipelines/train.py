@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,9 +47,13 @@ def train_only(config_path: str | Path) -> list[Path]:
         progress.step("fit")
         model.fit(train_bundle.frame, valid_bundle.frame, context)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
+        if config.diagnostics.enabled:
+            progress.step("diagnostics")
+            paths.extend(model.write_diagnostics(context))
         progress.step("save")
         model.save(path)
         paths.append(path)
+    paths.extend(_aggregate_diagnostics(config))
     progress.done()
     return paths
 
@@ -95,11 +100,15 @@ def _fit_predict_write_all(config: MlAlphaConfig) -> list[Path]:
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         model.fit(train_bundle.frame, valid_bundle.frame, context)
+        if config.diagnostics.enabled:
+            progress.step("diagnostics")
+            written.extend(model.write_diagnostics(context))
         progress.step("save")
         model.save(window_artifact_path(config.model.artifact_dir, window.window_id))
         written.extend(
             _predict_write_window(config, dataset, writer, model, window, progress, calendar, context)
         )
+    written.extend(_aggregate_diagnostics(config))
     progress.done()
     return written
 
@@ -382,6 +391,7 @@ def _context(config: MlAlphaConfig, window_id: str, feature_columns: list[str] |
         artifact_dir=Path(config.model.artifact_dir) / window_id,
         model_params=config.model.params,
         model_search=config.model.search,
+        diagnostics=config.diagnostics.__dict__,
     )
 
 
@@ -397,6 +407,35 @@ def _prediction_frame(source: pd.DataFrame, score: pd.Series) -> pd.DataFrame:
 
 def _chunks(values: list[int], size: int) -> list[list[int]]:
     return [values[idx : idx + size] for idx in range(0, len(values), size)]
+
+
+def _aggregate_diagnostics(config: MlAlphaConfig) -> list[Path]:
+    if not config.diagnostics.enabled:
+        return []
+    artifacts = Path(config.model.artifact_dir)
+    diagnostics_dir = artifacts.parent / "diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    if config.diagnostics.write_loss_history:
+        frames = []
+        for path in sorted(artifacts.glob("*/loss_history.parquet")):
+            frames.append(pd.read_parquet(path))
+        if frames:
+            out = diagnostics_dir / "loss_history.parquet"
+            pd.concat(frames, ignore_index=True).to_parquet(out, index=False)
+            written.append(out)
+
+    if config.diagnostics.write_window_summary:
+        rows = []
+        for path in sorted(artifacts.glob("*/model_info.json")):
+            with path.open("r", encoding="utf-8") as file:
+                rows.append(json.load(file))
+        if rows:
+            out = diagnostics_dir / "window_summary.parquet"
+            pd.DataFrame(rows).to_parquet(out, index=False)
+            written.append(out)
+    return written
 
 
 class _Progress:

@@ -110,6 +110,8 @@ impl BacktestEngine {
                 &output.returns,
                 &output.daily_ic,
                 &output.factor_stats,
+                &output.holdings,
+                &output.industry_weights,
             )?);
         }
         progress.finish();

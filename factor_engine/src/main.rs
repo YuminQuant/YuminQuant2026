@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use yq_factor_engine::backtest::request::{
-    BacktestRunRequest, FactorFill, LimitSide, NeutralizeSpec, RebalanceRule,
-    DEFAULT_BACKTEST_LABEL, DEFAULT_BENCHMARK,
+    BacktestDetail, BacktestDetailSector, BacktestRunRequest, FactorFill, LimitSide,
+    NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL, DEFAULT_BENCHMARK,
     DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE, DEFAULT_EXCLUDE_LIMIT,
     DEFAULT_EXCLUDE_ST, DEFAULT_FACTOR_BATCH_SIZE as DEFAULT_BACKTEST_FACTOR_BATCH_SIZE,
     DEFAULT_GROUPS, DEFAULT_UNIVERSE,
@@ -437,6 +437,16 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         .map(|value| FactorFill::parse(value))
         .transpose()?
         .unwrap_or(FactorFill::None);
+    let detail = flags
+        .get("detail")
+        .map(|value| BacktestDetail::parse(value))
+        .transpose()?
+        .unwrap_or_else(BacktestDetail::none);
+    let detail_sector = flags
+        .get("detail-sector")
+        .map(|value| BacktestDetailSector::parse(value))
+        .transpose()?
+        .unwrap_or(BacktestDetailSector::ShenwanL1);
     Ok(BacktestRunRequest {
         asset_class,
         frequency,
@@ -472,6 +482,8 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
         date_batch_size,
         threads,
         factor_fill,
+        detail,
+        detail_sector,
         output_dir: flags.get("output-dir").map(PathBuf::from),
         config_path: flags.get("config").map(PathBuf::from),
     })
@@ -1025,6 +1037,10 @@ fn print_help() {
     println!(
         "  --factor-fill none|ffill (backtest default none; ffill supports low-frequency alpha)"
     );
+    println!(
+        "  --detail none|holdings|industry_weights|all (backtest optional rebalance detail output)"
+    );
+    println!("  --detail-sector sw_l1|ci_l1 (backtest detail industry source; default sw_l1)");
     println!("  --exclude-limit true|false (backtest default true)");
     println!("  --exclude-st true|false (backtest default true)");
     println!("  --limit-side both|up|down (backtest default both)");
@@ -1055,7 +1071,8 @@ mod tests {
     use super::{
         flag_enabled, matches_tag_filter, parse_backtest_run_request, parse_barra_run_request,
         parse_csv_values, parse_flags, parse_label_run_request, parse_run_request, parse_yyyymmdd,
-        FactorFill, LimitSide, DEFAULT_DATE_BATCH_SIZE, DEFAULT_LABEL_BATCH_SIZE,
+        BacktestDetail, BacktestDetailSector, FactorFill, LimitSide, DEFAULT_DATE_BATCH_SIZE,
+        DEFAULT_LABEL_BATCH_SIZE,
     };
 
     #[test]
@@ -1278,6 +1295,8 @@ mod tests {
         assert!(request.exclude_st);
         assert_eq!(request.limit_side, LimitSide::Both);
         assert_eq!(request.factor_fill, FactorFill::None);
+        assert_eq!(request.detail, BacktestDetail::none());
+        assert_eq!(request.detail_sector, BacktestDetailSector::ShenwanL1);
 
         let args = [
             "--asset",
@@ -1302,6 +1321,10 @@ mod tests {
             "up",
             "--factor-fill",
             "ffill",
+            "--detail",
+            "holdings,industry_weights",
+            "--detail-sector",
+            "ci_l1",
         ]
         .iter()
         .map(|value| value.to_string())
@@ -1313,6 +1336,52 @@ mod tests {
         assert!(!request.exclude_st);
         assert_eq!(request.limit_side, LimitSide::Up);
         assert_eq!(request.factor_fill, FactorFill::ForwardFill);
+        assert!(request.detail.holdings);
+        assert!(request.detail.industry_weights);
+        assert_eq!(request.detail_sector, BacktestDetailSector::CiticL1);
+    }
+
+    #[test]
+    fn backtest_detail_flag_parses_all_and_rejects_unknown_values() {
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--factors",
+            "utd",
+            "--detail",
+            "all",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        let request = parse_backtest_run_request(&args).expect("request");
+        assert!(request.detail.holdings);
+        assert!(request.detail.industry_weights);
+
+        let args = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260401",
+            "--end-date",
+            "20260424",
+            "--factors",
+            "utd",
+            "--detail",
+            "bad",
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+        assert!(parse_backtest_run_request(&args).is_err());
     }
 
     #[test]

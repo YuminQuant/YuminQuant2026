@@ -35,8 +35,89 @@ pub struct BacktestRunRequest {
     pub date_batch_size: usize,
     pub threads: Option<usize>,
     pub factor_fill: FactorFill,
+    pub detail: BacktestDetail,
+    pub detail_sector: BacktestDetailSector,
     pub output_dir: Option<PathBuf>,
     pub config_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BacktestDetail {
+    pub holdings: bool,
+    pub industry_weights: bool,
+}
+
+impl BacktestDetail {
+    pub fn none() -> Self {
+        Self {
+            holdings: false,
+            industry_weights: false,
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        let mut detail = Self::none();
+        for part in value
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            match part.to_ascii_lowercase().as_str() {
+                "none" => {
+                    if detail.any() {
+                        return Err(err("--detail none cannot be combined with other values"));
+                    }
+                }
+                "holdings" | "holding" | "positions" | "position" => detail.holdings = true,
+                "industry_weights" | "industry-weight" | "industry_weights_sw_l1" => {
+                    detail.industry_weights = true
+                }
+                "all" => {
+                    detail.holdings = true;
+                    detail.industry_weights = true;
+                }
+                _ => {
+                    return Err(err(format!(
+                        "--detail must be none|holdings|industry_weights|all, got {value}"
+                    )))
+                }
+            }
+        }
+        Ok(detail)
+    }
+
+    pub fn any(&self) -> bool {
+        self.holdings || self.industry_weights
+    }
+
+    pub fn needs_sector(&self) -> bool {
+        self.industry_weights
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BacktestDetailSector {
+    ShenwanL1,
+    CiticL1,
+}
+
+impl BacktestDetailSector {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "sw" | "sw_l1" | "shenwan" | "shenwan_l1" => Ok(Self::ShenwanL1),
+            "ci" | "ci_l1" | "citic" | "citic_l1" | "zhongxin" | "zhongxin_l1" => Ok(Self::CiticL1),
+            _ => Err(err(format!(
+                "--detail-sector must be sw_l1|ci_l1, got {value}"
+            ))),
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ShenwanL1 => "sw_l1",
+            Self::CiticL1 => "ci_l1",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

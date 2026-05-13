@@ -30,6 +30,28 @@ pub struct FactorStatsDaily {
 }
 
 #[derive(Clone, Debug)]
+pub struct HoldingWeight {
+    pub factor_id: String,
+    pub rebalance_date: i32,
+    pub portfolio: String,
+    pub rank_ic_sign: f64,
+    pub ts_code: String,
+    pub weight: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndustryWeight {
+    pub factor_id: String,
+    pub rebalance_date: i32,
+    pub portfolio: String,
+    pub rank_ic_sign: f64,
+    pub sector_source: String,
+    pub sector_code: String,
+    pub weight: f64,
+    pub stock_count: i64,
+}
+
+#[derive(Clone, Debug)]
 pub struct FactorStatsSummary {
     pub factor_id: String,
     pub scope: String,

@@ -78,6 +78,8 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance weekly --factor-batch-size 10
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --factor-batch-size 10 --date-batch-size 120 --threads 8
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_monthly_alpha --factor-root data\models --factor-fill ffill
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20260401 --end-date 20260424 --factors gmm_mean --groups 10 --rebalance 5 --detail all
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20260401 --end-date 20260424 --factors gmm_mean --groups 10 --rebalance 5 --detail industry_weights --detail-sector ci_l1
 ```
 
 Backtest outputs are written as one parquet per factor:
@@ -86,7 +88,16 @@ Backtest outputs are written as one parquet per factor:
 data/backtest/stock/daily/returns/{factor_id}.parquet
 data/backtest/stock/daily/ic/{factor_id}.parquet
 data/backtest/stock/daily/factor_stats/{factor_id}.parquet
+data/backtest/stock/daily/holdings/{factor_id}.parquet
+data/backtest/stock/daily/industry_weights/{factor_id}.parquet
 ```
+
+The last two files are only written when `--detail holdings`,
+`--detail industry_weights`, or `--detail all` is passed. Detail output records
+the rebalance-date long-side endpoint group selected by `sign(mean(RankIC))`;
+industry weights use Shenwan level-1 sectors by default. Pass
+`--detail-sector ci_l1` to use CITIC level-1 sectors. Missing sectors are kept
+as `__MISSING__`.
 
 Backtest universe and benchmark defaults are `--universe mkt_all` and
 `--benchmark mkt_mean`. `mkt_mean` uses the full-market mean label return as the

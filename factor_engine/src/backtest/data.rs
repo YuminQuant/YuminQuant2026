@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use crate::backtest::request::BacktestRunRequest;
+use crate::backtest::request::{BacktestDetailSector, BacktestRunRequest};
 use crate::barra::engine::DEFAULT_BARRA_MODEL;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
@@ -41,6 +41,8 @@ pub struct BacktestInput {
     pub trade_filter: BacktestTradeFilterBatch,
     pub benchmark: BenchmarkBatch,
     pub sectors: Option<HashMap<i32, Vec<Option<String>>>>,
+    pub detail_sectors: Option<HashMap<i32, Vec<Option<String>>>>,
+    pub detail_sector_source: Option<String>,
     pub barra_columns: Vec<String>,
 }
 
@@ -54,6 +56,8 @@ pub struct BacktestDataPlan {
     label_table: Table,
     barra_columns: Vec<String>,
     sector_map: Option<ClassificationMap>,
+    detail_sector_map: Option<ClassificationMap>,
+    detail_sector_source: Option<String>,
     universe: BacktestUniversePlan,
     trade_filter: BacktestTradeFilterPlan,
     benchmark: BenchmarkPlan,
@@ -269,22 +273,24 @@ pub fn prepare_backtest_data_plan(
 
     let barra_columns = resolve_neutralize_barra_columns(config, request)?;
     let sector_map = if request.neutralize.uses_sector() {
-        let table = read_parquet(
+        Some(load_backtest_classification_map(
             &config.stock_sw_classification_path,
-            Some(&[
-                "ts_code".to_string(),
-                "in_date".to_string(),
-                "out_date".to_string(),
-                "l1_code".to_string(),
-            ]),
-        )?;
-        Some(ClassificationMap::from_table(
-            &table,
-            ClassificationLevel::Sector,
         )?)
     } else {
         None
     };
+    let detail_sector_map = if request.detail.needs_sector() {
+        Some(load_detail_classification_map(
+            config,
+            &request.detail_sector,
+        )?)
+    } else {
+        None
+    };
+    let detail_sector_source = request
+        .detail
+        .needs_sector()
+        .then(|| request.detail_sector.label().to_string());
 
     Ok(BacktestDataPlan {
         factor_metadata,
@@ -295,10 +301,39 @@ pub fn prepare_backtest_data_plan(
         label_table,
         barra_columns,
         sector_map,
+        detail_sector_map,
+        detail_sector_source,
         universe,
         trade_filter,
         benchmark,
     })
+}
+
+fn load_detail_classification_map(
+    config: &EngineConfig,
+    source: &BacktestDetailSector,
+) -> Result<ClassificationMap> {
+    match source {
+        BacktestDetailSector::ShenwanL1 => {
+            load_backtest_classification_map(&config.stock_sw_classification_path)
+        }
+        BacktestDetailSector::CiticL1 => {
+            load_backtest_classification_map(&config.stock_ci_classification_path)
+        }
+    }
+}
+
+fn load_backtest_classification_map(path: &Path) -> Result<ClassificationMap> {
+    let table = read_parquet(
+        path,
+        Some(&[
+            "ts_code".to_string(),
+            "in_date".to_string(),
+            "out_date".to_string(),
+            "l1_code".to_string(),
+        ]),
+    )?;
+    ClassificationMap::from_table(&table, ClassificationLevel::Sector)
 }
 
 fn resolve_neutralize_barra_columns(
@@ -421,6 +456,15 @@ pub fn load_backtest_input_batch(
     } else {
         None
     };
+    let detail_sectors = if let Some(sector_map) = &plan.detail_sector_map {
+        let mut by_date = HashMap::new();
+        for date in target_dates {
+            by_date.insert(*date, sector_map.groups_for(*date, panel.instruments()));
+        }
+        Some(by_date)
+    } else {
+        None
+    };
 
     Ok(BacktestInput {
         factor_metadata,
@@ -433,6 +477,8 @@ pub fn load_backtest_input_batch(
         trade_filter: plan.trade_filter.slice(target_dates),
         benchmark: plan.benchmark.slice(target_dates),
         sectors,
+        detail_sectors,
+        detail_sector_source: plan.detail_sector_source.clone(),
     })
 }
 

@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use crate::backtest::data::{BacktestInput, BacktestPanel, BenchmarkKind};
 use crate::backtest::ic::{daily_ic_observation_with_universe, IcObservation};
-use crate::backtest::metrics::{daily_factor_stats, FactorStatsDaily, PerformancePoint};
+use crate::backtest::metrics::{
+    daily_factor_stats, FactorStatsDaily, HoldingWeight, IndustryWeight, PerformancePoint,
+};
 use crate::backtest::preprocess::{
     coverage_stats_with_universe, equal_group_weights, group_assignments, keyed_values,
     long_short_weights, maybe_neutralize, portfolio_return, portfolio_scores, turnover,
@@ -19,6 +21,8 @@ pub struct CrossSectionBacktestOutput {
     pub returns: Vec<PerformancePoint>,
     pub daily_ic: Vec<IcObservation>,
     pub factor_stats: Vec<FactorStatsDaily>,
+    pub holdings: Vec<HoldingWeight>,
+    pub industry_weights: Vec<IndustryWeight>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +63,8 @@ pub struct CrossSectionBacktestState {
     returns: Vec<PerformancePoint>,
     daily_ic: Vec<IcObservation>,
     factor_stats: Vec<FactorStatsDaily>,
+    holdings: Vec<HoldingWeight>,
+    industry_weights: Vec<IndustryWeight>,
 }
 
 impl CrossSectionBacktestState {
@@ -69,6 +75,8 @@ impl CrossSectionBacktestState {
             returns: Vec::new(),
             daily_ic: Vec::new(),
             factor_stats: Vec::new(),
+            holdings: Vec::new(),
+            industry_weights: Vec::new(),
         }
     }
 }
@@ -165,6 +173,8 @@ pub fn finalize_cross_section_backtest(
         output.returns.extend(state.returns);
         output.daily_ic.extend(state.daily_ic);
         output.factor_stats.extend(state.factor_stats);
+        output.holdings.extend(state.holdings);
+        output.industry_weights.extend(state.industry_weights);
         progress.tick(format!(
             "batch={}/{} factor={} dates={} rebalance={}",
             batch_index, batch_count, factor.factor_id, target_date_count, rebalance_count
@@ -199,12 +209,17 @@ fn update_factor_cross_section_state(
             stats.inf_rate,
         ));
         let barra = barra_cross_sections(input, date_idx, &factor.output_column)?;
-        let groups = input
+        let sector_groups = input
             .sectors
             .as_ref()
             .and_then(|by_date| by_date.get(date))
             .map(Vec::as_slice);
-        let processed = maybe_neutralize(&masked_raw, &request.neutralize, &barra, groups);
+        let detail_sector_groups = input
+            .detail_sectors
+            .as_ref()
+            .and_then(|by_date| by_date.get(date))
+            .map(Vec::as_slice);
+        let processed = maybe_neutralize(&masked_raw, &request.neutralize, &barra, sector_groups);
 
         let label = input
             .panel
@@ -225,6 +240,16 @@ fn update_factor_cross_section_state(
 
         if rebalance_lookup.contains_key(date) {
             let weights = build_portfolio_weights(&processed, request.groups);
+            record_rebalance_detail(
+                request,
+                input,
+                factor,
+                *date,
+                &weights,
+                detail_sector_groups,
+                input.detail_sector_source.as_deref(),
+                state,
+            )?;
             state.latest_turnovers = state.portfolio.update_weights(weights);
         }
         if state.portfolio.weights.is_empty() {
@@ -253,6 +278,7 @@ fn update_factor_cross_section_state(
 
 fn finalize_factor_returns(state: &mut CrossSectionBacktestState, _group_count: usize) {
     let long_short_sign = rank_ic_mean_sign(&state.daily_ic);
+    let selected_portfolio = selected_long_group(long_short_sign, _group_count);
     for row in &mut state.returns {
         if row.portfolio == "long_short" {
             row.return_value = row.return_value.map(|value| value * long_short_sign);
@@ -265,6 +291,26 @@ fn finalize_factor_returns(state: &mut CrossSectionBacktestState, _group_count: 
                 _ => None,
             };
         }
+    }
+    state
+        .holdings
+        .retain(|row| row.portfolio == selected_portfolio);
+    for row in &mut state.holdings {
+        row.rank_ic_sign = long_short_sign;
+    }
+    state
+        .industry_weights
+        .retain(|row| row.portfolio == selected_portfolio);
+    for row in &mut state.industry_weights {
+        row.rank_ic_sign = long_short_sign;
+    }
+}
+
+fn selected_long_group(rank_ic_sign: f64, group_count: usize) -> String {
+    if rank_ic_sign < 0.0 {
+        group_name(0)
+    } else {
+        group_name(group_count.saturating_sub(1))
     }
 }
 
@@ -358,6 +404,119 @@ fn build_portfolio_weights(
     output
 }
 
+fn record_rebalance_detail(
+    request: &BacktestRunRequest,
+    input: &BacktestInput,
+    factor: &FactorMetadata,
+    rebalance_date: i32,
+    weights: &BTreeMap<String, Vec<f64>>,
+    detail_sector_groups: Option<&[Option<String>]>,
+    detail_sector_source: Option<&str>,
+    state: &mut CrossSectionBacktestState,
+) -> Result<()> {
+    if !request.detail.any() {
+        return Ok(());
+    }
+    let mut endpoint_groups = vec![group_name(0), group_name(request.groups.saturating_sub(1))];
+    endpoint_groups.sort();
+    endpoint_groups.dedup();
+    for portfolio in endpoint_groups {
+        let Some(group_weights) = weights.get(&portfolio) else {
+            continue;
+        };
+        if request.detail.holdings {
+            record_holding_weights(
+                &mut state.holdings,
+                &factor.factor_id,
+                rebalance_date,
+                &portfolio,
+                input.panel.instruments(),
+                group_weights,
+            );
+        }
+        if request.detail.industry_weights {
+            let sectors = detail_sector_groups.ok_or_else(|| {
+                err("--detail industry_weights requires configured level-1 sector data")
+            })?;
+            let sector_source = detail_sector_source.unwrap_or(request.detail_sector.label());
+            record_industry_weights(
+                &mut state.industry_weights,
+                &factor.factor_id,
+                rebalance_date,
+                &portfolio,
+                sector_source,
+                sectors,
+                group_weights,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn record_holding_weights(
+    output: &mut Vec<HoldingWeight>,
+    factor_id: &str,
+    rebalance_date: i32,
+    portfolio: &str,
+    instruments: &[String],
+    weights: &[f64],
+) {
+    for (idx, weight) in weights.iter().enumerate() {
+        if weight.abs() <= f64::EPSILON {
+            continue;
+        }
+        let Some(ts_code) = instruments.get(idx) else {
+            continue;
+        };
+        output.push(HoldingWeight {
+            factor_id: factor_id.to_string(),
+            rebalance_date,
+            portfolio: portfolio.to_string(),
+            rank_ic_sign: 0.0,
+            ts_code: ts_code.clone(),
+            weight: *weight,
+        });
+    }
+}
+
+fn record_industry_weights(
+    output: &mut Vec<IndustryWeight>,
+    factor_id: &str,
+    rebalance_date: i32,
+    portfolio: &str,
+    sector_source: &str,
+    sectors: &[Option<String>],
+    weights: &[f64],
+) {
+    let mut grouped = BTreeMap::<String, (f64, i64)>::new();
+    for (idx, weight) in weights.iter().enumerate() {
+        if weight.abs() <= f64::EPSILON {
+            continue;
+        }
+        let sector = sectors
+            .get(idx)
+            .and_then(|value| value.as_ref())
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| "__MISSING__".to_string());
+        let entry = grouped.entry(sector).or_insert((0.0, 0));
+        entry.0 += *weight;
+        entry.1 += 1;
+    }
+    for (sector_code, (weight, stock_count)) in grouped {
+        output.push(IndustryWeight {
+            factor_id: factor_id.to_string(),
+            rebalance_date,
+            portfolio: portfolio.to_string(),
+            rank_ic_sign: 0.0,
+            sector_source: sector_source.to_string(),
+            sector_code,
+            weight,
+            stock_count,
+        });
+    }
+}
+
 fn rank_ic_mean_sign(rows: &[IcObservation]) -> f64 {
     let mut sum = 0.0;
     let mut count = 0usize;
@@ -420,9 +579,9 @@ pub fn ensure_backtest_inputs(request: &BacktestRunRequest) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_factor_returns, CrossSectionBacktestState};
+    use super::{finalize_factor_returns, record_industry_weights, CrossSectionBacktestState};
     use crate::backtest::ic::IcObservation;
-    use crate::backtest::metrics::PerformancePoint;
+    use crate::backtest::metrics::{HoldingWeight, IndustryWeight, PerformancePoint};
 
     fn point(portfolio: &str, return_value: f64, benchmark_return: f64) -> PerformancePoint {
         PerformancePoint {
@@ -465,5 +624,93 @@ mod tests {
         assert_eq!(state.returns[1].excess_return, Some(-0.025));
         assert_eq!(state.returns[2].excess_return, None);
         assert_eq!(state.returns[2].return_value, Some(-0.03));
+    }
+
+    #[test]
+    fn finalize_keeps_rank_ic_selected_long_side_detail_only() {
+        let mut state = CrossSectionBacktestState::new();
+        state.daily_ic.push(IcObservation {
+            factor_id: "factor_a".to_string(),
+            factor_date: 20260424,
+            label_date: 20260424,
+            settle_date: Some(20260428),
+            horizon: None,
+            ic: Some(0.1),
+            rank_ic: Some(-0.1),
+            pair_count: 10,
+            coverage: 1.0,
+            inf_rate: 0.0,
+        });
+        state.holdings = vec![
+            HoldingWeight {
+                factor_id: "factor_a".to_string(),
+                rebalance_date: 20260424,
+                portfolio: "group_1".to_string(),
+                rank_ic_sign: 0.0,
+                ts_code: "000001.SZ".to_string(),
+                weight: 1.0,
+            },
+            HoldingWeight {
+                factor_id: "factor_a".to_string(),
+                rebalance_date: 20260424,
+                portfolio: "group_2".to_string(),
+                rank_ic_sign: 0.0,
+                ts_code: "000002.SZ".to_string(),
+                weight: 1.0,
+            },
+        ];
+        state.industry_weights = vec![
+            IndustryWeight {
+                factor_id: "factor_a".to_string(),
+                rebalance_date: 20260424,
+                portfolio: "group_1".to_string(),
+                rank_ic_sign: 0.0,
+                sector_source: "sw_l1".to_string(),
+                sector_code: "801010".to_string(),
+                weight: 1.0,
+                stock_count: 1,
+            },
+            IndustryWeight {
+                factor_id: "factor_a".to_string(),
+                rebalance_date: 20260424,
+                portfolio: "group_2".to_string(),
+                rank_ic_sign: 0.0,
+                sector_source: "sw_l1".to_string(),
+                sector_code: "801020".to_string(),
+                weight: 1.0,
+                stock_count: 1,
+            },
+        ];
+
+        finalize_factor_returns(&mut state, 2);
+
+        assert_eq!(state.holdings.len(), 1);
+        assert_eq!(state.holdings[0].portfolio, "group_1");
+        assert_eq!(state.holdings[0].rank_ic_sign, -1.0);
+        assert_eq!(state.industry_weights.len(), 1);
+        assert_eq!(state.industry_weights[0].portfolio, "group_1");
+        assert_eq!(state.industry_weights[0].rank_ic_sign, -1.0);
+    }
+
+    #[test]
+    fn industry_weights_keep_missing_sector_bucket() {
+        let mut rows = Vec::new();
+        let sectors = vec![Some("801010".to_string()), None, Some("801010".to_string())];
+        let weights = vec![0.25, 0.5, 0.25];
+
+        record_industry_weights(
+            &mut rows, "factor_a", 20260424, "group_2", "ci_l1", &sectors, &weights,
+        );
+
+        assert_eq!(rows.len(), 2);
+        let total_weight = rows.iter().map(|row| row.weight).sum::<f64>();
+        assert!((total_weight - 1.0).abs() < 1e-12);
+        let missing = rows
+            .iter()
+            .find(|row| row.sector_code == "__MISSING__")
+            .expect("missing sector row");
+        assert_eq!(missing.sector_source, "ci_l1");
+        assert_eq!(missing.weight, 0.5);
+        assert_eq!(missing.stock_count, 1);
     }
 }

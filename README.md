@@ -163,6 +163,9 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset
 --all-factors                All formal non-deprecated factors, or all non-key columns under --factor-root.
 --factor-root data\models    External direct daily factor root.
 --factor-fill none|ffill     Forward-fill low-frequency alpha date snapshots; default none.
+--detail none|holdings|industry_weights|all
+                              Optional rebalance-date long-side detail output.
+--detail-sector sw_l1|ci_l1  Industry source for detail output; default sw_l1.
 
 --label future_vwap_return_1d
 --label future_vwap_return_20d
@@ -233,11 +236,17 @@ Backtest output is written as one parquet per factor:
 data/backtest/stock/daily/returns/{factor_id}.parquet
 data/backtest/stock/daily/ic/{factor_id}.parquet
 data/backtest/stock/daily/factor_stats/{factor_id}.parquet
+data/backtest/stock/daily/holdings/{factor_id}.parquet          # with --detail holdings|all
+data/backtest/stock/daily/industry_weights/{factor_id}.parquet  # with --detail industry_weights|all
 ```
 
 The `returns` file contains group portfolios and the `long_short` portfolio,
 plus `benchmark_return` and `excess_return`. `long_short` is adjusted by
 `sign(mean(RankIC))`; `excess_return` is filled for every group portfolio.
+Detail files use the same RankIC sign to choose the long-side endpoint group:
+`group_N` when `mean(RankIC) >= 0`, otherwise `group_1`. Industry detail uses
+Shenwan level-1 sectors by default; pass `--detail-sector ci_l1` to use CITIC
+level-1 sectors. Missing classifications are written as `__MISSING__`.
 
 ## Python Analysis Tools
 

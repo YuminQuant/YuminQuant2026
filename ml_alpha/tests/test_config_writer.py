@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import load_config
+from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.transforms import (
@@ -400,6 +401,89 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             frame = provider.load(20260105)
             self.assertEqual(list(frame.columns), ["trade_date", "ts_code", "factor_a", "factor_b"])
             self.assertTrue(pd.isna(frame.loc[0, "factor_b"]))
+
+    def test_sequence_dataset_uses_past_sample_dates_as_timesteps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            factor_root = root / "factors"
+            label_root = root / "labels"
+            (factor_root / "2026").mkdir(parents=True)
+            (label_root / "2026").mkdir(parents=True)
+            for trade_date, values in [
+                (20260130, [1.0, 2.0, 10.0, 20.0]),
+                (20260227, [3.0, 4.0, 30.0, 40.0]),
+                (20260331, [5.0, 6.0, 50.0, 60.0]),
+            ]:
+                pd.DataFrame(
+                    {
+                        "trade_date": [trade_date, trade_date],
+                        "ts_code": ["000001.SZ", "000002.SZ"],
+                        "f1": values[:2],
+                        "f2": values[2:],
+                    }
+                ).to_parquet(factor_root / "2026" / f"{trade_date}.parquet", index=False)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260331, 20260331],
+                    "ts_code": ["000001.SZ", "000002.SZ"],
+                    "y": [0.1, 0.2],
+                }
+            ).to_parquet(label_root / "2026" / "20260331.parquet", index=False)
+
+            config_path = root / "run.toml"
+            config_path.write_text(
+                f"""
+run_id = "r1"
+alpha_id = "a1"
+data_root = "{root.as_posix()}"
+
+[dates]
+train = [20260101, 20260331]
+valid = []
+predict = []
+
+[sample]
+train_frequency = "monthly_end"
+
+[features]
+type = "factor_frame"
+root = "{factor_root.as_posix()}"
+columns = ["f1", "f2"]
+
+[label]
+id = "y"
+root = "{label_root.as_posix()}"
+
+[filters]
+exclude_limit = false
+exclude_st = false
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[model]
+name = "lstm"
+class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
+artifact_dir = "{(root / "artifacts").as_posix()}"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            builder = DatasetBuilder(config)
+            calendar = TradingCalendar([20260130, 20260227, 20260331])
+            bundle = builder.load_sequence([20260331], True, calendar, 3, "monthly_end")
+            self.assertEqual(
+                bundle.feature_columns,
+                ["f1__seq0", "f2__seq0", "f1__seq1", "f2__seq1", "f1__seq2", "f2__seq2"],
+            )
+            row = bundle.frame.loc[bundle.frame["ts_code"] == "000001.SZ"].iloc[0]
+            self.assertEqual(
+                [row[column] for column in bundle.feature_columns],
+                [1.0, 10.0, 3.0, 30.0, 5.0, 50.0],
+            )
+            self.assertEqual(len(bundle.frame), 2)
 
     def test_linear_regression_model_fits_simple_relation(self) -> None:
         model = LinearRegressionAlphaModel()
@@ -849,7 +933,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.alpha_id, "ml_alpha_mlp")
         self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.mlp_model.MLPAlphaModel")
-        self.assertEqual(config.model.params["hidden_layers"], [128, 64])
+        self.assertEqual(config.model.params["hidden_layers"], [256, 128])
 
     def test_monthly_ic_sign_config_parses(self) -> None:
         config = load_config(
@@ -885,6 +969,11 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 "monthly_elasticnet_36.toml",
                 "monthly_xgb_optuna_36.toml",
                 "monthly_lgbm_optuna_36.toml",
+                "monthly_mlp_36.toml",
+                "monthly_rnn_36.toml",
+                "monthly_lstm_36.toml",
+                "monthly_gru_36.toml",
+                "monthly_cnn_36.toml",
             }:
                 self.assertEqual(config.train_scheme.validation_sample_count, 1)
             else:

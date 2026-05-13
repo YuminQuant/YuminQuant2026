@@ -16,6 +16,7 @@ predict_frequency = "daily"
 type = "rolling"
 refit_frequency = "monthly_end"
 train_sample_count = 36
+validation_sample_count = 1
 
 [label]
 id = "future_vwap_return_20d"
@@ -48,13 +49,12 @@ class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
 artifact_dir = "data/model_workspace/monthly_mlp_36/artifacts"
 
 [model.params]
-hidden_layers = [128, 64]
+hidden_layers = [256, 128]
 dropout = 0.10
 epochs = 50
-batch_size = 8192
-lr = 0.01
+batch_size = 4500
+lr = 0.001
 weight_decay = 0.00001
 seed = 42
 device = "auto"
 patience = 10
-

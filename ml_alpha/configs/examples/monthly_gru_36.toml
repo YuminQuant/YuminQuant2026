@@ -16,6 +16,7 @@ predict_frequency = "daily"
 type = "rolling"
 refit_frequency = "monthly_end"
 train_sample_count = 36
+validation_sample_count = 1
 
 [label]
 id = "future_vwap_return_20d"
@@ -49,6 +50,7 @@ artifact_dir = "data/model_workspace/monthly_gru_36/artifacts"
 
 [model.params]
 sequence_length = 6
+sequence_frequency = "monthly_end"
 hidden_size = 64
 num_layers = 2
 dropout = 0.10

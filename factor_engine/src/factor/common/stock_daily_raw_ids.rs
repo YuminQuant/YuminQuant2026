@@ -124,3 +124,9 @@ pub const XYZQ_SPILL_VARVARSIGNSUB_RAW_ID: &str = "daily_xyzq_spill_varvarsignsu
 pub const XYZQ_SPILL_RETSHARP_RAW_ID: &str = "daily_xyzq_spill_retsharp";
 pub const XYZQ_SPILL_MORDOLVOL_RAW_ID: &str = "daily_xyzq_spill_mordolvol";
 pub const XYZQ_SPILL_DOLVOLSUB_RAW_ID: &str = "daily_xyzq_spill_dolvolsub";
+
+pub const CROSSDAY_RETSHARP_SPILLOVER_RAW_ID: &str = "daily_crossday_retsharp_spillover";
+pub const CROSSDAY_VOLRATIO_SPILLOVER_RAW_ID: &str = "daily_crossday_volratio_spillover";
+pub const CROSSDAY_TAYLORRET_SPILLOVER_RAW_ID: &str = "daily_crossday_taylorret_spillover";
+pub const CROSSDAY_RETVOLCORR_SPILLOVER_RAW_ID: &str = "daily_crossday_retvolcorr_spillover";
+pub const CROSSDAY_CLOSEVOLCORR_SPILLOVER_RAW_ID: &str = "daily_crossday_closevolcorr_spillover";

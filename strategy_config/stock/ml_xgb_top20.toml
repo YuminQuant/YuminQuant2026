@@ -2,7 +2,7 @@ asset_class = "stock"
 strategy_id = "ml_xgb_top20"
 strategy_class = "stock::top_signal_equal_weight"
 
-start_date = 20260105
+start_date = 20140401
 end_date = 20260424
 initial_cash = 100000.0
 

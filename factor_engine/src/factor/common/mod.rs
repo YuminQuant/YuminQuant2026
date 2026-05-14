@@ -16,6 +16,7 @@ pub mod vector;
 pub mod xyzq_domain_structure;
 pub mod xyzq_extreme_gmm;
 pub mod xyzq_flow_structure;
+pub mod xyzq_industry_spillover;
 pub mod xyzq_intraday_contrast;
 pub mod xyzq_intraday_distribution;
 pub mod xyzq_serial_structure;

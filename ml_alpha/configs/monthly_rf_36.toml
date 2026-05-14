@@ -48,11 +48,13 @@ class = "yq_ml_alpha.models.tree_model.RandomForestAlphaModel"
 artifact_dir = "data/model_workspace/monthly_rf_36/artifacts"
 
 [model.params]
+max_depth = 5
 n_estimators = 200
 min_samples_leaf = 50
 min_samples_split = 500
 max_features = "sqrt"
 bootstrap = true
+criterion = "squared_error"
 n_jobs = -1
 random_state = 42
 

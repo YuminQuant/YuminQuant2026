@@ -124,6 +124,9 @@ pub struct StrategyRunConfig {
     pub model_root: PathBuf,
     pub factor_root: PathBuf,
     pub future: FutureConfig,
+    pub detail: bool,
+    pub market_products: Vec<String>,
+    pub market_symbols: Vec<String>,
     pub strategy_params: BTreeMap<String, String>,
 }
 
@@ -201,6 +204,15 @@ impl StrategyRunConfig {
         let cover_commission_bps = doc
             .f64("execution", "cover_commission_bps")
             .unwrap_or(commission_bps);
+        let detail = parse_bool(doc.string("output", "detail").as_deref()).unwrap_or(false);
+        let market_products = doc
+            .string("market", "products")
+            .map(|value| parse_csv_upper(&value))
+            .unwrap_or_default();
+        let market_symbols = doc
+            .string("market", "symbols")
+            .map(|value| parse_csv_upper(&value))
+            .unwrap_or_default();
 
         Ok(Self {
             asset_class,
@@ -223,6 +235,9 @@ impl StrategyRunConfig {
             model_root,
             factor_root,
             future,
+            detail,
+            market_products,
+            market_symbols,
             strategy_params: doc.section_values("strategy"),
         })
     }
@@ -322,9 +337,26 @@ fn clean_value(value: &str) -> String {
     }
 }
 
+fn parse_bool(value: Option<&str>) -> Option<bool> {
+    match value?.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "y" => Some(true),
+        "false" | "0" | "no" | "n" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_csv_upper(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| item.to_ascii_uppercase())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BarFrequency, SimpleToml};
+    use super::{parse_bool, parse_csv_upper, BarFrequency, SimpleToml};
 
     #[test]
     fn simple_toml_reads_root_and_section_values() {
@@ -334,6 +366,10 @@ mod tests {
             start_date = 20200101
             [clock]
             bar_frequency = "daily"
+            [market]
+            products = "AG, IF"
+            [output]
+            detail = true
             [future.margin_by_product]
             IF = 0.12
             "#,
@@ -350,6 +386,14 @@ mod tests {
                 .get("IF")
                 .map(String::as_str),
             Some("0.12")
+        );
+        assert_eq!(
+            parse_csv_upper(&doc.string("market", "products").unwrap()),
+            vec!["AG", "IF"]
+        );
+        assert_eq!(
+            parse_bool(doc.string("output", "detail").as_deref()),
+            Some(true)
         );
     }
 }

@@ -4,4 +4,5 @@ use std::path::PathBuf;
 pub struct StrategyRunRequest {
     pub config_path: PathBuf,
     pub project_config_path: Option<PathBuf>,
+    pub detail: Option<bool>,
 }

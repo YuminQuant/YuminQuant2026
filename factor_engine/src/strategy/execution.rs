@@ -401,6 +401,9 @@ mod tests {
             model_root: PathBuf::new(),
             factor_root: PathBuf::new(),
             future: Default::default(),
+            detail: false,
+            market_products: Vec::new(),
+            market_symbols: Vec::new(),
             strategy_params: BTreeMap::new(),
         }
     }
@@ -427,6 +430,9 @@ mod tests {
             model_root: PathBuf::new(),
             factor_root: PathBuf::new(),
             future: Default::default(),
+            detail: false,
+            market_products: Vec::new(),
+            market_symbols: Vec::new(),
             strategy_params: BTreeMap::new(),
         }
     }

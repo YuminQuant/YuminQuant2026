@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::data::parquet_io::read_parquet;
 use crate::error::Result;
-use crate::strategy::config::BarFrequency;
+use crate::strategy::config::{future_product_from_symbol, BarFrequency};
 
 #[derive(Clone, Debug)]
 pub struct Bar {
@@ -335,6 +335,8 @@ pub fn load_future_minute_frames(
     data_root: &Path,
     dates: &[i32],
     meta: &BTreeMap<String, FutureContractMeta>,
+    products: &[String],
+    symbols: &[String],
 ) -> Result<Vec<MarketFrame>> {
     let mut frames = Vec::new();
     for trade_date in dates {
@@ -371,6 +373,9 @@ pub fn load_future_minute_frames(
             let Some(symbol) = codes[idx].clone() else {
                 continue;
             };
+            if !future_symbol_allowed(&symbol, products, symbols) {
+                continue;
+            }
             let Some(trade_time) = times[idx].clone() else {
                 continue;
             };
@@ -491,6 +496,17 @@ fn daily_pv_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
         .join(format!("{trade_date}.parquet"))
 }
 
+fn future_symbol_allowed(symbol: &str, products: &[String], symbols: &[String]) -> bool {
+    if products.is_empty() && symbols.is_empty() {
+        return true;
+    }
+    let symbol_upper = symbol.to_ascii_uppercase();
+    symbols.iter().any(|item| item == &symbol_upper)
+        || products
+            .iter()
+            .any(|product| product == &future_product_from_symbol(symbol))
+}
+
 fn minute_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
     data_root
         .join("stock_data")
@@ -570,4 +586,29 @@ fn clean_positive_opt(value: Option<f64>) -> Option<f64> {
 
 fn finite(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::future_symbol_allowed;
+
+    #[test]
+    fn future_symbol_filter_uses_product_or_explicit_symbol() {
+        assert!(future_symbol_allowed("AG2606.SHF", &[], &[]));
+        assert!(future_symbol_allowed(
+            "AG2606.SHF",
+            &["AG".to_string()],
+            &[]
+        ));
+        assert!(!future_symbol_allowed(
+            "IF2606.CFX",
+            &["AG".to_string()],
+            &[]
+        ));
+        assert!(future_symbol_allowed(
+            "IF2606.CFX",
+            &["AG".to_string()],
+            &["IF2606.CFX".to_string()]
+        ));
+    }
 }

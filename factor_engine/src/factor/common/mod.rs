@@ -13,6 +13,7 @@ pub mod stock_daily_ops;
 pub mod stock_daily_raw_ids;
 pub mod umr;
 pub mod vector;
+pub mod xyzq_crossday_spillover;
 pub mod xyzq_domain_structure;
 pub mod xyzq_extreme_gmm;
 pub mod xyzq_flow_structure;

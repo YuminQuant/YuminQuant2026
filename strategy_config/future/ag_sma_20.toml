@@ -9,6 +9,12 @@ initial_cash = 8000000.0
 [clock]
 bar_frequency = "minute"
 
+[market]
+products = "AG"
+
+[output]
+detail = false
+
 [execution]
 fill_price = "next_open"
 buy_commission_bps = 0.0

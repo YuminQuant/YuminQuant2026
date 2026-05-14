@@ -75,8 +75,20 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
             i64_col(rows.iter().map(|row| Some(row.position_count))),
         ),
         (
-            "trade_count".to_string(),
-            i64_col(rows.iter().map(|row| Some(row.trade_count))),
+            "buy_count".to_string(),
+            i64_col(rows.iter().map(|row| Some(row.buy_count))),
+        ),
+        (
+            "sell_count".to_string(),
+            i64_col(rows.iter().map(|row| Some(row.sell_count))),
+        ),
+        (
+            "short_count".to_string(),
+            i64_col(rows.iter().map(|row| Some(row.short_count))),
+        ),
+        (
+            "cover_count".to_string(),
+            i64_col(rows.iter().map(|row| Some(row.cover_count))),
         ),
         (
             "symbols_json".to_string(),
@@ -100,10 +112,6 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
         (
             "avg_costs_json".to_string(),
             utf8(rows.iter().map(|row| Some(row.avg_costs_json.clone()))),
-        ),
-        (
-            "prices_json".to_string(),
-            utf8(rows.iter().map(|row| Some(row.prices_json.clone()))),
         ),
         (
             "market_values_json".to_string(),
@@ -164,10 +172,6 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
         (
             "trade_net_pnls_json".to_string(),
             utf8(rows.iter().map(|row| Some(row.trade_net_pnls_json.clone()))),
-        ),
-        (
-            "trade_fill_ids_json".to_string(),
-            utf8(rows.iter().map(|row| Some(row.trade_fill_ids_json.clone()))),
         ),
     ]))
 }

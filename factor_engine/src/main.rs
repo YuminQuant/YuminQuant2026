@@ -250,6 +250,9 @@ fn parse_strategy_run_request(args: &[String]) -> Result<StrategyRunRequest> {
     Ok(StrategyRunRequest {
         config_path,
         project_config_path: flags.get("project-config").map(PathBuf::from),
+        detail: flags
+            .get("detail")
+            .map(|_| flag_bool(&flags, "detail", false)),
     })
 }
 
@@ -1046,7 +1049,7 @@ fn print_help() {
     println!(
         "  backtest --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD --factors factor_id[,factor_id...]"
     );
-    println!("  strategy-run --config configs/strategy/stock/strategy_001.toml");
+    println!("  strategy-run --config strategy_config/stock/strategy_001.toml");
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
@@ -1096,6 +1099,7 @@ fn print_help() {
     println!("  --refresh-label-cache");
     println!("  --config D:/path/to/config.toml");
     println!("  --project-config D:/path/to/config.toml (strategy-run project config)");
+    println!("  --detail true|false (strategy-run minute detail output; default false)");
 }
 
 #[cfg(test)]

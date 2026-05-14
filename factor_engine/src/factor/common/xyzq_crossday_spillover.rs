@@ -8,7 +8,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::{err, Result};
-use crate::factor::common::stock_daily_ops::neutralize_size_sector;
+use crate::factor::common::stock_daily_ops::{is_bj_stock, mask_bj, neutralize_ret20_size_sector};
 use crate::factor::common::stock_daily_raw_ids::{
     CROSSDAY_CLOSEVOLCORR_SPILLOVER_RAW_ID, CROSSDAY_RETSHARP_SPILLOVER_RAW_ID,
     CROSSDAY_RETVOLCORR_SPILLOVER_RAW_ID, CROSSDAY_TAYLORRET_SPILLOVER_RAW_ID,
@@ -21,8 +21,8 @@ use crate::factor::common::{
 use crate::factor::IntradayRawMaterializeMode;
 use crate::operators::cs_pctrank;
 
-pub const RAW_VERSION: &str = "0.1.0";
-pub const VERSION: &str = "0.1.0";
+pub const RAW_VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.2.0";
 pub const PROVIDER_KEY: &str = "xyzq_crossday_spillover_provider";
 
 const RAW_WINDOW_DAYS: usize = 20;
@@ -131,15 +131,17 @@ pub fn factor_spec(def: XyzqCrossdaySpilloverFactorDef) -> FactorSpec {
         version: VERSION.to_string(),
         tags: tags(),
         description: format!(
-            "{} cross-day hourly industry spillover factor, neutralized by Barra SIZE and SW sector.",
+            "{} cross-day hourly industry spillover factor, neutralized by 20-day return, Barra SIZE, and SW sector.",
             def.name
         ),
         dependencies: vec![
+            DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+            DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
             DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
         ],
         intraday_raw_dependencies: vec![IntradayDailyRawRequest::new(def.raw_id, 0)],
-        lookback: Lookback { trading_days: 0 },
+        lookback: Lookback { trading_days: 20 },
     }
 }
 
@@ -149,7 +151,8 @@ pub fn compute_factor(
 ) -> Result<FactorSeries> {
     let panel = data.intraday_daily_raw_panel(def.raw_id)?;
     let raw = panel.column(def.raw_id)?;
-    let factor = neutralize_size_sector(&raw, &panel, data)?;
+    let raw = mask_bj(&raw, &panel)?;
+    let factor = neutralize_ret20_size_sector(&raw, &panel, data)?;
     Ok(factor.to_factor_series(factor_spec(def)))
 }
 
@@ -162,8 +165,10 @@ pub fn composite_factor_spec() -> FactorSpec {
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
         tags: tags(),
-        description: "Composite cross-day hourly intraday industry spillover factor from retsharp, volratio, taylorret, retvolcorr, and closevolcorr components, neutralized by Barra SIZE and SW sector.".to_string(),
+        description: "Composite cross-day hourly intraday industry spillover factor from retsharp, volratio, taylorret, retvolcorr, and closevolcorr components, neutralized by 20-day return, Barra SIZE, and SW sector.".to_string(),
         dependencies: vec![
+            DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+            DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
             DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
         ],
@@ -171,7 +176,7 @@ pub fn composite_factor_spec() -> FactorSpec {
             .iter()
             .map(|raw_id| IntradayDailyRawRequest::new(raw_id, 0))
             .collect(),
-        lookback: Lookback { trading_days: 0 },
+        lookback: Lookback { trading_days: 20 },
     }
 }
 
@@ -179,11 +184,13 @@ pub fn compute_composite_factor(data: &DataPool) -> Result<FactorSeries> {
     let panel = data.intraday_daily_raw_panel(CROSSDAY_RETSHARP_SPILLOVER_RAW_ID)?;
     let mut scored = Vec::with_capacity(all_raw_ids().len());
     for raw_id in all_raw_ids() {
-        scored.push(rank_score_component(&panel.column(raw_id)?)?);
+        let values = panel.column(raw_id)?;
+        let values = mask_bj(&values, panel)?;
+        scored.push(rank_score_component(&values)?);
     }
     let composite = average_columns(panel, &scored)?;
     let filled = fill_missing_with_cs_mean(&composite)?;
-    let factor = neutralize_size_sector(&filled, panel, data)?;
+    let factor = neutralize_ret20_size_sector(&filled, panel, data)?;
     Ok(factor.to_factor_series(composite_factor_spec()))
 }
 
@@ -371,6 +378,9 @@ pub fn minute_compute_stateful_many(
     for hour_idx in 0..HOUR_BLOCKS.len() {
         let mut hourly_features = BTreeMap::<String, HourFeatureValues>::new();
         for (ts_code, blocks) in &day_blocks {
+            if is_bj_stock(ts_code) {
+                continue;
+            }
             let stock_state = state.stocks.entry(ts_code.clone()).or_default();
             let features = stock_state.apply_hour(&blocks[hour_idx]);
             hourly_features.insert(ts_code.clone(), features);
@@ -397,6 +407,10 @@ pub fn minute_compute_stateful_many(
     }
 
     for ts_code in day_blocks.keys() {
+        if is_bj_stock(ts_code) {
+            final_values.insert(ts_code.clone(), FinalValues::default());
+            continue;
+        }
         if let Some(stock_state) = state.stocks.get(ts_code) {
             final_values.insert(ts_code.clone(), stock_state.final_values());
         }

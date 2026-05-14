@@ -7,7 +7,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::stock_daily_ops::neutralize_size_sector;
+use crate::factor::common::stock_daily_ops::{mask_bj, neutralize_ret20_size_sector};
 use crate::factor::common::stock_daily_raw_ids::{
     XYZQ_SPILL_AFTVOLRATIO_RAW_ID, XYZQ_SPILL_DOLVOLSUB_RAW_ID, XYZQ_SPILL_MORDOLVOL_RAW_ID,
     XYZQ_SPILL_MORNINGRET_RAW_ID, XYZQ_SPILL_MORVOLMINUSAFTVOL_RAW_ID,
@@ -23,15 +23,14 @@ use crate::factor::common::{
 use crate::operators::{cs_pctrank, ts_mean};
 
 pub const RAW_VERSION: &str = "0.1.0";
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.2.0";
 pub const PROVIDER_KEY: &str = "xyzq_industry_spillover_intraday_provider";
 
 const RAW_WINDOW_DAYS: usize = 1;
 const RAW_LOOKBACK: usize = 24;
 const MIN_PERIODS: usize = 1;
-const INDUSTRY_MOM_LOOKBACK: usize = 39;
+const INDUSTRY_MOM_LOOKBACK: usize = 20;
 const INDUSTRY_MOM_RETURN_WINDOW: usize = 20;
-const INDUSTRY_MOM_SMOOTH_WINDOW: usize = 20;
 const SAMPLE_START: &str = "09:31:00";
 const SAMPLE_END: &str = "15:00:00";
 const OPEN_ANCHOR: &str = "09:30:00";
@@ -186,6 +185,8 @@ pub fn factor_spec(def: XyzqIndustrySpilloverFactorDef) -> FactorSpec {
         ),
         _ => (
             vec![
+                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
                 DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             ],
@@ -206,7 +207,7 @@ pub fn factor_spec(def: XyzqIndustrySpilloverFactorDef) -> FactorSpec {
         version: VERSION.to_string(),
         tags: tags(),
         description: format!(
-            "{} industry peer spillover factor with final SIZE and SW L1 neutralization.",
+            "{} industry peer spillover factor with final 20-day return, SIZE, and SW L1 neutralization.",
             def.name
         ),
         dependencies,
@@ -514,9 +515,9 @@ fn compute_industry_momentum(data: &DataPool) -> Result<PanelColumn> {
             _ => None,
         })?;
     let period_ret = adj_close.ts(|values| period_return(values, INDUSTRY_MOM_RETURN_WINDOW))?;
+    let period_ret = mask_bj(&period_ret, panel)?;
     let peer = industry_peer_mean(&period_ret, data)?;
-    let smoothed = peer.ts(|values| ts_mean(values, INDUSTRY_MOM_SMOOTH_WINDOW, MIN_PERIODS))?;
-    neutralize_size_sector(&smoothed, panel, data)
+    neutralize_ret20_size_sector(&peer, panel, data)
 }
 
 fn compute_composite(
@@ -532,13 +533,13 @@ fn compute_composite(
     }
     let composite = average_columns(&panel, &ranked_components)?;
     let filled = fill_missing_with_cs_mean(&composite)?;
-    neutralize_size_sector(&filled, &panel, data)
+    neutralize_ret20_size_sector(&filled, &panel, data)
 }
 
 fn compute_independent(data: &DataPool, component: ComponentSpec) -> Result<PanelColumn> {
     let panel = data.intraday_daily_raw_panel(component.raw_id)?;
     let values = component_series(data, &panel, component)?;
-    neutralize_size_sector(&values, &panel, data)
+    neutralize_ret20_size_sector(&values, &panel, data)
 }
 
 fn component_series(
@@ -547,16 +548,18 @@ fn component_series(
     component: ComponentSpec,
 ) -> Result<PanelColumn> {
     let raw = panel.column(component.raw_id)?;
+    let raw = mask_bj(&raw, panel)?;
     let peer = industry_peer_mean(&raw, data)?;
     let rolled = match component.rolling {
         RollingSpec::Mean(window) => peer.ts(|values| ts_mean(values, window, MIN_PERIODS))?,
         RollingSpec::MeanStd(window) => peer.ts(|values| ts_mean_std_ratio(values, window))?,
     };
-    Ok(if (component.sign - 1.0).abs() <= EPS {
+    let signed = if (component.sign - 1.0).abs() <= EPS {
         rolled
     } else {
         rolled.map_values(|value| clean(value).map(|value| value * component.sign))
-    })
+    };
+    mask_bj(&signed, panel)
 }
 
 fn industry_peer_mean(values: &PanelColumn, data: &DataPool) -> Result<PanelColumn> {

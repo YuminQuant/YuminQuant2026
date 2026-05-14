@@ -1,0 +1,34 @@
+asset_class = "future"
+strategy_id = "ag_sma_20"
+strategy_class = "future::sma"
+
+start_date = 20260105
+end_date = 20260424
+initial_cash = 8000000.0
+
+[clock]
+bar_frequency = "minute"
+
+[execution]
+fill_price = "next_open"
+buy_commission_bps = 0.0
+sell_commission_bps = 0.0
+short_commission_bps = 0.0
+cover_commission_bps = 0.0
+stamp_tax_bps = 0.0
+slippage_bps = 0.0
+lot_size = 1
+
+[future]
+default_margin_ratio = 0.12
+max_margin_ratio = 0.30
+mark_price = "close"
+
+[future.margin_by_product]
+AG = 0.12
+
+[strategy]
+product = "AG"
+window = 20
+capital_per_contract = 500000
+add_quantity = 1

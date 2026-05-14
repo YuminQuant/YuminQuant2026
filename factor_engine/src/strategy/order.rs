@@ -68,7 +68,6 @@ pub struct HoldingSnapshot {
     pub asset_class: String,
     pub trade_date: i32,
     pub trade_time: String,
-    pub bar_frequency: String,
     pub cash: f64,
     pub account_pnl: f64,
     pub realized_pnl_cum: f64,
@@ -98,6 +97,5 @@ pub struct HoldingSnapshot {
     pub trade_prices_json: String,
     pub trade_realized_pnls_json: String,
     pub trade_net_pnls_json: String,
-    pub trade_order_ids_json: String,
     pub trade_fill_ids_json: String,
 }

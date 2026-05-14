@@ -68,7 +68,7 @@ impl ExecutionEngine {
         }
 
         let notional = quantity * price;
-        let fee = notional * config.commission_bps / 10_000.0;
+        let fee = notional * config.commission_bps_for_side(side) / 10_000.0;
         let tax = if side == OrderSide::Sell {
             notional * config.stamp_tax_bps / 10_000.0
         } else {
@@ -233,7 +233,7 @@ impl ExecutionEngine {
             return;
         }
         let notional = quantity * price * multiplier;
-        let fee = notional * config.commission_bps / 10_000.0;
+        let fee = notional * config.commission_bps_for_side(side) / 10_000.0;
         let tax = 0.0;
         let slippage_cost = notional * config.slippage_bps / 10_000.0;
         let total_cost = fee + tax + slippage_cost;
@@ -323,7 +323,7 @@ fn affordable_buy_quantity(
     config: &StrategyRunConfig,
 ) -> f64 {
     let lot = config.lot_size.max(1.0);
-    let unit_cost = price * (1.0 + (config.commission_bps + config.slippage_bps) / 10_000.0);
+    let unit_cost = price * (1.0 + (config.buy_commission_bps + config.slippage_bps) / 10_000.0);
     if unit_cost <= 0.0 || !unit_cost.is_finite() {
         return 0.0;
     }
@@ -347,11 +347,16 @@ fn affordable_future_open_quantity(
     }
     let unit_notional = price * multiplier.max(1.0);
     let unit_need = unit_notional * margin_ratio.max(0.0)
-        + unit_notional * (config.commission_bps + config.slippage_bps) / 10_000.0;
+        + unit_notional
+            * (config.buy_commission_bps.max(config.short_commission_bps) + config.slippage_bps)
+            / 10_000.0;
     if unit_need <= 0.0 || !unit_need.is_finite() {
         return requested;
     }
-    let affordable = round_down_lot(account.available_margin().max(0.0) / unit_need, lot);
+    let cap_margin = account.equity().max(0.0) * config.future.max_margin_ratio;
+    let available_by_cap = (cap_margin - account.margin_required()).max(0.0);
+    let available_margin = account.available_margin().max(0.0).min(available_by_cap);
+    let affordable = round_down_lot(available_margin / unit_need, lot);
     requested.min(affordable).max(0.0)
 }
 
@@ -385,6 +390,10 @@ mod tests {
             bar_frequency: BarFrequency::Daily,
             fill_price: FillPrice::NextOpen,
             commission_bps: 10.0,
+            buy_commission_bps: 10.0,
+            sell_commission_bps: 10.0,
+            short_commission_bps: 10.0,
+            cover_commission_bps: 10.0,
             stamp_tax_bps: 10.0,
             slippage_bps: 0.0,
             lot_size: 100.0,
@@ -407,6 +416,10 @@ mod tests {
             bar_frequency: BarFrequency::Daily,
             fill_price: FillPrice::NextOpen,
             commission_bps: 0.0,
+            buy_commission_bps: 0.0,
+            sell_commission_bps: 0.0,
+            short_commission_bps: 0.0,
+            cover_commission_bps: 0.0,
             stamp_tax_bps: 0.0,
             slippage_bps: 0.0,
             lot_size: 1.0,
@@ -490,6 +503,46 @@ mod tests {
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].quantity, 900.0);
         assert!(fills[0].net_realized_pnl < 0.0);
+    }
+
+    #[test]
+    fn stock_uses_directional_commission_rates() {
+        let mut cfg = config();
+        cfg.commission_bps = 0.0;
+        cfg.buy_commission_bps = 3.0;
+        cfg.sell_commission_bps = 5.0;
+        cfg.stamp_tax_bps = 0.0;
+        let mut account = AccountState::new(10_000.0);
+        let mut execution = ExecutionEngine::new();
+
+        let fills = execution.fill_orders(
+            &cfg,
+            &mut account,
+            &market(10.0),
+            vec![Order {
+                order_id: 1,
+                symbol: "a".to_string(),
+                signed_quantity: 100.0,
+                signal_time: "20200101 daily".to_string(),
+            }],
+        );
+        assert_eq!(fills.len(), 1);
+        assert!((fills[0].fee - 0.3).abs() < 1e-9);
+
+        let fills = execution.fill_orders(
+            &cfg,
+            &mut account,
+            &market(10.0),
+            vec![Order {
+                order_id: 2,
+                symbol: "a".to_string(),
+                signed_quantity: -100.0,
+                signal_time: "20200102 daily".to_string(),
+            }],
+        );
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].side, crate::strategy::order::OrderSide::Sell);
+        assert!((fills[0].fee - 0.5).abs() < 1e-9);
     }
 
     #[test]

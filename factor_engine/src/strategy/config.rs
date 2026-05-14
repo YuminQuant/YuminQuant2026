@@ -86,6 +86,7 @@ impl FutureMarkPrice {
 #[derive(Clone, Debug)]
 pub struct FutureConfig {
     pub default_margin_ratio: f64,
+    pub max_margin_ratio: f64,
     pub mark_price: FutureMarkPrice,
     pub margin_by_product: BTreeMap<String, f64>,
 }
@@ -94,6 +95,7 @@ impl Default for FutureConfig {
     fn default() -> Self {
         Self {
             default_margin_ratio: 0.12,
+            max_margin_ratio: 1.0,
             mark_price: FutureMarkPrice::Close,
             margin_by_product: BTreeMap::new(),
         }
@@ -111,6 +113,10 @@ pub struct StrategyRunConfig {
     pub bar_frequency: BarFrequency,
     pub fill_price: FillPrice,
     pub commission_bps: f64,
+    pub buy_commission_bps: f64,
+    pub sell_commission_bps: f64,
+    pub short_commission_bps: f64,
+    pub cover_commission_bps: f64,
     pub stamp_tax_bps: f64,
     pub slippage_bps: f64,
     pub lot_size: f64,
@@ -161,6 +167,10 @@ impl StrategyRunConfig {
             .f64("future", "default_margin_ratio")
             .unwrap_or(future.default_margin_ratio)
             .max(0.0);
+        future.max_margin_ratio = doc
+            .f64("future", "max_margin_ratio")
+            .unwrap_or(future.max_margin_ratio)
+            .clamp(0.0, 1.0);
         future.mark_price = doc
             .string("future", "mark_price")
             .and_then(|value| FutureMarkPrice::parse(&value))
@@ -177,6 +187,21 @@ impl StrategyRunConfig {
             })
             .collect();
 
+        let commission_bps = doc.f64("execution", "commission_bps").unwrap_or(0.0);
+        let buy_commission_bps = doc
+            .f64("execution", "buy_commission_bps")
+            .or_else(|| doc.f64("execution", "long_commission_bps"))
+            .unwrap_or(commission_bps);
+        let sell_commission_bps = doc
+            .f64("execution", "sell_commission_bps")
+            .unwrap_or(commission_bps);
+        let short_commission_bps = doc
+            .f64("execution", "short_commission_bps")
+            .unwrap_or(commission_bps);
+        let cover_commission_bps = doc
+            .f64("execution", "cover_commission_bps")
+            .unwrap_or(commission_bps);
+
         Ok(Self {
             asset_class,
             strategy_id,
@@ -186,7 +211,11 @@ impl StrategyRunConfig {
             initial_cash,
             bar_frequency,
             fill_price,
-            commission_bps: doc.f64("execution", "commission_bps").unwrap_or(0.0),
+            commission_bps,
+            buy_commission_bps,
+            sell_commission_bps,
+            short_commission_bps,
+            cover_commission_bps,
             stamp_tax_bps: doc.f64("execution", "stamp_tax_bps").unwrap_or(0.0),
             slippage_bps: doc.f64("execution", "slippage_bps").unwrap_or(0.0),
             lot_size: doc.f64("execution", "lot_size").unwrap_or(1.0).max(1.0),
@@ -213,6 +242,15 @@ impl StrategyRunConfig {
             .copied()
             .unwrap_or(self.future.default_margin_ratio)
             .max(0.0)
+    }
+
+    pub fn commission_bps_for_side(&self, side: crate::strategy::order::OrderSide) -> f64 {
+        match side {
+            crate::strategy::order::OrderSide::Buy => self.buy_commission_bps,
+            crate::strategy::order::OrderSide::Sell => self.sell_commission_bps,
+            crate::strategy::order::OrderSide::Short => self.short_commission_bps,
+            crate::strategy::order::OrderSide::Cover => self.cover_commission_bps,
+        }
     }
 }
 

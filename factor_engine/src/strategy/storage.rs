@@ -35,10 +35,6 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
             utf8(rows.iter().map(|row| Some(row.trade_time.clone()))),
         ),
         (
-            "bar_frequency".to_string(),
-            utf8(rows.iter().map(|row| Some(row.bar_frequency.clone()))),
-        ),
-        (
             "cash".to_string(),
             f64_col(rows.iter().map(|row| Some(row.cash))),
         ),
@@ -168,13 +164,6 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
         (
             "trade_net_pnls_json".to_string(),
             utf8(rows.iter().map(|row| Some(row.trade_net_pnls_json.clone()))),
-        ),
-        (
-            "trade_order_ids_json".to_string(),
-            utf8(
-                rows.iter()
-                    .map(|row| Some(row.trade_order_ids_json.clone())),
-            ),
         ),
         (
             "trade_fill_ids_json".to_string(),

@@ -1,0 +1,28 @@
+asset_class = "stock"
+strategy_id = "ml_xgb_top20"
+strategy_class = "stock::top_signal_equal_weight"
+
+start_date = 20260105
+end_date = 20260424
+initial_cash = 100000.0
+
+[clock]
+bar_frequency = "daily"
+
+[execution]
+fill_price = "next_open"
+buy_commission_bps = 3.0
+sell_commission_bps = 5.0
+stamp_tax_bps = 0.0
+slippage_bps = 0.0
+lot_size = 100
+
+[paths]
+model_root = "data/models"
+
+[strategy]
+signal_id = "ml_alpha_xgb"
+signal_root = "data/models"
+rebalance_days = 5
+top_n = 20
+cash_buffer = 0.0

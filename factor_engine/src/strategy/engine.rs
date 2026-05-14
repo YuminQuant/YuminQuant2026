@@ -14,10 +14,11 @@ use crate::strategy::market::{
     load_stock_daily_frames, load_stock_minute_frames, Bar, BarEvent, FutureContractMeta,
     MarketFrame, MarketSnapshot, SessionOpenEvent,
 };
-use crate::strategy::order::{FillEvent, HoldingSnapshot, Order};
+use crate::strategy::order::{FillEvent, HoldingSnapshot, Order, OrderSide};
 use crate::strategy::request::StrategyRunRequest;
 use crate::strategy::storage::write_holdings;
 use crate::strategy::strategies::future::cta_001::Cta001;
+use crate::strategy::strategies::future::sma::SmaStrategy;
 use crate::strategy::strategies::stock::strategy_001::Strategy001;
 use crate::strategy::strategy::Strategy;
 
@@ -184,8 +185,11 @@ fn load_frames(
 
 fn create_strategy(config: &StrategyRunConfig) -> Result<Box<dyn Strategy>> {
     match config.strategy_class.as_str() {
-        "stock::strategy_001" => Ok(Box::new(Strategy001::from_context_config(config))),
+        "stock::strategy_001" | "stock::top_signal_equal_weight" => {
+            Ok(Box::new(Strategy001::from_context_config(config)))
+        }
         "future::cta_001" => Ok(Box::new(Cta001::from_context_config(config))),
+        "future::sma" => Ok(Box::new(SmaStrategy::from_context_config(config))),
         other => Err(err(format!("unknown strategy_class: {other}"))),
     }
 }
@@ -254,7 +258,7 @@ fn holding_snapshot(
         symbols.push(symbol.clone());
         quantities.push(position.quantity.abs());
         signed_quantities.push(position.quantity);
-        directions.push(position.direction().to_string());
+        directions.push(position_direction_code(position.quantity));
         avg_costs.push(position.avg_cost);
         prices.push(price);
         market_values.push(position.market_value());
@@ -269,13 +273,12 @@ fn holding_snapshot(
         asset_class: config.asset_class.as_str().to_string(),
         trade_date: market.event.trade_date,
         trade_time: market.event.trade_time.clone(),
-        bar_frequency: market.event.bar_frequency.as_str().to_string(),
-        cash: account.cash(),
+        cash: round2(account.cash()),
         account_pnl: account.account_pnl(),
         realized_pnl_cum: account.realized_pnl_cum(),
         net_realized_pnl_cum: account.net_realized_pnl_cum(),
-        unrealized_pnl: account.total_unrealized_pnl(),
-        gross_market_value: account.gross_market_value(),
+        unrealized_pnl: round2(account.total_unrealized_pnl()),
+        gross_market_value: round2(account.gross_market_value()),
         net_market_value: account.net_market_value(),
         margin_required: account.margin_required(),
         available_margin: account.available_margin(),
@@ -284,11 +287,11 @@ fn holding_snapshot(
         symbols_json: json_string_array(&symbols),
         quantities_json: json_f64_array(&quantities),
         signed_quantities_json: json_f64_array(&signed_quantities),
-        directions_json: json_string_array(&directions),
-        avg_costs_json: json_f64_array(&avg_costs),
+        directions_json: json_i64_array(&directions),
+        avg_costs_json: json_f64_array_rounded(&avg_costs, 2),
         prices_json: json_f64_array(&prices),
         market_values_json: json_f64_array(&market_values),
-        unrealized_pnls_json: json_f64_array(&unrealized_pnls),
+        unrealized_pnls_json: json_f64_array_rounded(&unrealized_pnls, 2),
         multipliers_json: json_f64_array(&multipliers),
         margin_ratios_json: json_f64_array(&margin_ratios),
         margin_values_json: json_f64_array(&margin_values),
@@ -298,10 +301,10 @@ fn holding_snapshot(
                 .map(|fill| fill.symbol.clone())
                 .collect::<Vec<_>>(),
         ),
-        trade_sides_json: json_string_array(
+        trade_sides_json: json_i64_array(
             &fills
                 .iter()
-                .map(|fill| fill.side.as_str().to_string())
+                .map(|fill| trade_side_code(fill.side))
                 .collect::<Vec<_>>(),
         ),
         trade_quantities_json: json_f64_array(
@@ -313,23 +316,22 @@ fn holding_snapshot(
                 .map(|fill| fill.signed_quantity)
                 .collect::<Vec<_>>(),
         ),
-        trade_prices_json: json_f64_array(
+        trade_prices_json: json_f64_array_rounded(
             &fills.iter().map(|fill| fill.fill_price).collect::<Vec<_>>(),
+            2,
         ),
-        trade_realized_pnls_json: json_f64_array(
+        trade_realized_pnls_json: json_f64_array_rounded(
             &fills
                 .iter()
                 .map(|fill| fill.realized_pnl)
                 .collect::<Vec<_>>(),
+            2,
         ),
         trade_net_pnls_json: json_f64_array(
             &fills
                 .iter()
                 .map(|fill| fill.net_realized_pnl)
                 .collect::<Vec<_>>(),
-        ),
-        trade_order_ids_json: json_i64_array(
-            &fills.iter().map(|fill| fill.order_id).collect::<Vec<_>>(),
         ),
         trade_fill_ids_json: json_i64_array(
             &fills.iter().map(|fill| fill.fill_id).collect::<Vec<_>>(),
@@ -413,6 +415,31 @@ fn json_f64_array(values: &[f64]) -> String {
     )
 }
 
+fn json_f64_array_rounded(values: &[f64], decimals: usize) -> String {
+    if values.is_empty() {
+        return "[]".to_string();
+    }
+    let scale = 10_f64.powi(decimals as i32);
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| {
+                if value.is_finite() {
+                    let mut rounded = (value * scale).round() / scale;
+                    if rounded == 0.0 {
+                        rounded = 0.0;
+                    }
+                    format!("{rounded:.precision$}", precision = decimals)
+                } else {
+                    "null".to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 fn json_i64_array(values: &[i64]) -> String {
     if values.is_empty() {
         return "[]".to_string();
@@ -429,6 +456,36 @@ fn json_i64_array(values: &[i64]) -> String {
 
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn round2(value: f64) -> f64 {
+    if value.is_finite() {
+        let rounded = (value * 100.0).round() / 100.0;
+        if rounded == 0.0 {
+            0.0
+        } else {
+            rounded
+        }
+    } else {
+        value
+    }
+}
+
+fn position_direction_code(quantity: f64) -> i64 {
+    if quantity < 0.0 {
+        -1
+    } else {
+        1
+    }
+}
+
+fn trade_side_code(side: OrderSide) -> i64 {
+    match side {
+        OrderSide::Buy => 1,
+        OrderSide::Sell => -2,
+        OrderSide::Short => -1,
+        OrderSide::Cover => 2,
+    }
 }
 
 #[cfg(test)]
@@ -454,6 +511,10 @@ mod tests {
             bar_frequency: BarFrequency::Daily,
             fill_price: FillPrice::NextOpen,
             commission_bps: 0.0,
+            buy_commission_bps: 0.0,
+            sell_commission_bps: 0.0,
+            short_commission_bps: 0.0,
+            cover_commission_bps: 0.0,
             stamp_tax_bps: 0.0,
             slippage_bps: 0.0,
             lot_size: 100.0,
@@ -544,14 +605,18 @@ mod tests {
         assert_eq!(snapshot.symbols_json, "[\"000001.SZ\"]");
         assert_eq!(snapshot.quantities_json, "[100]");
         assert_eq!(snapshot.signed_quantities_json, "[100]");
-        assert_eq!(snapshot.directions_json, "[\"long\"]");
+        assert_eq!(snapshot.directions_json, "[1]");
+        assert_eq!(snapshot.avg_costs_json, "[10.00]");
         assert_eq!(snapshot.prices_json, "[12]");
-        assert_eq!(snapshot.unrealized_pnls_json, "[200]");
+        assert_eq!(snapshot.unrealized_pnl, 200.0);
+        assert_eq!(snapshot.unrealized_pnls_json, "[200.00]");
         assert_eq!(snapshot.multipliers_json, "[1]");
         assert_eq!(snapshot.margin_values_json, "[0]");
         assert_eq!(snapshot.trade_symbols_json, "[\"000001.SZ\"]");
-        assert_eq!(snapshot.trade_sides_json, "[\"buy\"]");
+        assert_eq!(snapshot.trade_sides_json, "[1]");
         assert_eq!(snapshot.trade_quantities_json, "[100]");
+        assert_eq!(snapshot.trade_prices_json, "[10.00]");
+        assert_eq!(snapshot.trade_realized_pnls_json, "[0.00]");
         assert_eq!(snapshot.trade_net_pnls_json, "[-1]");
     }
 }

@@ -451,13 +451,22 @@ pub fn minute_compute_crossday_stateful_many(
     };
     let bars_by_stock = five_minute_bars_by_stock(table, true)?;
     let mut values = BTreeMap::<String, CrossdayAdditiveValues>::new();
+    for (ts_code, bars) in &bars_by_stock {
+        if !is_bj_stock(ts_code) && !bars.is_empty() {
+            values.insert(ts_code.clone(), CrossdayAdditiveValues::default());
+        }
+    }
     let mut prev_amihud_by_stock = state.prev_last_amihud_by_stock.clone();
     let mut current_last_amihud_by_stock = BTreeMap::<String, f64>::new();
+    let mut bar_values =
+        Vec::<(&String, Option<f64>, Option<f64>)>::with_capacity(bars_by_stock.len());
 
     for bar_idx in 0..FIVE_MINUTES_PER_DAY {
-        let mut market_returns = Vec::new();
-        let mut market_delta_liq = Vec::new();
-        let mut per_stock = BTreeMap::<String, (Option<f64>, Option<f64>)>::new();
+        bar_values.clear();
+        let mut market_ret_sum = 0.0;
+        let mut market_ret_count = 0usize;
+        let mut market_liq_sum = 0.0;
+        let mut market_liq_count = 0usize;
         for (ts_code, bars) in &bars_by_stock {
             if is_bj_stock(ts_code) {
                 continue;
@@ -471,21 +480,30 @@ pub fn minute_compute_crossday_stateful_many(
                 prev_amihud_by_stock.insert(ts_code.clone(), amihud);
                 current_last_amihud_by_stock.insert(ts_code.clone(), amihud);
             }
-            per_stock.insert(ts_code.clone(), (bar.ret, delta_liq));
             if let Some(ret) = bar.ret {
-                market_returns.push(ret);
+                market_ret_sum += ret;
+                market_ret_count += 1;
             }
             if let Some(delta_liq) = delta_liq {
-                market_delta_liq.push(delta_liq);
+                market_liq_sum += delta_liq;
+                market_liq_count += 1;
             }
+            bar_values.push((ts_code, bar.ret, delta_liq));
         }
-        let market_ret = mean_slice(&market_returns);
-        let market_liq = mean_slice(&market_delta_liq);
-        for (ts_code, (ret, delta_liq)) in per_stock {
-            values
-                .entry(ts_code)
-                .or_default()
-                .push_bar(ret, delta_liq, market_ret, market_liq);
+        let market_ret = if market_ret_count == 0 {
+            None
+        } else {
+            finite_value(market_ret_sum / market_ret_count as f64)
+        };
+        let market_liq = if market_liq_count == 0 {
+            None
+        } else {
+            finite_value(market_liq_sum / market_liq_count as f64)
+        };
+        for (ts_code, ret, delta_liq) in &bar_values {
+            if let Some(values) = values.get_mut(ts_code.as_str()) {
+                values.push_bar(*ret, *delta_liq, market_ret, market_liq);
+            }
         }
     }
     state.prev_last_amihud_by_stock = current_last_amihud_by_stock;
@@ -2008,13 +2026,6 @@ fn safe_div_value(numerator: f64, denominator: f64) -> Option<f64> {
         return None;
     }
     finite_value(numerator / denominator)
-}
-
-fn mean_slice(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    finite_value(values.iter().sum::<f64>() / values.len() as f64)
 }
 
 fn clean_value(value: Option<f64>) -> Option<f64> {

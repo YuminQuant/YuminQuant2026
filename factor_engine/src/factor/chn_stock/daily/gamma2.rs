@@ -8,6 +8,6 @@ crate::define_xyzq_liquidity_factor!(
     "Gamma2",
     GAMMA2_RAW_ID,
     LiquidityFamily::Crossday5m,
-    1,
+    3,
     20
 );

@@ -1,0 +1,1125 @@
+cargo:rerun-if-env-changed=ZSTD_SYS_USE_PKG_CONFIG
+cargo:rerun-if-env-changed=CC_FORCE_DISABLE
+CC_FORCE_DISABLE = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+debug.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+entropy_common.c
+error_private.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+fse_decompress.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+pool.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+threading.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+zstd_common.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+fse_compress.c
+hist.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+huf_compress.c
+zstd_compress.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_compress_literals.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_compress_sequences.c
+zstd_compress_superblock.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_double_fast.c
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+zstd_fast.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+zstd_lazy.c
+zstd_ldm.c
+zstd_preSplit.c
+zstd_opt.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+zstdmt_compress.c
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+huf_decompress.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_ddict.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                                                       
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_pc_windows_msvc
+CFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-pc-windows-msvc
+CFLAGS_x86_64-pc-windows-msvc = None
+zstd_decompress.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+zstd_decompress_block.c
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+cargo:warning=cl: 命令行 warning D9002 :忽略未知选项“-fvisibility=hidden”
+                          
+0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+exit code: 0
+cargo:rerun-if-env-changed=AR_x86_64-pc-windows-msvc
+AR_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=AR_x86_64_pc_windows_msvc
+AR_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_AR
+HOST_AR = None
+cargo:rerun-if-env-changed=AR
+AR = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=ARFLAGS
+ARFLAGS = None
+cargo:rerun-if-env-changed=HOST_ARFLAGS
+HOST_ARFLAGS = None
+cargo:rerun-if-env-changed=ARFLAGS_x86_64_pc_windows_msvc
+ARFLAGS_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=ARFLAGS_x86_64-pc-windows-msvc
+ARFLAGS_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=VCINSTALLDIR
+VCINSTALLDIR = None
+cargo:rerun-if-env-changed=VSTEL_MSBuildProjectFullPath
+VSTEL_MSBuildProjectFullPath = None
+cargo:rerun-if-env-changed=VCToolsVersion
+VCToolsVersion = None
+cargo:rerun-if-env-changed=VSCMD_ARG_VCVARS_SPECTRE
+VSCMD_ARG_VCVARS_SPECTRE = None
+cargo:rerun-if-env-changed=WindowsSdkDir
+WindowsSdkDir = None
+cargo:rerun-if-env-changed=WindowsSDKVersion
+WindowsSDKVersion = None
+cargo:rerun-if-env-changed=LIB
+LIB = None
+PATH = Some(D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release;D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\deps;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\lib;C:\Users\Devin\.codex\tmp\arg0\codex-arg0eS3Wo9;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Library\mingw-w64\bin;D:\ProgramData\anaconda3\Library\usr\bin;D:\ProgramData\anaconda3\Library\bin;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\bin;D:\ProgramData\anaconda3\condabin;C:\ProgramData\Eastmoney\Choice\ExcelAddinSSL;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\libnvvp;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\Program Files\NVIDIA Corporation\NVIDIA NvDLISR;C:\Users\Devin\python;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;C:\Program Files\dotnet;D:\Program\Anaconda;D:\Program\Anaconda\Scripts;D:\Program\Anaconda\Library\bin;D:\Program\Anaconda\Library\mingw-w64\bin;C:\Program Files\Microsoft SQL Server\130\Tools\Binn;C:\Program Files\Microsoft SQL Server\150\Tools\Binn;C:\Program Files\nodejs;D:\texlive\2023\bin\windows;C:\Program Files\Pandoc;C:\Program Files\Graphviz\bin;D:\Program Files (x86)\Graphviz\bin;C:\Program Files\NVIDIA Corporation\Nsight Compute 2022.1.0;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.6\lib\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS\System32\OpenSSH;D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;D:\ProgramData\anaconda3;D:\ProgramData\anaconda3\Scripts;D:\ProgramData\anaconda3\Library\bin;C:\Users\Devin\.cargo\bin;D:\Program Files\Git\cmd;C:\Program Files\MySQL\MySQL Shell 8.0\bin;C:\Users\Devin\AppData\Local\Microsoft\WindowsApps;C:\Users\Devin\.dotnet\tools;C:\Program Files\mingw64\bin;D:\Program Files\JetBrains\PyCharm Community Edition 2024.1\bin;D:\Program\Anaconda\Lib\site-packages\Graphviz\bin;C:\Users\Devin\AppData\Roaming\npm;D:\Wind\Wind.NET.Client\WindNET\bin;D:\Wind\Wind.NET.Client\WindNET\x64;D:\Users\Devin\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Devin\AppData\Local\OpenAI\Codex\bin;C:\Program Files\WindowsApps\OpenAI.Codex_26.506.3741.0_x64__2p2nqsd0c76g0\app\resources;C:\Users\Devin\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin)
+cargo:rerun-if-env-changed=INCLUDE
+INCLUDE = None
+cargo:rerun-if-env-changed=CC_x86_64-pc-windows-msvc
+CC_x86_64-pc-windows-msvc = None
+cargo:rerun-if-env-changed=CC_x86_64_pc_windows_msvc
+CC_x86_64_pc_windows_msvc = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rustc-link-search=native=D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\atlmfc\lib\x64
+cargo:rustc-link-lib=static=zstd
+cargo:rustc-link-search=native=D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\build\zstd-sys-f619e27b8de9a69d\out
+cargo:root=D:\yuminwu_workspace\Internship\YuminQuant\factor_engine\target_liq_verify\release\build\zstd-sys-f619e27b8de9a69d\out
+cargo:include=C:\Users\Devin\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\zstd-sys-2.0.16+zstd.1.5.7\zstd/lib

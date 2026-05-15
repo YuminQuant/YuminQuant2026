@@ -30,7 +30,8 @@ pub const CROSSDAY_5M_PROVIDER_KEY: &str = "xyzq_liquidity_crossday_5m_provider"
 const SAMPLE_START: &str = "09:31:00";
 const SAMPLE_END: &str = "15:00:00";
 const EPS: f64 = f64::EPSILON;
-const RAW_LOOKBACK_DAYS: usize = 20;
+const INTRADAY_RAW_WINDOW_DAYS: usize = 1;
+const CROSSDAY_5M_RAW_WINDOW_DAYS: usize = 10;
 const FIVE_MINUTES_PER_DAY: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,7 +102,11 @@ pub fn raw_spec(raw_id: &str, family: LiquidityFamily) -> IntradayDailyRawSpec {
         }
         LiquidityFamily::Operator => &["open", "close", "vol"][..],
     };
-    stock_minute_raw_spec(raw_id, RAW_VERSION, columns, RAW_LOOKBACK_DAYS)
+    let window_days = match family {
+        LiquidityFamily::OneMinute | LiquidityFamily::Operator => INTRADAY_RAW_WINDOW_DAYS,
+        LiquidityFamily::Crossday5m => CROSSDAY_5M_RAW_WINDOW_DAYS,
+    };
+    stock_minute_raw_spec(raw_id, RAW_VERSION, columns, window_days)
 }
 
 pub fn raw_specs_for_family(family: LiquidityFamily) -> Vec<IntradayDailyRawSpec> {
@@ -1788,6 +1793,17 @@ fn tags() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_specs_use_daily_window_for_stateless_liquidity_families() {
+        let one_minute = raw_spec(AMIHUD_1MIN_RAW_ID, LiquidityFamily::OneMinute);
+        let operator = raw_spec(CLOSE_APBETA4_RAW_ID, LiquidityFamily::Operator);
+        let crossday = raw_spec(APBETA2_RAW_ID, LiquidityFamily::Crossday5m);
+
+        assert_eq!(one_minute.window_days, 1);
+        assert_eq!(operator.window_days, 1);
+        assert_eq!(crossday.window_days, 10);
+    }
 
     #[test]
     fn amihud_uses_close_over_open_return_and_amount() {

@@ -8,6 +8,6 @@ crate::define_xyzq_liquidity_factor!(
     "APBeta3",
     APBETA3_RAW_ID,
     LiquidityFamily::Crossday5m,
-    1,
+    7,
     20
 );

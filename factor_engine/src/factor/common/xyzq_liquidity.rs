@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
@@ -10,16 +10,21 @@ use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
 use crate::factor::common::stock_daily_ops::{is_bj_stock, mask_bj, neutralize_ret20_size_sector};
 use crate::factor::common::stock_daily_raw_ids::{
-    AMIHUD_1MIN_RAW_ID, APBETA1_RAW_ID, APBETA2_RAW_ID, APBETA3_RAW_ID, APBETA4_RAW_ID,
-    CLOSEVOLCORR_GAMMA3_RAW_ID, CLOSE_APBETA4_RAW_ID, GAMMA1_RAW_ID, GAMMA2_RAW_ID, GAMMA3_RAW_ID,
-    GAMMA4_RAW_ID, LIQRESID_RAW_ID, RSI_GAMMA3_RAW_ID, RV_APBETA3_RAW_ID, VARVAR_GAMMA3_RAW_ID,
-    VOLRATIO_GAMMA4_RAW_ID,
+    AMIHUD_1MIN_RAW_ID, APBETA1_RAW_ID, APBETA2_5M_N_RAW_ID, APBETA2_5M_SUM_XY_RAW_ID,
+    APBETA2_5M_SUM_X_RAW_ID, APBETA2_5M_SUM_Y_RAW_ID, APBETA2_5M_SUM_Z2_RAW_ID,
+    APBETA2_5M_SUM_Z_RAW_ID, APBETA2_RAW_ID, APBETA3_5M_N_RAW_ID, APBETA3_5M_SUM_XY_RAW_ID,
+    APBETA3_5M_SUM_X_RAW_ID, APBETA3_5M_SUM_Y_RAW_ID, APBETA3_5M_SUM_Z2_RAW_ID,
+    APBETA3_5M_SUM_Z_RAW_ID, APBETA3_RAW_ID, APBETA4_RAW_ID, CLOSEVOLCORR_GAMMA3_RAW_ID,
+    CLOSE_APBETA4_RAW_ID, GAMMA1_RAW_ID, GAMMA2_5M_DEN_RAW_ID, GAMMA2_5M_NUM_RAW_ID,
+    GAMMA2_5M_N_RAW_ID, GAMMA2_RAW_ID, GAMMA3_RAW_ID, GAMMA4_RAW_ID, LIQRESID_RAW_ID,
+    RSI_GAMMA3_RAW_ID, RV_APBETA3_RAW_ID, VARVAR_GAMMA3_RAW_ID, VOLRATIO_GAMMA4_RAW_ID,
 };
 use crate::factor::common::{
     intraday_time_in_range, stock_minute_raw_spec, ClassificationLevel, ClassificationMap,
+    DailyPanel, PanelColumn,
 };
 use crate::factor::IntradayRawMaterializeMode;
-use crate::operators::ts_mean;
+use crate::operators::{ts_mean, ts_sum};
 
 pub const VERSION: &str = "0.1.0";
 pub const RAW_VERSION: &str = "0.1.0";
@@ -31,7 +36,7 @@ const SAMPLE_START: &str = "09:31:00";
 const SAMPLE_END: &str = "15:00:00";
 const EPS: f64 = f64::EPSILON;
 const INTRADAY_RAW_WINDOW_DAYS: usize = 1;
-const CROSSDAY_5M_RAW_WINDOW_DAYS: usize = 10;
+const CROSSDAY_5M_RAW_WINDOW_DAYS: usize = 2;
 const FIVE_MINUTES_PER_DAY: usize = 48;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,8 +80,51 @@ pub fn operator_raw_ids() -> [&'static str; 6] {
     ]
 }
 
-pub fn crossday_5m_raw_ids() -> [&'static str; 3] {
-    [APBETA2_RAW_ID, APBETA3_RAW_ID, GAMMA2_RAW_ID]
+pub fn crossday_5m_raw_ids() -> [&'static str; 15] {
+    [
+        APBETA2_5M_N_RAW_ID,
+        APBETA2_5M_SUM_X_RAW_ID,
+        APBETA2_5M_SUM_Y_RAW_ID,
+        APBETA2_5M_SUM_XY_RAW_ID,
+        APBETA2_5M_SUM_Z_RAW_ID,
+        APBETA2_5M_SUM_Z2_RAW_ID,
+        APBETA3_5M_N_RAW_ID,
+        APBETA3_5M_SUM_X_RAW_ID,
+        APBETA3_5M_SUM_Y_RAW_ID,
+        APBETA3_5M_SUM_XY_RAW_ID,
+        APBETA3_5M_SUM_Z_RAW_ID,
+        APBETA3_5M_SUM_Z2_RAW_ID,
+        GAMMA2_5M_N_RAW_ID,
+        GAMMA2_5M_NUM_RAW_ID,
+        GAMMA2_5M_DEN_RAW_ID,
+    ]
+}
+
+pub fn crossday_5m_raw_ids_for_factor(raw_id: &str) -> Vec<&'static str> {
+    match raw_id {
+        APBETA2_RAW_ID => vec![
+            APBETA2_5M_N_RAW_ID,
+            APBETA2_5M_SUM_X_RAW_ID,
+            APBETA2_5M_SUM_Y_RAW_ID,
+            APBETA2_5M_SUM_XY_RAW_ID,
+            APBETA2_5M_SUM_Z_RAW_ID,
+            APBETA2_5M_SUM_Z2_RAW_ID,
+        ],
+        APBETA3_RAW_ID => vec![
+            APBETA3_5M_N_RAW_ID,
+            APBETA3_5M_SUM_X_RAW_ID,
+            APBETA3_5M_SUM_Y_RAW_ID,
+            APBETA3_5M_SUM_XY_RAW_ID,
+            APBETA3_5M_SUM_Z_RAW_ID,
+            APBETA3_5M_SUM_Z2_RAW_ID,
+        ],
+        GAMMA2_RAW_ID => vec![
+            GAMMA2_5M_N_RAW_ID,
+            GAMMA2_5M_NUM_RAW_ID,
+            GAMMA2_5M_DEN_RAW_ID,
+        ],
+        _ => Vec::new(),
+    }
 }
 
 pub fn raw_ids_for_family(family: LiquidityFamily) -> Vec<&'static str> {
@@ -135,17 +183,39 @@ pub fn factor_spec(def: XyzqLiquidityFactorDef) -> FactorSpec {
             DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
         ],
-        intraday_raw_dependencies: vec![IntradayDailyRawRequest::new(
-            def.raw_id,
-            def.lookback.saturating_sub(1),
-        )],
+        intraday_raw_dependencies: intraday_raw_dependencies_for_factor(def),
         lookback: Lookback {
             trading_days: def.lookback.max(20),
         },
     }
 }
 
+fn intraday_raw_dependencies_for_factor(
+    def: XyzqLiquidityFactorDef,
+) -> Vec<IntradayDailyRawRequest> {
+    match def.family {
+        LiquidityFamily::Crossday5m => {
+            let daily_lookback = match def.raw_id {
+                APBETA3_RAW_ID => 6,
+                APBETA2_RAW_ID | GAMMA2_RAW_ID => 2,
+                _ => def.lookback.saturating_sub(1),
+            };
+            crossday_5m_raw_ids_for_factor(def.raw_id)
+                .into_iter()
+                .map(|raw_id| IntradayDailyRawRequest::new(raw_id, daily_lookback))
+                .collect()
+        }
+        _ => vec![IntradayDailyRawRequest::new(
+            def.raw_id,
+            def.lookback.saturating_sub(1),
+        )],
+    }
+}
+
 pub fn compute_factor(def: XyzqLiquidityFactorDef, data: &DataPool) -> Result<FactorSeries> {
+    if def.family == LiquidityFamily::Crossday5m {
+        return compute_crossday_5m_factor(def, data);
+    }
     let panel = data.intraday_daily_raw_panel(def.raw_id)?;
     let raw = panel.column(def.raw_id)?;
     let raw = mask_bj(&raw, &panel)?;
@@ -157,6 +227,147 @@ pub fn compute_factor(def: XyzqLiquidityFactorDef, data: &DataPool) -> Result<Fa
     let smoothed = mask_bj(&smoothed, &panel)?;
     let factor = neutralize_ret20_size_sector(&smoothed, &panel, data)?;
     Ok(factor.to_factor_series(factor_spec(def)))
+}
+
+fn compute_crossday_5m_factor(
+    def: XyzqLiquidityFactorDef,
+    data: &DataPool,
+) -> Result<FactorSeries> {
+    let (panel, raw) = match def.raw_id {
+        APBETA2_RAW_ID => {
+            let panel = data.intraday_daily_raw_panel(APBETA2_5M_N_RAW_ID)?;
+            let raw = restore_moment_additive_factor(
+                panel,
+                APBETA2_5M_N_RAW_ID,
+                APBETA2_5M_SUM_X_RAW_ID,
+                APBETA2_5M_SUM_Y_RAW_ID,
+                APBETA2_5M_SUM_XY_RAW_ID,
+                APBETA2_5M_SUM_Z_RAW_ID,
+                APBETA2_5M_SUM_Z2_RAW_ID,
+                def.smooth_window,
+            )?;
+            (panel, raw)
+        }
+        APBETA3_RAW_ID => {
+            let panel = data.intraday_daily_raw_panel(APBETA3_5M_N_RAW_ID)?;
+            let raw = restore_moment_additive_factor(
+                panel,
+                APBETA3_5M_N_RAW_ID,
+                APBETA3_5M_SUM_X_RAW_ID,
+                APBETA3_5M_SUM_Y_RAW_ID,
+                APBETA3_5M_SUM_XY_RAW_ID,
+                APBETA3_5M_SUM_Z_RAW_ID,
+                APBETA3_5M_SUM_Z2_RAW_ID,
+                def.smooth_window,
+            )?;
+            (panel, raw)
+        }
+        GAMMA2_RAW_ID => {
+            let panel = data.intraday_daily_raw_panel(GAMMA2_5M_N_RAW_ID)?;
+            let raw = restore_gamma_additive_factor(
+                panel,
+                GAMMA2_5M_N_RAW_ID,
+                GAMMA2_5M_NUM_RAW_ID,
+                GAMMA2_5M_DEN_RAW_ID,
+                def.smooth_window,
+            )?;
+            (panel, raw)
+        }
+        _ => {
+            return Err(err(format!(
+                "unsupported crossday liquidity raw: {}",
+                def.raw_id
+            )))
+        }
+    };
+    let raw = mask_bj(&raw, panel)?;
+    let factor = neutralize_ret20_size_sector(&raw, panel, data)?;
+    Ok(factor.to_factor_series(factor_spec(def)))
+}
+
+fn restore_moment_additive_factor(
+    panel: &DailyPanel,
+    n_raw_id: &str,
+    sum_x_raw_id: &str,
+    sum_y_raw_id: &str,
+    sum_xy_raw_id: &str,
+    sum_z_raw_id: &str,
+    sum_z2_raw_id: &str,
+    window: usize,
+) -> Result<PanelColumn> {
+    let n = rolling_raw_sum(panel, n_raw_id, window)?;
+    let sum_x = rolling_raw_sum(panel, sum_x_raw_id, window)?;
+    let sum_y = rolling_raw_sum(panel, sum_y_raw_id, window)?;
+    let sum_xy = rolling_raw_sum(panel, sum_xy_raw_id, window)?;
+    let sum_z = rolling_raw_sum(panel, sum_z_raw_id, window)?;
+    let sum_z2 = rolling_raw_sum(panel, sum_z2_raw_id, window)?;
+    let values = n
+        .values()
+        .iter()
+        .zip(sum_x.values())
+        .zip(sum_y.values())
+        .zip(sum_xy.values())
+        .zip(sum_z.values())
+        .zip(sum_z2.values())
+        .map(|(((((n, sum_x), sum_y), sum_xy), sum_z), sum_z2)| {
+            moment_ratio_from_sums(*n, *sum_x, *sum_y, *sum_xy, *sum_z, *sum_z2)
+        })
+        .collect();
+    panel.column_from_values(values)
+}
+
+fn restore_gamma_additive_factor(
+    panel: &DailyPanel,
+    n_raw_id: &str,
+    num_raw_id: &str,
+    den_raw_id: &str,
+    window: usize,
+) -> Result<PanelColumn> {
+    let n = rolling_raw_sum(panel, n_raw_id, window)?;
+    let num = rolling_raw_sum(panel, num_raw_id, window)?;
+    let den = rolling_raw_sum(panel, den_raw_id, window)?;
+    let values = n
+        .values()
+        .iter()
+        .zip(num.values())
+        .zip(den.values())
+        .map(|((n, num), den)| gamma_ratio_from_sums(*n, *num, *den))
+        .collect();
+    panel.column_from_values(values)
+}
+
+fn rolling_raw_sum(panel: &DailyPanel, raw_id: &str, window: usize) -> Result<PanelColumn> {
+    panel.column(raw_id)?.ts(|values| ts_sum(values, window, 1))
+}
+
+fn moment_ratio_from_sums(
+    n: Option<f64>,
+    sum_x: Option<f64>,
+    sum_y: Option<f64>,
+    sum_xy: Option<f64>,
+    sum_z: Option<f64>,
+    sum_z2: Option<f64>,
+) -> Option<f64> {
+    let n = n.and_then(finite_value)?;
+    if n < 2.0 {
+        return None;
+    }
+    let sum_x = sum_x.and_then(finite_value)?;
+    let sum_y = sum_y.and_then(finite_value)?;
+    let sum_xy = sum_xy.and_then(finite_value)?;
+    let sum_z = sum_z.and_then(finite_value)?;
+    let sum_z2 = sum_z2.and_then(finite_value)?;
+    let numerator = sum_xy - sum_x * sum_y / n;
+    let denominator = sum_z2 - sum_z * sum_z / n;
+    safe_div_value(numerator, denominator)
+}
+
+fn gamma_ratio_from_sums(n: Option<f64>, num: Option<f64>, den: Option<f64>) -> Option<f64> {
+    let n = n.and_then(finite_value)?;
+    if n < 1.0 {
+        return None;
+    }
+    safe_div_value(num.and_then(finite_value)?, den.and_then(finite_value)?)
 }
 
 pub fn intraday_raw_auxiliary_requirements(
@@ -231,6 +442,7 @@ pub fn minute_compute_crossday_stateful_many(
         .first()
         .ok_or_else(|| err("crossday liquidity raw requires one target date"))?;
     let Some(table) = data.minute(DatasetId::StockMinute1m, trade_date) else {
+        state.prev_last_amihud_by_stock.clear();
         return Ok(series_from_crossday_values(
             trade_date,
             &requested,
@@ -238,7 +450,9 @@ pub fn minute_compute_crossday_stateful_many(
         ));
     };
     let bars_by_stock = five_minute_bars_by_stock(table, true)?;
-    let mut values = BTreeMap::<String, CrossdayValues>::new();
+    let mut values = BTreeMap::<String, CrossdayAdditiveValues>::new();
+    let mut prev_amihud_by_stock = state.prev_last_amihud_by_stock.clone();
+    let mut current_last_amihud_by_stock = BTreeMap::<String, f64>::new();
 
     for bar_idx in 0..FIVE_MINUTES_PER_DAY {
         let mut market_returns = Vec::new();
@@ -251,8 +465,12 @@ pub fn minute_compute_crossday_stateful_many(
             let Some(bar) = bars.get(bar_idx) else {
                 continue;
             };
-            let stock_state = state.stocks.entry(ts_code.clone()).or_default();
-            let delta_liq = stock_state.next_delta_liq(bar.amihud);
+            let prev_amihud = prev_amihud_by_stock.get(ts_code).copied();
+            let delta_liq = log_diff(bar.amihud, prev_amihud);
+            if let Some(amihud) = bar.amihud {
+                prev_amihud_by_stock.insert(ts_code.clone(), amihud);
+                current_last_amihud_by_stock.insert(ts_code.clone(), amihud);
+            }
             per_stock.insert(ts_code.clone(), (bar.ret, delta_liq));
             if let Some(ret) = bar.ret {
                 market_returns.push(ret);
@@ -264,18 +482,17 @@ pub fn minute_compute_crossday_stateful_many(
         let market_ret = mean_slice(&market_returns);
         let market_liq = mean_slice(&market_delta_liq);
         for (ts_code, (ret, delta_liq)) in per_stock {
-            let stock_state = state.stocks.entry(ts_code).or_default();
-            stock_state.push_bar(ret, delta_liq, market_ret, market_liq);
+            values
+                .entry(ts_code)
+                .or_default()
+                .push_bar(ret, delta_liq, market_ret, market_liq);
         }
     }
+    state.prev_last_amihud_by_stock = current_last_amihud_by_stock;
 
     for ts_code in bars_by_stock.keys() {
         if is_bj_stock(ts_code) {
-            values.insert(ts_code.clone(), CrossdayValues::default());
-            continue;
-        }
-        if let Some(stock_state) = state.stocks.get(ts_code) {
-            values.insert(ts_code.clone(), stock_state.final_values());
+            values.insert(ts_code.clone(), CrossdayAdditiveValues::default());
         }
     }
 
@@ -308,9 +525,22 @@ macro_rules! define_xyzq_liquidity_factor {
             }
 
             fn intraday_raw_specs(&self) -> Vec<$crate::core::IntradayDailyRawSpec> {
-                vec![$crate::factor::common::xyzq_liquidity::raw_spec(
-                    DEF.raw_id, DEF.family,
-                )]
+                match DEF.family {
+                    $crate::factor::common::xyzq_liquidity::LiquidityFamily::Crossday5m => {
+                        $crate::factor::common::xyzq_liquidity::crossday_5m_raw_ids_for_factor(DEF.raw_id)
+                            .iter()
+                            .map(|raw_id| {
+                                $crate::factor::common::xyzq_liquidity::raw_spec(
+                                    raw_id,
+                                    DEF.family,
+                                )
+                            })
+                            .collect()
+                    }
+                    _ => vec![$crate::factor::common::xyzq_liquidity::raw_spec(
+                        DEF.raw_id, DEF.family,
+                    )],
+                }
             }
 
             fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
@@ -408,10 +638,27 @@ struct OperatorValues {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct CrossdayValues {
-    apbeta2: Option<f64>,
-    apbeta3: Option<f64>,
-    gamma2: Option<f64>,
+struct CrossdayAdditiveValues {
+    apbeta2: MomentAdditiveStats,
+    apbeta3: MomentAdditiveStats,
+    gamma2: GammaAdditiveStats,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MomentAdditiveStats {
+    n: usize,
+    sum_x: f64,
+    sum_y: f64,
+    sum_xy: f64,
+    sum_z: f64,
+    sum_z2: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct GammaAdditiveStats {
+    n: usize,
+    num: f64,
+    den: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -497,16 +744,7 @@ struct FiveMinuteBar {
 
 #[derive(Debug, Default)]
 pub struct Crossday5mState {
-    stocks: BTreeMap<String, CrossdayStockState>,
-}
-
-#[derive(Debug, Default)]
-struct CrossdayStockState {
-    prev_amihud: Option<f64>,
-    ret: VecDeque<Option<f64>>,
-    delta_liq: VecDeque<Option<f64>>,
-    market_ret: VecDeque<Option<f64>>,
-    market_liq: VecDeque<Option<f64>>,
+    prev_last_amihud_by_stock: BTreeMap<String, f64>,
 }
 
 fn compute_one_minute_raws(
@@ -1074,15 +1312,7 @@ impl SumCount {
     }
 }
 
-impl CrossdayStockState {
-    fn next_delta_liq(&mut self, amihud: Option<f64>) -> Option<f64> {
-        let delta = log_diff(amihud, self.prev_amihud);
-        if amihud.is_some() {
-            self.prev_amihud = amihud;
-        }
-        delta
-    }
-
+impl CrossdayAdditiveValues {
     fn push_bar(
         &mut self,
         ret: Option<f64>,
@@ -1090,115 +1320,59 @@ impl CrossdayStockState {
         market_ret: Option<f64>,
         market_liq: Option<f64>,
     ) {
-        push_deque(&mut self.ret, ret, 336);
-        push_deque(&mut self.delta_liq, delta_liq, 336);
-        push_deque(&mut self.market_ret, market_ret, 336);
-        push_deque(&mut self.market_liq, market_liq, 336);
-    }
-
-    fn final_values(&self) -> CrossdayValues {
-        CrossdayValues {
-            apbeta2: crossday_covariance_ratio(
-                &self.delta_liq,
-                &self.market_ret,
-                &self.market_ret,
-                &self.market_liq,
-                144,
-            ),
-            apbeta3: crossday_covariance_ratio(
-                &self.ret,
-                &self.market_liq,
-                &self.market_ret,
-                &self.market_liq,
-                336,
-            ),
-            gamma2: crossday_gamma2(&self.delta_liq, &self.market_ret, &self.market_liq, 144),
+        if let (Some(delta_liq), Some(market_ret), Some(market_liq)) =
+            (delta_liq, market_ret, market_liq)
+        {
+            let z = market_ret - market_liq;
+            self.apbeta2.push(delta_liq, market_ret, z);
+            if market_ret < market_liq {
+                self.gamma2.push(-delta_liq * market_ret, z * z);
+            }
+        }
+        if let (Some(ret), Some(market_ret), Some(market_liq)) = (ret, market_ret, market_liq) {
+            let z = market_ret - market_liq;
+            self.apbeta3.push(ret, market_liq, z);
         }
     }
 }
 
-fn crossday_covariance_ratio(
-    left: &VecDeque<Option<f64>>,
-    numerator_right: &VecDeque<Option<f64>>,
-    denom_ret: &VecDeque<Option<f64>>,
-    market_liq: &VecDeque<Option<f64>>,
-    window: usize,
-) -> Option<f64> {
-    let rows = tail_zip4(left, numerator_right, denom_ret, market_liq, window);
-    if rows.len() < 2 {
-        return None;
-    }
-    let mean_left = rows.iter().map(|row| row.0).sum::<f64>() / rows.len() as f64;
-    let mean_right = rows.iter().map(|row| row.1).sum::<f64>() / rows.len() as f64;
-    let state_mean = rows.iter().map(|row| row.2 - row.3).sum::<f64>() / rows.len() as f64;
-    let numerator = rows
-        .iter()
-        .map(|row| (row.0 - mean_left) * (row.1 - mean_right))
-        .sum::<f64>();
-    let denominator = rows
-        .iter()
-        .map(|row| {
-            let centered = row.2 - row.3 - state_mean;
-            centered * centered
-        })
-        .sum::<f64>();
-    safe_div_value(numerator, denominator)
-}
-
-fn crossday_gamma2(
-    delta_liq: &VecDeque<Option<f64>>,
-    market_ret: &VecDeque<Option<f64>>,
-    market_liq: &VecDeque<Option<f64>>,
-    window: usize,
-) -> Option<f64> {
-    let rows = tail_zip3(delta_liq, market_ret, market_liq, window);
-    let mut numerator = 0.0;
-    let mut denominator = 0.0;
-    let mut count = 0usize;
-    for (delta_liq, market_ret, market_liq) in rows {
-        if market_ret >= market_liq {
-            continue;
+impl MomentAdditiveStats {
+    fn push(&mut self, x: f64, y: f64, z: f64) {
+        if x.is_finite() && y.is_finite() && z.is_finite() {
+            self.n += 1;
+            self.sum_x += x;
+            self.sum_y += y;
+            self.sum_xy += x * y;
+            self.sum_z += z;
+            self.sum_z2 += z * z;
         }
-        numerator += -delta_liq * market_ret;
-        let diff = market_ret - market_liq;
-        denominator += diff * diff;
-        count += 1;
     }
-    if count == 0 {
-        return None;
+
+    fn n_value(self) -> Option<f64> {
+        (self.n > 0).then_some(self.n as f64)
     }
-    safe_div_value(numerator, denominator)
+
+    fn value_if_nonempty(self, value: f64) -> Option<f64> {
+        (self.n > 0).then_some(value).and_then(finite_value)
+    }
 }
 
-fn tail_zip3(
-    left: &VecDeque<Option<f64>>,
-    mid: &VecDeque<Option<f64>>,
-    right: &VecDeque<Option<f64>>,
-    window: usize,
-) -> Vec<(f64, f64, f64)> {
-    let len = left.len().min(mid.len()).min(right.len());
-    let start = len.saturating_sub(window);
-    (start..len)
-        .filter_map(|idx| Some((left[idx]?, mid[idx]?, right[idx]?)))
-        .collect()
-}
+impl GammaAdditiveStats {
+    fn push(&mut self, num: f64, den: f64) {
+        if num.is_finite() && den.is_finite() {
+            self.n += 1;
+            self.num += num;
+            self.den += den;
+        }
+    }
 
-fn tail_zip4(
-    first: &VecDeque<Option<f64>>,
-    second: &VecDeque<Option<f64>>,
-    third: &VecDeque<Option<f64>>,
-    fourth: &VecDeque<Option<f64>>,
-    window: usize,
-) -> Vec<(f64, f64, f64, f64)> {
-    let len = first
-        .len()
-        .min(second.len())
-        .min(third.len())
-        .min(fourth.len());
-    let start = len.saturating_sub(window);
-    (start..len)
-        .filter_map(|idx| Some((first[idx]?, second[idx]?, third[idx]?, fourth[idx]?)))
-        .collect()
+    fn n_value(self) -> Option<f64> {
+        (self.n > 0).then_some(self.n as f64)
+    }
+
+    fn value_if_nonempty(self, value: f64) -> Option<f64> {
+        (self.n > 0).then_some(value).and_then(finite_value)
+    }
 }
 
 fn five_minute_bars_by_stock(
@@ -1412,7 +1586,7 @@ fn push_operator_values<'a, I>(
 fn series_from_crossday_values(
     trade_date: i32,
     requested: &BTreeSet<&'static str>,
-    values: BTreeMap<String, CrossdayValues>,
+    values: BTreeMap<String, CrossdayAdditiveValues>,
 ) -> Vec<IntradayDailyRawSeries> {
     let mut by_raw_id = crossday_5m_raw_ids()
         .iter()
@@ -1423,26 +1597,113 @@ fn series_from_crossday_values(
             trade_date,
             ts_code,
         };
+        let apbeta2 = values.apbeta2;
         push_raw_value(
             &mut by_raw_id,
             requested,
-            APBETA2_RAW_ID,
+            APBETA2_5M_N_RAW_ID,
             &key,
-            values.apbeta2,
+            apbeta2.n_value(),
         );
         push_raw_value(
             &mut by_raw_id,
             requested,
-            APBETA3_RAW_ID,
+            APBETA2_5M_SUM_X_RAW_ID,
             &key,
-            values.apbeta3,
+            apbeta2.value_if_nonempty(apbeta2.sum_x),
         );
         push_raw_value(
             &mut by_raw_id,
             requested,
-            GAMMA2_RAW_ID,
+            APBETA2_5M_SUM_Y_RAW_ID,
             &key,
-            values.gamma2,
+            apbeta2.value_if_nonempty(apbeta2.sum_y),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA2_5M_SUM_XY_RAW_ID,
+            &key,
+            apbeta2.value_if_nonempty(apbeta2.sum_xy),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA2_5M_SUM_Z_RAW_ID,
+            &key,
+            apbeta2.value_if_nonempty(apbeta2.sum_z),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA2_5M_SUM_Z2_RAW_ID,
+            &key,
+            apbeta2.value_if_nonempty(apbeta2.sum_z2),
+        );
+        let apbeta3 = values.apbeta3;
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA3_5M_N_RAW_ID,
+            &key,
+            apbeta3.n_value(),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA3_5M_SUM_X_RAW_ID,
+            &key,
+            apbeta3.value_if_nonempty(apbeta3.sum_x),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA3_5M_SUM_Y_RAW_ID,
+            &key,
+            apbeta3.value_if_nonempty(apbeta3.sum_y),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA3_5M_SUM_XY_RAW_ID,
+            &key,
+            apbeta3.value_if_nonempty(apbeta3.sum_xy),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA3_5M_SUM_Z_RAW_ID,
+            &key,
+            apbeta3.value_if_nonempty(apbeta3.sum_z),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            APBETA3_5M_SUM_Z2_RAW_ID,
+            &key,
+            apbeta3.value_if_nonempty(apbeta3.sum_z2),
+        );
+        let gamma2 = values.gamma2;
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            GAMMA2_5M_N_RAW_ID,
+            &key,
+            gamma2.n_value(),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            GAMMA2_5M_NUM_RAW_ID,
+            &key,
+            gamma2.value_if_nonempty(gamma2.num),
+        );
+        push_raw_value(
+            &mut by_raw_id,
+            requested,
+            GAMMA2_5M_DEN_RAW_ID,
+            &key,
+            gamma2.value_if_nonempty(gamma2.den),
         );
     }
     crossday_5m_raw_ids()
@@ -1749,13 +2010,6 @@ fn safe_div_value(numerator: f64, denominator: f64) -> Option<f64> {
     finite_value(numerator / denominator)
 }
 
-fn push_deque(values: &mut VecDeque<Option<f64>>, value: Option<f64>, cap: usize) {
-    values.push_back(value.and_then(finite_value));
-    while values.len() > cap {
-        values.pop_front();
-    }
-}
-
 fn mean_slice(values: &[f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -1798,11 +2052,11 @@ mod tests {
     fn raw_specs_use_daily_window_for_stateless_liquidity_families() {
         let one_minute = raw_spec(AMIHUD_1MIN_RAW_ID, LiquidityFamily::OneMinute);
         let operator = raw_spec(CLOSE_APBETA4_RAW_ID, LiquidityFamily::Operator);
-        let crossday = raw_spec(APBETA2_RAW_ID, LiquidityFamily::Crossday5m);
+        let crossday = raw_spec(APBETA2_5M_N_RAW_ID, LiquidityFamily::Crossday5m);
 
         assert_eq!(one_minute.window_days, 1);
         assert_eq!(operator.window_days, 1);
-        assert_eq!(crossday.window_days, 10);
+        assert_eq!(crossday.window_days, 2);
     }
 
     #[test]
@@ -1836,6 +2090,46 @@ mod tests {
         liq[0] = Some(1.0);
         liq[1] = Some(1.0);
         assert!(covariance_ratio(&left, &right, &right, &liq).is_some());
+    }
+
+    #[test]
+    fn crossday_moment_additive_stats_restore_direct_formula() {
+        let rows = [(1.0, 4.0, 2.0), (3.0, 8.0, 5.0), (5.0, 7.0, 4.0)];
+        let mut stats = MomentAdditiveStats::default();
+        for (x, y, z) in rows {
+            stats.push(x, y, z);
+        }
+        let restored = moment_ratio_from_sums(
+            stats.n_value(),
+            stats.value_if_nonempty(stats.sum_x),
+            stats.value_if_nonempty(stats.sum_y),
+            stats.value_if_nonempty(stats.sum_xy),
+            stats.value_if_nonempty(stats.sum_z),
+            stats.value_if_nonempty(stats.sum_z2),
+        )
+        .unwrap();
+        let n = rows.len() as f64;
+        let sum_x = rows.iter().map(|(x, _, _)| *x).sum::<f64>();
+        let sum_y = rows.iter().map(|(_, y, _)| *y).sum::<f64>();
+        let sum_xy = rows.iter().map(|(x, y, _)| x * y).sum::<f64>();
+        let sum_z = rows.iter().map(|(_, _, z)| *z).sum::<f64>();
+        let sum_z2 = rows.iter().map(|(_, _, z)| z * z).sum::<f64>();
+        let expected = (sum_xy - sum_x * sum_y / n) / (sum_z2 - sum_z * sum_z / n);
+        assert!((restored - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn crossday_gamma_additive_stats_restore_ratio() {
+        let mut stats = GammaAdditiveStats::default();
+        stats.push(2.0, 4.0);
+        stats.push(3.0, 6.0);
+        let restored = gamma_ratio_from_sums(
+            stats.n_value(),
+            stats.value_if_nonempty(stats.num),
+            stats.value_if_nonempty(stats.den),
+        )
+        .unwrap();
+        assert!((restored - 0.5).abs() < 1e-12);
     }
 
     #[test]

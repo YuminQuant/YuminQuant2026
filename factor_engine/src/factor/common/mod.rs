@@ -8,6 +8,7 @@ pub mod gfzq_5min_salience;
 pub mod gfzq_apl_beta;
 pub mod gfzq_behavioral;
 pub mod gfzq_hf_resid_std;
+pub mod gfzq_jump_vol_5min;
 pub mod intraday_daily;
 pub mod intraday_raw;
 pub mod minute;

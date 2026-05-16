@@ -171,3 +171,8 @@ pub const STR_5MIN_MA_SIGMA_RAW_ID: &str = "daily_str_5min_ma_sigma";
 pub const HF_RDVOL_RAW_ID: &str = "daily_hf_rdvol";
 pub const HF_RDSKEW_RAW_ID: &str = "daily_hf_rdskew";
 pub const HF_RDKURT_RAW_ID: &str = "daily_hf_rdkurt";
+
+pub const SRJV_5MIN_RAW_ID: &str = "daily_srjv_5min";
+pub const RJVP_5MIN_RAW_ID: &str = "daily_rjvp_5min";
+pub const RLJVP_5MIN_RAW_ID: &str = "daily_rljvp_5min";
+pub const SRLJV_5MIN_RAW_ID: &str = "daily_srljv_5min";

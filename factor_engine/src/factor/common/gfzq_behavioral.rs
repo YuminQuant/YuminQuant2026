@@ -2,15 +2,24 @@ use crate::core::DatasetId;
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::chip::{daily_vwap, percent_to_decimal};
-use crate::factor::common::stock_daily_ops::is_bj_stock;
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{DailyPanel, PanelColumn};
+use crate::operators::cs_zscore;
 
 pub const CGO_WINDOW: usize = 100;
 pub const CGO_MIN_PERIODS: usize = 50;
+pub const LOSS_WINDOW: usize = 100;
+pub const LOSS_MIN_PERIODS: usize = 50;
 pub const ST_WINDOW: usize = 20;
+pub const ST_MIN_PERIODS: usize = 1;
 pub const ST_THETA: f64 = 0.9;
 pub const ST_DELTA: f64 = 0.9;
+pub const SALIENCE_WINDOW: usize = 20;
+pub const SALIENCE_MIN_PERIODS: usize = 1;
+pub const SALIENCE_THETA: f64 = 0.9;
+pub const SALIENCE_DELTA: f64 = 0.9;
+pub const STV_RETURN_THRESHOLD: f64 = 0.07;
 
 const EPS: f64 = 1e-12;
 
@@ -39,6 +48,73 @@ pub fn st_salience_from_data(data: &DataPool) -> Result<(DailyPanel, PanelColumn
     Ok((panel.clone(), st))
 }
 
+pub fn loss_from_data(data: &DataPool) -> Result<(DailyPanel, PanelColumn)> {
+    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let amount = panel.column("amount")?;
+    let vol = panel.column("vol")?;
+    let vwap = amount.zip_binary(&vol, daily_vwap)?;
+    let turnover = panel
+        .column_from_table(data.daily(DatasetId::StockDailyBasic)?, "turnover_rate_f")?
+        .map_values(percent_to_decimal);
+    let loss = loss_panel(&panel, &vwap, &turnover)?;
+    Ok((panel.clone(), loss))
+}
+
+pub fn salience_return_from_data(data: &DataPool) -> Result<(DailyPanel, PanelColumn)> {
+    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let close = panel.column("close")?;
+    let adj_factor =
+        panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+    let adj_close = close.zip_binary(&adj_factor, multiply)?;
+    let returns = daily_returns(&panel, &adj_close)?;
+    let market_returns = market_equal_returns_ex_bj(&panel, &returns);
+    let raw = salience_return_panel(&panel, &returns, &market_returns)?;
+    let factor = postprocess_salience_factor(data, &panel, &raw)?;
+    Ok((panel.clone(), factor))
+}
+
+pub fn stt_from_data(data: &DataPool) -> Result<(DailyPanel, PanelColumn)> {
+    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let close = panel.column("close")?;
+    let adj_factor =
+        panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+    let adj_close = close.zip_binary(&adj_factor, multiply)?;
+    let returns = daily_returns(&panel, &adj_close)?;
+    let turnover = panel
+        .column_from_table(data.daily(DatasetId::StockDailyBasic)?, "turnover_rate_f")?
+        .map_values(percent_to_decimal);
+    let market_turnover = market_equal_values_ex_bj(&panel, &turnover);
+    let raw = stt_panel(&panel, &returns, &turnover, &market_turnover)?;
+    let factor = postprocess_salience_factor(data, &panel, &raw)?;
+    Ok((panel.clone(), factor))
+}
+
+pub fn stt2_from_data(data: &DataPool) -> Result<(DailyPanel, PanelColumn)> {
+    let panel = data.daily_panel(DatasetId::StockDailyBasic)?;
+    let turnover = panel
+        .column("turnover_rate_f")?
+        .map_values(percent_to_decimal);
+    let market_turnover = market_equal_values_ex_bj(&panel, &turnover);
+    let raw = stt2_panel(&panel, &turnover, &market_turnover)?;
+    let factor = postprocess_salience_factor(data, &panel, &raw)?;
+    Ok((panel.clone(), factor))
+}
+
+pub fn stv_from_data(data: &DataPool) -> Result<(DailyPanel, PanelColumn)> {
+    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let close = panel.column("close")?;
+    let adj_factor =
+        panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+    let adj_close = close.zip_binary(&adj_factor, multiply)?;
+    let returns = daily_returns(&panel, &adj_close)?;
+    let turnover = panel
+        .column_from_table(data.daily(DatasetId::StockDailyBasic)?, "turnover_rate_f")?
+        .map_values(percent_to_decimal);
+    let raw = stv_panel(&panel, &returns, &turnover)?;
+    let factor = postprocess_salience_factor(data, &panel, &raw)?;
+    Ok((panel.clone(), factor))
+}
+
 pub fn cgo_panel(
     panel: &DailyPanel,
     close: &PanelColumn,
@@ -65,6 +141,36 @@ pub fn cgo_panel(
                 continue;
             }
             output[offset] = finite_value((prev_close - reference_price) / reference_price);
+        }
+    }
+
+    panel.column_from_values(output)
+}
+
+pub fn loss_panel(
+    panel: &DailyPanel,
+    vwap: &PanelColumn,
+    turnover: &PanelColumn,
+) -> Result<PanelColumn> {
+    let date_count = panel.dates().len();
+    let instrument_count = panel.instruments().len();
+    let mut output = vec![None; panel.shape_len()];
+
+    for instrument_idx in 0..instrument_count {
+        for date_idx in 0..date_count {
+            let offset = date_idx * instrument_count + instrument_idx;
+            let Some(current_price) = finite(vwap.values()[offset]).filter(|value| *value > EPS)
+            else {
+                continue;
+            };
+            output[offset] = loss_for_date(
+                date_idx,
+                instrument_idx,
+                instrument_count,
+                current_price,
+                vwap,
+                turnover,
+            );
         }
     }
 
@@ -113,6 +219,56 @@ fn cgo_reference_price(
     }
 }
 
+fn loss_for_date(
+    date_idx: usize,
+    instrument_idx: usize,
+    instrument_count: usize,
+    current_price: f64,
+    vwap: &PanelColumn,
+    turnover: &PanelColumn,
+) -> Option<f64> {
+    let start = date_idx.saturating_sub(LOSS_WINDOW);
+    let mut survival = 1.0;
+    let mut numerator = 0.0;
+    let mut denominator = 0.0;
+    let mut valid_count = 0usize;
+
+    for hist_date_idx in (start..date_idx).rev() {
+        let offset = hist_date_idx * instrument_count + instrument_idx;
+        let turnover_value = finite(turnover.values()[offset]);
+
+        if let (Some(history_price), Some(turnover_value)) = (
+            finite(vwap.values()[offset]).filter(|value| *value > EPS),
+            turnover_value,
+        ) {
+            valid_count += 1;
+            let weight = turnover_value * survival;
+            if weight.is_finite() && weight > 0.0 {
+                let loss = if current_price < history_price {
+                    (history_price - current_price) / history_price
+                } else {
+                    0.0
+                };
+                numerator += loss * weight;
+                denominator += weight;
+            }
+        }
+
+        if let Some(turnover_value) = turnover_value {
+            survival *= 1.0 - turnover_value;
+            if !survival.is_finite() {
+                break;
+            }
+        }
+    }
+
+    if valid_count < LOSS_MIN_PERIODS || denominator.abs() <= EPS {
+        None
+    } else {
+        finite_value(numerator / denominator)
+    }
+}
+
 pub fn st_salience_panel(
     panel: &DailyPanel,
     returns: &PanelColumn,
@@ -138,6 +294,109 @@ pub fn st_salience_panel(
     panel.column_from_values(output)
 }
 
+pub fn salience_return_panel(
+    panel: &DailyPanel,
+    returns: &PanelColumn,
+    market_returns: &[Option<f64>],
+) -> Result<PanelColumn> {
+    let date_count = panel.dates().len();
+    let instrument_count = panel.instruments().len();
+    let mut output = vec![None; panel.shape_len()];
+
+    for instrument_idx in 0..instrument_count {
+        for date_idx in 0..date_count {
+            let offset = date_idx * instrument_count + instrument_idx;
+            output[offset] = salience_return_for_date(
+                date_idx,
+                instrument_idx,
+                instrument_count,
+                returns.values(),
+                market_returns,
+            );
+        }
+    }
+
+    panel.column_from_values(output)
+}
+
+pub fn stt_panel(
+    panel: &DailyPanel,
+    returns: &PanelColumn,
+    turnover: &PanelColumn,
+    market_turnover: &[Option<f64>],
+) -> Result<PanelColumn> {
+    let date_count = panel.dates().len();
+    let instrument_count = panel.instruments().len();
+    let mut output = vec![None; panel.shape_len()];
+
+    for instrument_idx in 0..instrument_count {
+        for date_idx in 0..date_count {
+            let offset = date_idx * instrument_count + instrument_idx;
+            output[offset] = turnover_salience_for_date(
+                date_idx,
+                instrument_idx,
+                instrument_count,
+                returns.values(),
+                turnover.values(),
+                market_turnover,
+            );
+        }
+    }
+
+    panel.column_from_values(output)
+}
+
+pub fn stt2_panel(
+    panel: &DailyPanel,
+    turnover: &PanelColumn,
+    market_turnover: &[Option<f64>],
+) -> Result<PanelColumn> {
+    let date_count = panel.dates().len();
+    let instrument_count = panel.instruments().len();
+    let mut output = vec![None; panel.shape_len()];
+
+    for instrument_idx in 0..instrument_count {
+        for date_idx in 0..date_count {
+            let offset = date_idx * instrument_count + instrument_idx;
+            output[offset] = turnover_salience_for_date(
+                date_idx,
+                instrument_idx,
+                instrument_count,
+                turnover.values(),
+                turnover.values(),
+                market_turnover,
+            );
+        }
+    }
+
+    panel.column_from_values(output)
+}
+
+pub fn stv_panel(
+    panel: &DailyPanel,
+    returns: &PanelColumn,
+    turnover: &PanelColumn,
+) -> Result<PanelColumn> {
+    let date_count = panel.dates().len();
+    let instrument_count = panel.instruments().len();
+    let mut output = vec![None; panel.shape_len()];
+
+    for instrument_idx in 0..instrument_count {
+        for date_idx in 0..date_count {
+            let offset = date_idx * instrument_count + instrument_idx;
+            output[offset] = stv_for_date(
+                date_idx,
+                instrument_idx,
+                instrument_count,
+                returns.values(),
+                turnover.values(),
+            );
+        }
+    }
+
+    panel.column_from_values(output)
+}
+
 fn st_salience_for_date(
     date_idx: usize,
     instrument_idx: usize,
@@ -145,10 +404,7 @@ fn st_salience_for_date(
     returns: &[Option<f64>],
     market_returns: &[Option<f64>],
 ) -> Option<f64> {
-    if date_idx + 1 < ST_WINDOW {
-        return None;
-    }
-    let start = date_idx + 1 - ST_WINDOW;
+    let start = (date_idx + 1).saturating_sub(ST_WINDOW);
     let mut rows = Vec::with_capacity(ST_WINDOW);
     for hist_date_idx in start..=date_idx {
         let offset = hist_date_idx * instrument_count + instrument_idx;
@@ -161,7 +417,7 @@ fn st_salience_for_date(
         let salience = salience_value(stock_ret, market_ret)?;
         rows.push((stock_ret, salience));
     }
-    if rows.len() < ST_WINDOW {
+    if rows.len() < ST_MIN_PERIODS {
         return None;
     }
 
@@ -191,6 +447,141 @@ fn salience_value(stock_ret: f64, market_ret: f64) -> Option<f64> {
         return None;
     }
     finite_value(((stock_ret - market_ret).abs() / denominator) * (stock_ret - market_ret).exp())
+}
+
+fn salience_return_for_date(
+    date_idx: usize,
+    instrument_idx: usize,
+    instrument_count: usize,
+    returns: &[Option<f64>],
+    market_returns: &[Option<f64>],
+) -> Option<f64> {
+    let start = (date_idx + 1).saturating_sub(SALIENCE_WINDOW);
+    let mut rows = Vec::with_capacity(SALIENCE_WINDOW);
+    for hist_date_idx in start..=date_idx {
+        let offset = hist_date_idx * instrument_count + instrument_idx;
+        let (Some(stock_ret), Some(market_ret)) = (
+            finite(returns[offset]),
+            finite(market_returns[hist_date_idx]),
+        ) else {
+            continue;
+        };
+        let salience = salience_value_without_exp(stock_ret, market_ret)?;
+        rows.push((stock_ret, salience));
+    }
+    salience_weighted_difference(&rows)
+}
+
+fn turnover_salience_for_date(
+    date_idx: usize,
+    instrument_idx: usize,
+    instrument_count: usize,
+    payoff_values: &[Option<f64>],
+    turnover: &[Option<f64>],
+    market_turnover: &[Option<f64>],
+) -> Option<f64> {
+    let start = (date_idx + 1).saturating_sub(SALIENCE_WINDOW);
+    let mut rows = Vec::with_capacity(SALIENCE_WINDOW);
+    for hist_date_idx in start..=date_idx {
+        let offset = hist_date_idx * instrument_count + instrument_idx;
+        let (Some(payoff), Some(stock_turnover), Some(market_turnover)) = (
+            finite(payoff_values[offset]),
+            finite(turnover[offset]),
+            finite(market_turnover[hist_date_idx]),
+        ) else {
+            continue;
+        };
+        let salience = salience_value_without_exp(stock_turnover, market_turnover)?;
+        rows.push((payoff, salience));
+    }
+    salience_weighted_difference(&rows)
+}
+
+fn stv_for_date(
+    date_idx: usize,
+    instrument_idx: usize,
+    instrument_count: usize,
+    returns: &[Option<f64>],
+    turnover: &[Option<f64>],
+) -> Option<f64> {
+    let start = (date_idx + 1).saturating_sub(SALIENCE_WINDOW);
+    let mut rows = Vec::with_capacity(SALIENCE_WINDOW);
+    for hist_date_idx in start..=date_idx {
+        let offset = hist_date_idx * instrument_count + instrument_idx;
+        let (Some(stock_ret), Some(turnover)) = (finite(returns[offset]), finite(turnover[offset]))
+        else {
+            continue;
+        };
+        let salience = if stock_ret.abs() >= STV_RETURN_THRESHOLD {
+            stock_ret.abs() * 1000.0
+        } else {
+            turnover
+        };
+        rows.push((stock_ret, salience));
+    }
+    salience_weighted_difference(&rows)
+}
+
+fn salience_value_without_exp(value: f64, market_value: f64) -> Option<f64> {
+    let denominator = value.abs() + market_value.abs() + SALIENCE_THETA;
+    if denominator.abs() <= EPS {
+        return None;
+    }
+    finite_value((value - market_value).abs() / denominator)
+}
+
+fn salience_weighted_difference(rows: &[(f64, f64)]) -> Option<f64> {
+    if rows.len() < SALIENCE_MIN_PERIODS {
+        return None;
+    }
+    let ranks =
+        descending_one_based_ranks(rows.iter().map(|row| row.1).collect::<Vec<_>>().as_slice());
+    let delta_powers = ranks
+        .iter()
+        .map(|rank| SALIENCE_DELTA.powf(*rank))
+        .collect::<Vec<_>>();
+    let denominator = delta_powers.iter().sum::<f64>();
+    if denominator.abs() <= EPS || !denominator.is_finite() {
+        return None;
+    }
+
+    let mean_payoff = rows.iter().map(|row| row.0).sum::<f64>() / rows.len() as f64;
+    let weighted_payoff = rows
+        .iter()
+        .zip(delta_powers.iter())
+        .map(|(row, delta_power)| row.0 * delta_power / denominator)
+        .sum::<f64>();
+    finite_value(weighted_payoff - mean_payoff)
+}
+
+fn descending_one_based_ranks(values: &[f64]) -> Vec<f64> {
+    let mut pairs = values
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| (idx, *value))
+        .collect::<Vec<_>>();
+    pairs.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let mut output = vec![0.0; values.len()];
+    let mut start = 0usize;
+    while start < pairs.len() {
+        let mut end = start + 1;
+        while end < pairs.len() && (pairs[end].1 - pairs[start].1).abs() <= EPS {
+            end += 1;
+        }
+        let avg_rank = (start + 1 + end) as f64 / 2.0;
+        for idx in start..end {
+            output[pairs[idx].0] = avg_rank;
+        }
+        start = end;
+    }
+    output
 }
 
 fn descending_pct_ranks(values: &[f64]) -> Vec<f64> {
@@ -250,6 +641,10 @@ fn daily_returns(panel: &DailyPanel, adj_close: &PanelColumn) -> Result<PanelCol
 }
 
 fn market_equal_returns_ex_bj(panel: &DailyPanel, returns: &PanelColumn) -> Vec<Option<f64>> {
+    market_equal_values_ex_bj(panel, returns)
+}
+
+fn market_equal_values_ex_bj(panel: &DailyPanel, values: &PanelColumn) -> Vec<Option<f64>> {
     let instrument_count = panel.instruments().len();
     let instruments = panel.instruments();
     let mut output = Vec::with_capacity(panel.dates().len());
@@ -261,7 +656,7 @@ fn market_equal_returns_ex_bj(panel: &DailyPanel, returns: &PanelColumn) -> Vec<
                 continue;
             }
             let offset = date_idx * instrument_count + instrument_idx;
-            if let Some(value) = finite(returns.values()[offset]) {
+            if let Some(value) = finite(values.values()[offset]) {
                 sum += value;
                 count += 1;
             }
@@ -269,6 +664,45 @@ fn market_equal_returns_ex_bj(panel: &DailyPanel, returns: &PanelColumn) -> Vec<
         output.push((count > 0).then_some(sum / count as f64));
     }
     output
+}
+
+fn postprocess_salience_factor(
+    data: &DataPool,
+    panel: &DailyPanel,
+    raw: &PanelColumn,
+) -> Result<PanelColumn> {
+    let winsorized = raw.cs(three_sigma_winsorize)?;
+    let standardized = winsorized.cs(cs_zscore)?;
+    neutralize_size_sector(&standardized, panel, data)
+}
+
+fn three_sigma_winsorize(values: &[Option<f64>]) -> Vec<Option<f64>> {
+    let finite_values = values
+        .iter()
+        .filter_map(|value| finite(*value))
+        .collect::<Vec<_>>();
+    if finite_values.is_empty() {
+        return vec![None; values.len()];
+    }
+    let mean = finite_values.iter().sum::<f64>() / finite_values.len() as f64;
+    let variance = finite_values
+        .iter()
+        .map(|value| {
+            let diff = value - mean;
+            diff * diff
+        })
+        .sum::<f64>()
+        / finite_values.len() as f64;
+    let std = variance.sqrt();
+    if !std.is_finite() || std <= EPS {
+        return values.iter().map(|value| finite(*value)).collect();
+    }
+    let lower = mean - 3.0 * std;
+    let upper = mean + 3.0 * std;
+    values
+        .iter()
+        .map(|value| finite(*value).map(|value| value.clamp(lower, upper)))
+        .collect()
 }
 
 fn finite(value: Option<f64>) -> Option<f64> {
@@ -330,6 +764,54 @@ mod tests {
     }
 
     #[test]
+    fn gfzq_loss_uses_positive_loss_and_surviving_turnover_weights() {
+        let panel = test_panel((0..51).collect(), vec!["000001.SZ".to_string()]);
+        let mut vwap_values = vec![Some(10.0); 51];
+        vwap_values[48] = Some(20.0);
+        vwap_values[49] = Some(40.0);
+        vwap_values[50] = Some(10.0);
+        let vwap = panel.column_from_values(vwap_values).unwrap();
+        let mut turnover_values = vec![Some(0.0); 51];
+        turnover_values[48] = Some(0.1);
+        turnover_values[49] = Some(0.2);
+        let turnover = panel.column_from_values(turnover_values).unwrap();
+
+        let actual = loss_for_date(50, 0, 1, 10.0, &vwap, &turnover);
+        let expected = (0.2 * 0.75 + 0.1 * 0.8 * 0.5) / (0.2 + 0.1 * 0.8);
+        assert_close(actual, expected);
+    }
+
+    #[test]
+    fn gfzq_loss_sets_profitable_history_to_zero() {
+        let panel = test_panel((0..51).collect(), vec!["000001.SZ".to_string()]);
+        let mut vwap_values = vec![Some(10.0); 51];
+        vwap_values[48] = Some(20.0);
+        vwap_values[49] = Some(40.0);
+        vwap_values[50] = Some(50.0);
+        let vwap = panel.column_from_values(vwap_values).unwrap();
+        let mut turnover_values = vec![Some(0.0); 51];
+        turnover_values[48] = Some(0.1);
+        turnover_values[49] = Some(0.2);
+        let turnover = panel.column_from_values(turnover_values).unwrap();
+
+        assert_close(loss_for_date(50, 0, 1, 50.0, &vwap, &turnover), 0.0);
+    }
+
+    #[test]
+    fn gfzq_loss_requires_minimum_effective_days() {
+        let panel = test_panel((0..50).collect(), vec!["000001.SZ".to_string()]);
+        let vwap = panel.column_from_values(vec![Some(10.0); 50]).unwrap();
+        let turnover = panel.column_from_values(vec![Some(0.1); 50]).unwrap();
+
+        assert_eq!(loss_for_date(49, 0, 1, 5.0, &vwap, &turnover), None);
+
+        let panel = test_panel((0..51).collect(), vec!["000001.SZ".to_string()]);
+        let vwap = panel.column_from_values(vec![Some(10.0); 51]).unwrap();
+        let turnover = panel.column_from_values(vec![Some(0.1); 51]).unwrap();
+        assert_close(loss_for_date(50, 0, 1, 5.0, &vwap, &turnover), 0.5);
+    }
+
+    #[test]
     fn gfzq_st_ranks_salience_descending_and_computes_covariance() {
         let stock_returns = (0..ST_WINDOW)
             .map(|idx| Some(0.001 * (idx as f64 + 1.0)))
@@ -373,6 +855,66 @@ mod tests {
             .unwrap();
         let market = market_equal_returns_ex_bj(&panel, &returns);
         assert_eq!(market, vec![Some(0.02)]);
+    }
+
+    #[test]
+    fn gfzq_salience_ranks_most_salient_state_as_one() {
+        let ranks = descending_one_based_ranks(&[0.5, 2.0, 1.0]);
+        assert_eq!(ranks, vec![3.0, 1.0, 2.0]);
+
+        let delta_powers = ranks
+            .iter()
+            .map(|rank| SALIENCE_DELTA.powf(*rank))
+            .collect::<Vec<_>>();
+        assert!(delta_powers[1] > delta_powers[2]);
+        assert!(delta_powers[2] > delta_powers[0]);
+    }
+
+    #[test]
+    fn gfzq_salience_min_periods_one_outputs_zero_for_single_state() {
+        assert_close(salience_weighted_difference(&[(0.03, 1.0)]), 0.0);
+    }
+
+    #[test]
+    fn gfzq_stt_uses_turnover_salience_and_return_payoff() {
+        let panel = test_panel(vec![1, 2], vec!["000001.SZ".to_string()]);
+        let returns = panel
+            .column_from_values(vec![Some(0.01), Some(0.10)])
+            .unwrap();
+        let turnover = panel
+            .column_from_values(vec![Some(0.50), Some(0.01)])
+            .unwrap();
+        let raw = stt_panel(&panel, &returns, &turnover, &[Some(0.0), Some(0.0)]).unwrap();
+
+        let expected = salience_weighted_difference(&[(0.01, 0.50 / 1.40), (0.10, 0.01 / 0.91)]);
+        assert_close(raw.values()[1], expected.unwrap());
+    }
+
+    #[test]
+    fn gfzq_stt2_uses_turnover_salience_and_turnover_payoff() {
+        let panel = test_panel(vec![1, 2], vec!["000001.SZ".to_string()]);
+        let turnover = panel
+            .column_from_values(vec![Some(0.50), Some(0.01)])
+            .unwrap();
+        let raw = stt2_panel(&panel, &turnover, &[Some(0.0), Some(0.0)]).unwrap();
+
+        let expected = salience_weighted_difference(&[(0.50, 0.50 / 1.40), (0.01, 0.01 / 0.91)]);
+        assert_close(raw.values()[1], expected.unwrap());
+    }
+
+    #[test]
+    fn gfzq_stv_switches_salience_at_return_threshold() {
+        let panel = test_panel(vec![1, 2], vec!["000001.SZ".to_string()]);
+        let returns = panel
+            .column_from_values(vec![Some(0.08), Some(0.01)])
+            .unwrap();
+        let turnover = panel
+            .column_from_values(vec![Some(0.01), Some(0.50)])
+            .unwrap();
+        let raw = stv_panel(&panel, &returns, &turnover).unwrap();
+
+        let expected = salience_weighted_difference(&[(0.08, 80.0), (0.01, 0.50)]);
+        assert_close(raw.values()[1], expected.unwrap());
     }
 
     fn test_panel(dates: Vec<i32>, instruments: Vec<String>) -> DailyPanel {

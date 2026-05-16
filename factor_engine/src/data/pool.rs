@@ -239,6 +239,7 @@ fn should_build_daily_panel(dataset: DatasetId) -> bool {
         dataset,
         DatasetId::StockDailyPv
             | DatasetId::StockDailyBasic
+            | DatasetId::StockDailyLimit
             | DatasetId::StockAdjFactor
             | DatasetId::StockMoneyflow
             | DatasetId::StockBarraDaily

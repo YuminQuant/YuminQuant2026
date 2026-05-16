@@ -5,6 +5,7 @@ pub mod dbzq_5min_risk;
 pub mod dbzq_coskewness;
 pub mod financial;
 pub mod gfzq_5min_salience;
+pub mod gfzq_apl_beta;
 pub mod gfzq_behavioral;
 pub mod intraday_daily;
 pub mod intraday_raw;

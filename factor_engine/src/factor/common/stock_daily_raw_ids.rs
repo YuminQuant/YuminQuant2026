@@ -167,3 +167,7 @@ pub const GAMMA2_5M_DEN_RAW_ID: &str = "daily_gamma2_5m_den";
 pub const STR_5MIN_MA_RAW_ID: &str = "daily_str_5min_ma";
 pub const STR_5MIN_MA_ACTIVE_RAW_ID: &str = "daily_str_5min_ma_active";
 pub const STR_5MIN_MA_SIGMA_RAW_ID: &str = "daily_str_5min_ma_sigma";
+
+pub const HF_RDVOL_RAW_ID: &str = "daily_hf_rdvol";
+pub const HF_RDSKEW_RAW_ID: &str = "daily_hf_rdskew";
+pub const HF_RDKURT_RAW_ID: &str = "daily_hf_rdkurt";

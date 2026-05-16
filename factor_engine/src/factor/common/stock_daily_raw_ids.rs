@@ -163,3 +163,7 @@ pub const APBETA3_5M_SUM_Z2_RAW_ID: &str = "daily_apbeta3_5m_sum_z2";
 pub const GAMMA2_5M_N_RAW_ID: &str = "daily_gamma2_5m_n";
 pub const GAMMA2_5M_NUM_RAW_ID: &str = "daily_gamma2_5m_num";
 pub const GAMMA2_5M_DEN_RAW_ID: &str = "daily_gamma2_5m_den";
+
+pub const STR_5MIN_MA_RAW_ID: &str = "daily_str_5min_ma";
+pub const STR_5MIN_MA_ACTIVE_RAW_ID: &str = "daily_str_5min_ma_active";
+pub const STR_5MIN_MA_SIGMA_RAW_ID: &str = "daily_str_5min_ma_sigma";

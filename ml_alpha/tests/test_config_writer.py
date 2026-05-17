@@ -906,6 +906,9 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             model = model_cls()
             context = ModelContext(**base_context)
             model.fit(train, pd.DataFrame(), context)
+            self.assertGreater(len(model.loss_history), 0)
+            self.assertIn("train_loss", model.loss_history[-1])
+            self.assertEqual(model.model_info["epochs_run"], len(model.loss_history))
             pred = model.predict(train, context)
             self.assertEqual(len(pred), 4)
             self.assertTrue(np.isfinite(pred.to_numpy()).all())
@@ -913,6 +916,8 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 path = Path(tmp) / "model.pt"
                 model.save(path)
                 loaded = model_cls.load(path)
+                self.assertEqual(len(loaded.loss_history), len(model.loss_history))
+                self.assertEqual(loaded.model_info["rnn_type"], model.rnn_type)
                 loaded_pred = loaded.predict(train, context)
                 self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
@@ -1120,6 +1125,10 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             if class_name == "eLSTMRankNetAlphaModel":
                 self.assertEqual(config.model.params["max_pairs_per_date"], 20000)
                 self.assertEqual(config.model.params["sigma"], 1.0)
+            if filename == "monthly_lstm_36.toml":
+                self.assertTrue(config.diagnostics.enabled)
+                self.assertTrue(config.diagnostics.print_epoch)
+                self.assertTrue(config.diagnostics.write_loss_history)
 
     def test_tuned_configs_expose_search_space(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"

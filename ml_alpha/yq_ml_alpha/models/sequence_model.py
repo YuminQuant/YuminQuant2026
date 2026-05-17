@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +18,16 @@ class _SequenceAlphaModel(AlphaModel):
         self.model = None
         self.input_size: int | None = None
         self.params: dict[str, Any] = {}
+        self.loss_history: list[dict[str, Any]] = []
+        self.model_info: dict[str, Any] = {}
 
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
         torch, nn = _torch_modules()
         self.params = _params(context.model_params, self.rnn_type)
+        diagnostics = _diagnostics(context)
         _set_seed(torch, int(self.params["seed"]))
         device = _device(torch, str(self.params["device"]))
+        window_id = context.artifact_dir.name
 
         x_train, self.input_size = _sequence_features(train_data, context.feature_columns, int(self.params["sequence_length"]))
         y_train = train_data[context.label_column].astype("float32").to_numpy().reshape(-1, 1)
@@ -48,33 +54,89 @@ class _SequenceAlphaModel(AlphaModel):
         patience = int(self.params["patience"])
         best_state = None
         best_loss = float("inf")
+        best_epoch = 0
         stale_epochs = 0
+        self.loss_history = []
+        started_at = time.perf_counter()
 
-        for _ in range(epochs):
+        for epoch in range(1, epochs + 1):
             self.model.train()
             order = torch.randperm(x_tensor.shape[0], device=device)
+            train_loss_sum = 0.0
+            train_count = 0
             for start in range(0, x_tensor.shape[0], batch_size):
                 batch_idx = order[start : start + batch_size]
                 optimizer.zero_grad()
                 loss = loss_fn(self.model(x_tensor[batch_idx]), y_tensor[batch_idx])
                 loss.backward()
                 optimizer.step()
+                batch_count = int(batch_idx.shape[0])
+                train_loss_sum += float(loss.detach().cpu().item()) * batch_count
+                train_count += batch_count
 
-            if x_valid is None:
-                continue
-            current_loss = _eval_loss(torch, loss_fn, self.model, x_valid, y_valid)
-            if current_loss + 1e-12 < best_loss:
-                best_loss = current_loss
-                best_state = _cpu_state_dict(self.model)
+            train_loss = train_loss_sum / max(1, train_count)
+            valid_loss = _eval_loss(torch, loss_fn, self.model, x_valid, y_valid) if x_valid is not None else None
+            score_loss = valid_loss if valid_loss is not None else train_loss
+            is_best = score_loss + 1e-12 < best_loss
+            if is_best:
+                best_loss = score_loss
+                best_epoch = epoch
+                if x_valid is not None:
+                    best_state = _cpu_state_dict(self.model)
                 stale_epochs = 0
             else:
-                stale_epochs += 1
-                if patience > 0 and stale_epochs >= patience:
-                    break
+                if x_valid is not None:
+                    stale_epochs += 1
+
+            row = {
+                "window_id": window_id,
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "valid_loss": valid_loss,
+                "best_loss": best_loss,
+                "is_best": is_best,
+                "stale_epochs": stale_epochs,
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "device": str(device),
+                "rnn_type": self.rnn_type,
+            }
+            self.loss_history.append(row)
+            if diagnostics["enabled"] and diagnostics["print_epoch"]:
+                valid_text = "nan" if valid_loss is None else f"{valid_loss:.6g}"
+                print(
+                    f"window={window_id} epoch={epoch} {self.rnn_type.lower()}_train_loss={train_loss:.6g} "
+                    f"valid_loss={valid_text} best={best_loss:.6g} patience={stale_epochs}/{patience}",
+                    flush=True,
+                )
+
+            if x_valid is not None and patience > 0 and stale_epochs >= patience:
+                break
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
         self.model.to("cpu")
+        self.model_info = {
+            "window_id": window_id,
+            "model_class": self.__class__.__name__,
+            "rnn_type": self.rnn_type,
+            "alpha_id": context.alpha_id,
+            "input_size": self.input_size,
+            "feature_count": len(context.feature_columns),
+            "train_rows": int(len(train_data)),
+            "valid_rows": int(len(valid_data)),
+            "epochs_run": len(self.loss_history),
+            "best_epoch": best_epoch,
+            "best_loss": None if best_loss == float("inf") else best_loss,
+            "device": str(device),
+            "sequence_length": int(self.params["sequence_length"]),
+            "hidden_size": int(self.params["hidden_size"]),
+            "num_layers": int(self.params["num_layers"]),
+            "dropout": float(self.params["dropout"]),
+            "lr": float(self.params["lr"]),
+            "weight_decay": float(self.params["weight_decay"]),
+            "batch_size": int(self.params["batch_size"]),
+            "patience": int(self.params["patience"]),
+        }
 
     def predict(self, data: pd.DataFrame, context: ModelContext) -> pd.Series:
         if self.model is None:
@@ -99,9 +161,28 @@ class _SequenceAlphaModel(AlphaModel):
                 "input_size": self.input_size,
                 "params": self.params,
                 "state_dict": self.model.state_dict(),
+                "loss_history": self.loss_history,
+                "model_info": self.model_info,
             },
             path,
         )
+
+    def write_diagnostics(self, context: ModelContext) -> list[Path]:
+        diagnostics = _diagnostics(context)
+        if not diagnostics["enabled"]:
+            return []
+        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        written: list[Path] = []
+        if diagnostics["write_loss_history"] and self.loss_history:
+            path = context.artifact_dir / "loss_history.parquet"
+            pd.DataFrame(self.loss_history).to_parquet(path, index=False)
+            written.append(path)
+        if diagnostics["write_model_info"] and self.model_info:
+            path = context.artifact_dir / "model_info.json"
+            with path.open("w", encoding="utf-8") as file:
+                json.dump(self.model_info, file, ensure_ascii=False, indent=2)
+            written.append(path)
+        return written
 
     @classmethod
     def load(cls, path: str | Path):
@@ -113,6 +194,8 @@ class _SequenceAlphaModel(AlphaModel):
         model.model = _SequenceRegressor(nn, str(checkpoint["rnn_type"]), model.input_size, model.params)
         model.model.load_state_dict(checkpoint["state_dict"])
         model.model.eval()
+        model.loss_history = list(checkpoint.get("loss_history", []))
+        model.model_info = dict(checkpoint.get("model_info", {}))
         return model
 
 
@@ -167,6 +250,17 @@ def _params(raw: dict[str, Any], rnn_type: str) -> dict[str, Any]:
     if params["sequence_length"] <= 0:
         raise ValueError("sequence_length must be positive")
     return params
+
+
+def _diagnostics(context: ModelContext) -> dict[str, bool]:
+    raw = dict(context.diagnostics or {})
+    enabled = bool(raw.get("enabled", False))
+    return {
+        "enabled": enabled,
+        "print_epoch": enabled and bool(raw.get("print_epoch", False)),
+        "write_loss_history": enabled and bool(raw.get("write_loss_history", False)),
+        "write_model_info": enabled and bool(raw.get("write_model_info", False)),
+    }
 
 
 def _sequence_features(frame: pd.DataFrame, columns: list[str], sequence_length: int) -> tuple[np.ndarray, int]:

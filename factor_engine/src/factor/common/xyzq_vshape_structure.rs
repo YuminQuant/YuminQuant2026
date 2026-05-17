@@ -402,7 +402,7 @@ fn vshape_stats(points: &[MinutePoint]) -> VshapeStats {
         minv: values
             .iter()
             .copied()
-            .reduce(f64::min)
+            .reduce(f64::max)
             .and_then(finite_value),
     }
 }
@@ -559,18 +559,52 @@ mod tests {
                 duration: 2,
             },
             Segment {
-                sum: -1.0,
+                sum: -6.0,
                 duration: 1,
             },
             Segment {
-                sum: 3.0,
-                duration: 4,
+                sum: 1.0,
+                duration: 2,
             },
         ];
 
         let (values, weighted) = vshape_values(&segments);
-        assert_eq!(values, vec![3.0]);
-        assert_eq!(weighted, vec![15.0]);
+        assert_eq!(values, vec![3.0, 5.0]);
+        assert_eq!(weighted, vec![15.0, 15.0]);
+    }
+
+    #[test]
+    fn vshape_stats_minv_uses_largest_abs_pair_sum() {
+        let points = vec![
+            MinutePoint {
+                in_window: false,
+                close: Some(100.0),
+                vol: Some(1.0),
+            },
+            MinutePoint {
+                in_window: true,
+                close: Some(98.0),
+                vol: Some(1.0),
+            },
+            MinutePoint {
+                in_window: true,
+                close: Some(98.98),
+                vol: Some(1.0),
+            },
+            MinutePoint {
+                in_window: true,
+                close: Some(96.0106),
+                vol: Some(1.0),
+            },
+            MinutePoint {
+                in_window: true,
+                close: Some(96.970706),
+                vol: Some(1.0),
+            },
+        ];
+
+        let stats = vshape_stats(&points);
+        assert_close(stats.minv, Some(50.0));
     }
 
     #[test]

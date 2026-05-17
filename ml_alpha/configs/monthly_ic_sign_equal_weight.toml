@@ -27,7 +27,7 @@ exclude_st = true
 exclude_bj = true
 
 [preprocess]
-cross_section_transform = "zscore_log_rank"
+cross_section_transform = "rank_gauss"
 feature_fill_value = 0.0
 
 [features]

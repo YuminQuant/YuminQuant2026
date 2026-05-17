@@ -19,6 +19,7 @@ from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.transforms import (
     apply_cross_section_transform,
     available_transforms,
+    cross_section_zscore_erfinv_rank,
     cross_section_zscore_log_rank,
 )
 from yq_ml_alpha.models.base import ModelContext
@@ -198,6 +199,29 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertAlmostEqual(float(output["label"].dropna().mean()), 0.0, places=7)
         self.assertAlmostEqual(float(output["label"].dropna().std(ddof=0)), 1.0, places=7)
 
+    def test_zscore_erfinv_rank_maps_rank_to_gaussian_scores(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "trade_date": [20260131, 20260131, 20260131, 20260131, 20260131],
+                "ts_code": ["a", "b", "c", "d", "e"],
+                "f": [1.0, 2.0, 3.0, 4.0, np.nan],
+                "label": [0.1, 0.2, 0.3, 0.4, np.nan],
+            }
+        )
+        output = cross_section_zscore_erfinv_rank(
+            frame,
+            ["f", "label"],
+            fill_columns=["f"],
+            fill_value=0.0,
+        )
+        finite = output.loc[:3, "f"]
+        self.assertTrue(np.isfinite(finite).all())
+        self.assertTrue(finite.is_monotonic_increasing)
+        self.assertAlmostEqual(float(finite.mean()), 0.0, places=7)
+        self.assertAlmostEqual(float(finite.std(ddof=0)), 1.0, places=7)
+        self.assertEqual(output.loc[4, "f"], 0.0)
+        self.assertTrue(pd.isna(output.loc[4, "label"]))
+
     def test_transform_registry_dispatches_aliases(self) -> None:
         frame = pd.DataFrame(
             {
@@ -208,9 +232,10 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             }
         )
         self.assertIn("zscore_log_rank", available_transforms())
+        self.assertIn("zscore_erfinv_rank", available_transforms())
         output = apply_cross_section_transform(
             frame,
-            "cs_zscore_log_rank",
+            "zscore_inverf_rank",
             ["f"],
             label_columns=["label"],
             feature_fill_value=0.0,
@@ -1062,7 +1087,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             "monthly_elasticnet_36.toml": ("ml_alpha_elasticnet", "ElasticNetAlphaModel"),
             "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
             "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
-            "monthly_lstm_36.toml": ("ml_alpha_lstm", "LSTMAlphaModel"),
+            "monthly_lstm_36.toml": ("ml_alpha_lstm_128", "LSTMAlphaModel"),
             "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
             "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
             "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),

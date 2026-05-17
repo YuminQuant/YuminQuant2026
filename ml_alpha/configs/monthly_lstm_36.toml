@@ -43,6 +43,13 @@ cache_samples = false
 cache_dir = "data/model_workspace/monthly_lstm_36/cache"
 predict_batch_size = 20
 
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
 [model]
 name = "lstm"
 class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"

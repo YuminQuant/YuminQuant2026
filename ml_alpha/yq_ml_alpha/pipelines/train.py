@@ -197,6 +197,7 @@ def _load_bundle(
 
 def _uses_sequence_dataset(config: MlAlphaConfig) -> bool:
     return config.model.class_path in {
+        "yq_ml_alpha.models.elstm_ranknet_model.eLSTMRankNetAlphaModel",
         "yq_ml_alpha.models.sequence_model.RNNAlphaModel",
         "yq_ml_alpha.models.sequence_model.LSTMAlphaModel",
         "yq_ml_alpha.models.sequence_model.GRUAlphaModel",

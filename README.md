@@ -81,6 +81,14 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stoc
 cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags GFZQ --factor-batch-size 20 --date-batch-size 120 --profile --refresh-minute-cache
 ```
 
+多 raw 共享 provider 示例：下面这组 V-shape 因子来自同一个分钟 provider。引擎会在同一批次里共享一次分钟扫描，并只物化本次选中因子需要的 sibling raw。
+
+Multi-raw provider example: these V-shape factors share one minute provider. In one factor batch, the engine scans the minute file once and materializes only the selected sibling raw columns.
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors negv_mean,negv_max,negvwgt_mean,negvwgt_max,flash_crash_prob_v --profile --refresh-minute-cache
+```
+
 ### Barra 与 Label / Barra And Labels
 
 ```powershell

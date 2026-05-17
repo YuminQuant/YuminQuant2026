@@ -1,55 +1,33 @@
-# yq_ml_alpha
+# yq_ml_alpha / Python ML Alpha
 
-`ml_alpha` is the Python-side ML alpha package. It reads existing factor or raw
-data, applies the configured universe/filter/preprocess pipeline, trains a
-model, and writes alpha columns to `data/models/{year}/{trade_date}.parquet`.
+`ml_alpha` 是 YuminQuant 的 Python 机器学习 alpha 包。它读取正式因子库或外部 alpha root，按配置切分训练/验证/预测窗口，训练模型，并把预测分数写成标准日频 alpha parquet。
 
-## Run Built-In Examples
+`ml_alpha` is the Python ML alpha package. It reads formal factors or external alpha roots, builds train/valid/predict windows from TOML configs, trains models, and writes predictions as standard daily alpha parquet files.
 
-Run commands from the `ml_alpha` directory so the package is importable without
-installing it:
+## 快速开始 / Quick Start
+
+不安装包时，从 `ml_alpha` 目录运行：
+
+Run from the `ml_alpha` directory when you do not want to install the package:
 
 ```powershell
 cd ml_alpha
 python -m yq_ml_alpha run --config configs\monthly_lr_36.toml
 python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml
-python -m yq_ml_alpha run --config configs\monthly_xgb_optuna_36.toml
-python -m yq_ml_alpha run --config configs\monthly_lgbm_optuna_36.toml
-python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
-python -m yq_ml_alpha run --config configs\monthly_ic_sign_equal_weight.toml
-python -m yq_ml_alpha run --config configs\monthly_lasso_36.toml
-python -m yq_ml_alpha run --config configs\monthly_ridge_36.toml
-python -m yq_ml_alpha run --config configs\monthly_elasticnet_36.toml
-python -m yq_ml_alpha run --config configs\monthly_rf_36.toml
 python -m yq_ml_alpha run --config configs\monthly_lstm_36.toml
-python -m yq_ml_alpha run --config configs\monthly_gru_36.toml
-python -m yq_ml_alpha run --config configs\monthly_rnn_36.toml
 python -m yq_ml_alpha run --config configs\monthly_elstm_ranknet_36.toml
-python -m yq_ml_alpha run --config configs\monthly_cnn_36.toml
 ```
 
-If you want to use the local Python 3.8.3 GPU environment from the repository
-root, call the interpreter explicitly and set `PYTHONPATH` for that shell:
+如果想从仓库根目录直接运行，可以临时设置 `PYTHONPATH`：
+
+If running from the repository root, set `PYTHONPATH` temporarily:
 
 ```powershell
-cd D:\yuminwu_workspace\Internship\YuminQuant
 $env:PYTHONPATH = "D:\yuminwu_workspace\Internship\YuminQuant\ml_alpha"
-D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config ml_alpha\configs\monthly_mlp_36.toml
+python -m yq_ml_alpha run --config ml_alpha\configs\monthly_mlp_36.toml
 ```
 
-The outputs are standard daily alpha parquet files:
-
-```text
-data/models/{year}/{trade_date}.parquet
-```
-
-You can backtest them with the Rust backtest CLI:
-
-```powershell
-cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_alpha_mlp --factor-root data\models --groups 10 --rebalance 5
-```
-
-## CLI Entry Points
+可用子命令 / Commands:
 
 ```powershell
 python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
@@ -58,74 +36,47 @@ python -m yq_ml_alpha predict --config configs\monthly_mlp_36.toml
 python -m yq_ml_alpha materialize --config configs\monthly_mlp_36.toml
 ```
 
-`run` trains, predicts, and writes alpha files. `train` only fits and saves
-artifacts. `predict` loads saved artifacts and writes predictions. `materialize`
-builds sample data for inspection. Hyperparameter search is handled inside each
-model during `train` or `run`.
+`run` = train + predict + write alpha. `train` only saves model artifacts. `predict` uses existing artifacts. `materialize` only builds sample cache when configured.
 
-## Diagnostics
+## 输出与回测 / Output And Backtest
 
-Diagnostics are off unless the TOML explicitly enables them. MLP diagnostics are
-currently supported:
+Alpha 输出 / Alpha output:
+
+```text
+data/models/{year}/{trade_date}.parquet
+columns: trade_date, ts_code, alpha_id
+```
+
+同一天多个 alpha 会写入同一个 daily parquet。Parquet 不能真正原地追加列，因此 writer 会读取旧文件、合并/覆盖当前 alpha 列，再重写文件。
+
+Multiple alphas for the same date are stored in one daily parquet. Parquet cannot append a column in place, so the writer reads, merges, and rewrites the file.
+
+回测 / Backtest:
+
+```powershell
+cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_alpha_mlp --factor-root data\models --groups 10 --rebalance 20
+cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_monthly_alpha --factor-root data\models --factor-fill ffill
+```
+
+低频 alpha 只在月末或周末有截面时，使用 `--factor-fill ffill` 让回测用最近一次 alpha 日频结算。
+
+Use `--factor-fill ffill` for low-frequency alpha snapshots.
+
+## 配置结构 / TOML Config
+
+所有示例配置都在：
+
+All configs live under:
+
+```text
+ml_alpha/configs/*.toml
+```
+
+典型结构 / Typical shape:
 
 ```toml
-[diagnostics]
-enabled = true
-print_epoch = true
-write_loss_history = true
-write_model_info = true
-write_window_summary = true
-```
-
-When enabled, each training window writes:
-
-```text
-data/model_workspace/{run_id}/artifacts/{window_id}/loss_history.parquet
-data/model_workspace/{run_id}/artifacts/{window_id}/model_info.json
-```
-
-Aggregate files are written to:
-
-```text
-data/model_workspace/{run_id}/diagnostics/loss_history.parquet
-data/model_workspace/{run_id}/diagnostics/window_summary.parquet
-```
-
-`print_epoch = true` prints a compact epoch line during MLP training. Other
-models ignore these switches unless they implement diagnostics themselves.
-
-## Workflow And Config
-
-The current v1 flow is:
-
-```text
-TOML config
-  -> build rolling/static training windows
-  -> DatasetBuilder reads factor/label/universe/filter data
-  -> cross-sectional preprocessing
-  -> model.fit(train, valid, context)
-  -> model.predict(predict, context)
-  -> AlphaWriter writes data/models
-```
-
-For the monthly examples:
-
-- train samples are month-end cross sections
-- predictions are daily
-- the rolling scheme uses the previous 36 completed month-end samples
-- features and labels use `zscore(log(rank))` by date
-- missing features are filled with `0`
-- rows with missing labels are excluded from training
-
-The IC-sign equal-weight example reads existing IC detail files from
-`data/backtest/stock/daily/ic`, orients each feature by `sign(mean(rank_ic))`,
-and then averages the oriented features row-wise.
-
-Important TOML sections:
-
-```toml
-run_id = "monthly_mlp_36"
-alpha_id = "ml_alpha_mlp"
+run_id = "monthly_lstm_36"
+alpha_id = "ml_alpha_lstm_128"
 data_root = "data"
 output_root = "data/models"
 
@@ -142,222 +93,192 @@ predict_frequency = "daily"
 type = "rolling"              # static | expanding | rolling
 refit_frequency = "monthly_end"
 train_sample_count = 36
-validation_sample_count = 0
+validation_sample_count = 1
 
 [label]
 id = "future_vwap_return_20d"
 
-[features]
-type = "factor_frame"
-root = "data/factors/stock/daily"
-columns = "__all__"
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
 
 [preprocess]
 cross_section_transform = "rank_gauss"
 feature_fill_value = 0.0
 
+[features]
+type = "factor_frame"         # factor_frame | raw_panel
+root = "data/factors/stock/daily"
+columns = "__all__"
+
 [model]
-name = "mlp"
-class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
-artifact_dir = "data/model_workspace/monthly_mlp_36/artifacts"
+name = "lstm"
+class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
+artifact_dir = "data/model_workspace/monthly_lstm_36/artifacts"
 ```
 
-`[dates].train` is required. `[dates].valid` and `[dates].predict` can be
-omitted or set to `[]`; this is useful when you only want to fit and save a
-model for later live prediction. In `[sample]`, `train_frequency` is required.
-`predict_frequency` is required only when `[dates].predict` is non-empty.
-
-```toml
-[dates]
-train = [20110101, 20260424]
-valid = []
-predict = []
-
-[sample]
-train_frequency = "monthly_end"
-```
-
-Supported sampling/refit frequencies:
+常用采样频率 / Sampling frequencies:
 
 ```text
 daily
-weekly or weekly_end
-monthly or monthly_end
-5, 10, 20, ...
-every_5_days, every_20_days, ...
+weekly
+monthly_end
+quarterly
+5
+20
+every_5_days
 ```
 
-For Python 3.8, prefer numeric forms such as `"5"` over `"every_5_days"` unless
-the string helper compatibility patch has been applied in your environment.
+`valid = []` 表示不使用固定验证区间。滚动训练里的 `validation_sample_count = 1` 仍会用训练窗口之后第一个样本截面做动态验证。
 
-To train on every factor column under a feature root, use:
+`valid = []` means no fixed validation period. In rolling mode, `validation_sample_count = 1` can still create a dynamic validation sample after the training window.
+
+## 预处理 / Preprocessing
+
+当前推荐截面变换是：
+
+Recommended cross-sectional transform:
 
 ```toml
-[features]
-type = "factor_frame"
-root = "data/factors/stock/daily"
-columns = "__all__"
+[preprocess]
+cross_section_transform = "rank_gauss"
+feature_fill_value = 0.0
 ```
 
-`__all__` scans the parquet schemas under the root and uses every non-key
-column except `trade_date`, `ts_code`, and `trade_time`. It does not use factor
-metadata, so deprecated metadata flags do not affect ML feature discovery.
+`rank_gauss` 做：
 
-## Built-In Model Modules
-
-Current model modules live under `yq_ml_alpha/models/`:
+`rank_gauss` applies:
 
 ```text
-linear_model.py     LinearRegressionAlphaModel, ordinary least squares via numpy.
-regularized_linear_model.py
-                    LassoAlphaModel, RidgeAlphaModel, ElasticNetAlphaModel with
-                    optional GridSearchCV or RandomizedSearchCV inside fit().
-tree_model.py       RandomForestAlphaModel, wraps sklearn RandomForestRegressor.
-xgb_model.py        XGBoostAlphaModel, wraps xgboost.XGBRegressor.
-xgb_optuna_model.py
-                    XGBoostOptunaAlphaModel, runs Optuna TPE tuning inside
-                    each fit window, then trains a final XGBoost regressor.
-lgbm_optuna_model.py
-                    LightGBMOptunaAlphaModel, Optuna-tuned LightGBM regressor.
-mlp_model.py        MLPAlphaModel, PyTorch MLP for factor-frame alpha combination.
-sequence_model.py   RNNAlphaModel, LSTMAlphaModel, GRUAlphaModel. Factor-frame
-                    inputs use real historical sample dates; examples use the
-                    past 6 month-end cross-sections.
-elstm_ranknet_model.py
-                    eLSTMRankNetAlphaModel, hand-written exponential-gated
-                    recurrent model trained with same-date RankNet loss.
-cnn_model.py        CNNAlphaModel, 1D CNN over feature dimension. Pooling code is
-                    present but disabled by default.
-ic_sign_model.py    ICSignEqualWeightAlphaModel, equal-weight features by RankIC sign.
-lgbm_model.py       LightGBMAlphaModel placeholder/wrapper for LightGBM style configs.
-sklearn_model.py    Generic sklearn-style wrapper utilities.
-base.py             AlphaModel and ModelContext interfaces.
+rank -> (rank - 0.5) / n -> inverse normal CDF -> cross-section zscore
 ```
 
-Built-in configs:
+feature 缺失值在变换后填 `feature_fill_value`，label 缺失不会填充，训练时缺 label 的样本会被剔除。
+
+Feature missing values are filled after transform. Label missing values are not filled and are dropped for training.
+
+可用 transform 在 `yq_ml_alpha/features/transforms.py` 注册。新增 transform 时只需要注册一次，然后 TOML 中写注册名。
+
+Transforms are registered in `yq_ml_alpha/features/transforms.py`. Add a transform once and reference its registered name in TOML.
+
+## 已有模型 / Built-In Models
 
 ```text
-configs/monthly_lr_36.toml
-configs/monthly_lasso_36.toml
-configs/monthly_ridge_36.toml
-configs/monthly_elasticnet_36.toml
-configs/monthly_rf_36.toml
-configs/monthly_xgb_36.toml
-configs/monthly_xgb_optuna_36.toml
-configs/monthly_lgbm_optuna_36.toml
-configs/monthly_mlp_36.toml
-configs/monthly_rnn_36.toml
-configs/monthly_lstm_36.toml
-configs/monthly_gru_36.toml
-configs/monthly_elstm_ranknet_36.toml
-configs/monthly_cnn_36.toml
-configs/monthly_ic_sign_equal_weight.toml
+LinearRegressionAlphaModel                  monthly_lr_36.toml
+XGBoostAlphaModel                           monthly_xgb_36.toml
+XGBoostOptunaAlphaModel                     monthly_xgb_optuna_36.toml
+LightGBMOptunaAlphaModel                    monthly_lgbm_optuna_36.toml
+LassoAlphaModel                             monthly_lasso_36.toml
+RidgeAlphaModel                             monthly_ridge_36.toml
+ElasticNetAlphaModel                        monthly_elasticnet_36.toml
+RandomForestAlphaModel                      monthly_rf_36.toml
+MLPAlphaModel                               monthly_mlp_36.toml
+RNNAlphaModel                               monthly_rnn_36.toml
+LSTMAlphaModel                              monthly_lstm_36.toml
+GRUAlphaModel                               monthly_gru_36.toml
+CNNAlphaModel                               monthly_cnn_36.toml
+eLSTMRankNetAlphaModel                      monthly_elstm_ranknet_36.toml
+ICSignEqualWeightAlphaModel                 monthly_ic_sign_equal_weight.toml
+MeanFeatureAlphaModel                       mean_combo_smoke.toml
 ```
 
-Model-specific fit parameters go under `[model.params]` and are passed through
-as `context.model_params`. Hyperparameter-search settings go under
-`[model.search]` and are passed through as `context.model_search`. The shared
-pipeline does not interpret loss functions, metrics, or search spaces.
+深度模型依赖 PyTorch；XGBoost/LightGBM/Optuna 是可选依赖。
 
-Lasso/Ridge/ElasticNet can tune themselves during each rolling window. The
-example configs enable `RandomizedSearchCV` and use a 36+1 monthly split:
-the previous 36 completed month-end samples are used for fitting, and the
-next month-end sample is used as the explicit validation set.
+Deep models require PyTorch. XGBoost, LightGBM, and Optuna are optional dependencies.
+
+## Sequence 模型输入 / Sequence Model Input
+
+`RNN/LSTM/GRU/eLSTM` 使用 `DatasetBuilder.load_sequence()` 读取过去 `sequence_length` 个样本截面。若 `sequence_length = 6`，训练样本日期是月末，则每个样本包含最近 6 个月末截面的 feature。
+
+`RNN/LSTM/GRU/eLSTM` use `DatasetBuilder.load_sequence()` to load the last `sequence_length` sample dates. With `sequence_length = 6` and monthly samples, each row contains features from the last six month-end snapshots.
+
+进入模型前的形状：
+
+Input shape before model:
+
+```text
+flat DataFrame feature matrix: [N, sequence_length * F]
+torch tensor:                  [N, sequence_length, F]
+```
+
+如果 feature 数不能整除 `sequence_length`，会在右侧补 0 后 reshape。
+
+If feature count is not divisible by `sequence_length`, zeros are padded on the right before reshaping.
+
+## Diagnostics / Loss 输出
+
+MLP、RNN、LSTM、GRU、eLSTM RankNet 支持 diagnostics。TOML 中打开：
+
+MLP, RNN, LSTM, GRU, and eLSTM RankNet support diagnostics:
 
 ```toml
-[train_scheme]
-type = "rolling"
-refit_frequency = "monthly_end"
-train_sample_count = 36
-validation_sample_count = 1
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
 ```
 
-The explicit validation month is preferred for parameter selection. If it is
-empty after label filtering, the models fall back to their internal CV setting.
+窗口级输出 / Per-window outputs:
+
+```text
+data/model_workspace/{run_id}/artifacts/{window_id}/loss_history.parquet
+data/model_workspace/{run_id}/artifacts/{window_id}/model_info.json
+```
+
+全 run 汇总 / Run-level summaries:
+
+```text
+data/model_workspace/{run_id}/diagnostics/loss_history.parquet
+data/model_workspace/{run_id}/diagnostics/window_summary.parquet
+```
+
+`loss_history.parquet` 记录每个 epoch 的 `train_loss`、`valid_loss`、`best_loss`、`stale_epochs`、`elapsed_seconds` 等。`model_info.json` 记录样本量、设备、模型参数、best epoch 和 best loss。
+
+`loss_history.parquet` records per-epoch loss. `model_info.json` records data sizes, device, model params, best epoch, and best loss.
+
+## 调参 / Tuning
+
+调参属于模型内部逻辑，不做框架级公共 objective/loss。TOML 中通过 `[model.search]` 和 `[model.search.space]` 暴露搜索空间。
+
+Tuning is model-owned. There is no shared framework-level objective or loss. Search spaces are configured through `[model.search]` and `[model.search.space]`.
+
+示例 / Example:
 
 ```toml
 [model.search]
 enabled = true
-method = "random"  # random | grid
-cv = 3
+method = "random"
 n_iter = 40
 scoring = "neg_mean_squared_error"
-n_jobs = -1
-random_state = 42
-```
 
-To use an explicit search space, add `space` below the search block:
-
-```toml
 [model.search.space]
-alpha = [0.001, 0.01, 0.1]
-fit_intercept = [true, false]
+alpha = [0.0001, 0.001, 0.01, 0.1, 1, 10]
+solver_selection = ["cyclic", "random"]
 ```
 
-The built-in tuned configs expose their full default search grids in TOML, so
-you can edit ranges without touching model code.
+关闭调参时：
 
-For RNN/LSTM/GRU configs, `sequence_length = 6` means each target sample uses
-the previous six sampled factor cross-sections. With the monthly examples, the
-tensor shape is:
-
-```text
-N x 6 x F
-```
-
-where `N` is the number of target stock-date samples and `F` is the number of
-features. `sequence_frequency` can be set under `[model.params]`; if omitted it
-uses `sample.train_frequency`, so the monthly examples use `monthly_end`.
-The neural-network monthly examples also use `validation_sample_count = 1`, so
-early stopping and best-checkpoint selection use the month immediately after the
-36 training samples.
-
-`monthly_elstm_ranknet_36.toml` uses the same `N x 6 x F` sequence input, but
-trains with RankNet pairs only inside each `trade_date` cross-section. The
-default pair cap is `max_pairs_per_date = 20000`.
-
-XGBoost and LightGBM also have Optuna-tuned variants. They live in separate
-model paths so the plain configs stay fast:
+Disable tuning:
 
 ```toml
-[model]
-name = "xgboost_optuna"
-class = "yq_ml_alpha.models.xgb_optuna_model.XGBoostOptunaAlphaModel"
-
 [model.search]
-n_trials = 50
-valid_fraction = 0.2
-random_state = 42
-show_progress_bar = false
-
-[model.search.space.n_estimators]
-type = "int"
-low = 100
-high = 800
-step = 50
-
-[model.search.space.learning_rate]
-type = "float"
-low = 0.005
-high = 0.2
-log = true
+enabled = false
 ```
 
-For the tuned monthly examples, `validation_sample_count = 1` supplies the
-Optuna objective with the month immediately after the 36 training samples. If no
-valid rows survive label filtering, the model internally carves out
-`valid_fraction` of the current training window for tuning, then fits the final
-model on the full training window.
+## 新增模型 / Add A Model
 
-## Add A New Model
+新增文件：
 
-Create a new model file, for example:
+Create a model file:
 
 ```text
-yq_ml_alpha/models/my_model.py
+ml_alpha/yq_ml_alpha/models/my_model.py
 ```
 
-Implement the common interface:
+实现接口 / Implement:
 
 ```python
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
@@ -368,59 +289,62 @@ class MyAlphaModel(AlphaModel):
 
     def predict(self, data, context: ModelContext):
         ...
+
+    def save(self, path):
+        ...
+
+    @classmethod
+    def load(cls, path):
+        ...
 ```
 
-Then point the config at the class:
+TOML 中指向类路径：
+
+Reference the class path in TOML:
 
 ```toml
 [model]
 name = "my_model"
 class = "yq_ml_alpha.models.my_model.MyAlphaModel"
-artifact_dir = "data/model_workspace/my_model/artifacts"
+artifact_dir = "data/model_workspace/my_run/artifacts"
 
 [model.params]
 learning_rate = 0.03
 ```
 
-`model.params` is passed through as `context.model_params`; the shared pipeline
-does not interpret model-specific loss, metrics, or hyperparameters.
+训练管线会动态 import 该类。模型自己的 loss、调参、early stopping 和 artifact 结构由模型内部决定。
 
-## Preprocess Transforms
+The training pipeline dynamically imports the class. Loss, tuning, early stopping, and artifacts are model-owned.
 
-Transforms are registered in `yq_ml_alpha/features/transforms.py`. The config
-uses:
+## IC Sign Equal Weight 模型
+
+`ICSignEqualWeightAlphaModel` 读取 Rust 回测输出的 RankIC 序列，使用 `sign(mean(rank_ic))` 调整每个 feature 方向，再对有效 feature 等权平均：
+
+`ICSignEqualWeightAlphaModel` reads RankIC history from Rust backtest outputs, orients each feature by `sign(mean(rank_ic))`, then averages valid features:
 
 ```toml
-[preprocess]
-cross_section_transform = "rank_gauss"
-feature_fill_value = 0.0
+[model]
+class = "yq_ml_alpha.models.ic_sign_model.ICSignEqualWeightAlphaModel"
+
+[model.params]
+ic_root = "data/backtest/stock/daily/ic"
+ic_metric = "rank_ic"
 ```
 
-To add a transform, implement a function in `transforms.py` and decorate it
-with `@register_transform("your_name")`. Then use `your_name` in TOML. This
-keeps transform lookup centralized and avoids editing the training pipeline.
+缺 IC 文件、RankIC 全空或均值为 0 的 feature 会被剔除。
 
-## Output And Backtest
+Features with missing or invalid IC files are dropped.
 
-`AlphaWriter` writes or updates one daily parquet per date:
+## 维护提示 / Maintenance Notes
 
-```text
-data/models/{year}/{trade_date}.parquet
-columns: trade_date, ts_code, alpha_id_1, alpha_id_2, ...
-```
+- 当前配置都在 `ml_alpha/configs/*.toml`。
+- `data/models` 是正式 ML alpha 输出根目录。
+- `data/model_workspace/{run_id}` 是模型 artifact、diagnostics 和可选 cache 目录。
+- `rank_gauss` 是当前推荐预处理 transform。
+- 输出 alpha 不写入 Rust factor metadata，回测时用 `--factor-root data\models --factors alpha_id`。
 
-Parquet cannot append a single column in-place, so if a date file already
-exists, the writer reads it, merges or replaces the alpha column, and rewrites
-the file.
-
-Backtest ML alpha with:
-
-```powershell
-cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_alpha_mlp --factor-root data\models --groups 10 --rebalance 5
-```
-
-If an alpha is lower frequency, use forward fill:
-
-```powershell
-cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_monthly_alpha --factor-root data\models --factor-fill ffill
-```
+- Current configs live under `ml_alpha/configs/*.toml`.
+- `data/models` is the formal ML alpha output root.
+- `data/model_workspace/{run_id}` stores artifacts, diagnostics, and optional cache.
+- `rank_gauss` is the recommended transform.
+- ML alpha is not written into Rust factor metadata; use `--factor-root data\models`.

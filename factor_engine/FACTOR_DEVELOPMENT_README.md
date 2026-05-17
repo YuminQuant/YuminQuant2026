@@ -1,21 +1,20 @@
-# Factor Development README
+# Factor Development README / 因子开发教程
 
-This document is for researchers adding new Rust factors to the YuminQuant
-factor engine.
+本教程面向新增 Rust 因子的研究员和工程实现者。核心原则是：一个正式因子一个 `.rs` 文件，依赖声明精确，公式尽量留在因子文件，公共层只放可复用的数据视图和数学工具。
 
-## Add A Stock Daily Factor
+This guide is for adding Rust factors to YuminQuant. The main rule is: one formal factor per `.rs` file, precise data dependencies, factor formulas in factor files, and reusable data/math helpers in `common` or `operators`.
 
-Create one file under:
+## 1. 普通日频因子 / Ordinary Daily Factor
+
+新增股票日频因子文件：
+
+Create a stock daily factor file:
 
 ```text
-factor_engine/src/factor/chn_stock/daily/{factor_id}.rs
+factor_engine/src/factor/chn_stock/daily/my_factor.rs
 ```
 
-Use the file stem as the short factor id and output column. Each factor exposes
-`create()`, implements `Factor`, declares its metadata in `spec()`, and writes
-the expression in `compute()`.
-
-Minimal shape:
+最小结构 / Minimal shape:
 
 ```rust
 use crate::core::{
@@ -41,11 +40,8 @@ impl Factor for MyFactor {
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: 1,
-            tags: ["price_volume", "daily"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            description: "Example factor".to_string(),
+            tags: ["research", "daily"].into_iter().map(str::to_string).collect(),
+            description: "20-day mean close demo factor.".to_string(),
             dependencies: vec![DataRequest::new(DatasetId::StockDailyPv, &["close"])],
             lookback: Lookback { trading_days: 19 },
             aliases: Vec::new(),
@@ -56,13 +52,15 @@ impl Factor for MyFactor {
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let close = panel.column("close")?;
-        let factor = close.ts(|values| ts_mean(values, 20, 20))?;
+        let factor = close.ts(|values| ts_mean(values, 20, 1))?;
         Ok(factor.to_factor_series(self.spec()))
     }
 }
 ```
 
-After adding the file, run:
+`build.rs` 会自动扫描目录并注册，不需要手写 registry。新增或修改 `spec()` 后运行：
+
+`build.rs` discovers factor files automatically. After adding or editing `spec()`, run:
 
 ```powershell
 cargo run --release --manifest-path factor_engine\Cargo.toml -- metadata
@@ -70,85 +68,68 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- plan --asset sto
 cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors my_factor --profile
 ```
 
-`build.rs` scans the factor directory and generates the registry; there is no
-handwritten factor list to update.
+## 2. 数据依赖 / Data Dependencies
 
-## Data Dependencies
+所有输入列必须写进 `FactorSpec.dependencies`。引擎会按当前 factor batch 合并依赖，只读取需要的 parquet 和列。
 
-Every input must be declared in `FactorSpec.dependencies`. The engine uses these
-requests to load only the necessary datasets and columns for each factor batch.
+Every input column must be declared in `FactorSpec.dependencies`. The engine merges dependencies per factor batch and reads only needed files and columns.
 
-Common stock daily datasets:
-
-- `DatasetId::StockDailyPv`: `open`, `high`, `low`, `close`, `pre_close`, `vol`,
-  `amount`
-- `DatasetId::StockDailyBasic`: `pe`, `pe_ttm`, `pb`, `total_mv`, `circ_mv`,
-  `turnover_rate_f`
-- `DatasetId::StockAdjFactor`: `adj_factor`
-- `DatasetId::StockSwClassification`: `l1_code`, `l2_code`, `l3_code`
-- parameterized index data via `DataRequest::index_daily("000985.CSI", &["close", "pre_close"])`
-
-Daily fact tables are read from daily parquet files, for example:
+常用数据集 / Common datasets:
 
 ```text
-data/stock_data/daily/pv/2026/20260424.parquet
-data/stock_data/daily/basic/2026/20260424.parquet
-data/stock_data/daily/adj_factor/2026/20260424.parquet
+DatasetId::StockDailyPv           open, high, low, close, pre_close, vol, amount
+DatasetId::StockDailyBasic        pe, pe_ttm, pb, total_mv, circ_mv, turnover_rate_f
+DatasetId::StockAdjFactor         adj_factor
+DatasetId::StockDailyLimit        up_limit, down_limit
+DatasetId::StockSwClassification  l1_code, l2_code, l3_code
+DatasetId::StockCiClassification  l1_code, l2_code, l3_code
+DataRequest::index_daily(...)     index close/pre_close etc.
 ```
 
-If a new dataset is needed, add it in this order:
+新增数据集时，按这个顺序改：
 
-1. Add a `DatasetId` or a parameterized `DataRequest` variant.
-2. Add its path rules in `DataCatalog`.
+When adding a new dataset, update in this order:
+
+1. Add `DatasetId` or a parameterized `DataRequest`.
+2. Add path rules in `DataCatalog`.
 3. Add loader support in `MarketDataLoader`.
-4. Add panel caching in `DataPool` only if the data is a daily fact table.
-5. Add tests for path resolution and a small read.
+4. Add `DataPool` panel caching if it is a daily fact table.
+5. Add path/read tests.
 
-Do not hide factor formulas in `common`. Put formulas in the factor file; put
-only reusable data views, panel operations, and generic utilities in `common`.
+## 3. DailyPanel 表达式 / DailyPanel Expressions
 
-## DailyPanel Expression Style
+`DailyPanel` 是 `date x instrument` 对齐后的主视图。它支持时序、截面和二元操作。
 
-`DailyPanel` is the main daily factor view. It aligns data to a shared
-`date x instrument` index and stores each column as a flat vector. `DataPool`
-builds each panel once per batch, so all factors in the same batch reuse it.
-
-Useful patterns:
+`DailyPanel` is the aligned `date x instrument` view used by daily factors.
 
 ```rust
 let panel = data.daily_panel(DatasetId::StockDailyPv)?;
 let close = panel.column("close")?;
 let open = panel.column("open")?;
 
-let return_20d = close.ts(|values| ts_pctchg(values, 20))?;
-let corr = close.ts_binary(&open, |c, o| ts_corr(c, o, 20, 20))?;
-let ranked = return_20d.cs(|values| cs_rank(values, true))?;
+let ret_1d = close.zip_binary(&open, |c, o| {
+    if o > 0.0 { Some(c / o - 1.0) } else { None }
+})?;
+let ranked = ret_1d.cs(|values| cs_pctrank(values, true))?;
 ```
 
-Use `column_from_table()` when another table is aligned by the same
-`trade_date + ts_code` keys but does not have its own cached panel:
+当另一个 daily table 共享 `trade_date + ts_code`，但没有自己的 panel 时：
+
+When another daily table shares `trade_date + ts_code` but has no cached panel:
 
 ```rust
 let adj = panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
 let adj_close = panel.column("close")?.zip_binary(&adj, |close, factor| Some(close * factor))?;
 ```
 
-For industry or Barra neutralization, keep it explicit in `compute()`:
+## 4. 分钟 raw + 日频后处理 / Minute Raw + Daily Postprocess
 
-```rust
-let sector_map = data.stock_sw_classification_map()?;
-let neutral = raw.cs_by_group(
-    |date, codes| sector_map.groups_for(date, codes, ClassificationLevel::Sector),
-    cs_neutralize,
-)?;
-```
-
-## Minute-To-Daily Factors
+分钟派生日频因子推荐两层：
 
 Minute-derived daily factors should use two layers:
 
-1. `minute_compute()` calculates one trading day's minute-to-daily raw statistic.
-2. `compute()` reads the raw daily panel and applies final daily post-processing.
+1. `minute_compute()` 读取单日分钟数据，计算日频 raw。
+2. `compute()` 读取 raw daily panel，做 rolling、rank、中性化等后处理。
 
 Raw cache path:
 
@@ -156,57 +137,78 @@ Raw cache path:
 data/factors/_cache/intraday_daily/chn_stock/{year}/{trade_date}.parquet
 ```
 
-A minute factor that needs no additional post-processing should still use this
-same flow: `compute()` can simply return the raw column as the final factor. The
-benefit is consistent caching, profiling, and writer behavior.
+正式因子在 `FactorSpec.intraday_raw_dependencies` 中声明 raw 依赖。raw 公式变化后必须重跑：
 
-Use `--refresh-minute-cache` when the raw formula changes and old cache files
-should be rebuilt.
+Formal factors declare raw dependencies in `FactorSpec.intraday_raw_dependencies`. If raw formulas change, rerun with:
 
-## Execution Flow And Batching
-
-For `run --asset stock --frequency daily --start-date 20260101 --end-date 20260130`:
-
-1. The engine reads `factor_metadata.parquet` and selects factors by asset,
-   frequency, `--factors`, or `--tags`.
-2. It aligns user dates to the trading calendar.
-3. It splits target dates into date batches. The default is one trading day per
-   batch.
-4. It splits selected factors into factor batches. The default is `64`.
-5. For each date batch and factor batch, it computes `load_dates` from lookback.
-   A 20-day factor for one target day loads roughly 21 trading-day files.
-6. It reads only the required dataset columns for that factor batch.
-7. It builds cached panels once per dataset in `DataPool`.
-8. It computes factors in parallel inside the factor batch using rayon.
-9. It writes the selected factor columns for each target date immediately.
-10. It drops the batch data and moves to the next batch.
-
-This favors low peak memory. Smaller `--factor-batch-size` reduces memory more
-and increases local IO. Larger batches reuse loaded data better but keep more
-intermediate columns alive.
-
-`--profile` is the fastest way to inspect this tradeoff. It prints per-batch
-load, compute, and write timings plus row and non-null counts.
-
-## Output Semantics
-
-Official factor output:
-
-```text
-data/factors/stock/daily/{year}/{trade_date}.parquet
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors your_factor --refresh-minute-cache --profile
 ```
 
-If the file does not exist, it is created. If it exists, the writer loads it,
-merges the newly computed columns, and rewrites the file. Existing unrelated
-columns are preserved.
+分钟因子设计建议：
 
-Insufficient lookback history usually means the factor column contains `null`
-for that date. Labels are different: if the future lookahead is not available,
-the label engine skips that target date and writes no label file.
+Minute factor guidelines:
 
-## Validation Checklist
+- 只需要当天分钟数据的 raw 使用 `window_days = 1`。
+- 跨日拼接需要状态机时，只在 state 中保存必要统计量或最近合成 bar，不保存全量分钟原始数据。
+- 能落成可加 raw 的跨日公式，优先落日频 additive raw，再用 `ts_sum` 恢复窗口公式。
+- provider 要支持 sibling raw 去重，同批多个因子共享一次分钟扫描。
 
-Before committing a factor change:
+## 5. 跨日状态机 raw / Cross-Day Stateful Raw
+
+当公式需要跨日连续序列，但不适合落大量分钟中间列时，可以使用 stateful provider。典型例子：
+
+Use a stateful provider when the formula needs cross-day continuity but should not persist large minute-level intermediate columns. Typical examples:
+
+- 最近 5 日 5min 凸显因子：state 保存最近 5 日合成后的 5min return/salience。
+- 5min 流动性 additive raw：state 只保存前一交易日最后一根 5min Amihud，用来计算下一日第一根 `ΔAmihud`。
+
+状态机原则：
+
+Stateful provider rules:
+
+- state 只保存下一天真正需要的最小信息。
+- 每天读当天分钟文件，算完后释放当天原始分钟数据。
+- 首个目标日前的 warmup 只用于初始化 state。
+- raw version 或 raw id 改变时，避免和旧缓存混用。
+
+## 6. 后处理与中性化 / Postprocess And Neutralization
+
+因子后处理必须在公式里显式写出。常见选择：
+
+Postprocess should be explicit in the factor formula. Common choices:
+
+```text
+ts_mean(raw, window, min_periods)
+cs_zscore
+cs_pctrank
+SIZE + SW level-1 sector neutralization
+20d return + SIZE + SW level-1 sector neutralization
+```
+
+注意：回测 CLI 的 `sector` 代表申万一级行业；开发中如需中性化，建议清楚写明用 `StockSwClassification.l1_code` 还是 `StockCiClassification.l1_code`。
+
+Note: backtest CLI `sector` means Shenwan level-1 sector. In factor code, state clearly whether Shenwan or CITIC classification is used.
+
+## 7. Deprecated 与删除列 / Deprecated Tags And Column Removal
+
+不再推荐使用的因子不要删除 `.rs` 文件，给 metadata tags 增加 `deprecated`，这样 `--all-factors` 和 `--tags` 默认跳过。
+
+Do not delete old factor source files just to retire them. Add the `deprecated` tag so broad selections skip them.
+
+从正式因子库或外部 alpha root 删除历史列：
+
+Remove historical columns from factor parquet or external alpha roots:
+
+```powershell
+python scripts\remove_factor_columns.py --start-date 20110101 --end-date 20260424 --columns WQAlpha007,WQAlpha021 --dry-run
+python scripts\remove_factor_columns.py --start-date 20110101 --end-date 20260424 --columns WQAlpha007,WQAlpha021
+
+python scripts\remove_factor_columns.py --factor-root data\models --start-date 20110101 --end-date 20260424 --columns ml_alpha_lstm --dry-run
+python scripts\remove_factor_columns.py --factor-root data\models --start-date 20110101 --end-date 20260424 --columns ml_alpha_lstm
+```
+
+## 8. 常用验证 / Validation Checklist
 
 ```powershell
 cargo fmt --manifest-path factor_engine\Cargo.toml
@@ -216,12 +218,10 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- metadata
 cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors your_factor --profile
 ```
 
-Common issues:
+常见问题 / Common issues:
 
-- `missing required column ts_code`: a daily file is malformed or the wrong file
-  layout was read.
-- stale metadata: rerun `metadata` after adding or renaming factors.
-- all-null output: check lookback, missing input dates, industry membership, and
-  whether PIT data is available on the target date.
-- `STATUS_CONTROL_C_EXIT`: the process was interrupted from the terminal; it is
-  not a Rust panic.
+- `missing required column ts_code`: 输入 parquet 结构不对或读取路径不对。
+- stale metadata: 新增/改名因子后忘记跑 `metadata`。
+- all-null output: 检查 lookback、输入日期、行业分类、PIT 数据是否可用。
+- 旧 raw cache: raw 公式变更后需要 `--refresh-minute-cache`。
+- Label 缺未来数据时可能跳过目标日，因子通常仍写出 null。

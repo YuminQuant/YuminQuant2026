@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,13 @@ from yq_ml_alpha.features.transforms import (
 )
 from yq_ml_alpha.models.base import ModelContext
 from yq_ml_alpha.models.cnn_model import CNNAlphaModel
+from yq_ml_alpha.models import elstm_ranknet_model as elstm_module
+from yq_ml_alpha.models.elstm_ranknet_model import (
+    eLSTM,
+    eLSTMCell,
+    eLSTMRankNetAlphaModel,
+    ranknet_loss,
+)
 from yq_ml_alpha.models.ic_sign_model import ICSignEqualWeightAlphaModel
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
 from yq_ml_alpha.models.lgbm_optuna_model import LightGBMOptunaAlphaModel
@@ -883,6 +891,102 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 loaded_pred = loaded.predict(train, context)
                 self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
+    def test_elstm_cell_and_layer_shapes_when_installed(self) -> None:
+        try:
+            import torch
+            from torch import nn
+        except ImportError:
+            self.skipTest("torch is not installed")
+        self.assertNotIn("nn.LSTM", inspect.getsource(elstm_module))
+        cell = eLSTMCell(nn, input_size=3, hidden_size=5)
+        x = torch.randn(4, 3, requires_grad=True)
+        state = tuple(torch.zeros(4, 5) for _ in range(4))
+        h, next_state = cell(x, state)
+        self.assertEqual(tuple(h.shape), (4, 5))
+        for item in next_state:
+            self.assertEqual(tuple(item.shape), (4, 5))
+        self.assertFalse(next_state[3].requires_grad)
+
+        layer = eLSTM(nn, input_size=3, hidden_size=5, num_layers=2, dropout=0.0, batch_first=True)
+        output, h_last = layer(torch.randn(4, 6, 3))
+        self.assertEqual(tuple(output.shape), (4, 6, 5))
+        self.assertEqual(tuple(h_last.shape), (4, 5))
+
+    def test_ranknet_loss_uses_same_date_pairs_only_when_installed(self) -> None:
+        try:
+            import torch
+            import torch.nn.functional as F
+        except ImportError:
+            self.skipTest("torch is not installed")
+        pred = torch.tensor([0.0, 1.0, 10.0])
+        target = torch.tensor([2.0, 1.0, 100.0])
+        date_id = torch.tensor([1, 1, 2])
+        loss = ranknet_loss(pred, target, date_id, sigma=1.0, max_pairs_per_date=0)
+        self.assertIsNotNone(loss)
+        self.assertTrue(torch.allclose(loss, F.softplus(torch.tensor(1.0))))
+
+        tied = ranknet_loss(
+            torch.tensor([0.0, 1.0]),
+            torch.tensor([1.0, 1.0]),
+            torch.tensor([1, 1]),
+        )
+        self.assertIsNone(tied)
+
+        sampled = ranknet_loss(
+            torch.linspace(0.0, 1.0, 50),
+            torch.arange(50.0),
+            torch.ones(50, dtype=torch.int64),
+            max_pairs_per_date=5,
+        )
+        self.assertIsNotNone(sampled)
+        self.assertTrue(torch.isfinite(sampled))
+
+    def test_elstm_ranknet_model_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        model = eLSTMRankNetAlphaModel()
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1, 2, 2, 2, 2],
+                "ts_code": ["a", "b", "c", "d", "a", "b", "c", "d"],
+                "x1": [1.0, 2.0, 3.0, 4.0, 1.1, 2.1, 3.1, 4.1],
+                "x2": [4.0, 3.0, 2.0, 1.0, 4.1, 3.1, 2.1, 1.1],
+                "x3": [0.5, 0.4, 0.3, 0.2, 0.6, 0.5, 0.4, 0.3],
+                "x4": [0.1, 0.2, 0.3, 0.4, 0.2, 0.3, 0.4, 0.5],
+                "y": [0.1, 0.2, 0.3, 0.4, 0.15, 0.25, 0.35, 0.45],
+            }
+        )
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2", "x3", "x4"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "sequence_length": 2,
+                "hidden_size": 4,
+                "num_layers": 1,
+                "epochs": 2,
+                "batch_size": 4,
+                "patience": 0,
+                "seed": 7,
+                "max_pairs_per_date": 10,
+            },
+            model_search={},
+        )
+        model.fit(train, pd.DataFrame(), context)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), 8)
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.pt"
+            model.save(path)
+            loaded = eLSTMRankNetAlphaModel.load(path)
+            loaded_pred = loaded.predict(train, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
     def test_cnn_model_smoke_when_installed(self) -> None:
         try:
             import torch  # noqa: F401
@@ -960,6 +1064,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
             "monthly_lstm_36.toml": ("ml_alpha_lstm", "LSTMAlphaModel"),
             "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
+            "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
             "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),
             "monthly_xgb_optuna_36.toml": ("ml_alpha_xgb_optuna", "XGBoostOptunaAlphaModel"),
             "monthly_lgbm_optuna_36.toml": ("ml_alpha_lgbm_optuna", "LightGBMOptunaAlphaModel"),
@@ -979,13 +1084,17 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 "monthly_rnn_36.toml",
                 "monthly_lstm_36.toml",
                 "monthly_gru_36.toml",
+                "monthly_elstm_ranknet_36.toml",
                 "monthly_cnn_36.toml",
             }:
                 self.assertEqual(config.train_scheme.validation_sample_count, 1)
             else:
                 self.assertEqual(config.train_scheme.validation_sample_count, 0)
-            if class_name in {"RNNAlphaModel", "LSTMAlphaModel", "GRUAlphaModel"}:
+            if class_name in {"RNNAlphaModel", "LSTMAlphaModel", "GRUAlphaModel", "eLSTMRankNetAlphaModel"}:
                 self.assertEqual(config.model.params["sequence_length"], 6)
+            if class_name == "eLSTMRankNetAlphaModel":
+                self.assertEqual(config.model.params["max_pairs_per_date"], 20000)
+                self.assertEqual(config.model.params["sigma"], 1.0)
 
     def test_tuned_configs_expose_search_space(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"

@@ -24,6 +24,7 @@ python -m yq_ml_alpha run --config configs\monthly_rf_36.toml
 python -m yq_ml_alpha run --config configs\monthly_lstm_36.toml
 python -m yq_ml_alpha run --config configs\monthly_gru_36.toml
 python -m yq_ml_alpha run --config configs\monthly_rnn_36.toml
+python -m yq_ml_alpha run --config configs\monthly_elstm_ranknet_36.toml
 python -m yq_ml_alpha run --config configs\monthly_cnn_36.toml
 ```
 
@@ -222,6 +223,9 @@ mlp_model.py        MLPAlphaModel, PyTorch MLP for factor-frame alpha combinatio
 sequence_model.py   RNNAlphaModel, LSTMAlphaModel, GRUAlphaModel. Factor-frame
                     inputs use real historical sample dates; examples use the
                     past 6 month-end cross-sections.
+elstm_ranknet_model.py
+                    eLSTMRankNetAlphaModel, hand-written exponential-gated
+                    recurrent model trained with same-date RankNet loss.
 cnn_model.py        CNNAlphaModel, 1D CNN over feature dimension. Pooling code is
                     present but disabled by default.
 ic_sign_model.py    ICSignEqualWeightAlphaModel, equal-weight features by RankIC sign.
@@ -245,6 +249,7 @@ configs/monthly_mlp_36.toml
 configs/monthly_rnn_36.toml
 configs/monthly_lstm_36.toml
 configs/monthly_gru_36.toml
+configs/monthly_elstm_ranknet_36.toml
 configs/monthly_cnn_36.toml
 configs/monthly_ic_sign_equal_weight.toml
 ```
@@ -306,6 +311,10 @@ uses `sample.train_frequency`, so the monthly examples use `monthly_end`.
 The neural-network monthly examples also use `validation_sample_count = 1`, so
 early stopping and best-checkpoint selection use the month immediately after the
 36 training samples.
+
+`monthly_elstm_ranknet_36.toml` uses the same `N x 6 x F` sequence input, but
+trains with RankNet pairs only inside each `trade_date` cross-section. The
+default pair cap is `max_pairs_per_date = 20000`.
 
 XGBoost and LightGBM also have Optuna-tuned variants. They live in separate
 model paths so the plain configs stay fast:

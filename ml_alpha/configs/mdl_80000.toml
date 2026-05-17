@@ -1,5 +1,5 @@
-run_id = "monthly_lstm_36"
-alpha_id = "ml_alpha_lstm_128"
+run_id = "mdl_80000"
+alpha_id = "mdl_80000"
 data_root = "data"
 output_root = "data/models"
 
@@ -40,7 +40,7 @@ columns = "__all__"
 
 [materialize]
 cache_samples = false
-cache_dir = "data/model_workspace/monthly_lstm_36/cache"
+cache_dir = "data/model_workspace/mdl_80000/cache"
 predict_batch_size = 20
 
 [diagnostics]
@@ -53,17 +53,17 @@ write_window_summary = true
 [model]
 name = "lstm"
 class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
-artifact_dir = "data/model_workspace/monthly_lstm_36/artifacts"
+artifact_dir = "data/model_workspace/mdl_80000/artifacts"
 
 [model.params]
 sequence_length = 6
 sequence_frequency = "monthly_end"
-hidden_size = 128
-num_layers = 1
+hidden_size = 64
+num_layers = 2
 dropout = 0.20
 epochs = 100
 batch_size = 4096
-lr = 0.001
+lr = 0.0001
 weight_decay = 0.00001
 seed = 42
 device = "auto"

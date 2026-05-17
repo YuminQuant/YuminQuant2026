@@ -218,6 +218,57 @@ let intraday_raw_dependencies = match def.kind {
 
 If several raw columns share one minute scan, implement `minute_compute_many()` rather than repeating minute IO per raw.
 
+在正式因子的 `impl Factor` 里要显式告诉引擎三件事：
+
+In the formal factor's `impl Factor`, tell the engine three things explicitly:
+
+```rust
+impl Factor for StockDailyNegvMean {
+    fn spec(&self) -> FactorSpec {
+        xyzq_vshape_structure::factor_spec(DEF)
+    }
+
+    // 1. 这个 family 可以产出哪些 raw。
+    // 1. Which raw columns this family can materialize.
+    fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
+        xyzq_vshape_structure::raw_specs()
+    }
+
+    // 2. 同一 provider key 的 raw 会被合并调度。
+    // 2. Raw columns with the same provider key are scheduled together.
+    fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
+        "xyzq_vshape_structure_provider".to_string()
+    }
+
+    // 3. 一次读取分钟数据，同时返回多个 raw series。
+    // 3. Read minute data once and return multiple raw series.
+    fn minute_compute_many(
+        &self,
+        raw_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+    ) -> Result<Vec<IntradayDailyRawSeries>> {
+        xyzq_vshape_structure::minute_compute_many(raw_ids, context, data)
+    }
+
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        xyzq_vshape_structure::compute_factor(DEF, data)
+    }
+}
+```
+
+这里最关键的是 `intraday_raw_provider_key()`。如果两个 raw 的 provider key 相同，引擎会把它们放到同一个 materialize 批次里；如果 key 不同，即使公式共享逻辑，也可能被分开调度，导致重复扫描分钟数据。
+
+The key method is `intraday_raw_provider_key()`. Raw columns with the same provider key are materialized in one provider batch. If keys differ, the engine may schedule them separately even if the formula could share one minute scan.
+
+`minute_compute()` 适合只有一个 raw 的简单因子；`minute_compute_many()` 适合一组 raw 共享同一组中间结果的因子。比如 V-shape provider 一次计算 `negv_mean`、`negv_max`、`negvwgt_mean`、`negvwgt_max`、`daily_minv`。
+
+Use `minute_compute()` for a single independent raw. Use `minute_compute_many()` when a family of raw columns shares intermediate results. For example, the V-shape provider computes `negv_mean`, `negv_max`, `negvwgt_mean`, `negvwgt_max`, and `daily_minv` in one pass.
+
+common helper 里再实现真正的 multi-raw 输出函数：
+
+The common helper then implements the actual multi-raw materialization:
+
 ```rust
 pub fn minute_compute_many(
     raw_ids: &[String],

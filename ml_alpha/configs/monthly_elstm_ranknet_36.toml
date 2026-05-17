@@ -30,7 +30,7 @@ exclude_st = true
 exclude_bj = true
 
 [preprocess]
-cross_section_transform = "zscore_log_rank"
+cross_section_transform = "rank_gauss"
 feature_fill_value = 0.0
 
 [features]
@@ -51,16 +51,17 @@ artifact_dir = "data/model_workspace/monthly_elstm_ranknet_36/artifacts"
 [model.params]
 sequence_length = 6
 sequence_frequency = "monthly_end"
-hidden_size = 64
-num_layers = 2
-dropout = 0.10
-epochs = 50
-batch_size = 8192
+hidden_size = 128
+num_layers = 1
+dropout = 0.20
+epochs = 100
+batch_size = 4096
 lr = 0.001
 weight_decay = 0.00001
 seed = 42
 device = "auto"
 patience = 10
+# RankNet pairwise loss scale: softplus(-sigma * (pred_i - pred_j)).
 sigma = 1.0
 max_pairs_per_date = 20000
 eps = 0.00000001

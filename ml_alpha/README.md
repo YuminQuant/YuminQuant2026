@@ -153,7 +153,7 @@ root = "data/factors/stock/daily"
 columns = "__all__"
 
 [preprocess]
-cross_section_transform = "zscore_log_rank"
+cross_section_transform = "rank_gauss"
 feature_fill_value = 0.0
 
 [model]
@@ -392,7 +392,7 @@ uses:
 
 ```toml
 [preprocess]
-cross_section_transform = "zscore_log_rank"
+cross_section_transform = "rank_gauss"
 feature_fill_value = 0.0
 ```
 

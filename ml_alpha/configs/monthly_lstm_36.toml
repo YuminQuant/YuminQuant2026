@@ -1,5 +1,5 @@
 run_id = "monthly_lstm_36"
-alpha_id = "ml_alpha_lstm"
+alpha_id = "ml_alpha_lstm_128"
 data_root = "data"
 output_root = "data/models"
 
@@ -30,7 +30,7 @@ exclude_st = true
 exclude_bj = true
 
 [preprocess]
-cross_section_transform = "zscore_log_rank"
+cross_section_transform = "rank_gauss"
 feature_fill_value = 0.0
 
 [features]
@@ -51,11 +51,11 @@ artifact_dir = "data/model_workspace/monthly_lstm_36/artifacts"
 [model.params]
 sequence_length = 6
 sequence_frequency = "monthly_end"
-hidden_size = 64
-num_layers = 2
-dropout = 0.10
-epochs = 50
-batch_size = 8192
+hidden_size = 128
+num_layers = 1
+dropout = 0.20
+epochs = 100
+batch_size = 4096
 lr = 0.001
 weight_decay = 0.00001
 seed = 42

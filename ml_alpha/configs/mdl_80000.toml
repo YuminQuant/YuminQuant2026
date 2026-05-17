@@ -6,7 +6,7 @@ output_root = "data/models"
 [dates]
 train = [20110101, 20260424]
 valid = []
-predict = [20110101, 20260424]
+predict = [20231229, 20260424]
 
 [sample]
 train_frequency = "monthly_end"

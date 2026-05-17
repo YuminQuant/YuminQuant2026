@@ -134,6 +134,25 @@ every_5_days
 
 `valid = []` means no fixed validation period. In rolling mode, `validation_sample_count = 1` can still create a dynamic validation sample after the training window.
 
+### 滚动训练续跑 / Resuming Rolling Training
+
+如果一次 rolling 训练中途暂停，通常**不要**为了续跑而把 `train` 改成暂停日期附近。`train` 是训练样本池范围，程序真正读取哪些训练截面由每个 refit window 的 `train_dates` 决定。对于 `train_sample_count = 36`、`validation_sample_count = 1` 这类配置，每个窗口只会从 `train` 样本池中取 refit 日期之前最近的 36 个训练截面和 1 个验证截面。
+
+续跑时应主要调整 `predict` 区间，让它从“下一段预测所需的 refit anchor”开始。例如已经预测完 `20231229`，下一段需要预测 2024 年 1 月，月频 refit 下建议：
+
+```toml
+[dates]
+train = [20110101, 20260424]   # 保留足够历史样本池
+valid = []
+predict = [20231229, 20260424] # 20231229 是下一段预测的 refit anchor
+```
+
+当前实现中，`refit_date` 本身不会被该窗口重新预测；窗口预测的是 `refit_date` 之后到下一个 refit date 之间的交易日。因此上面的配置会从 `20240102` 开始写后续 alpha，同时保留足够历史样本用于 rolling 训练。
+
+When resuming an interrupted rolling run, usually do **not** shrink `train` to the interrupted date. `train` is the sample pool. The actual training data is selected per refit window from `window.train_dates`. With `train_sample_count = 36` and `validation_sample_count = 1`, each window uses only the latest 36 training snapshots plus one validation snapshot before the refit date.
+
+To resume, adjust `predict` to start from the refit anchor that owns the next unfinished prediction segment. If predictions are complete through `20231229` and the next segment is January 2024, keep `train` broad and set `predict = [20231229, 20260424]`. The refit date itself is not predicted again; predictions start after it.
+
 ## 预处理 / Preprocessing
 
 当前推荐截面变换是：

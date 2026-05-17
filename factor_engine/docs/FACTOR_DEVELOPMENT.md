@@ -1,119 +1,47 @@
-# Factor Development Guide
+# Factor Development Navigation / 因子开发导航
 
-## Workflow
+这份文件只保留快速导航，完整教程请看：
 
-1. Create one factor per `.rs` file under `src/factor/{asset}/{frequency}/`.
-2. Use a short snake_case factor ID equal to the file stem.
-3. Declare dependencies precisely; the engine loads only requested columns for
-   the current factor batch.
-4. Run `metadata` after adding or editing factor specs.
-5. Use `plan` to confirm selected factors and loaded columns, then use `run`.
-
-## Daily Panel Expressions
-
-`DailyPanel` is the preferred interface for nested time-series and
-cross-sectional expressions:
-
-```rust
-let panel = DailyPanel::from_table(data.daily(DatasetId::StockDailyPv)?, context)?;
-let factor = panel
-    .column("close")?
-    .ts(|values| ts_pctchg(values, 1))?
-    .ts(|values| ts_sum(values, 20, 20))?
-    .cs(|values| cs_pctrank(values, true))?;
-Ok(factor.to_factor_series(self.spec()))
-```
-
-Use `ts_binary` for multi-column time-series expressions such as
-`ts_corr(volume, close)`, and `cs_binary` for multi-column cross-sectional
-expressions such as regression residuals.
-
-## Minute To Daily Expressions
-
-Minute-to-daily factors use two compute layers. A factor exposes
-`intraday_raw_specs()` and `minute_compute()` in the same `.rs` file that
-contains its final `compute()`. The engine materializes missing raw daily
-vectors from minute data into the local cache, loads the requested raw columns
-into `DataPool`, and then calls the ordinary final `compute()`:
-
-```rust
-let panel = DailyPanel::from_table(
-    data.intraday_daily_raw("ret_over_sqrt_vol_mean")?,
-    context,
-)?;
-let raw = panel.column("ret_over_sqrt_vol_mean")?;
-let factor = raw.ts(|values| ts_mean(values, 20, 20))?;
-Ok(factor.to_factor_series(self.spec()))
-```
-
-Final factors declare raw dependencies in `FactorSpec::intraday_raw_dependencies`.
-The raw expression is discovered from registered factors, so concrete raw
-formula code should stay in factor files. `factor/common/` only provides
-generic intraday grouping, window, cache-table, and numeric helpers.
-
-Raw cache parquet output is enabled by default and lives under
-`data/factors/_cache/intraday_daily/chn_stock/{year}/{trade_date}.parquet` for
-stock raw factors. Use `--refresh-minute-cache` to force raw recomputation.
-
-For factors that do not need daily post-processing, keep the same shape:
-`minute_compute()` creates the raw value and `compute()` simply returns the raw
-column as the final factor. Cross-day minute concat factors are intentionally
-kept for a later design pass.
-
-```rust
-let panel = DailyPanel::from_table(
-    data.intraday_daily_raw("ret_over_sqrt_vol_mean")?,
-    context,
-)?;
-let factor = panel.column("ret_over_sqrt_vol_mean")?;
-Ok(factor.to_factor_series(self.spec()))
-```
-
-## Financial Statements
-
-Financial statement helpers are point-in-time. They prefer `f_ann_date` over
-`ann_date` and only expose records whose disclosure date is on or before the
-target trading date. Report type preference is explicit: income factors can
-prefer adjusted single-quarter reports before regular single-quarter reports,
-while balance sheet factors can prefer consolidated point-in-time reports. For
-duplicate `(ts_code, end_date, report_type)` records, the as-of version with the
-latest disclosure date is used; ties prefer `update_flag=1`.
-
-The `roe_8q` demo uses the latest 8 valid quarters and applies the regulatory
-deadline rule for Q1/Q4, Q2, and Q3:
+This file is intentionally a short navigation page. For the full tutorial, read:
 
 ```text
-mean(n_income_attr_p / total_hldr_eqy_exc_min_int, 8 quarters)
+factor_engine/FACTOR_DEVELOPMENT_README.md
 ```
 
-## Operators
+## 常用入口 / Common Entry Points
 
-- Time-series operators live in `src/operators/time_series/`.
-- Cross-sectional operators live in `src/operators/cross_sectional/`.
-- Keep factor expressions in factor files. Put reusable math in operators and
-  data-shaping helpers in `factor/common/`.
+```text
+factor_engine/src/factor/chn_stock/daily/      stock daily factor files
+factor_engine/src/factor/chn_stock/minute/     true minute-frequency factors
+factor_engine/src/factor/future/daily/         future daily factor files
+factor_engine/src/factor/common/               reusable panel/minute/raw helpers
+factor_engine/src/operators/time_series/       time-series operators
+factor_engine/src/operators/cross_sectional/   cross-sectional operators
+```
 
-## Profiling
+## 最小流程 / Minimal Workflow
 
-Pass `--profile` to `run` to print per target-date batch and factor batch
-timings. The engine processes one trading date at a time, reusing that date's
-loaded data across the selected factors in the current factor batch:
+1. 新建一个 `.rs` 文件，文件名和 factor id 使用 snake_case。
+2. 在 `spec()` 中声明 metadata、tags、dependencies、lookback、aliases。
+3. 在 `compute()` 中写正式公式。
+4. 如果是分钟因子，增加 intraday raw spec 和 `minute_compute()`。
+5. 运行 metadata、plan、单日 run 验证。
+
+1. Create one `.rs` file with a snake_case id.
+2. Declare metadata, tags, dependencies, lookback, and aliases in `spec()`.
+3. Implement the formal formula in `compute()`.
+4. For minute-derived factors, add intraday raw specs and `minute_compute()`.
+5. Validate with metadata, plan, and a one-day run.
+
+## 常用命令 / Useful Commands
 
 ```powershell
-cargo run --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260105 --end-date 20260130 --factors pe_zscore_60d,roe_8q --profile
+cargo run --release --manifest-path factor_engine\Cargo.toml -- metadata
+cargo run --release --manifest-path factor_engine\Cargo.toml -- plan --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors your_factor
+cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors your_factor --profile
+cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors your_factor --profile --refresh-minute-cache
 ```
 
-The profile includes the execution stage, load, compute, write milliseconds,
-row count, and non-null count for each factor. Intraday daily factors show
-`intraday_raw_materialize_window_N` for the in-memory raw step, followed by
-`intraday_daily_postprocess_lookback_N` for final daily expressions.
+## 详细教程 / Full Guide
 
-## Common Pitfalls
-
-- Short factor IDs are scoped by asset and frequency. Use `--asset` and
-  `--frequency` with `--factors return_1d`.
-- Old output parquet files may still contain long columns such as
-  `stock__daily__pv__return_1d`. Clear the target output date range before
-  regenerating if you want only short columns.
-- `ts_sum(ts_pctchg(close, 1), 20)` is a sum of 20 one-period returns, not
-  `close_t / close_{t-20} - 1`.
+See [../FACTOR_DEVELOPMENT_README.md](../FACTOR_DEVELOPMENT_README.md).

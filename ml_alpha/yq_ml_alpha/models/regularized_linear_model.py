@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from itertools import product
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -16,6 +18,11 @@ class _RegularizedLinearAlphaModel(AlphaModel):
         self.model = None
         self.best_params_: dict[str, Any] | None = None
         self.cv_results_: dict[str, Any] | None = None
+        self.best_score_: float | None = None
+        self.search_enabled_: bool = False
+        self.train_rows_: int = 0
+        self.valid_rows_: int = 0
+        self.n_features_: int = 0
 
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
         sklearn_linear = _sklearn_linear_module()
@@ -25,9 +32,15 @@ class _RegularizedLinearAlphaModel(AlphaModel):
         x = _features(train_data, context.feature_columns)
         y = train_data[context.label_column].astype(float).to_numpy()
         validation = _explicit_validation(valid_data, context)
+        self.train_rows_ = int(x.shape[0])
+        self.valid_rows_ = int(validation[0].shape[0]) if validation is not None else 0
+        self.n_features_ = int(x.shape[1])
+        self.search_enabled_ = bool(search_config.get("enabled", False))
         if bool(search_config.get("enabled", False)):
             search_model = _fit_search(estimator_cls, params, search_config, x, y, self.estimator_name, validation)
             self.best_params_ = dict(getattr(search_model, "best_params_", {}))
+            best_score = getattr(search_model, "best_score_", None)
+            self.best_score_ = float(best_score) if best_score is not None and np.isfinite(best_score) else None
             self.cv_results_ = _compact_cv_results(getattr(search_model, "cv_results_", {}))
             if hasattr(search_model, "best_estimator_"):
                 self.model = search_model.best_estimator_
@@ -43,6 +56,40 @@ class _RegularizedLinearAlphaModel(AlphaModel):
             raise RuntimeError("model is not fitted")
         score = self.model.predict(_features(data, context.feature_columns))
         return pd.Series(score, index=data.index, dtype="float32")
+
+    def write_diagnostics(self, context: ModelContext) -> list[Path]:
+        diagnostics = context.diagnostics
+        if not diagnostics.get("enabled", False):
+            return []
+        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        written: list[Path] = []
+        info = {
+            "window_id": context.artifact_dir.name,
+            "run_id": context.run_id,
+            "alpha_id": context.alpha_id,
+            "model_class": self.__class__.__name__,
+            "estimator": self.estimator_name,
+            "train_rows": self.train_rows_,
+            "valid_rows": self.valid_rows_,
+            "n_features": self.n_features_,
+            "search_enabled": self.search_enabled_,
+            "best_score": self.best_score_,
+            "best_params_json": json.dumps(self.best_params_ or {}, ensure_ascii=False, default=_json_default),
+            "best_alpha": (self.best_params_ or {}).get("alpha"),
+            "best_l1_ratio": (self.best_params_ or {}).get("l1_ratio"),
+        }
+        if diagnostics.get("write_model_info", False):
+            info_path = context.artifact_dir / "model_info.json"
+            with info_path.open("w", encoding="utf-8") as file:
+                json.dump(info, file, ensure_ascii=False, indent=2, default=_json_default)
+            written.append(info_path)
+        if diagnostics.get("write_model_info", False) and self.cv_results_:
+            frame = _cv_results_frame(self.cv_results_)
+            if not frame.empty:
+                cv_path = context.artifact_dir / "search_results.parquet"
+                frame.to_parquet(cv_path, index=False)
+                written.append(cv_path)
+        return written
 
 
 class LassoAlphaModel(_RegularizedLinearAlphaModel):
@@ -226,3 +273,21 @@ def _compact_cv_results(cv_results: dict[str, Any]) -> dict[str, Any]:
             value = value.tolist()
         output[key] = value
     return output
+
+
+def _cv_results_frame(cv_results: dict[str, Any]) -> pd.DataFrame:
+    params = cv_results.get("params") or []
+    rows = [dict(item) for item in params]
+    frame = pd.DataFrame(rows)
+    for key in ["mean_test_score", "std_test_score", "rank_test_score"]:
+        if key in cv_results:
+            frame[key] = cv_results[key]
+    return frame
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return str(value)

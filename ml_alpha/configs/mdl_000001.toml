@@ -42,10 +42,16 @@ cache_samples = false
 cache_dir = "data/model_workspace/mdl_000001/cache"
 predict_batch_size = 20
 
+[diagnostics]
+enabled = true
+print_epoch = false
+write_loss_history = false
+write_model_info = true
+write_window_summary = true
+
 [model]
 name = "linear_regression"
 class = "yq_ml_alpha.models.linear_model.LinearRegressionAlphaModel"
 artifact_dir = "data/model_workspace/mdl_000001/artifacts"
 
 [model.params]
-

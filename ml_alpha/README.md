@@ -257,6 +257,11 @@ data/model_workspace/{run_id}/diagnostics/loss_history.parquet
 data/model_workspace/{run_id}/diagnostics/window_summary.parquet
 ```
 
+Regularized linear models also write diagnostics when enabled. For
+`mdl_000002` / `mdl_000003` / `mdl_000004`, the aggregate
+`window_summary.parquet` includes `best_alpha`, `best_l1_ratio` when
+applicable, `best_score`, and `best_params_json`.
+
 `loss_history.parquet` 记录每个 epoch 的 `train_loss`、`valid_loss`、`best_loss`、`stale_epochs`、`elapsed_seconds` 等。`model_info.json` 记录样本量、设备、模型参数、best epoch 和 best loss。
 
 `loss_history.parquet` records per-epoch loss. `model_info.json` records data sizes, device, model params, best epoch, and best loss.

@@ -43,6 +43,13 @@ cache_samples = false
 cache_dir = "data/model_workspace/mdl_000002/cache"
 predict_batch_size = 20
 
+[diagnostics]
+enabled = true
+print_epoch = false
+write_loss_history = false
+write_model_info = true
+write_window_summary = true
+
 [model]
 name = "lasso"
 class = "yq_ml_alpha.models.regularized_linear_model.LassoAlphaModel"
@@ -61,4 +68,3 @@ random_state = 42
 
 [model.search.space]
 alpha = [0.0001, 0.001, 0.01, 0.1, 1, 10]
-

@@ -6,7 +6,7 @@ output_root = "data/models"
 [dates]
 train = [20110101, 20260424]
 valid = []
-predict = [20231229, 20260424]
+predict = [20110101, 20260424]
 
 [sample]
 train_frequency = "monthly_end"
@@ -43,13 +43,6 @@ cache_samples = false
 cache_dir = "data/model_workspace/mdl_80000/cache"
 predict_batch_size = 20
 
-[diagnostics]
-enabled = true
-print_epoch = true
-write_loss_history = true
-write_model_info = true
-write_window_summary = true
-
 [model]
 name = "lstm"
 class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
@@ -58,7 +51,7 @@ artifact_dir = "data/model_workspace/mdl_80000/artifacts"
 [model.params]
 sequence_length = 6
 sequence_frequency = "monthly_end"
-hidden_size = 64
+hidden_size = 256
 num_layers = 2
 dropout = 0.20
 epochs = 100
@@ -69,3 +62,9 @@ seed = 42
 device = "auto"
 patience = 10
 
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true

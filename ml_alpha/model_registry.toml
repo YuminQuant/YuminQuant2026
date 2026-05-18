@@ -1,0 +1,70 @@
+version = 1
+
+[[models]]
+model_id = "mdl_000001"
+alpha_id = "mdl_000001"
+run_id = "mdl_000001"
+config = "configs/mdl_000001.toml"
+status = "active"
+display_name = "OLS factor-frame combo"
+description = "Linear regression model using all formal daily factors with rank_gauss preprocessing."
+model_class = "yq_ml_alpha.models.linear_model.LinearRegressionAlphaModel"
+model_family = "linear"
+label = "future_vwap_return_20d"
+preprocess = "rank_gauss"
+train_scheme = "rolling_monthly_36"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+components = ["all formal stock daily factors"]
+tags = ["linear", "ols", "factor_frame", "rank_gauss"]
+
+[[models]]
+model_id = "mdl_000002"
+alpha_id = "mdl_000002"
+run_id = "mdl_000002"
+config = "configs/mdl_000002.toml"
+status = "active"
+display_name = "Lasso factor-frame combo"
+description = "Lasso regression model using all formal daily factors with rank_gauss preprocessing and internal alpha search."
+model_class = "yq_ml_alpha.models.regularized_linear_model.LassoAlphaModel"
+model_family = "linear_regularized"
+label = "future_vwap_return_20d"
+preprocess = "rank_gauss"
+train_scheme = "rolling_monthly_36_plus_1_valid"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+components = ["all formal stock daily factors"]
+tags = ["linear", "lasso", "factor_frame", "rank_gauss", "tuned"]
+
+[[models]]
+model_id = "mdl_000003"
+alpha_id = "mdl_000003"
+run_id = "mdl_000003"
+config = "configs/mdl_000003.toml"
+status = "active"
+display_name = "Ridge factor-frame combo"
+description = "Ridge regression model using all formal daily factors with rank_gauss preprocessing and internal alpha search."
+model_class = "yq_ml_alpha.models.regularized_linear_model.RidgeAlphaModel"
+model_family = "linear_regularized"
+label = "future_vwap_return_20d"
+preprocess = "rank_gauss"
+train_scheme = "rolling_monthly_36_plus_1_valid"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+components = ["all formal stock daily factors"]
+tags = ["linear", "ridge", "factor_frame", "rank_gauss", "tuned"]
+
+[[models]]
+model_id = "mdl_000004"
+alpha_id = "mdl_000004"
+run_id = "mdl_000004"
+config = "configs/mdl_000004.toml"
+status = "active"
+display_name = "ElasticNet factor-frame combo"
+description = "ElasticNet regression model using all formal daily factors with rank_gauss preprocessing and internal alpha/l1_ratio search."
+model_class = "yq_ml_alpha.models.regularized_linear_model.ElasticNetAlphaModel"
+model_family = "linear_regularized"
+label = "future_vwap_return_20d"
+preprocess = "rank_gauss"
+train_scheme = "rolling_monthly_36_plus_1_valid"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+components = ["all formal stock daily factors"]
+tags = ["linear", "elasticnet", "factor_frame", "rank_gauss", "tuned"]
+

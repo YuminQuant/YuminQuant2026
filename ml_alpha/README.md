@@ -12,9 +12,9 @@ Run from the `ml_alpha` directory when you do not want to install the package:
 
 ```powershell
 cd ml_alpha
-python -m yq_ml_alpha run --config configs\monthly_lr_36.toml
+python -m yq_ml_alpha run --config configs\mdl_000001.toml
 python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml
-python -m yq_ml_alpha run --config configs\monthly_lstm_36.toml
+python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
 python -m yq_ml_alpha run --config configs\monthly_elstm_ranknet_36.toml
 ```
 
@@ -72,11 +72,15 @@ All configs live under:
 ml_alpha/configs/*.toml
 ```
 
+Numbered production model configs use `mdl_******` ids. The registry file
+`ml_alpha/model_registry.toml` records the model id, output alpha id, config
+path, model class, description, feature source, preprocessing, and tags.
+
 典型结构 / Typical shape:
 
 ```toml
-run_id = "monthly_lstm_36"
-alpha_id = "ml_alpha_lstm_128"
+run_id = "monthly_mlp_36"
+alpha_id = "ml_alpha_mlp"
 data_root = "data"
 output_root = "data/models"
 
@@ -113,9 +117,9 @@ root = "data/factors/stock/daily"
 columns = "__all__"
 
 [model]
-name = "lstm"
-class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
-artifact_dir = "data/model_workspace/monthly_lstm_36/artifacts"
+name = "mlp"
+class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
+artifact_dir = "data/model_workspace/monthly_mlp_36/artifacts"
 ```
 
 常用采样频率 / Sampling frequencies:
@@ -184,17 +188,16 @@ Transforms are registered in `yq_ml_alpha/features/transforms.py`. Add a transfo
 ## 已有模型 / Built-In Models
 
 ```text
-LinearRegressionAlphaModel                  monthly_lr_36.toml
+LinearRegressionAlphaModel                  mdl_000001.toml
 XGBoostAlphaModel                           monthly_xgb_36.toml
 XGBoostOptunaAlphaModel                     monthly_xgb_optuna_36.toml
 LightGBMOptunaAlphaModel                    monthly_lgbm_optuna_36.toml
-LassoAlphaModel                             monthly_lasso_36.toml
-RidgeAlphaModel                             monthly_ridge_36.toml
-ElasticNetAlphaModel                        monthly_elasticnet_36.toml
+LassoAlphaModel                             mdl_000002.toml
+RidgeAlphaModel                             mdl_000003.toml
+ElasticNetAlphaModel                        mdl_000004.toml
 RandomForestAlphaModel                      monthly_rf_36.toml
 MLPAlphaModel                               monthly_mlp_36.toml
 RNNAlphaModel                               monthly_rnn_36.toml
-LSTMAlphaModel                              monthly_lstm_36.toml
 GRUAlphaModel                               monthly_gru_36.toml
 CNNAlphaModel                               monthly_cnn_36.toml
 eLSTMRankNetAlphaModel                      monthly_elstm_ranknet_36.toml

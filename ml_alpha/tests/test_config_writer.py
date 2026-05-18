@@ -1087,12 +1087,12 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
     def test_new_model_configs_parse(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
         expected = {
-            "monthly_lasso_36.toml": ("ml_alpha_lasso", "LassoAlphaModel"),
-            "monthly_ridge_36.toml": ("ml_alpha_ridge", "RidgeAlphaModel"),
-            "monthly_elasticnet_36.toml": ("ml_alpha_elasticnet", "ElasticNetAlphaModel"),
+            "mdl_000001.toml": ("mdl_000001", "LinearRegressionAlphaModel"),
+            "mdl_000002.toml": ("mdl_000002", "LassoAlphaModel"),
+            "mdl_000003.toml": ("mdl_000003", "RidgeAlphaModel"),
+            "mdl_000004.toml": ("mdl_000004", "ElasticNetAlphaModel"),
             "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
             "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
-            "monthly_lstm_36.toml": ("ml_alpha_lstm_128", "LSTMAlphaModel"),
             "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
             "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
             "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),
@@ -1105,14 +1105,13 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertTrue(config.model.class_path.endswith(class_name))
             self.assertEqual(config.features.columns, "__all__")
             if filename in {
-                "monthly_lasso_36.toml",
-                "monthly_ridge_36.toml",
-                "monthly_elasticnet_36.toml",
+                "mdl_000002.toml",
+                "mdl_000003.toml",
+                "mdl_000004.toml",
                 "monthly_xgb_optuna_36.toml",
                 "monthly_lgbm_optuna_36.toml",
                 "monthly_mlp_36.toml",
                 "monthly_rnn_36.toml",
-                "monthly_lstm_36.toml",
                 "monthly_gru_36.toml",
                 "monthly_elstm_ranknet_36.toml",
                 "monthly_cnn_36.toml",
@@ -1120,19 +1119,15 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertEqual(config.train_scheme.validation_sample_count, 1)
             else:
                 self.assertEqual(config.train_scheme.validation_sample_count, 0)
-            if class_name in {"RNNAlphaModel", "LSTMAlphaModel", "GRUAlphaModel", "eLSTMRankNetAlphaModel"}:
+            if class_name in {"RNNAlphaModel", "GRUAlphaModel", "eLSTMRankNetAlphaModel"}:
                 self.assertEqual(config.model.params["sequence_length"], 6)
             if class_name == "eLSTMRankNetAlphaModel":
                 self.assertEqual(config.model.params["max_pairs_per_date"], 20000)
                 self.assertEqual(config.model.params["sigma"], 1.0)
-            if filename == "monthly_lstm_36.toml":
-                self.assertTrue(config.diagnostics.enabled)
-                self.assertTrue(config.diagnostics.print_epoch)
-                self.assertTrue(config.diagnostics.write_loss_history)
 
     def test_tuned_configs_expose_search_space(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
-        lasso = load_config(config_dir / "monthly_lasso_36.toml")
+        lasso = load_config(config_dir / "mdl_000002.toml")
         self.assertIn("alpha", lasso.model.search["space"])
 
         xgb = load_config(config_dir / "monthly_xgb_optuna_36.toml")

@@ -135,9 +135,9 @@ Run from `ml_alpha` when you do not want to install the package:
 
 ```powershell
 Push-Location .\ml_alpha
-python -m yq_ml_alpha run --config configs\monthly_lr_36.toml
+python -m yq_ml_alpha run --config configs\mdl_000001.toml
 python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml
-python -m yq_ml_alpha run --config configs\monthly_lstm_36.toml
+python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
 python -m yq_ml_alpha run --config configs\monthly_elstm_ranknet_36.toml
 Pop-Location
 ```
@@ -151,7 +151,7 @@ data/models/{year}/{trade_date}.parquet
 回测 ML alpha / Backtest ML alpha:
 
 ```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors ml_alpha_lstm_128 --factor-root data\models --groups 10 --rebalance 20
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000001 --factor-root data\models --groups 10 --rebalance 20
 ```
 
 ### Strategy

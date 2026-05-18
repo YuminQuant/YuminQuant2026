@@ -1,5 +1,5 @@
-run_id = "monthly_elasticnet_36"
-alpha_id = "ml_alpha_elasticnet"
+run_id = "mdl_000001"
+alpha_id = "mdl_000001"
 data_root = "data"
 output_root = "data/models"
 
@@ -16,7 +16,6 @@ predict_frequency = "daily"
 type = "rolling"
 refit_frequency = "monthly_end"
 train_sample_count = 36
-validation_sample_count = 1
 
 [label]
 id = "future_vwap_return_20d"
@@ -40,26 +39,13 @@ columns = "__all__"
 
 [materialize]
 cache_samples = false
-cache_dir = "data/model_workspace/monthly_elasticnet_36/cache"
+cache_dir = "data/model_workspace/mdl_000001/cache"
 predict_batch_size = 20
 
 [model]
-name = "elasticnet"
-class = "yq_ml_alpha.models.regularized_linear_model.ElasticNetAlphaModel"
-artifact_dir = "data/model_workspace/monthly_elasticnet_36/artifacts"
+name = "linear_regression"
+class = "yq_ml_alpha.models.linear_model.LinearRegressionAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000001/artifacts"
 
 [model.params]
-fit_intercept = true
 
-[model.search]
-enabled = true
-method = "random"
-cv = 3
-n_iter = 40
-scoring = "neg_mean_squared_error"
-n_jobs = -1
-random_state = 42
-
-[model.search.space]
-alpha = [0.00001, 0.0001, 0.001, 0.01, 0.1]
-l1_ratio = [0.05, 0.15, 0.3, 0.5, 0.7, 0.85, 0.95]

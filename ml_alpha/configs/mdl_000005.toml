@@ -1,5 +1,5 @@
-run_id = "mdl_000002"
-alpha_id = "mdl_000002"
+run_id = "mdl_000005"
+alpha_id = "mdl_000005"
 data_root = "data"
 output_root = "data/models"
 
@@ -16,7 +16,6 @@ predict_frequency = "daily"
 type = "rolling"
 refit_frequency = "monthly_end"
 train_sample_count = 36
-validation_sample_count = 1
 
 [label]
 id = "future_vwap_return_20d"
@@ -40,7 +39,7 @@ columns = "__all__"
 
 [materialize]
 cache_samples = false
-cache_dir = "data/model_workspace/mdl_000002/cache"
+cache_dir = "data/model_workspace/mdl_000005/cache"
 predict_batch_size = 20
 
 [diagnostics]
@@ -51,20 +50,9 @@ write_model_info = true
 write_window_summary = true
 
 [model]
-name = "lasso"
-class = "yq_ml_alpha.models.regularized_linear_model.LassoAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000002/artifacts"
+name = "pca_ols"
+class = "yq_ml_alpha.models.pca_ols_model.PCAOLSAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000005/artifacts"
 
 [model.params]
-fit_intercept = true
-
-[model.search]
-enabled = true
-method = "random"
-cv = 3
-scoring = "neg_mean_squared_error"
-n_jobs = -1
-random_state = 42
-
-[model.search.space]
-alpha = [0.001, 0.01, 0.1, 0.5, 1, 3, 10]
+explained_variance = 0.95

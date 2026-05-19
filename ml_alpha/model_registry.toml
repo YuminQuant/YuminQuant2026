@@ -68,3 +68,53 @@ features = "factor_frame: data/factors/stock/daily, columns=__all__"
 components = ["all formal stock daily factors"]
 tags = ["linear", "elasticnet", "factor_frame", "rank_gauss", "tuned"]
 
+[[models]]
+model_id = "mdl_000005"
+alpha_id = "mdl_000005"
+run_id = "mdl_000005"
+config = "configs/mdl_000005.toml"
+status = "active"
+display_name = "PCA OLS factor-frame combo"
+description = "OLS regression on PCA components fitted from rank_gauss transformed formal daily factors, retaining 95% cumulative explained variance."
+model_class = "yq_ml_alpha.models.pca_ols_model.PCAOLSAlphaModel"
+model_family = "linear_pca"
+label = "future_vwap_return_20d"
+preprocess = "rank_gauss"
+train_scheme = "rolling_monthly_36"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+components = ["all formal stock daily factors", "PCA cumulative explained variance 0.95", "OLS"]
+tags = ["linear", "pca", "ols", "factor_frame", "rank_gauss"]
+
+[[models]]
+model_id = "mdl_000006"
+alpha_id = "mdl_000006"
+run_id = "mdl_000006"
+config = "configs/mdl_000006.toml"
+status = "active"
+display_name = "Bar GRU end-to-end alpha"
+description = "End-to-end GRU model using generic bar_panel OHLCVW tensors, trained with date-wise negative IC loss."
+model_class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
+model_family = "end_to_end_bar_gru"
+label = "future_vwap_return_20d"
+preprocess = "time_series_mean_scale + cross_section_zscore"
+train_scheme = "rolling_3y_20d_samples_29_train_7_valid_semiannual_refit"
+features = "bar_panel: data/stock_data/minute, source_frequency=minute, bar_size=15, lookback_sessions=20, shape=[320,6]"
+components = ["bar_panel OHLCVW aggregation", "GRU hidden_size=30", "BatchNorm", "FC", "negative IC loss"]
+tags = ["end_to_end", "bar_panel", "minute", "gru", "ic_loss", "zscore"]
+
+[[models]]
+model_id = "mdl_000007"
+alpha_id = "mdl_000007"
+run_id = "mdl_000007"
+config = "configs/mdl_000007.toml"
+status = "active"
+display_name = "Daily + 15m multi-frequency GRU alpha"
+description = "End-to-end GRU model with separate daily OHLCVW and 15-minute OHLCVW branches, trained with date-wise negative IC loss."
+model_class = "yq_ml_alpha.models.multi_bar_gru_model.MultiBarGRUAlphaModel"
+model_family = "end_to_end_multi_bar_gru"
+label = "future_vwap_return_20d"
+preprocess = "daily_last_scale + minute_mean_scale + cross_section_zscore"
+train_scheme = "rolling_3y_20d_samples_29_train_7_valid_semiannual_refit"
+features = "multi_bar_panel: daily shape=[40,6], minute shape=[320,6]"
+components = ["daily bar_panel GRU hidden_size=30", "15m bar_panel GRU hidden_size=30", "BatchNorm", "Concat", "FC", "negative IC loss"]
+tags = ["end_to_end", "multi_frequency", "daily", "minute", "gru", "ic_loss", "zscore"]

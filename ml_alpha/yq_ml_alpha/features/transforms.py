@@ -101,6 +101,21 @@ def _transform_none(
     return fill_feature_nan(frame, feature_columns, feature_fill_value)
 
 
+@register_transform("zscore", "cs_zscore")
+def _transform_zscore(
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+    label_columns: list[str],
+    feature_fill_value: float,
+) -> pd.DataFrame:
+    output = frame.copy()
+    for column in [*feature_columns, *label_columns]:
+        if column not in output.columns:
+            continue
+        output[column] = output.groupby("trade_date", group_keys=False)[column].transform(_zscore_series)
+    return fill_feature_nan(output, feature_columns, feature_fill_value)
+
+
 @register_transform("zscore_log_rank", "log_rank_zscore", "cs_zscore_log_rank")
 def _transform_zscore_log_rank(
     frame: pd.DataFrame,
@@ -135,6 +150,20 @@ def _zscore_log_rank_series(values: pd.Series) -> pd.Series:
     values = values.replace([np.inf, -np.inf], np.nan)
     ranks = values.rank(method="average", na_option="keep", ascending=True)
     transformed = np.log(ranks)
+    valid = transformed.notna()
+    if not valid.any():
+        return transformed
+    mean = transformed.loc[valid].mean()
+    std = transformed.loc[valid].std(ddof=0)
+    if not np.isfinite(std) or std <= 0.0:
+        transformed.loc[valid] = 0.0
+        return transformed
+    transformed.loc[valid] = (transformed.loc[valid] - mean) / std
+    return transformed
+
+
+def _zscore_series(values: pd.Series) -> pd.Series:
+    transformed = values.replace([np.inf, -np.inf], np.nan).astype("float64")
     valid = transformed.notna()
     if not valid.any():
         return transformed

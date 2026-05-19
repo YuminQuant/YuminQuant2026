@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
-from yq_ml_alpha.data.sampler import sample_dates
+from yq_ml_alpha.data.sampler import refit_dates, sample_dates
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
+from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.transforms import (
     apply_cross_section_transform,
     available_transforms,
@@ -35,7 +36,10 @@ from yq_ml_alpha.models.ic_sign_model import ICSignEqualWeightAlphaModel
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
 from yq_ml_alpha.models.lgbm_optuna_model import LightGBMOptunaAlphaModel
 from yq_ml_alpha.models.mlp_model import MLPAlphaModel
+from yq_ml_alpha.models.bar_gru_model import BarGRUAlphaModel
+from yq_ml_alpha.models.multi_bar_gru_model import MultiBarGRUAlphaModel
 from yq_ml_alpha.models.optuna_space import suggest_params
+from yq_ml_alpha.models.pca_ols_model import PCAOLSAlphaModel
 from yq_ml_alpha.models.regularized_linear_model import (
     ElasticNetAlphaModel,
     LassoAlphaModel,
@@ -177,6 +181,17 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(
             sample_dates(Calendar(), (20260105, 20260112), "every_5_days"),
             [20260105, 20260112],
+        )
+
+    def test_semiannual_end_frequency(self) -> None:
+        calendar = TradingCalendar([20260629, 20260630, 20260701, 20261230, 20261231, 20270104])
+        self.assertEqual(
+            sample_dates(calendar, (20260629, 20261231), "semiannual_end"),
+            [20260630, 20261231],
+        )
+        self.assertEqual(
+            refit_dates(calendar, [20260629, 20260630, 20260701, 20261230, 20261231], "semiannual_end"),
+            [20260630, 20261231],
         )
 
     def test_zscore_log_rank_fills_features_but_not_label(self) -> None:
@@ -517,6 +532,188 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 [1.0, 10.0, 3.0, 30.0, 5.0, 50.0],
             )
             self.assertEqual(len(bundle.frame), 2)
+
+    def test_bar_panel_provider_aggregates_minute_bars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "minute"
+            (root / "2026").mkdir(parents=True)
+            rows = []
+            times = []
+            for hour, start, end in [(9, 31, 60), (10, 0, 60), (11, 0, 31), (13, 1, 60), (14, 0, 60), (15, 0, 1)]:
+                for minute in range(start, end):
+                    times.append(f"2026-01-05 {hour:02d}:{minute:02d}:00")
+            for symbol, offset in [("000001.SZ", 0.0), ("000002.SZ", 10.0)]:
+                for idx, trade_time in enumerate(times):
+                    price = 100.0 + offset + idx * 0.01
+                    rows.append(
+                        {
+                            "ts_code": symbol,
+                            "trade_time": trade_time,
+                            "open": price,
+                            "high": price + 0.2,
+                            "low": price - 0.2,
+                            "close": price + 0.1,
+                            "vol": 100.0 + idx,
+                            "amount": (100.5 + offset) * (100.0 + idx),
+                        }
+                    )
+            pd.DataFrame(rows).to_parquet(root / "2026" / "20260105.parquet", index=False)
+
+            provider = BarPanelProvider(
+                root,
+                ["open", "high", "low", "close", "vwap", "volume"],
+                {"source_frequency": "minute", "bar_size": 15, "lookback_sessions": 1},
+            )
+            daily = provider._load_minute_session(20260105)
+            self.assertEqual(len(daily), 2)
+            self.assertIn("vwap__b000", daily.columns)
+            first = daily.loc[daily["ts_code"] == "000001.SZ"].iloc[0]
+            self.assertAlmostEqual(float(first["vwap__b000"]), 100.5, places=7)
+
+            window = provider.load_window(20260105, [20260105])
+            self.assertEqual(window.shape, (2, 2 + 16 * 6))
+            self.assertEqual(window["trade_date"].tolist(), [20260105, 20260105])
+            self.assertTrue(np.isfinite(window[provider.feature_columns].to_numpy()).all())
+
+    def test_bar_panel_rejects_too_large_minute_bar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "1 <= bar_size <= 120"):
+                BarPanelProvider(
+                    Path(tmp),
+                    ["open", "high", "low", "close", "vwap", "volume"],
+                    {"source_frequency": "minute", "bar_size": 121, "lookback_sessions": 1},
+                )
+
+    def test_bar_panel_provider_aggregates_daily_bars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "daily"
+            (root / "2026").mkdir(parents=True)
+            for offset, trade_date in enumerate([20260102, 20260105, 20260106, 20260107, 20260108]):
+                pd.DataFrame(
+                    {
+                        "trade_date": [trade_date],
+                        "ts_code": ["000001.SZ"],
+                        "open": [10.0 + offset],
+                        "high": [11.0 + offset],
+                        "low": [9.0 + offset],
+                        "close": [10.5 + offset],
+                        "vol": [100.0 + offset],
+                        "amount": [1000.0 + offset],
+                    }
+                ).to_parquet(root / "2026" / f"{trade_date}.parquet", index=False)
+            provider = BarPanelProvider(
+                root,
+                ["open", "high", "low", "close", "vwap", "volume"],
+                {"source_frequency": "daily", "bar_size": 5, "lookback_sessions": 5, "time_series_scale": "none"},
+            )
+            window = provider.load_window(20260108, [20260102, 20260105, 20260106, 20260107, 20260108])
+            self.assertEqual(window.shape, (1, 2 + 6))
+            row = window.iloc[0]
+            self.assertEqual(float(row["open__t000"]), 10.0)
+            self.assertEqual(float(row["high__t000"]), 15.0)
+            self.assertEqual(float(row["low__t000"]), 9.0)
+            self.assertEqual(float(row["close__t000"]), 14.5)
+            self.assertEqual(float(row["volume__t000"]), sum(100.0 + i for i in range(5)))
+            expected_vwap = sum(1000.0 + i for i in range(5)) * 10.0 / sum(100.0 + i for i in range(5))
+            self.assertAlmostEqual(float(row["vwap__t000"]), expected_vwap, places=7)
+
+    def test_bar_panel_last_scale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "daily"
+            (root / "2026").mkdir(parents=True)
+            for trade_date, open_value in [(20260105, 10.0), (20260106, 20.0)]:
+                pd.DataFrame(
+                    {
+                        "trade_date": [trade_date],
+                        "ts_code": ["000001.SZ"],
+                        "open": [open_value],
+                        "high": [open_value + 1.0],
+                        "low": [open_value - 1.0],
+                        "close": [open_value + 0.5],
+                        "vol": [100.0],
+                        "amount": [1000.0],
+                    }
+                ).to_parquet(root / "2026" / f"{trade_date}.parquet", index=False)
+            provider = BarPanelProvider(
+                root,
+                ["open", "high", "low", "close", "vwap", "volume"],
+                {"source_frequency": "daily", "bar_size": 1, "lookback_sessions": 2, "time_series_scale": "last"},
+            )
+            window = provider.load_window(20260106, [20260105, 20260106])
+            row = window.iloc[0]
+            self.assertAlmostEqual(float(row["open__t000"]), 0.5, places=7)
+            self.assertAlmostEqual(float(row["open__t001"]), 1.0, places=7)
+
+    def test_multi_bar_panel_provider_merges_prefixed_panels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            daily_root = Path(tmp) / "daily"
+            minute_root = Path(tmp) / "minute"
+            (daily_root / "2026").mkdir(parents=True)
+            (minute_root / "2026").mkdir(parents=True)
+            for offset, trade_date in enumerate([20260102, 20260105]):
+                pd.DataFrame(
+                    {
+                        "trade_date": [trade_date, trade_date],
+                        "ts_code": ["000001.SZ", "000002.SZ"],
+                        "open": [10.0 + offset, 20.0 + offset],
+                        "high": [11.0 + offset, 21.0 + offset],
+                        "low": [9.0 + offset, 19.0 + offset],
+                        "close": [10.5 + offset, 20.5 + offset],
+                        "vol": [100.0, 200.0],
+                        "amount": [1000.0, 4000.0],
+                    }
+                ).to_parquet(daily_root / "2026" / f"{trade_date}.parquet", index=False)
+
+            times = []
+            for hour, start, end in [(9, 31, 60), (10, 0, 60), (11, 0, 31), (13, 1, 60), (14, 0, 60), (15, 0, 1)]:
+                for minute in range(start, end):
+                    times.append(f"2026-01-05 {hour:02d}:{minute:02d}:00")
+            rows = []
+            for symbol, base in [("000001.SZ", 10.0), ("000002.SZ", 20.0)]:
+                for idx, trade_time in enumerate(times):
+                    price = base + idx * 0.01
+                    rows.append(
+                        {
+                            "ts_code": symbol,
+                            "trade_time": trade_time,
+                            "open": price,
+                            "high": price + 0.1,
+                            "low": price - 0.1,
+                            "close": price + 0.05,
+                            "vol": 100.0,
+                            "amount": price * 100.0,
+                        }
+                    )
+            pd.DataFrame(rows).to_parquet(minute_root / "2026" / "20260105.parquet", index=False)
+
+            provider = MultiBarPanelProvider(
+                {
+                    "panels": {
+                        "daily": {
+                            "root": daily_root,
+                            "source_frequency": "daily",
+                            "bar_size": 1,
+                            "lookback_sessions": 2,
+                            "time_series_scale": "last",
+                            "columns": ["open", "high", "low", "close", "vwap", "volume"],
+                        },
+                        "minute": {
+                            "root": minute_root,
+                            "source_frequency": "minute",
+                            "bar_size": 60,
+                            "lookback_sessions": 1,
+                            "time_series_scale": "mean",
+                            "columns": ["open", "high", "low", "close", "vwap", "volume"],
+                        },
+                    }
+                }
+            )
+            window = provider.load_window(20260105, [20260102, 20260105])
+            self.assertEqual(len(window), 2)
+            self.assertIn("daily__open__t000", provider.feature_columns)
+            self.assertIn("minute__open__t003", provider.feature_columns)
+            self.assertEqual(len(provider.feature_columns), 2 * 6 + 4 * 6)
+            self.assertTrue(np.isfinite(window[provider.feature_columns].to_numpy()).all())
 
     def test_linear_regression_model_fits_simple_relation(self) -> None:
         model = LinearRegressionAlphaModel()
@@ -921,6 +1118,104 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 loaded_pred = loaded.predict(train, context)
                 self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
+    def test_bar_gru_model_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        feature_columns = [f"f{feature}__t{step:03d}" for step in range(4) for feature in range(2)]
+        rows = []
+        for trade_date, base in [(1, 0.0), (2, 1.0)]:
+            for idx, symbol in enumerate(["a", "b", "c", "d"]):
+                row = {"trade_date": trade_date, "ts_code": symbol, "y": float(idx)}
+                for col_idx, column in enumerate(feature_columns):
+                    row[column] = base + idx * 0.1 + col_idx * 0.01
+                rows.append(row)
+        train = pd.DataFrame(rows)
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=feature_columns,
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "sequence_length": 4,
+                "input_size": 2,
+                "hidden_size": 4,
+                "num_layers": 1,
+                "epochs": 2,
+                "batch_size": 10,
+                "patience": 0,
+                "seed": 7,
+                "device": "cpu",
+            },
+            model_search={},
+        )
+        model = BarGRUAlphaModel()
+        model.fit(train, pd.DataFrame(), context)
+        self.assertGreater(len(model.loss_history), 0)
+        self.assertEqual(model.model_info["sequence_length"], 4)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), len(train))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.pt"
+            model.save(path)
+            loaded = BarGRUAlphaModel.load(path)
+            loaded_pred = loaded.predict(train, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-6))
+
+    def test_multi_bar_gru_model_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        daily_columns = [f"daily__f{feature}__t{step:03d}" for step in range(2) for feature in range(2)]
+        minute_columns = [f"minute__f{feature}__t{step:03d}" for step in range(3) for feature in range(2)]
+        feature_columns = [*daily_columns, *minute_columns]
+        rows = []
+        for trade_date, base in [(1, 0.0), (2, 1.0)]:
+            for idx, symbol in enumerate(["a", "b", "c", "d"]):
+                row = {"trade_date": trade_date, "ts_code": symbol, "y": float(idx)}
+                for col_idx, column in enumerate(feature_columns):
+                    row[column] = base + idx * 0.1 + col_idx * 0.01
+                rows.append(row)
+        train = pd.DataFrame(rows)
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=feature_columns,
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "daily_sequence_length": 2,
+                "minute_sequence_length": 3,
+                "input_size": 2,
+                "hidden_size": 4,
+                "num_layers": 1,
+                "epochs": 2,
+                "batch_size": 10,
+                "patience": 0,
+                "seed": 7,
+                "device": "cpu",
+            },
+            model_search={},
+        )
+        model = MultiBarGRUAlphaModel()
+        model.fit(train, pd.DataFrame(), context)
+        self.assertGreater(len(model.loss_history), 0)
+        self.assertEqual(model.model_info["daily_sequence_length"], 2)
+        self.assertEqual(model.model_info["minute_sequence_length"], 3)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), len(train))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.pt"
+            model.save(path)
+            loaded = MultiBarGRUAlphaModel.load(path)
+            loaded_pred = loaded.predict(train, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-6))
+
     def test_elstm_cell_and_layer_shapes_when_installed(self) -> None:
         try:
             import torch
@@ -1062,6 +1357,49 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             loaded_pred = loaded.predict(train, context)
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
+    def test_pca_ols_model_fit_predict_save_load(self) -> None:
+        context = ModelContext(
+            run_id="mdl_000005",
+            alpha_id="mdl_000005",
+            feature_columns=["x1", "x2", "x3", "x4"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={"explained_variance": 0.95},
+            model_search={},
+            diagnostics={
+                "enabled": True,
+                "write_model_info": True,
+                "write_window_summary": True,
+            },
+        )
+        train = pd.DataFrame(
+            {
+                "trade_date": [1, 1, 1, 1, 2, 2, 2, 2],
+                "ts_code": ["a", "b", "c", "d", "a", "b", "c", "d"],
+                "x1": [1.0, 2.0, 3.0, 4.0, 1.1, 2.1, 3.1, 4.1],
+                "x2": [4.0, 3.0, 2.0, 1.0, 3.9, 2.9, 1.9, 0.9],
+                "x3": [0.5, 0.4, 0.3, 0.2, 0.6, 0.5, 0.4, 0.3],
+                "x4": [0.1, 0.2, 0.3, 0.4, 0.0, 0.1, 0.2, 0.3],
+                "y": [0.1, 0.2, 0.3, 0.4, 0.15, 0.25, 0.35, 0.45],
+            }
+        )
+        model = PCAOLSAlphaModel()
+        model.fit(train, pd.DataFrame(), context)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), len(train))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+        self.assertLessEqual(model.n_components_, model.n_original_features_)
+        self.assertGreaterEqual(model.explained_variance_ratio_sum_, 0.95)
+        with tempfile.TemporaryDirectory() as tmp:
+            context.artifact_dir = Path(tmp) / "window"
+            written = model.write_diagnostics(context)
+            self.assertTrue(any(path.name == "model_info.json" for path in written))
+            path = Path(tmp) / "model.pkl"
+            model.save(path)
+            loaded = PCAOLSAlphaModel.load(path)
+            loaded_pred = loaded.predict(train, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
     def test_monthly_mlp_config_parses(self) -> None:
         config = load_config(Path(__file__).resolve().parents[1] / "configs" / "monthly_mlp_36.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_mlp")
@@ -1091,6 +1429,9 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             "mdl_000002.toml": ("mdl_000002", "LassoAlphaModel"),
             "mdl_000003.toml": ("mdl_000003", "RidgeAlphaModel"),
             "mdl_000004.toml": ("mdl_000004", "ElasticNetAlphaModel"),
+            "mdl_000005.toml": ("mdl_000005", "PCAOLSAlphaModel"),
+            "mdl_000006.toml": ("mdl_000006", "BarGRUAlphaModel"),
+            "mdl_000007.toml": ("mdl_000007", "MultiBarGRUAlphaModel"),
             "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
             "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
             "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
@@ -1103,7 +1444,20 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             config = load_config(config_dir / filename)
             self.assertEqual(config.alpha_id, alpha_id)
             self.assertTrue(config.model.class_path.endswith(class_name))
-            self.assertEqual(config.features.columns, "__all__")
+            if filename == "mdl_000006.toml":
+                self.assertEqual(config.features.type, "bar_panel")
+                self.assertEqual(config.features.columns, ["open", "high", "low", "close", "vwap", "volume"])
+                self.assertEqual(config.features.params["source_frequency"], "minute")
+                self.assertEqual(config.features.params["bar_size"], 15)
+                self.assertEqual(config.features.params["lookback_sessions"], 20)
+            elif filename == "mdl_000007.toml":
+                self.assertEqual(config.features.type, "multi_bar_panel")
+                self.assertIn("daily", config.features.params["panels"])
+                self.assertIn("minute", config.features.params["panels"])
+                self.assertEqual(config.features.params["panels"]["daily"]["time_series_scale"], "last")
+                self.assertEqual(config.features.params["panels"]["minute"]["bar_size"], 15)
+            else:
+                self.assertEqual(config.features.columns, "__all__")
             if filename in {
                 "mdl_000002.toml",
                 "mdl_000003.toml",
@@ -1117,6 +1471,8 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 "monthly_cnn_36.toml",
             }:
                 self.assertEqual(config.train_scheme.validation_sample_count, 1)
+            elif filename in {"mdl_000006.toml", "mdl_000007.toml"}:
+                self.assertEqual(config.train_scheme.validation_sample_count, 7)
             else:
                 self.assertEqual(config.train_scheme.validation_sample_count, 0)
             if class_name in {"RNNAlphaModel", "GRUAlphaModel", "eLSTMRankNetAlphaModel"}:
@@ -1124,6 +1480,24 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             if class_name == "eLSTMRankNetAlphaModel":
                 self.assertEqual(config.model.params["max_pairs_per_date"], 20000)
                 self.assertEqual(config.model.params["sigma"], 1.0)
+            if class_name == "PCAOLSAlphaModel":
+                self.assertEqual(config.model.params["explained_variance"], 0.95)
+                self.assertTrue(config.diagnostics.enabled)
+                self.assertTrue(config.diagnostics.write_model_info)
+                self.assertTrue(config.diagnostics.write_window_summary)
+            if class_name == "BarGRUAlphaModel":
+                self.assertEqual(config.model.params["sequence_length"], 320)
+                self.assertEqual(config.model.params["input_size"], 6)
+                self.assertEqual(config.model.params["hidden_size"], 30)
+                self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
+                self.assertEqual(config.preprocess.cross_section_transform, "zscore")
+            if class_name == "MultiBarGRUAlphaModel":
+                self.assertEqual(config.model.params["daily_sequence_length"], 40)
+                self.assertEqual(config.model.params["minute_sequence_length"], 320)
+                self.assertEqual(config.model.params["input_size"], 6)
+                self.assertEqual(config.model.params["hidden_size"], 30)
+                self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
+                self.assertEqual(config.preprocess.cross_section_transform, "zscore")
 
     def test_tuned_configs_expose_search_space(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"

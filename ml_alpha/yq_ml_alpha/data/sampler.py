@@ -12,6 +12,8 @@ def sample_dates(calendar: TradingCalendar, date_range: tuple[int, int], frequen
         return _period_ends(dates, lambda date: date // 10000 * 100 + _week_number(date))
     if frequency in {"monthly", "monthly_end"}:
         return _period_ends(dates, lambda date: date // 100)
+    if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
+        return _period_ends(dates, _semiannual_key)
     step = _fixed_step(frequency)
     if step is not None:
         return dates[::step]
@@ -28,6 +30,8 @@ def refit_dates(calendar: TradingCalendar, predict_dates: list[int], frequency: 
         return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "monthly_end")
     if frequency in {"weekly", "weekly_end"}:
         return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "weekly_end")
+    if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
+        return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "semiannual_end")
     if _fixed_step(frequency) is not None:
         return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), frequency)
     return [predict_dates[0]]
@@ -61,3 +65,10 @@ def _week_number(yyyymmdd: int) -> int:
     date = dt.date(int(text[:4]), int(text[4:6]), int(text[6:]))
     year, week, _ = date.isocalendar()
     return year * 100 + week
+
+
+def _semiannual_key(yyyymmdd: int) -> int:
+    year = yyyymmdd // 10000
+    month = (yyyymmdd // 100) % 100
+    half = 1 if month <= 6 else 2
+    return year * 10 + half

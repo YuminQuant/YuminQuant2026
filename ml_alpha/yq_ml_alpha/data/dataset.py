@@ -12,6 +12,7 @@ from yq_ml_alpha.data.filters import TradeFilters
 from yq_ml_alpha.data.stores import read_daily
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
+from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.data.sampler import sample_dates
@@ -119,6 +120,43 @@ class DatasetBuilder:
         self._maybe_cache(output, dates, include_label)
         return DatasetBundle(output, sequence_columns, self.config.label.id)
 
+    def load_bar_panel(
+        self,
+        dates: list[int],
+        include_label: bool,
+        calendar: TradingCalendar,
+    ) -> DatasetBundle:
+        if not isinstance(self.feature_provider, (BarPanelProvider, MultiBarPanelProvider)):
+            raise TypeError("load_bar_panel requires BarPanelProvider or MultiBarPanelProvider")
+        frames = []
+        for trade_date in dates:
+            history_dates = calendar.between(calendar.dates[0], trade_date)
+            features = self.feature_provider.load_window(trade_date, history_dates)
+            if features.empty:
+                continue
+            frame = self.universe.filter(features, trade_date)
+            frame = self.filters.apply(frame, trade_date)
+            if include_label:
+                labels = read_daily(self.config.label.root, trade_date, [self.config.label.id])
+                frame = frame.merge(
+                    labels[["trade_date", "ts_code", self.config.label.id]],
+                    on=["trade_date", "ts_code"],
+                    how="left",
+                )
+            frame = self._preprocess(frame, include_label)
+            if include_label:
+                frame = frame.loc[frame[self.config.label.id].notna()]
+            frames.append(frame)
+        if frames:
+            output = pd.concat(frames, ignore_index=True)
+        else:
+            columns = ["trade_date", "ts_code", *self.feature_provider.feature_columns]
+            if include_label:
+                columns.append(self.config.label.id)
+            output = pd.DataFrame(columns=columns)
+        self._maybe_cache(output, dates, include_label)
+        return DatasetBundle(output, self.feature_provider.feature_columns, self.config.label.id)
+
     def _preprocess(self, frame: pd.DataFrame, include_label: bool) -> pd.DataFrame:
         columns = list(self.feature_provider.feature_columns)
         label_columns = [self.config.label.id] if include_label and self.config.label.id in frame.columns else []
@@ -172,6 +210,10 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return FactorFrameProvider(config.features.root, config.features.columns)
     if config.features.type == "raw_panel":
         return RawPanelProvider(config.features.root, config.features.columns)
+    if config.features.type == "bar_panel":
+        return BarPanelProvider(config.features.root, config.features.columns, config.features.params)
+    if config.features.type == "multi_bar_panel":
+        return MultiBarPanelProvider(config.features.params)
     raise ValueError(f"unsupported features.type: {config.features.type}")
 
 

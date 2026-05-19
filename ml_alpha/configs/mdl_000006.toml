@@ -1,0 +1,78 @@
+run_id = "mdl_000006"
+alpha_id = "mdl_000006"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20110101, 20260424]
+valid = []
+predict = [20110101, 20260424]
+
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+train_sample_count = 29
+validation_sample_count = 7
+
+[label]
+id = "future_vwap_return_20d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "zscore"
+feature_fill_value = 0.0
+
+[features]
+type = "bar_panel"
+root = "data/stock_data/minute"
+columns = ["open", "high", "low", "close", "vwap", "volume"]
+
+[features.params]
+source_frequency = "minute"
+bar_size = 15
+lookback_sessions = 20
+time_series_scale = "mean"
+strict = true
+max_cache_sessions = 120
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000006/cache"
+predict_batch_size = 5
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "bar_gru"
+class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000006/artifacts"
+
+[model.params]
+sequence_length = 320
+input_size = 6
+hidden_size = 30
+num_layers = 1
+dropout = 0.0
+epochs = 100
+batch_size = 5000
+lr = 0.001
+weight_decay = 0.0
+seed = 42
+device = "auto"
+patience = 10

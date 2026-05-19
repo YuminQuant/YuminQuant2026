@@ -389,6 +389,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "every_10_days"
+train_lookback = "60d"
 validation_ratio = 0.25
 
 [features]
@@ -410,9 +411,57 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             calendar = TradingCalendar(list(range(1, 101)))
             windows = build_windows(config, calendar)
             self.assertGreaterEqual(len(windows), 1)
-            self.assertEqual(windows[0].train_dates, [1, 21, 41])
-            self.assertEqual(windows[0].valid_dates, [61])
+            self.assertEqual(windows[0].train_dates, [2, 22])
+            self.assertEqual(windows[0].valid_dates, [42])
             self.assertEqual(windows[0].predict_dates, list(range(63, 73)))
+
+    def test_rolling_validation_ratio_uses_train_lookback_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.toml"
+            path.write_text(
+                """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [20110101, 20141231]
+valid = []
+predict = [20110101, 20141231]
+
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+train_lookback = "3y"
+validation_ratio = 0.2
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            dates = [int(item.strftime("%Y%m%d")) for item in pd.bdate_range("2011-01-03", "2014-12-31")]
+            calendar = TradingCalendar(dates)
+            windows = build_windows(config, calendar)
+            self.assertGreaterEqual(len(windows), 1)
+            self.assertEqual(windows[0].predict_dates[0], 20140101)
+            self.assertGreaterEqual(windows[0].train_dates[0], 20110101)
+            self.assertLess(windows[0].valid_dates[-1], 20131231)
+            self.assertTrue(all(20110101 <= date < 20131231 for date in windows[0].train_dates + windows[0].valid_dates))
 
     def test_validation_ratio_conflicts_with_fixed_sample_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -432,6 +481,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "semiannual_end"
+train_lookback = "3y"
 validation_ratio = 0.2
 {extra}
 
@@ -456,6 +506,103 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             path.write_text(base.format(extra="train_sample_count = 36"), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "validation_ratio cannot be used with train_sample_count"):
                 load_config(path)
+
+            path.write_text(base.format(extra=""), encoding="utf-8")
+            config = load_config(path)
+            self.assertEqual(config.train_scheme.train_lookback, "3y")
+
+            path.write_text(base.format(extra="").replace('train_lookback = "3y"\n', ""), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "validation_ratio requires train_lookback for rolling"):
+                load_config(path)
+
+    def test_train_lookback_conflicts_with_static_and_sample_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [20260101, 20260424]
+valid = []
+predict = [20260301, 20260424]
+
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "{scheme}"
+refit_frequency = "semiannual_end"
+train_lookback = "3y"
+{extra}
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+"""
+            path = Path(tmp) / "run.toml"
+            path.write_text(base.format(scheme="static", extra=""), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "train_lookback is not supported for static"):
+                load_config(path)
+
+            path.write_text(base.format(scheme="rolling", extra="train_sample_count = 36"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "train_lookback cannot be used with train_sample_count"):
+                load_config(path)
+
+    def test_expanding_validation_ratio_can_use_full_history_or_lookback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [1, 100]
+valid = []
+predict = [62, 100]
+
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "expanding"
+refit_frequency = "every_10_days"
+validation_ratio = 0.25
+{lookback}
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+"""
+            calendar = TradingCalendar(list(range(1, 101)))
+            path = Path(tmp) / "run.toml"
+            path.write_text(base.format(lookback=""), encoding="utf-8")
+            windows = build_windows(load_config(path), calendar)
+            self.assertEqual(windows[0].train_dates, [1, 21, 41])
+            self.assertEqual(windows[0].valid_dates, [61])
+
+            path.write_text(base.format(lookback='train_lookback = "40d"'), encoding="utf-8")
+            windows = build_windows(load_config(path), calendar)
+            self.assertEqual(windows[0].train_dates, [22])
+            self.assertEqual(windows[0].valid_dates, [42])
 
     def test_train_only_window_when_predict_dates_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1638,9 +1785,11 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             elif filename in {"mdl_000006.toml", "mdl_000007.toml", "mdl_000008.toml"}:
                 self.assertEqual(config.train_scheme.validation_sample_count, 0)
                 self.assertEqual(config.train_scheme.validation_ratio, 0.2)
+                self.assertEqual(config.train_scheme.train_lookback, "3y")
             else:
                 self.assertEqual(config.train_scheme.validation_sample_count, 0)
                 self.assertIsNone(config.train_scheme.validation_ratio)
+                self.assertIsNone(config.train_scheme.train_lookback)
             if class_name in {"RNNAlphaModel", "GRUAlphaModel", "eLSTMRankNetAlphaModel"}:
                 self.assertEqual(config.model.params["sequence_length"], 6)
             if class_name == "eLSTMRankNetAlphaModel":

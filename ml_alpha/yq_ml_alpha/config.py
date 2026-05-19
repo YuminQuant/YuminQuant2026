@@ -150,6 +150,12 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     model_params = dict(model.get("params", {}))
     legacy_search = model_params.pop("search", {})
     model_search = dict(model.get("search", legacy_search))
+    feature_type = _required(features, "type", "features.type")
+    feature_params = dict(features.get("params", {})) if isinstance(features.get("params", {}), dict) else {}
+    feature_params.update(
+        {key: value for key, value in features.items() if key not in {"type", "root", "columns", "params"}}
+    )
+    feature_params = _normalize_feature_params(feature_params)
 
     return MlAlphaConfig(
         run_id=run_id,
@@ -176,10 +182,10 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             feature_fill_value=float(preprocess.get("feature_fill_value", 0.0)),
         ),
         features=FeaturesConfig(
-            type=_required(features, "type", "features.type"),
-            root=_project_path(_required(features, "root", "features.root")),
+            type=feature_type,
+            root=_feature_root(features, feature_type, data_root),
             columns=_feature_columns(features.get("columns", [])),
-            params={key: value for key, value in features.items() if key not in {"type", "root", "columns"}},
+            params=feature_params,
         ),
         materialize=MaterializeConfig(
             cache_samples=bool(materialize.get("cache_samples", False)),
@@ -257,3 +263,28 @@ def _feature_columns(value: Any) -> list[str] | str:
     if isinstance(value, list):
         return [str(item) for item in value]
     raise ValueError("features.columns must be a list of column names or the string '__all__'")
+
+
+def _feature_root(features: dict[str, Any], feature_type: str, data_root: Path) -> Path:
+    if "root" in features:
+        return _project_path(features["root"])
+    if feature_type == "multi_bar_panel":
+        return data_root
+    raise ValueError("missing required config value: features.root")
+
+
+def _normalize_feature_params(params: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(params)
+    panels = normalized.get("panels")
+    if isinstance(panels, dict):
+        normalized_panels: dict[str, dict[str, Any]] = {}
+        for name, raw_panel in panels.items():
+            if not isinstance(raw_panel, dict):
+                normalized_panels[name] = raw_panel
+                continue
+            panel = dict(raw_panel)
+            if "root" in panel:
+                panel["root"] = _project_path(panel["root"])
+            normalized_panels[name] = panel
+        normalized["panels"] = normalized_panels
+    return normalized

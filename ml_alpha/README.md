@@ -13,6 +13,7 @@ Run from the `ml_alpha` directory when you do not want to install the package:
 ```powershell
 cd ml_alpha
 python -m yq_ml_alpha run --config configs\mdl_000001.toml
+python -m yq_ml_alpha run --config configs\mdl_000006.toml
 python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml
 python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
 python -m yq_ml_alpha run --config configs\monthly_elstm_ranknet_36.toml
@@ -112,7 +113,7 @@ cross_section_transform = "rank_gauss"
 feature_fill_value = 0.0
 
 [features]
-type = "factor_frame"         # factor_frame | raw_panel
+type = "factor_frame"         # factor_frame | raw_panel | bar_panel
 root = "data/factors/stock/daily"
 columns = "__all__"
 
@@ -195,6 +196,9 @@ LightGBMOptunaAlphaModel                    monthly_lgbm_optuna_36.toml
 LassoAlphaModel                             mdl_000002.toml
 RidgeAlphaModel                             mdl_000003.toml
 ElasticNetAlphaModel                        mdl_000004.toml
+PCAOLSAlphaModel                            mdl_000005.toml
+BarGRUAlphaModel                            mdl_000006.toml
+MultiBarGRUAlphaModel                       mdl_000007.toml
 RandomForestAlphaModel                      monthly_rf_36.toml
 MLPAlphaModel                               monthly_mlp_36.toml
 RNNAlphaModel                               monthly_rnn_36.toml
@@ -228,11 +232,45 @@ torch tensor:                  [N, sequence_length, F]
 
 If feature count is not divisible by `sequence_length`, zeros are padded on the right before reshaping.
 
+## Bar Panel End-to-End GRU / 通用 Bar Panel 端到端模型
+
+`mdl_000006` uses `features.type = "bar_panel"`. The same provider can read
+1-minute bars and aggregate them to 1..120 minute bars, or read daily bars and
+aggregate them into non-overlapping 5D/10D-style bars. The current production
+config reads one day of 1-minute parquet at a time, aggregates it into 16
+intraday 15-minute bars, and keeps the latest 20 trading days for each target
+sample. The model input before GRU is:
+
+```text
+[N, 320, 6] = [stocks, 20 trading days * 16 bars, open/high/low/close/vwap/volume]
+```
+
+Preprocessing order:
+
+1. per stock and feature, divide the 320-step time series by its own mean;
+2. per trade date, z-score each `time_step x feature` column cross-sectionally;
+3. z-score the `future_vwap_return_20d` label cross-sectionally.
+
+Training windows use 20-trading-day sampling and semiannual refits. Each refit
+uses the latest 36 sampled snapshots, split chronologically into 29 train
+snapshots and 7 validation snapshots. Daily prediction is written to
+`data/models/{year}/{trade_date}.parquet` as column `mdl_000006`.
+
+`mdl_000007` uses `features.type = "multi_bar_panel"` for a two-branch
+end-to-end model. The daily branch reads `data/stock_data/daily/pv`, keeps the
+last 40 daily OHLCVW bars, divides each stock-feature time series by its last
+value, and feeds `[N, 40, 6]` into a GRU. The minute branch reads
+`data/stock_data/minute`, aggregates one day at a time into 15-minute bars,
+keeps the last 20 sessions, divides each stock-feature time series by its
+mean, and feeds `[N, 320, 6]` into another GRU. The two 30-dimensional branch
+outputs are batch-normalized, concatenated, and mapped to one score. Output is
+written as column `mdl_000007`.
+
 ## Diagnostics / Loss 输出
 
 MLP、RNN、LSTM、GRU、eLSTM RankNet 支持 diagnostics。TOML 中打开：
 
-MLP, RNN, LSTM, GRU, and eLSTM RankNet support diagnostics:
+MLP, RNN, LSTM, GRU, eLSTM RankNet, and BarGRU support diagnostics:
 
 ```toml
 [diagnostics]
@@ -261,6 +299,14 @@ Regularized linear models also write diagnostics when enabled. For
 `mdl_000002` / `mdl_000003` / `mdl_000004`, the aggregate
 `window_summary.parquet` includes `best_alpha`, `best_l1_ratio` when
 applicable, `best_score`, and `best_params_json`.
+
+`mdl_000005` writes PCA diagnostics to the same summary file, including
+`n_original_features`, `n_components`, `explained_variance_ratio_sum`, and
+`explained_variance_ratio_json`.
+
+`mdl_000006` writes GRU diagnostics to the same paths. `loss_history.parquet`
+contains date-wise negative IC loss by epoch, and `model_info.json` records the
+15-minute panel shape, train/valid row counts, device, and best epoch.
 
 `loss_history.parquet` 记录每个 epoch 的 `train_loss`、`valid_loss`、`best_loss`、`stale_epochs`、`elapsed_seconds` 等。`model_info.json` 记录样本量、设备、模型参数、best epoch 和 best loss。
 

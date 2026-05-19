@@ -188,6 +188,8 @@ def _load_bundle(
     dates: list[int],
     include_label: bool,
 ):
+    if config.features.type in {"bar_panel", "multi_bar_panel"}:
+        return dataset.load_bar_panel(dates, include_label, calendar)
     if _uses_sequence_dataset(config):
         sequence_length = int(config.model.params.get("sequence_length", 6))
         sequence_frequency = str(config.model.params.get("sequence_frequency", config.sample.train_frequency))
@@ -303,6 +305,8 @@ def _is_actual_period_end(calendar: TradingCalendar, date: int, frequency: str) 
     if next_open is not None:
         if frequency in {"monthly", "monthly_end"}:
             return next_open // 100 != date // 100
+        if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
+            return _semiannual_key(next_open) != _semiannual_key(date)
         if frequency in {"weekly", "weekly_end"}:
             return _iso_week_key(next_open) != _iso_week_key(date)
     if frequency in {"monthly", "monthly_end"}:
@@ -310,6 +314,15 @@ def _is_actual_period_end(calendar: TradingCalendar, date: int, frequency: str) 
 
         text = str(date)
         last_day = cal.monthrange(int(text[:4]), int(text[4:6]))[1]
+        return int(text[6:]) >= last_day - 3
+    if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
+        import calendar as cal
+
+        text = str(date)
+        month = int(text[4:6])
+        if month not in {6, 12}:
+            return False
+        last_day = cal.monthrange(int(text[:4]), month)[1]
         return int(text[6:]) >= last_day - 3
     return True
 
@@ -345,6 +358,13 @@ def _iso_week_key(yyyymmdd: int) -> tuple[int, int]:
     date = dt.date(int(text[:4]), int(text[4:6]), int(text[6:]))
     year, week, _ = date.isocalendar()
     return year, week
+
+
+def _semiannual_key(yyyymmdd: int) -> tuple[int, int]:
+    year = yyyymmdd // 10000
+    month = (yyyymmdd // 100) % 100
+    half = 1 if month <= 6 else 2
+    return year, half
 
 
 def _training_ranges(

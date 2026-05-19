@@ -15,8 +15,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "semiannual_end"
-train_sample_count = 29
-validation_sample_count = 7
+validation_ratio = 0.2
 
 [label]
 id = "future_vwap_return_20d"

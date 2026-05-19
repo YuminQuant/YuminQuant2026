@@ -51,7 +51,7 @@ from yq_ml_alpha.models.tree_model import RandomForestAlphaModel
 from yq_ml_alpha.models.xgb_optuna_model import XGBoostOptunaAlphaModel
 from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
-from yq_ml_alpha.pipelines.train import build_windows
+from yq_ml_alpha.pipelines.train import build_windows, _split_by_validation_ratio
 
 
 class ConfigAndWriterTests(unittest.TestCase):
@@ -351,6 +351,111 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             self.assertEqual(windows[0].train_dates, [20260130, 20260227])
             self.assertEqual(windows[0].valid_dates, [20260331])
             self.assertEqual(windows[0].predict_dates, [20260501, 20260504])
+
+    def test_validation_ratio_splits_sampled_dates_by_expected_counts(self) -> None:
+        train, valid = _split_by_validation_ratio(list(range(36)), 0.2)
+        self.assertEqual(len(train), 29)
+        self.assertEqual(len(valid), 7)
+
+        train, valid = _split_by_validation_ratio(list(range(35)), 0.2)
+        self.assertEqual(len(train), 28)
+        self.assertEqual(len(valid), 7)
+
+        train, valid = _split_by_validation_ratio(list(range(34)), 0.2)
+        self.assertEqual(len(train), 27)
+        self.assertEqual(len(valid), 7)
+
+        train, valid = _split_by_validation_ratio(list(range(2)), 0.2)
+        self.assertEqual(len(train), 1)
+        self.assertEqual(len(valid), 1)
+
+    def test_rolling_validation_ratio_uses_fixed_step_sample_pool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.toml"
+            path.write_text(
+                """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [1, 100]
+valid = []
+predict = [62, 100]
+
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "every_10_days"
+validation_ratio = 0.25
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            calendar = TradingCalendar(list(range(1, 101)))
+            windows = build_windows(config, calendar)
+            self.assertGreaterEqual(len(windows), 1)
+            self.assertEqual(windows[0].train_dates, [1, 21, 41])
+            self.assertEqual(windows[0].valid_dates, [61])
+            self.assertEqual(windows[0].predict_dates, list(range(63, 73)))
+
+    def test_validation_ratio_conflicts_with_fixed_sample_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = """
+run_id = "r1"
+alpha_id = "a1"
+
+[dates]
+train = [20260101, 20260424]
+valid = []
+predict = [20260301, 20260424]
+
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+validation_ratio = 0.2
+{extra}
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["utd"]
+
+[label]
+id = "future_vwap_return_20d"
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "data/model_workspace/r1/artifacts"
+"""
+            path = Path(tmp) / "run.toml"
+            path.write_text(base.format(extra="validation_sample_count = 1"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "validation_ratio cannot be used with validation_sample_count"):
+                load_config(path)
+
+            path.write_text(base.format(extra="train_sample_count = 36"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "validation_ratio cannot be used with train_sample_count"):
+                load_config(path)
 
     def test_train_only_window_when_predict_dates_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1531,9 +1636,11 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             }:
                 self.assertEqual(config.train_scheme.validation_sample_count, 1)
             elif filename in {"mdl_000006.toml", "mdl_000007.toml", "mdl_000008.toml"}:
-                self.assertEqual(config.train_scheme.validation_sample_count, 7)
+                self.assertEqual(config.train_scheme.validation_sample_count, 0)
+                self.assertEqual(config.train_scheme.validation_ratio, 0.2)
             else:
                 self.assertEqual(config.train_scheme.validation_sample_count, 0)
+                self.assertIsNone(config.train_scheme.validation_ratio)
             if class_name in {"RNNAlphaModel", "GRUAlphaModel", "eLSTMRankNetAlphaModel"}:
                 self.assertEqual(config.model.params["sequence_length"], 6)
             if class_name == "eLSTMRankNetAlphaModel":

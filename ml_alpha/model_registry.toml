@@ -97,7 +97,7 @@ model_class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
 model_family = "end_to_end_bar_gru"
 label = "future_vwap_return_20d"
 preprocess = "time_series_mean_scale + cross_section_zscore"
-train_scheme = "rolling_3y_20d_samples_29_train_7_valid_semiannual_refit"
+train_scheme = "rolling_semiannual_refit_3y_lookback_20d_samples_validation_ratio_0.2"
 features = "bar_panel: data/stock_data/minute, source_frequency=minute, bar_size=15, lookback_sessions=20, shape=[320,6]"
 components = ["bar_panel OHLCVW aggregation", "GRU hidden_size=30", "BatchNorm", "FC", "negative IC loss"]
 tags = ["end_to_end", "bar_panel", "minute", "gru", "ic_loss", "zscore"]
@@ -114,7 +114,7 @@ model_class = "yq_ml_alpha.models.multi_bar_gru_model.MultiBarGRUAlphaModel"
 model_family = "end_to_end_multi_bar_gru"
 label = "future_vwap_return_20d"
 preprocess = "daily_last_scale + minute_mean_scale + cross_section_zscore"
-train_scheme = "rolling_3y_20d_samples_29_train_7_valid_semiannual_refit"
+train_scheme = "rolling_semiannual_refit_3y_lookback_20d_samples_validation_ratio_0.2"
 features = "multi_bar_panel: daily shape=[40,6], minute shape=[320,6]"
 components = ["daily bar_panel GRU hidden_size=30", "15m bar_panel GRU hidden_size=30", "BatchNorm", "Concat", "FC", "negative IC loss"]
 tags = ["end_to_end", "multi_frequency", "daily", "minute", "gru", "ic_loss", "zscore"]
@@ -131,7 +131,7 @@ model_class = "yq_ml_alpha.models.residual_multi_bar_gru_model.ResidualMultiBarG
 model_family = "end_to_end_residual_multi_bar_gru"
 label = "future_vwap_return_20d"
 preprocess = "daily_last_scale + minute_mean_scale + cross_section_zscore"
-train_scheme = "rolling_3y_20d_samples_29_train_7_valid_semiannual_refit"
+train_scheme = "rolling_semiannual_refit_3y_lookback_20d_samples_validation_ratio_0.2"
 features = "multi_bar_panel: daily shape=[40,6], minute shape=[320,6]"
 components = ["stage1 daily GRU hidden_size=30", "freeze daily branch", "stage2 15m GRU hidden_size=30", "y_hat_1 + y_hat_2", "negative IC loss"]
 tags = ["end_to_end", "multi_frequency", "daily", "minute", "gru", "residual", "frozen_branch", "ic_loss", "zscore"]

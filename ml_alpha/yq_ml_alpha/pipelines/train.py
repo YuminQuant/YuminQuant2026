@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -154,6 +155,8 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
             )
         ]
 
+    if config.train_scheme.validation_ratio is not None:
+        return _ratio_split_windows(config, calendar, predict_dates, scheme, train_frequency)
     if config.train_scheme.train_sample_count > 0:
         return _sample_count_windows(config, calendar, predict_dates, scheme, train_frequency)
 
@@ -216,7 +219,11 @@ def _train_only_windows(
     if not train_pool:
         return []
     count = int(config.train_scheme.train_sample_count)
-    if count > 0:
+    if config.train_scheme.validation_ratio is not None:
+        train_dates, valid_dates = _split_by_validation_ratio(train_pool, float(config.train_scheme.validation_ratio))
+        if not train_dates:
+            return []
+    elif count > 0:
         valid_count = max(0, int(config.train_scheme.validation_sample_count))
         if len(train_pool) < count + valid_count:
             return []
@@ -246,6 +253,49 @@ def _train_only_sample_dates(config: MlAlphaConfig, calendar: TradingCalendar, t
     if frequency in {"monthly", "monthly_end"}:
         return _actual_refit_dates(calendar, config.dates.train, train_frequency)
     return sample_dates(calendar, config.dates.train, train_frequency)
+
+
+def _ratio_split_windows(
+    config: MlAlphaConfig,
+    calendar: TradingCalendar,
+    predict_dates: list[int],
+    scheme: str,
+    train_frequency: str,
+) -> list[TrainingWindow]:
+    if scheme not in {"rolling", "expanding"}:
+        raise ValueError(f"validation_ratio is only supported for rolling/expanding, got {scheme}")
+    assert config.dates.predict is not None
+    refits = _actual_refit_dates(calendar, config.dates.predict, config.train_scheme.refit_frequency)
+    train_pool = sample_dates(calendar, config.dates.train, train_frequency)
+    ratio = float(config.train_scheme.validation_ratio)
+    windows = []
+    for idx, refit in enumerate(refits):
+        next_refit = refits[idx + 1] if idx + 1 < len(refits) else None
+        segment = [date for date in predict_dates if date > refit and (next_refit is None or date <= next_refit)]
+        if not segment:
+            continue
+        eligible = [date for date in train_pool if date < refit]
+        train_dates, valid_dates = _split_by_validation_ratio(eligible, ratio)
+        if not train_dates:
+            continue
+        windows.append(
+            TrainingWindow(
+                window_id=f"{len(windows) + 1:04d}_{segment[0]}_{segment[-1]}",
+                train_dates=train_dates,
+                valid_dates=valid_dates,
+                predict_dates=segment,
+            )
+        )
+    return windows
+
+
+def _split_by_validation_ratio(dates: list[int], ratio: float) -> tuple[list[int], list[int]]:
+    if len(dates) < 2:
+        return [], []
+    valid_count = min(max(1, math.floor(len(dates) * ratio + 0.5)), len(dates) - 1)
+    if valid_count <= 0:
+        return list(dates), []
+    return dates[:-valid_count], dates[-valid_count:]
 
 
 def _sample_count_windows(

@@ -46,6 +46,7 @@ class TrainSchemeConfig:
     valid_days: int = 252
     train_sample_count: int = 0
     validation_sample_count: int = 0
+    validation_ratio: float | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,9 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     )
     feature_params = _normalize_feature_params(feature_params)
 
+    train_scheme = TrainSchemeConfig(**{**TrainSchemeConfig().__dict__, **raw.get("train_scheme", {})})
+    _validate_train_scheme(train_scheme)
+
     return MlAlphaConfig(
         run_id=run_id,
         alpha_id=alpha_id,
@@ -166,7 +170,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             predict=_optional_date_pair(dates, "predict"),
         ),
         sample=_sample_config(raw.get("sample", {})),
-        train_scheme=TrainSchemeConfig(**{**TrainSchemeConfig().__dict__, **raw.get("train_scheme", {})}),
+        train_scheme=train_scheme,
         label=LabelConfig(
             id=_required(label, "id", "label.id"),
             root=_project_path(label.get("root", data_root / "label" / "stock" / "daily")),
@@ -209,6 +213,20 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         data_root=data_root,
         output_root=output_root,
     )
+
+
+def _validate_train_scheme(section: TrainSchemeConfig) -> None:
+    ratio = section.validation_ratio
+    if ratio is None:
+        return
+    if not 0.0 < float(ratio) < 1.0:
+        raise ValueError("train_scheme.validation_ratio must be in (0, 1)")
+    if section.type not in {"rolling", "expanding"}:
+        raise ValueError("train_scheme.validation_ratio is only supported for rolling/expanding")
+    if int(section.validation_sample_count) > 0:
+        raise ValueError("train_scheme.validation_ratio cannot be used with validation_sample_count")
+    if int(section.train_sample_count) > 0:
+        raise ValueError("train_scheme.validation_ratio cannot be used with train_sample_count")
 
 
 def _sample_config(section: dict[str, Any]) -> SampleConfig:

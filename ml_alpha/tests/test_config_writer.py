@@ -40,6 +40,7 @@ from yq_ml_alpha.models.bar_gru_model import BarGRUAlphaModel
 from yq_ml_alpha.models.multi_bar_gru_model import MultiBarGRUAlphaModel
 from yq_ml_alpha.models.optuna_space import suggest_params
 from yq_ml_alpha.models.pca_ols_model import PCAOLSAlphaModel
+from yq_ml_alpha.models.residual_multi_bar_gru_model import ResidualMultiBarGRUAlphaModel
 from yq_ml_alpha.models.regularized_linear_model import (
     ElasticNetAlphaModel,
     LassoAlphaModel,
@@ -1216,6 +1217,63 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             loaded_pred = loaded.predict(train, context)
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-6))
 
+    def test_residual_multi_bar_gru_model_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        daily_columns = [f"daily__f{feature}__t{step:03d}" for step in range(2) for feature in range(2)]
+        minute_columns = [f"minute__f{feature}__t{step:03d}" for step in range(3) for feature in range(2)]
+        feature_columns = [*daily_columns, *minute_columns]
+        rows = []
+        for trade_date, base in [(1, 0.0), (2, 1.0)]:
+            for idx, symbol in enumerate(["a", "b", "c", "d"]):
+                row = {"trade_date": trade_date, "ts_code": symbol, "y": float(idx)}
+                for col_idx, column in enumerate(feature_columns):
+                    row[column] = base + idx * 0.1 + col_idx * 0.01
+                rows.append(row)
+        train = pd.DataFrame(rows)
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=feature_columns,
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "daily_sequence_length": 2,
+                "minute_sequence_length": 3,
+                "input_size": 2,
+                "hidden_size": 4,
+                "num_layers": 1,
+                "stage1_epochs": 2,
+                "stage2_epochs": 2,
+                "stage1_patience": 0,
+                "stage2_patience": 0,
+                "batch_size": 10,
+                "seed": 7,
+                "device": "cpu",
+            },
+            model_search={},
+        )
+        model = ResidualMultiBarGRUAlphaModel()
+        model.fit(train, pd.DataFrame(), context)
+        self.assertIn("stage1_daily", {row["stage"] for row in model.loss_history})
+        self.assertIn("stage2_residual", {row["stage"] for row in model.loss_history})
+        self.assertIn("stage1_best_loss", model.model_info)
+        self.assertIn("stage2_best_loss", model.model_info)
+        self.assertTrue(
+            all(not parameter.requires_grad for name, parameter in model.model.named_parameters() if name.startswith("daily_"))
+        )
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), len(train))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.pt"
+            model.save(path)
+            loaded = ResidualMultiBarGRUAlphaModel.load(path)
+            loaded_pred = loaded.predict(train, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-6))
+
     def test_elstm_cell_and_layer_shapes_when_installed(self) -> None:
         try:
             import torch
@@ -1432,6 +1490,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             "mdl_000005.toml": ("mdl_000005", "PCAOLSAlphaModel"),
             "mdl_000006.toml": ("mdl_000006", "BarGRUAlphaModel"),
             "mdl_000007.toml": ("mdl_000007", "MultiBarGRUAlphaModel"),
+            "mdl_000008.toml": ("mdl_000008", "ResidualMultiBarGRUAlphaModel"),
             "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
             "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
             "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
@@ -1450,7 +1509,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertEqual(config.features.params["source_frequency"], "minute")
                 self.assertEqual(config.features.params["bar_size"], 15)
                 self.assertEqual(config.features.params["lookback_sessions"], 20)
-            elif filename == "mdl_000007.toml":
+            elif filename in {"mdl_000007.toml", "mdl_000008.toml"}:
                 self.assertEqual(config.features.type, "multi_bar_panel")
                 self.assertIn("daily", config.features.params["panels"])
                 self.assertIn("minute", config.features.params["panels"])
@@ -1471,7 +1530,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 "monthly_cnn_36.toml",
             }:
                 self.assertEqual(config.train_scheme.validation_sample_count, 1)
-            elif filename in {"mdl_000006.toml", "mdl_000007.toml"}:
+            elif filename in {"mdl_000006.toml", "mdl_000007.toml", "mdl_000008.toml"}:
                 self.assertEqual(config.train_scheme.validation_sample_count, 7)
             else:
                 self.assertEqual(config.train_scheme.validation_sample_count, 0)
@@ -1496,6 +1555,15 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertEqual(config.model.params["minute_sequence_length"], 320)
                 self.assertEqual(config.model.params["input_size"], 6)
                 self.assertEqual(config.model.params["hidden_size"], 30)
+                self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
+                self.assertEqual(config.preprocess.cross_section_transform, "zscore")
+            if class_name == "ResidualMultiBarGRUAlphaModel":
+                self.assertEqual(config.model.params["daily_sequence_length"], 40)
+                self.assertEqual(config.model.params["minute_sequence_length"], 320)
+                self.assertEqual(config.model.params["input_size"], 6)
+                self.assertEqual(config.model.params["hidden_size"], 30)
+                self.assertEqual(config.model.params["stage1_epochs"], 100)
+                self.assertEqual(config.model.params["stage2_epochs"], 100)
                 self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
                 self.assertEqual(config.preprocess.cross_section_transform, "zscore")
 

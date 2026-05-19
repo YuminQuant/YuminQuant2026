@@ -199,6 +199,7 @@ ElasticNetAlphaModel                        mdl_000004.toml
 PCAOLSAlphaModel                            mdl_000005.toml
 BarGRUAlphaModel                            mdl_000006.toml
 MultiBarGRUAlphaModel                       mdl_000007.toml
+ResidualMultiBarGRUAlphaModel               mdl_000008.toml
 RandomForestAlphaModel                      monthly_rf_36.toml
 MLPAlphaModel                               monthly_mlp_36.toml
 RNNAlphaModel                               monthly_rnn_36.toml
@@ -265,6 +266,13 @@ keeps the last 20 sessions, divides each stock-feature time series by its
 mean, and feeds `[N, 320, 6]` into another GRU. The two 30-dimensional branch
 outputs are batch-normalized, concatenated, and mapped to one score. Output is
 written as column `mdl_000007`.
+
+`mdl_000008` uses the same `multi_bar_panel` input but trains in two stages.
+Stage 1 trains only the daily GRU branch to produce `y_hat_1`. Stage 2 freezes
+that daily branch and trains a 15-minute residual GRU branch to produce
+`y_hat_2`; the final score is `y_hat_1 + y_hat_2`. The loss for both stages is
+date-wise negative IC, and diagnostics include a `stage` column in
+`loss_history.parquet`.
 
 ## Diagnostics / Loss 输出
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -169,7 +170,10 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
         segment = [date for date in predict_dates if date >= start and (end is None or date < end)]
         if not segment:
             continue
-        train_range, valid_range = _training_ranges(config, calendar, start, scheme)
+        ranges = _training_ranges(config, calendar, start, scheme)
+        if ranges is None:
+            continue
+        train_range, valid_range = ranges
         if len(calendar.between(train_range[0], train_range[1])) < config.train_scheme.min_train_days:
             continue
         valid_dates = sample_dates(calendar, valid_range, train_frequency) if valid_range is not None else []
@@ -266,7 +270,6 @@ def _ratio_split_windows(
         raise ValueError(f"validation_ratio is only supported for rolling/expanding, got {scheme}")
     assert config.dates.predict is not None
     refits = _actual_refit_dates(calendar, config.dates.predict, config.train_scheme.refit_frequency)
-    train_pool = sample_dates(calendar, config.dates.train, train_frequency)
     ratio = float(config.train_scheme.validation_ratio)
     windows = []
     for idx, refit in enumerate(refits):
@@ -274,7 +277,10 @@ def _ratio_split_windows(
         segment = [date for date in predict_dates if date > refit and (next_refit is None or date <= next_refit)]
         if not segment:
             continue
-        eligible = [date for date in train_pool if date < refit]
+        train_range = _train_range_for_refit(config, calendar, refit, scheme)
+        if train_range is None:
+            continue
+        eligible = sample_dates(calendar, train_range, train_frequency)
         train_dates, valid_dates = _split_by_validation_ratio(eligible, ratio)
         if not train_dates:
             continue
@@ -422,7 +428,7 @@ def _training_ranges(
     calendar: TradingCalendar,
     predict_start: int,
     scheme: str,
-) -> tuple[tuple[int, int], tuple[int, int] | None]:
+) -> tuple[tuple[int, int], tuple[int, int] | None] | None:
     train_end_anchor = calendar.previous_open(predict_start) or config.dates.train[1]
     if config.dates.valid is None:
         train_end = train_end_anchor
@@ -432,11 +438,76 @@ def _training_ranges(
         valid_start = calendar.offset(train_end_anchor, -(valid_days - 1)) or config.dates.valid[0]
         valid_range = (valid_start, train_end_anchor)
         train_end = calendar.previous_open(valid_start) or config.dates.train[1]
-    if scheme == "rolling":
-        start = calendar.offset(train_end, -(max(1, config.train_scheme.rolling_train_days) - 1)) or config.dates.train[0]
-    else:
+    train_range = _train_range_for_end(config, calendar, train_end, scheme, lookback_anchor=predict_start)
+    if train_range is None:
+        return None
+    return train_range, valid_range
+
+
+def _train_range_for_refit(
+    config: MlAlphaConfig,
+    calendar: TradingCalendar,
+    refit_date: int,
+    scheme: str,
+) -> tuple[int, int] | None:
+    train_end = calendar.previous_open(refit_date) or config.dates.train[1]
+    return _train_range_for_end(config, calendar, train_end, scheme, lookback_anchor=refit_date)
+
+
+def _train_range_for_end(
+    config: MlAlphaConfig,
+    calendar: TradingCalendar,
+    train_end: int,
+    scheme: str,
+    lookback_anchor: int | None = None,
+) -> tuple[int, int] | None:
+    train_end = min(train_end, config.dates.train[1])
+    if train_end < config.dates.train[0]:
+        return None
+    lookback = config.train_scheme.train_lookback
+    if lookback:
+        start = _lookback_start(config, calendar, lookback_anchor or train_end, train_end, lookback)
+        if start is None or start < config.dates.train[0]:
+            return None
+    elif scheme in {"rolling", "expanding"}:
         start = config.dates.train[0]
-    return (start, train_end), valid_range
+    else:
+        raise ValueError(f"unsupported train scheme: {scheme}")
+    if start > train_end:
+        return None
+    return start, train_end
+
+
+def _lookback_start(
+    config: MlAlphaConfig,
+    calendar: TradingCalendar,
+    anchor_date: int,
+    train_end: int,
+    lookback: str,
+) -> int | None:
+    value = lookback.strip().lower()
+    if value.endswith("d") and value[:-1].isdigit():
+        days = int(value[:-1])
+        if days <= 0:
+            raise ValueError("train_scheme.train_lookback days must be > 0")
+        return calendar.offset(train_end, -(days - 1))
+    if value.endswith("y") and value[:-1].isdigit():
+        years = int(value[:-1])
+        if years <= 0:
+            raise ValueError("train_scheme.train_lookback years must be > 0")
+        end_date = _int_to_date(anchor_date)
+        try:
+            shifted = end_date.replace(year=end_date.year - years)
+        except ValueError:
+            shifted = end_date.replace(year=end_date.year - years, day=28)
+        start_date = shifted + dt.timedelta(days=1)
+        return int(start_date.strftime("%Y%m%d"))
+    raise ValueError("train_scheme.train_lookback must use 'Ny' or 'Nd', for example '3y' or '720d'")
+
+
+def _int_to_date(value: int) -> dt.date:
+    text = str(value)
+    return dt.date(int(text[:4]), int(text[4:6]), int(text[6:]))
 
 
 def _new_model(config: MlAlphaConfig) -> AlphaModel:

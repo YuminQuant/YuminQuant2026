@@ -16,7 +16,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "monthly"
-rolling_train_days = 756
+train_lookback = "756d"
 valid_days = 252
 
 [label]

@@ -42,8 +42,8 @@ class TrainSchemeConfig:
     type: str = "static"
     refit_frequency: str = "monthly"
     min_train_days: int = 756
-    rolling_train_days: int = 756
     valid_days: int = 252
+    train_lookback: str | None = None
     train_sample_count: int = 0
     validation_sample_count: int = 0
     validation_ratio: float | None = None
@@ -216,17 +216,31 @@ def load_config(path: str | Path) -> MlAlphaConfig:
 
 
 def _validate_train_scheme(section: TrainSchemeConfig) -> None:
+    scheme = section.type.lower()
     ratio = section.validation_ratio
-    if ratio is None:
-        return
-    if not 0.0 < float(ratio) < 1.0:
+    if scheme == "static" and section.train_lookback is not None:
+        raise ValueError("train_scheme.train_lookback is not supported for static")
+    if scheme == "static" and ratio is not None:
+        raise ValueError("train_scheme.validation_ratio is not supported for static")
+    if section.train_lookback is not None:
+        value = section.train_lookback
+        if not isinstance(value, str) or not (
+            (value.lower().endswith("y") and value[:-1].isdigit())
+            or (value.lower().endswith("d") and value[:-1].isdigit())
+        ):
+            raise ValueError("train_scheme.train_lookback must use 'Ny' or 'Nd', for example '3y' or '720d'")
+    if scheme == "rolling" and ratio is not None and section.train_lookback is None:
+        raise ValueError("train_scheme.validation_ratio requires train_lookback for rolling")
+    if ratio is not None and not 0.0 < float(ratio) < 1.0:
         raise ValueError("train_scheme.validation_ratio must be in (0, 1)")
-    if section.type not in {"rolling", "expanding"}:
+    if ratio is not None and scheme not in {"rolling", "expanding"}:
         raise ValueError("train_scheme.validation_ratio is only supported for rolling/expanding")
-    if int(section.validation_sample_count) > 0:
+    if ratio is not None and int(section.validation_sample_count) > 0:
         raise ValueError("train_scheme.validation_ratio cannot be used with validation_sample_count")
-    if int(section.train_sample_count) > 0:
+    if ratio is not None and int(section.train_sample_count) > 0:
         raise ValueError("train_scheme.validation_ratio cannot be used with train_sample_count")
+    if section.train_lookback is not None and int(section.train_sample_count) > 0:
+        raise ValueError("train_scheme.train_lookback cannot be used with train_sample_count")
 
 
 def _sample_config(section: dict[str, Any]) -> SampleConfig:

@@ -19,6 +19,21 @@ python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
 python -m yq_ml_alpha run --config configs\monthly_elstm_ranknet_36.toml
 ```
 
+Python 3.8.3 GPU environment on this machine:
+
+```powershell
+cd D:\yuminwu_workspace\Internship\YuminQuant\ml_alpha
+
+& D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config configs\mdl_000006.toml
+& D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config configs\mdl_000007.toml
+& D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config configs\mdl_000008.toml
+```
+
+`D:\Users\Devin\anaconda383\python.exe` is Python 3.8.3 with PyTorch, CUDA,
+pandas, and pyarrow available. Running from `ml_alpha` avoids changing
+`PYTHONPATH` or global environment variables.
+
+
 如果想从仓库根目录直接运行，可以临时设置 `PYTHONPATH`：
 
 If running from the repository root, set `PYTHONPATH` temporarily:
@@ -235,44 +250,168 @@ If feature count is not divisible by `sequence_length`, zeros are padded on the 
 
 ## Bar Panel End-to-End GRU / 通用 Bar Panel 端到端模型
 
-`mdl_000006` uses `features.type = "bar_panel"`. The same provider can read
-1-minute bars and aggregate them to 1..120 minute bars, or read daily bars and
-aggregate them into non-overlapping 5D/10D-style bars. The current production
-config reads one day of 1-minute parquet at a time, aggregates it into 16
-intraday 15-minute bars, and keeps the latest 20 trading days for each target
-sample. The model input before GRU is:
+### 设计 / Design
+
+`bar_panel` 是端到端量价模型的通用行情输入接口。它负责把原始行情 bar
+合成为固定长度的 tensor 特征，但不会把合成后的 bar 作为独立文件落盘。
+
+`bar_panel` is the reusable market-bar input interface for end-to-end models. It
+builds fixed-length tensor features from raw bars, but it does not persist the
+synthesized bars as standalone files.
+
+分钟源数据流程 / Minute source flow:
+
+```text
+读取某一天 1m parquet / read one daily 1m parquet
+  -> 合成目标 bar，例如 16 根 15m bar / aggregate into requested bars
+  -> 只在进程内 LRU cache 保留合成后的日度 bar / keep aggregated day in cache
+  -> 释放原始 1m DataFrame / release raw 1m DataFrame
+  -> 读取下一天 / read the next day
+```
+
+日频源数据流程 / Daily source flow:
+
+```text
+按 trade_date 读取 daily pv parquet / read daily pv parquet by trade_date
+  -> 如果 bar_size > 1，合成非重叠 N 日 bar / aggregate non-overlapping N-day bars
+  -> 在进程内 cache 保留合成后的 daily panel / keep aggregated daily panel in cache
+```
+
+`cache_samples = true` 只会缓存最终训练/预测样本，方便 debug；它不是合成
+bar 的持久化缓存。
+
+`cache_samples = true` only caches final train/predict samples for debugging. It
+is not a persistent cache of synthesized source bars.
+
+### Single Bar Panel: `mdl_000006`
+
+`mdl_000006` 是单频率 15 分钟 GRU 模型。核心配置如下：
+
+`mdl_000006` is the single-frequency 15-minute GRU model. Core config:
+
+```toml
+[features]
+type = "bar_panel"
+root = "data/stock_data/minute"
+columns = ["open", "high", "low", "close", "vwap", "volume"]
+
+[features.params]
+source_frequency = "minute"
+bar_size = 15
+lookback_sessions = 20
+time_series_scale = "mean"
+strict = true
+```
+
+模型输入 / Model input:
 
 ```text
 [N, 320, 6] = [stocks, 20 trading days * 16 bars, open/high/low/close/vwap/volume]
 ```
 
-Preprocessing order:
+预处理顺序 / Preprocessing order:
 
-1. per stock and feature, divide the 320-step time series by its own mean;
-2. per trade date, z-score each `time_step x feature` column cross-sectionally;
-3. z-score the `future_vwap_return_20d` label cross-sectionally.
+1. 对每只股票、每个特征，把 320 步时序值除以自身时序均值；
+2. 对每个 `trade_date`，将每个 `time_step x feature` 列做截面 z-score；
+3. 对 `future_vwap_return_20d` label 做截面 z-score。
 
-Training windows use 20-trading-day sampling and semiannual refits. Each refit
-uses the latest 36 sampled snapshots, split chronologically into 29 train
-snapshots and 7 validation snapshots. Daily prediction is written to
-`data/models/{year}/{trade_date}.parquet` as column `mdl_000006`.
+English: divide each stock-feature time series by its own mean, then apply
+cross-sectional z-score to each `time_step x feature` column and to the label.
 
-`mdl_000007` uses `features.type = "multi_bar_panel"` for a two-branch
-end-to-end model. The daily branch reads `data/stock_data/daily/pv`, keeps the
-last 40 daily OHLCVW bars, divides each stock-feature time series by its last
-value, and feeds `[N, 40, 6]` into a GRU. The minute branch reads
-`data/stock_data/minute`, aggregates one day at a time into 15-minute bars,
-keeps the last 20 sessions, divides each stock-feature time series by its
-mean, and feeds `[N, 320, 6]` into another GRU. The two 30-dimensional branch
-outputs are batch-normalized, concatenated, and mapped to one score. Output is
-written as column `mdl_000007`.
+### Multi Bar Panel: `mdl_000007` / `mdl_000008`
 
-`mdl_000008` uses the same `multi_bar_panel` input but trains in two stages.
-Stage 1 trains only the daily GRU branch to produce `y_hat_1`. Stage 2 freezes
-that daily branch and trains a 15-minute residual GRU branch to produce
-`y_hat_2`; the final score is `y_hat_1 + y_hat_2`. The loss for both stages is
-date-wise negative IC, and diagnostics include a `stage` column in
-`loss_history.parquet`.
+`multi_bar_panel` 用来组合多个 `bar_panel`。当前生产配置使用一个日频分支
+和一个 15 分钟分支：
+
+`multi_bar_panel` composes multiple `bar_panel` providers. Current production
+configs use one daily branch and one 15-minute branch:
+
+```toml
+[features]
+type = "multi_bar_panel"
+
+[features.panels.daily]
+root = "data/stock_data/daily/pv"
+source_frequency = "daily"
+bar_size = 1
+lookback_sessions = 40
+time_series_scale = "last"
+columns = ["open", "high", "low", "close", "vwap", "volume"]
+
+[features.panels.minute]
+root = "data/stock_data/minute"
+source_frequency = "minute"
+bar_size = 15
+lookback_sessions = 20
+time_series_scale = "mean"
+columns = ["open", "high", "low", "close", "vwap", "volume"]
+```
+
+输出列会带分支前缀，例如 `daily__open__t000` 和 `minute__close__t319`。
+模型侧按前缀恢复 tensor：
+
+English: output columns are prefixed by branch, such as `daily__open__t000`
+and `minute__close__t319`; the model restores tensors by prefix.
+
+```text
+daily branch:  [N, 40, 6]
+minute branch: [N, 320, 6]
+```
+
+`mdl_000007` 是普通多频率混合 GRU：日频分支和分钟分支分别输出 30 维表示，
+经过 BatchNorm 后 concat，再通过 FC 映射为一个 score。
+
+`mdl_000007` is the normal multi-frequency GRU. The daily and minute branches
+produce 30-dimensional representations, then BatchNorm + concat + FC maps them
+to one score.
+
+`mdl_000008` 是参数冻结 + 残差预测版本：
+
+`mdl_000008` is the frozen-parameter residual version:
+
+```text
+stage 1: train daily branch only -> y_hat_1
+stage 2: freeze daily branch, train minute branch -> y_hat_2
+final:   y_hat = y_hat_1 + y_hat_2
+```
+
+两个阶段都使用 date-wise negative IC loss。`loss_history.parquet` 会包含
+`stage = stage1_daily / stage2_residual`。
+
+Both stages use date-wise negative IC loss. `loss_history.parquet` includes
+`stage = stage1_daily / stage2_residual`.
+
+### 训练命令 / Training Commands
+
+默认 Python 环境 / Default Python environment:
+
+```powershell
+cd D:\yuminwu_workspace\Internship\YuminQuant\ml_alpha
+
+python -m yq_ml_alpha run --config configs\mdl_000006.toml
+python -m yq_ml_alpha run --config configs\mdl_000007.toml
+python -m yq_ml_alpha run --config configs\mdl_000008.toml
+```
+
+Python 3.8.3 GPU 环境 / Python 3.8.3 GPU environment:
+
+```powershell
+cd D:\yuminwu_workspace\Internship\YuminQuant\ml_alpha
+
+& D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config configs\mdl_000006.toml
+& D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config configs\mdl_000007.toml
+& D:\Users\Devin\anaconda383\python.exe -m yq_ml_alpha run --config configs\mdl_000008.toml
+```
+
+### 回测命令 / Backtest Commands
+
+```powershell
+cd D:\yuminwu_workspace\Internship\YuminQuant
+
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000006 --factor-root data\models --groups 10 --rebalance 20 --date-batch-size 120
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000007 --factor-root data\models --groups 10 --rebalance 20 --date-batch-size 120
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000008 --factor-root data\models --groups 10 --rebalance 20 --date-batch-size 120
+```
 
 ## Diagnostics / Loss 输出
 

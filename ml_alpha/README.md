@@ -19,6 +19,8 @@ python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
 python -m yq_ml_alpha run --config configs\monthly_elstm_ranknet_36.toml
 ```
 
+本机 Python 3.8.3 GPU 环境：
+
 Python 3.8.3 GPU environment on this machine:
 
 ```powershell
@@ -92,11 +94,11 @@ Numbered production model configs use `mdl_******` ids. The registry file
 `ml_alpha/model_registry.toml` records the model id, output alpha id, config
 path, model class, description, feature source, preprocessing, and tags.
 
-典型结构 / Typical shape:
+典型 factor-frame 配置 / Typical factor-frame config:
 
 ```toml
-run_id = "monthly_mlp_36"
-alpha_id = "ml_alpha_mlp"
+run_id = "mdl_000001"
+alpha_id = "mdl_000001"
 data_root = "data"
 output_root = "data/models"
 
@@ -110,10 +112,10 @@ train_frequency = "monthly_end"
 predict_frequency = "daily"
 
 [train_scheme]
-type = "rolling"              # static | expanding | rolling
+type = "rolling"               # static | expanding | rolling
 refit_frequency = "monthly_end"
-train_sample_count = 36
-validation_sample_count = 1
+train_sample_count = 36         # fixed sample-count mode
+validation_sample_count = 0
 
 [label]
 id = "future_vwap_return_20d"
@@ -128,14 +130,14 @@ cross_section_transform = "rank_gauss"
 feature_fill_value = 0.0
 
 [features]
-type = "factor_frame"         # factor_frame | raw_panel | bar_panel
+type = "factor_frame"          # factor_frame | bar_panel | multi_bar_panel
 root = "data/factors/stock/daily"
 columns = "__all__"
 
 [model]
-name = "mlp"
-class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
-artifact_dir = "data/model_workspace/monthly_mlp_36/artifacts"
+name = "linear"
+class = "yq_ml_alpha.models.linear_model.LinearRegressionAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000001/artifacts"
 ```
 
 常用采样频率 / Sampling frequencies:
@@ -150,13 +152,121 @@ quarterly
 every_5_days
 ```
 
-`valid = []` 表示不使用固定验证区间。滚动训练里的 `validation_sample_count = 1` 仍会用训练窗口之后第一个样本截面做动态验证。
+`monthly_end` 取每个自然月最后一个交易日。`"20"` 和 `every_20_days`
+会先取训练区间内的交易日列表，再执行 `dates[::20]`。
 
-`valid = []` means no fixed validation period. In rolling mode, `validation_sample_count = 1` can still create a dynamic validation sample after the training window.
+`monthly_end` selects the last trading day of each calendar month. `"20"` and
+`every_20_days` build the trading-day list first, then apply `dates[::20]`.
+
+### 训练窗口语义 / Training Window Semantics
+
+`rolling` 只表示“按 `refit_frequency` 周期重新训练”。真正读取哪些训练样本，由下面几种互斥配置模式决定：
+
+`rolling` only means "refit on the `refit_frequency` schedule". The training
+samples are selected by one of the mutually exclusive configuration modes below.
+
+固定截面数模式适合月末截面模型，例如线性模型：
+
+Fixed sample-count mode is used by month-end snapshot models, such as linear
+models:
+
+```toml
+[sample]
+train_frequency = "monthly_end"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "monthly_end"
+train_sample_count = 36
+validation_sample_count = 1
+```
+
+每个 refit date 前，先按 `train_frequency` 得到采样截面，然后取最近
+`36 + 1` 个截面：前 36 个训练，最后 1 个验证。这里不使用
+`train_lookback`。
+
+Before each refit date, the pipeline samples dates by `train_frequency`, takes
+the latest `36 + 1` snapshots, uses the first 36 for training and the last one
+for validation. This mode does not use `train_lookback`.
+
+日期回看 + 比例验证模式适合端到端 GRU：
+
+Lookback + validation-ratio mode is used by end-to-end GRU models:
+
+```toml
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+train_lookback = "3y"
+validation_ratio = 0.2
+```
+
+每个 refit date 前，先生成训练日期窗口，再在窗口内按 `train_frequency`
+采样，最后按时间顺序切分 train/valid。`validation_ratio=0.2` 的例子：
+
+For each refit date, the pipeline first builds a training date window, samples
+inside that window, then splits train/valid chronologically. Examples with
+`validation_ratio=0.2`:
+
+```text
+36 sampled dates -> 29 train / 7 valid
+35 sampled dates -> 28 train / 7 valid
+34 sampled dates -> 27 train / 7 valid
+2 sampled dates  -> 1 train / 1 valid
+```
+
+`train_lookback` 支持整数年或整数交易日：
+
+`train_lookback` supports integer years or integer trading days:
+
+```toml
+train_lookback = "3y"    # natural-year lookback
+train_lookback = "756d"  # trading-day lookback
+```
+
+`3y` 是自然年回看。例如 refit anchor 为 `20160630` 时，训练结束日是
+refit 前一个交易日 `20160629`，三年回看窗口约为 `20130701..20160629`。
+`756d` 是交易日回看，从训练结束日往前数 756 个交易日。当前实现只接受
+整数，不接受 `0.5y`；需要半年时建议写成交易日近似，例如 `120d`。
+
+`3y` is a calendar-year lookback. For refit anchor `20160630`, the train end is
+the previous trading day `20160629`, and the three-year window is approximately
+`20130701..20160629`. `756d` counts 756 trading days backward from the train
+end. Fractional values such as `0.5y` are not supported; use a trading-day
+approximation such as `120d` instead.
+
+配置互斥规则 / Conflict rules:
+
+```text
+train_lookback cannot be used with train_sample_count
+validation_ratio cannot be used with validation_sample_count
+validation_ratio cannot be used with train_sample_count
+static cannot use train_lookback or validation_ratio
+rolling + validation_ratio requires train_lookback
+```
+
+`static` 使用 `[dates].train` 和 `[dates].valid`，不会按 refit 滚动；`expanding`
+不配置 `train_lookback` 时从 `[dates].train[0]` 扩展到 refit 前一日，配置
+`train_lookback` 时则只使用回看窗口。
+
+`static` uses `[dates].train` and `[dates].valid` directly and does not refit
+over time. `expanding` without `train_lookback` expands from `[dates].train[0]`
+to the day before each refit; with `train_lookback`, it uses the lookback window.
+
+`valid = []` 表示不使用固定验证区间。动态验证集由
+`validation_sample_count` 或 `validation_ratio` 决定。
+
+`valid = []` means no fixed validation period. Dynamic validation is controlled
+by `validation_sample_count` or `validation_ratio`.
 
 ### 滚动训练续跑 / Resuming Rolling Training
 
-如果一次 rolling 训练中途暂停，通常**不要**为了续跑而把 `train` 改成暂停日期附近。`train` 是训练样本池范围，程序真正读取哪些训练截面由每个 refit window 的 `train_dates` 决定。对于 `train_sample_count = 36`、`validation_sample_count = 1` 这类配置，每个窗口只会从 `train` 样本池中取 refit 日期之前最近的 36 个训练截面和 1 个验证截面。
+如果一次 rolling 训练中途暂停，通常**不要**为了续跑而把 `train` 改成暂停日期附近。`train` 是训练样本池上限，程序真正读取哪些训练截面由每个 refit window 的 `train_dates` 决定。固定截面数模式会取 refit 之前最近 N 个采样截面；`train_lookback + validation_ratio` 模式会先回看窗口，再采样和切分。
 
 续跑时应主要调整 `predict` 区间，让它从“下一段预测所需的 refit anchor”开始。例如已经预测完 `20231229`，下一段需要预测 2024 年 1 月，月频 refit 下建议：
 
@@ -169,7 +279,7 @@ predict = [20231229, 20260424] # 20231229 是下一段预测的 refit anchor
 
 当前实现中，`refit_date` 本身不会被该窗口重新预测；窗口预测的是 `refit_date` 之后到下一个 refit date 之间的交易日。因此上面的配置会从 `20240102` 开始写后续 alpha，同时保留足够历史样本用于 rolling 训练。
 
-When resuming an interrupted rolling run, usually do **not** shrink `train` to the interrupted date. `train` is the sample pool. The actual training data is selected per refit window from `window.train_dates`. With `train_sample_count = 36` and `validation_sample_count = 1`, each window uses only the latest 36 training snapshots plus one validation snapshot before the refit date.
+When resuming an interrupted rolling run, usually do **not** shrink `train` to the interrupted date. `train` is the upper bound of the sample pool. The actual training data is selected per refit window from `window.train_dates`. Fixed sample-count mode uses the latest N sampled snapshots before the refit date; `train_lookback + validation_ratio` mode first builds a lookback window, then samples and splits it.
 
 To resume, adjust `predict` to start from the refit anchor that owns the next unfinished prediction segment. If predictions are complete through `20231229` and the next segment is January 2024, keep `train` broad and set `predict = [20231229, 20260424]`. The refit date itself is not predicted again; predictions start after it.
 
@@ -318,6 +428,29 @@ strict = true
 English: divide each stock-feature time series by its own mean, then apply
 cross-sectional z-score to each `time_step x feature` column and to the label.
 
+训练窗口 / Training window:
+
+```toml
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+train_lookback = "3y"
+validation_ratio = 0.2
+```
+
+含义是：每半年重新训练一次；每次 refit 前回看三年交易历史；在三年窗口内每 20
+个交易日采样一个训练截面；再按时间顺序做 80/20 train/valid 切分；refit
+之后到下一次 refit 前每日预测。
+
+This means: refit every half-year; look back three years before each refit;
+sample one training snapshot every 20 trading days inside that window; split
+the sampled dates chronologically into 80/20 train/valid; predict daily until
+the next refit.
+
 ### Multi Bar Panel: `mdl_000007` / `mdl_000008`
 
 `multi_bar_panel` 用来组合多个 `bar_panel`。当前生产配置使用一个日频分支
@@ -380,6 +513,14 @@ final:   y_hat = y_hat_1 + y_hat_2
 
 Both stages use date-wise negative IC loss. `loss_history.parquet` includes
 `stage = stage1_daily / stage2_residual`.
+
+`mdl_000007` 和 `mdl_000008` 使用与 `mdl_000006` 相同的半年度 refit、
+`train_lookback="3y"`、`train_frequency="20"`、`validation_ratio=0.2`
+训练窗口语义。
+
+`mdl_000007` and `mdl_000008` use the same semiannual refit,
+`train_lookback="3y"`, `train_frequency="20"`, and `validation_ratio=0.2`
+window semantics as `mdl_000006`.
 
 ### 训练命令 / Training Commands
 

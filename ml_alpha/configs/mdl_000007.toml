@@ -59,7 +59,7 @@ columns = ["open", "high", "low", "close", "vwap", "volume"]
 [materialize]
 cache_samples = false
 cache_dir = "data/model_workspace/mdl_000007/cache"
-predict_batch_size = 5
+predict_batch_size = 10
 
 [diagnostics]
 enabled = true

@@ -79,7 +79,7 @@ class BarPanelProvider(FeatureProvider):
         if self.source_frequency in {"minute", "1m", "minute_bar", "derived_minute"}:
             return self._load_minute_window(trade_date, history, exclude_bj, st_symbols_by_date or {}, progress)
         if self.source_frequency in {"daily", "day", "1d"}:
-            return self._load_daily_window(trade_date, history)
+            return self._load_daily_window(trade_date, history, progress)
         raise ValueError(f"unsupported bar_panel source_frequency: {self.source_frequency}")
 
     def empty_frame(self, trade_date: int | None = None) -> pd.DataFrame:
@@ -119,20 +119,33 @@ class BarPanelProvider(FeatureProvider):
             frames.append(renamed[["ts_code", *[_feature_column(feature, day_idx * self.steps_per_session + bar_idx) for bar_idx in range(self.steps_per_session) for feature in self.output_features]]])
         return self._merge_window_frames(trade_date, frames)
 
-    def _load_daily_window(self, trade_date: int, history: list[int]) -> pd.DataFrame:
+    def _load_daily_window(
+        self,
+        trade_date: int,
+        history: list[int],
+        progress: ProgressCallback | None = None,
+    ) -> pd.DataFrame:
         frames = []
+        if progress is not None:
+            progress(f"daily source_days={len(history)} step=read")
         for day_idx, date in enumerate(history):
             daily = self._read_daily_session(date)
             if daily.empty and self.strict:
+                if progress is not None:
+                    progress(f"daily date={date} step=empty")
                 return self.empty_frame(trade_date)
             daily = daily.copy()
             daily["__day_idx"] = day_idx
             daily["__bar_idx"] = day_idx // self.bar_size
             frames.append(daily)
         if not frames:
+            if progress is not None:
+                progress("daily step=empty")
             return self.empty_frame(trade_date)
         bars = _aggregate_daily_bars(pd.concat(frames, ignore_index=True), self.bar_size, self.steps_per_session)
         if bars.empty:
+            if progress is not None:
+                progress("daily step=empty")
             return self.empty_frame(trade_date)
         pieces = []
         for feature in self.output_features:
@@ -141,7 +154,10 @@ class BarPanelProvider(FeatureProvider):
             pivot.columns = [_feature_column(feature, int(idx)) for idx in pivot.columns]
             pieces.append(pivot)
         wide = pd.concat(pieces, axis=1).reset_index()
-        return self._finalize_window(trade_date, wide)
+        output = self._finalize_window(trade_date, wide)
+        if progress is not None:
+            progress(f"daily step=done stocks={len(output)}")
+        return output
 
     def _merge_window_frames(self, trade_date: int, frames: list[pd.DataFrame]) -> pd.DataFrame:
         if not frames:

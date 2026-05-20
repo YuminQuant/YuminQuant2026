@@ -791,7 +791,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             root = Path(tmp) / "minute"
             (root / "2026").mkdir(parents=True)
             rows = []
-            times = []
+            times = ["2026-01-05 09:30:00"]
             for hour, start, end in [(9, 31, 60), (10, 0, 60), (11, 0, 31), (13, 1, 60), (14, 0, 60), (15, 0, 1)]:
                 for minute in range(start, end):
                     times.append(f"2026-01-05 {hour:02d}:{minute:02d}:00")
@@ -822,11 +822,51 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertIn("vwap__b000", daily.columns)
             first = daily.loc[daily["ts_code"] == "000001.SZ"].iloc[0]
             self.assertAlmostEqual(float(first["vwap__b000"]), 100.5, places=7)
+            self.assertAlmostEqual(float(first["open__b000"]), 100.01, places=7)
 
             window = provider.load_window(20260105, [20260105])
             self.assertEqual(window.shape, (2, 2 + 16 * 6))
             self.assertEqual(window["trade_date"].tolist(), [20260105, 20260105])
             self.assertTrue(np.isfinite(window[provider.feature_columns].to_numpy()).all())
+
+    def test_bar_panel_provider_filters_bj_and_st_before_resample(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "minute"
+            (root / "2026").mkdir(parents=True)
+            rows = []
+            times = []
+            for hour, start, end in [(9, 31, 60), (10, 0, 60), (11, 0, 31), (13, 1, 60), (14, 0, 60), (15, 0, 1)]:
+                for minute in range(start, end):
+                    times.append(f"2026-01-05 {hour:02d}:{minute:02d}:00")
+            for symbol, base in [("000001.SZ", 10.0), ("000002.SZ", 20.0), ("830001.BJ", 30.0)]:
+                for idx, trade_time in enumerate(times):
+                    price = base + idx * 0.01
+                    rows.append(
+                        {
+                            "ts_code": symbol,
+                            "trade_time": trade_time,
+                            "open": price,
+                            "high": price + 0.1,
+                            "low": price - 0.1,
+                            "close": price + 0.05,
+                            "vol": 100.0,
+                            "amount": price * 100.0,
+                        }
+                    )
+            pd.DataFrame(rows).to_parquet(root / "2026" / "20260105.parquet", index=False)
+
+            provider = BarPanelProvider(
+                root,
+                ["open", "high", "low", "close", "vwap", "volume"],
+                {"source_frequency": "minute", "bar_size": 15, "lookback_sessions": 1},
+            )
+            window = provider.load_window(
+                20260105,
+                [20260105],
+                exclude_bj=True,
+                st_symbols_by_date={20260105: {"000002.SZ"}},
+            )
+            self.assertEqual(window["ts_code"].tolist(), ["000001.SZ"])
 
     def test_bar_panel_rejects_too_large_minute_bar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -964,8 +1004,8 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             window = provider.load_window(20260105, [20260102, 20260105])
             self.assertEqual(len(window), 2)
             self.assertIn("daily__open__t000", provider.feature_columns)
-            self.assertIn("minute__open__t003", provider.feature_columns)
-            self.assertEqual(len(provider.feature_columns), 2 * 6 + 4 * 6)
+            self.assertIn("minute__open__t004", provider.feature_columns)
+            self.assertEqual(len(provider.feature_columns), 2 * 6 + 5 * 6)
             self.assertTrue(np.isfinite(window[provider.feature_columns].to_numpy()).all())
 
     def test_linear_regression_model_fits_simple_relation(self) -> None:

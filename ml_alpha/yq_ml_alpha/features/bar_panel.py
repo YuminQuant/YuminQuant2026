@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -39,17 +40,27 @@ class BarPanelProvider(FeatureProvider):
         if self.source_frequency in {"daily", "day", "1d"}:
             self.total_steps = self.steps_per_session
         self.feature_columns = _feature_columns(self.output_features, self.total_steps)
-        self._session_cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
+        self._session_cache: OrderedDict[Any, pd.DataFrame] = OrderedDict()
 
     def load(self, trade_date: int) -> pd.DataFrame:
         raise NotImplementedError("BarPanelProvider requires load_window(..., history_dates=...)")
 
-    def load_window(self, trade_date: int, history_dates: list[int]) -> pd.DataFrame:
+    def required_history_dates(self, history_dates: list[int]) -> list[int]:
+        return list(history_dates)[-self.lookback_sessions :]
+
+    def load_window(
+        self,
+        trade_date: int,
+        history_dates: list[int],
+        *,
+        exclude_bj: bool = False,
+        st_symbols_by_date: dict[int, set[str]] | None = None,
+    ) -> pd.DataFrame:
         history = list(history_dates)[-self.lookback_sessions :]
         if len(history) < self.lookback_sessions:
             return self.empty_frame(trade_date)
         if self.source_frequency in {"minute", "1m"}:
-            return self._load_minute_window(trade_date, history)
+            return self._load_minute_window(trade_date, history, exclude_bj, st_symbols_by_date or {})
         if self.source_frequency in {"daily", "day", "1d"}:
             return self._load_daily_window(trade_date, history)
         raise ValueError(f"unsupported bar_panel source_frequency: {self.source_frequency}")
@@ -57,10 +68,16 @@ class BarPanelProvider(FeatureProvider):
     def empty_frame(self, trade_date: int | None = None) -> pd.DataFrame:
         return pd.DataFrame(columns=["trade_date", "ts_code", *self.feature_columns])
 
-    def _load_minute_window(self, trade_date: int, history: list[int]) -> pd.DataFrame:
+    def _load_minute_window(
+        self,
+        trade_date: int,
+        history: list[int],
+        exclude_bj: bool,
+        st_symbols_by_date: dict[int, set[str]],
+    ) -> pd.DataFrame:
         frames = []
         for day_idx, date in enumerate(history):
-            daily = self._load_minute_session(date)
+            daily = self._load_minute_session(date, exclude_bj, st_symbols_by_date.get(date, set()))
             if daily.empty and self.strict:
                 return self.empty_frame(trade_date)
             renamed = daily.rename(
@@ -130,13 +147,27 @@ class BarPanelProvider(FeatureProvider):
             raise ValueError(f"unsupported bar_panel time_series_scale: {self.time_series_scale}")
         return wide
 
-    def _load_minute_session(self, trade_date: int) -> pd.DataFrame:
-        cached = self._cache_get(trade_date)
+    def _load_minute_session(
+        self,
+        trade_date: int,
+        exclude_bj: bool = False,
+        st_symbols: set[str] | None = None,
+    ) -> pd.DataFrame:
+        cache_key = (trade_date, bool(exclude_bj), frozenset(st_symbols or set()))
+        cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
         frame = _read_minute_session(self.root, trade_date)
-        session = _aggregate_minute_session(frame, self.bar_size, self.steps_per_session, self.strict)
-        self._cache_put(trade_date, session)
+        session = _aggregate_minute_session(
+            frame,
+            trade_date,
+            self.bar_size,
+            self.steps_per_session,
+            self.strict,
+            exclude_bj=exclude_bj,
+            st_symbols=st_symbols or set(),
+        )
+        self._cache_put(cache_key, session)
         return session
 
     def _read_daily_session(self, trade_date: int) -> pd.DataFrame:
@@ -151,15 +182,15 @@ class BarPanelProvider(FeatureProvider):
         self._cache_put(trade_date, session)
         return session
 
-    def _cache_get(self, trade_date: int) -> pd.DataFrame | None:
-        if trade_date not in self._session_cache:
+    def _cache_get(self, key: Any) -> pd.DataFrame | None:
+        if key not in self._session_cache:
             return None
-        frame = self._session_cache.pop(trade_date)
-        self._session_cache[trade_date] = frame
+        frame = self._session_cache.pop(key)
+        self._session_cache[key] = frame
         return frame
 
-    def _cache_put(self, trade_date: int, frame: pd.DataFrame) -> None:
-        self._session_cache[trade_date] = frame
+    def _cache_put(self, key: Any, frame: pd.DataFrame) -> None:
+        self._session_cache[key] = frame
         while len(self._session_cache) > self.max_cache_sessions:
             self._session_cache.popitem(last=False)
 
@@ -194,10 +225,32 @@ class MultiBarPanelProvider(FeatureProvider):
     def load(self, trade_date: int) -> pd.DataFrame:
         raise NotImplementedError("MultiBarPanelProvider requires load_window(..., history_dates=...)")
 
-    def load_window(self, trade_date: int, history_dates: list[int]) -> pd.DataFrame:
+    def required_history_dates(self, history_dates: list[int]) -> list[int]:
+        required: list[int] = []
+        seen: set[int] = set()
+        for _, provider in self.panels:
+            for date in provider.required_history_dates(history_dates):
+                if date not in seen:
+                    required.append(date)
+                    seen.add(date)
+        return required
+
+    def load_window(
+        self,
+        trade_date: int,
+        history_dates: list[int],
+        *,
+        exclude_bj: bool = False,
+        st_symbols_by_date: dict[int, set[str]] | None = None,
+    ) -> pd.DataFrame:
         frames: list[pd.DataFrame] = []
         for prefix, provider in self.panels:
-            frame = provider.load_window(trade_date, history_dates)
+            frame = provider.load_window(
+                trade_date,
+                history_dates,
+                exclude_bj=exclude_bj,
+                st_symbols_by_date=st_symbols_by_date,
+            )
             if frame.empty and self.strict:
                 return self.empty_frame(trade_date)
             renamed = frame.rename(columns={column: _prefix_column(prefix, column) for column in provider.feature_columns})
@@ -230,7 +283,7 @@ def _steps_per_session(source_frequency: str, bar_size: int, lookback_sessions: 
     if source_frequency in {"minute", "1m"}:
         if bar_size < 1 or bar_size > 120:
             raise ValueError("minute bar_panel requires 1 <= bar_size <= 120")
-        return 2 * (120 // bar_size)
+        return len(_canonical_minute_bar_labels(bar_size))
     if source_frequency in {"daily", "day", "1d"}:
         if bar_size <= 0:
             raise ValueError("daily bar_panel requires bar_size > 0")
@@ -251,50 +304,66 @@ def _read_minute_session(root: Path, trade_date: int) -> pd.DataFrame:
 
 def _aggregate_minute_session(
     frame: pd.DataFrame,
+    trade_date: int,
     bar_size: int,
     steps_per_session: int,
     strict: bool,
+    *,
+    exclude_bj: bool = False,
+    st_symbols: set[str] | None = None,
 ) -> pd.DataFrame:
     columns = ["ts_code", *[_session_column(feature, idx) for idx in range(steps_per_session) for feature in BAR_FEATURES]]
     if frame.empty:
         return pd.DataFrame(columns=columns)
     data = frame.copy()
-    minute = _minute_of_day(data["trade_time"])
-    morning_start = 9 * 60 + 31
-    afternoon_start = 13 * 60 + 1
-    bars_per_half = 120 // bar_size
-    morning_end = morning_start + bars_per_half * bar_size - 1
-    afternoon_end = afternoon_start + bars_per_half * bar_size - 1
-    morning = (minute >= morning_start) & (minute <= morning_end)
-    afternoon = (minute >= afternoon_start) & (minute <= afternoon_end)
-    data = data.loc[morning | afternoon].copy()
+    if exclude_bj:
+        data = data.loc[~data["ts_code"].astype("string").str.upper().str.endswith(".BJ", na=False)].copy()
+    if st_symbols:
+        data = data.loc[~data["ts_code"].isin(st_symbols)].copy()
     if data.empty:
         return pd.DataFrame(columns=columns)
-    minute = minute.loc[data.index]
-    data["__bar_idx"] = np.where(
-        minute <= morning_end,
-        ((minute - morning_start) // bar_size).astype("int16"),
-        (bars_per_half + (minute - afternoon_start) // bar_size).astype("int16"),
-    )
-    data = data.sort_values(["ts_code", "__bar_idx", "trade_time"])
+    data["trade_time"] = _normalize_trade_time(data["trade_time"], trade_date)
+    data = data.loc[data["trade_time"].notna()].copy()
+    minute = _minute_of_day(data["trade_time"])
+    data = data.loc[minute != 9 * 60 + 30].copy()
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+    data = data.sort_values(["ts_code", "trade_time"])
+    indexed = data.set_index("trade_time")
     agg = (
-        data.groupby(["ts_code", "__bar_idx"], sort=True)
+        indexed.drop(columns=["ts_code"])
+        .groupby(indexed["ts_code"])
+        .resample(
+            f"{bar_size}min",
+            origin="start_day",
+            offset="9h30min",
+            label="right",
+            closed="right",
+        )
         .agg(
             open=("open", "first"),
             high=("high", "max"),
             low=("low", "min"),
             close=("close", "last"),
-            volume=("vol", "sum"),
+            vol=("vol", "sum"),
             amount=("amount", "sum"),
-            minute_count=("close", "count"),
         )
+        .dropna(subset=["open"])
         .reset_index()
     )
+    if agg.empty:
+        return pd.DataFrame(columns=columns)
+    label_to_idx = {label: idx for idx, label in enumerate(_canonical_minute_bar_labels(bar_size))}
+    labels = agg["trade_time"].dt.strftime("%H:%M:%S")
+    agg["__bar_idx"] = labels.map(label_to_idx)
+    agg = agg.loc[agg["__bar_idx"].notna()].copy()
+    if agg.empty:
+        return pd.DataFrame(columns=columns)
+    agg["__bar_idx"] = agg["__bar_idx"].astype("int16")
     agg = agg.loc[(agg["__bar_idx"] >= 0) & (agg["__bar_idx"] < steps_per_session)].copy()
-    if strict:
-        agg = agg.loc[agg["minute_count"] == bar_size].copy()
+    agg = agg.rename(columns={"vol": "volume"})
     agg["vwap"] = np.where(agg["volume"].astype("float64").abs() > 1e-12, agg["amount"] / agg["volume"], np.nan)
-    return _bars_to_wide(agg, steps_per_session)
+    return _bars_to_wide(agg, steps_per_session, strict)
 
 
 def _aggregate_daily_bars(frame: pd.DataFrame, bar_size: int, steps_per_session: int) -> pd.DataFrame:
@@ -318,7 +387,7 @@ def _aggregate_daily_bars(frame: pd.DataFrame, bar_size: int, steps_per_session:
     return agg
 
 
-def _bars_to_wide(agg: pd.DataFrame, steps_per_session: int) -> pd.DataFrame:
+def _bars_to_wide(agg: pd.DataFrame, steps_per_session: int, strict: bool) -> pd.DataFrame:
     pieces = []
     for feature in BAR_FEATURES:
         pivot = agg.pivot(index="ts_code", columns="__bar_idx", values=feature)
@@ -326,15 +395,44 @@ def _bars_to_wide(agg: pd.DataFrame, steps_per_session: int) -> pd.DataFrame:
         pivot.columns = [_session_column(feature, int(idx)) for idx in pivot.columns]
         pieces.append(pivot)
     wide = pd.concat(pieces, axis=1).reset_index()
-    needed = [_session_column(feature, idx) for idx in range(steps_per_session) for feature in BAR_FEATURES]
-    return wide.dropna(subset=needed).reset_index(drop=True)
+    if strict:
+        needed = [_session_column(feature, idx) for idx in range(steps_per_session) for feature in BAR_FEATURES]
+        wide = wide.dropna(subset=needed)
+    return wide.reset_index(drop=True)
 
 
 def _minute_of_day(values: pd.Series) -> pd.Series:
-    text = values.astype("string").str.extract(r"(?P<hour>\d{2}):(?P<minute>\d{2})(?::\d{2})?$")
-    hour = pd.to_numeric(text["hour"], errors="coerce")
-    minute = pd.to_numeric(text["minute"], errors="coerce")
-    return hour * 60 + minute
+    parsed = pd.to_datetime(values, errors="coerce")
+    return parsed.dt.hour * 60 + parsed.dt.minute
+
+
+def _normalize_trade_time(values: pd.Series, trade_date: int) -> pd.Series:
+    text = values.astype("string")
+    date_text = f"{trade_date // 10000:04d}-{(trade_date // 100) % 100:02d}-{trade_date % 100:02d}"
+    time_only = text.str.match(r"^\d{2}:\d{2}(?::\d{2})?$", na=False)
+    normalized = text.where(~time_only, date_text + " " + text)
+    return pd.to_datetime(normalized, errors="coerce")
+
+
+@lru_cache(maxsize=None)
+def _canonical_minute_bar_labels(bar_size: int) -> list[str]:
+    date = pd.Timestamp("2000-01-03")
+    morning = pd.date_range(date + pd.Timedelta(hours=9, minutes=31), periods=120, freq="min")
+    afternoon = pd.date_range(date + pd.Timedelta(hours=13, minutes=1), periods=120, freq="min")
+    frame = pd.DataFrame({"value": 1.0}, index=morning.append(afternoon))
+    labels = (
+        frame.resample(
+            f"{bar_size}min",
+            origin="start_day",
+            offset="9h30min",
+            label="right",
+            closed="right",
+        )
+        .agg({"value": "first"})
+        .dropna()
+        .index
+    )
+    return [label.strftime("%H:%M:%S") for label in labels]
 
 
 def _time_series_mean_scale(frame: pd.DataFrame, features: list[str], total_steps: int) -> pd.DataFrame:

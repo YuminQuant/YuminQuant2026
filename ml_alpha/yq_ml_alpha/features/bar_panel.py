@@ -15,6 +15,20 @@ from yq_ml_alpha.features.base import FeatureProvider
 
 BAR_FEATURES = ["open", "high", "low", "close", "vwap", "volume"]
 MINUTE_REQUIRED_COLUMNS = ["ts_code", "trade_time", "open", "high", "low", "close", "vol", "amount"]
+DERIVED_MINUTE_REQUIRED_COLUMNS = [
+    "trade_date",
+    "trade_time",
+    "bar_index",
+    "ts_code",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "vwap",
+    "minute_count",
+]
 DAILY_REQUIRED_COLUMNS = ["open", "high", "low", "close", "vol", "amount"]
 ProgressCallback = Callable[[str], None]
 
@@ -62,7 +76,7 @@ class BarPanelProvider(FeatureProvider):
         history = list(history_dates)[-self.lookback_sessions :]
         if len(history) < self.lookback_sessions:
             return self.empty_frame(trade_date)
-        if self.source_frequency in {"minute", "1m"}:
+        if self.source_frequency in {"minute", "1m", "minute_bar", "derived_minute"}:
             return self._load_minute_window(trade_date, history, exclude_bj, st_symbols_by_date or {}, progress)
         if self.source_frequency in {"daily", "day", "1d"}:
             return self._load_daily_window(trade_date, history)
@@ -175,18 +189,30 @@ class BarPanelProvider(FeatureProvider):
             return cached
         if progress is not None:
             progress(f"date={trade_date} cache=miss step=read")
-        frame = _read_minute_session(self.root, trade_date)
-        if progress is not None:
-            progress(f"date={trade_date} step=resample raw_rows={len(frame)}")
-        session = _aggregate_minute_session(
-            frame,
-            trade_date,
-            self.bar_size,
-            self.steps_per_session,
-            self.strict,
-            exclude_bj=exclude_bj,
-            st_symbols=st_symbols or set(),
-        )
+        if self.source_frequency in {"minute_bar", "derived_minute"}:
+            frame = _read_derived_minute_session(self.root, trade_date)
+            if progress is not None:
+                progress(f"date={trade_date} step=pivot derived_rows={len(frame)}")
+            session = _derived_minute_session_to_wide(
+                frame,
+                self.steps_per_session,
+                self.strict,
+                exclude_bj=exclude_bj,
+                st_symbols=st_symbols or set(),
+            )
+        else:
+            frame = _read_minute_session(self.root, trade_date)
+            if progress is not None:
+                progress(f"date={trade_date} step=resample raw_rows={len(frame)}")
+            session = _aggregate_minute_session(
+                frame,
+                trade_date,
+                self.bar_size,
+                self.steps_per_session,
+                self.strict,
+                exclude_bj=exclude_bj,
+                st_symbols=st_symbols or set(),
+            )
         self._cache_put(cache_key, session)
         if progress is not None:
             progress(f"date={trade_date} step=done stocks={len(session)}")
@@ -308,9 +334,13 @@ def _validate_features(features: list[str]) -> None:
 
 
 def _steps_per_session(source_frequency: str, bar_size: int, lookback_sessions: int) -> int:
-    if source_frequency in {"minute", "1m"}:
+    if source_frequency in {"minute", "1m", "minute_bar", "derived_minute"}:
         if bar_size < 1 or bar_size > 120:
             raise ValueError("minute bar_panel requires 1 <= bar_size <= 120")
+        if source_frequency in {"minute_bar", "derived_minute"}:
+            if 240 % bar_size != 0 or bar_size <= 1 or bar_size >= 120:
+                raise ValueError("derived minute bar_panel requires bar_size to divide 240 and satisfy 1 < bar_size < 120")
+            return 240 // bar_size
         return len(_canonical_minute_bar_labels(bar_size))
     if source_frequency in {"daily", "day", "1d"}:
         if bar_size <= 0:
@@ -328,6 +358,44 @@ def _read_minute_session(root: Path, trade_date: int) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=MINUTE_REQUIRED_COLUMNS)
     return pd.read_parquet(path, columns=MINUTE_REQUIRED_COLUMNS)
+
+
+def _read_derived_minute_session(root: Path, trade_date: int) -> pd.DataFrame:
+    path = root / str(trade_date // 10000) / f"{trade_date}.parquet"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"missing derived minute bar file for {trade_date}: {path}. "
+            "Run: cargo run --release --manifest-path factor_engine\\Cargo.toml -- "
+            f"derive-bar --asset stock --source minute --bar-size <N> --start-date {trade_date} --end-date {trade_date}"
+        )
+    return pd.read_parquet(path, columns=DERIVED_MINUTE_REQUIRED_COLUMNS)
+
+
+def _derived_minute_session_to_wide(
+    frame: pd.DataFrame,
+    steps_per_session: int,
+    strict: bool,
+    *,
+    exclude_bj: bool = False,
+    st_symbols: set[str] | None = None,
+) -> pd.DataFrame:
+    columns = ["ts_code", *[_session_column(feature, idx) for idx in range(steps_per_session) for feature in BAR_FEATURES]]
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    data = frame.copy()
+    if exclude_bj:
+        data = data.loc[~data["ts_code"].astype("string").str.upper().str.endswith(".BJ", na=False)].copy()
+    if st_symbols:
+        data = data.loc[~data["ts_code"].isin(st_symbols)].copy()
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+    data["__bar_idx"] = pd.to_numeric(data["bar_index"], errors="coerce")
+    data = data.loc[data["__bar_idx"].notna()].copy()
+    data["__bar_idx"] = data["__bar_idx"].astype("int16")
+    data = data.loc[(data["__bar_idx"] >= 0) & (data["__bar_idx"] < steps_per_session)].copy()
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+    return _bars_to_wide(data, steps_per_session, strict)
 
 
 def _aggregate_minute_session(

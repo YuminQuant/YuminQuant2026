@@ -11,11 +11,13 @@ use yq_factor_engine::backtest::request::{
 use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
 use yq_factor_engine::core::{AssetClass, Frequency};
+use yq_factor_engine::derive::request::{BarSource, DEFAULT_DERIVE_DATE_BATCH_SIZE};
 use yq_factor_engine::engine::{DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE};
 use yq_factor_engine::strategy::request::StrategyRunRequest;
 use yq_factor_engine::{
-    BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest, Engine, LabelEngine,
-    LabelRunRequest, Result, RunRequest, StrategyEngine, StrategyRunReport,
+    BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest, DeriveBarRequest,
+    DeriveEngine, Engine, LabelEngine, LabelRunRequest, Result, RunRequest, StrategyEngine,
+    StrategyRunReport,
 };
 
 const DEFAULT_LABEL_BATCH_SIZE: usize = 5;
@@ -232,6 +234,12 @@ fn run_cli() -> Result<()> {
             let report = engine.run(&request)?;
             print_strategy_report(&report);
         }
+        "derive-bar" => {
+            let request = parse_derive_bar_request(&args[1..])?;
+            let engine = DeriveEngine::from_request(&request)?;
+            let report = engine.run_bar(&request)?;
+            print_derive_bar_report(&report);
+        }
         command => {
             return Err(yq_factor_engine::error::err(format!(
                 "unknown command: {command}"
@@ -239,6 +247,59 @@ fn run_cli() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_derive_bar_request(args: &[String]) -> Result<DeriveBarRequest> {
+    let flags = parse_flags(args)?;
+    let asset_class = flags
+        .get("asset")
+        .and_then(|value| AssetClass::parse(value))
+        .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --asset stock"))?;
+    let source = flags
+        .get("source")
+        .and_then(|value| BarSource::parse(value))
+        .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --source minute"))?;
+    let bar_size = flags
+        .get("bar-size")
+        .ok_or_else(|| yq_factor_engine::error::err("missing --bar-size N"))?
+        .parse::<usize>()?;
+    let start_date = parse_yyyymmdd(
+        flags
+            .get("start-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --start-date YYYYMMDD"))?,
+        "start-date",
+    )?;
+    let end_date = parse_yyyymmdd(
+        flags
+            .get("end-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?,
+        "end-date",
+    )?;
+    let date_batch_size = match flags.get("date-batch-size") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--date-batch-size must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_DERIVE_DATE_BATCH_SIZE,
+    };
+    Ok(DeriveBarRequest {
+        asset_class,
+        source,
+        bar_size,
+        start_date,
+        end_date,
+        overwrite: flag_bool(&flags, "overwrite", true),
+        date_batch_size,
+        project_config_path: flags
+            .get("project-config")
+            .or_else(|| flags.get("config"))
+            .map(PathBuf::from),
+    })
 }
 
 fn parse_strategy_run_request(args: &[String]) -> Result<StrategyRunRequest> {
@@ -1022,6 +1083,25 @@ fn print_strategy_report(report: &StrategyRunReport) {
     }
 }
 
+fn print_derive_bar_report(report: &yq_factor_engine::DeriveBarReport) {
+    println!("derive-bar complete");
+    println!("processed dates: {}", report.processed_dates);
+    println!("total rows: {}", report.total_rows);
+    println!("output files: {}", report.output_files.len());
+    if !report.missing_input_dates.is_empty() {
+        println!("missing input dates: {}", report.missing_input_dates.len());
+    }
+    if !report.skipped_existing_dates.is_empty() {
+        println!(
+            "skipped existing dates: {}",
+            report.skipped_existing_dates.len()
+        );
+    }
+    for path in &report.output_files {
+        println!("  {}", path.display());
+    }
+}
+
 fn print_help() {
     println!("YuminQuant factor engine MVP");
     println!();
@@ -1050,6 +1130,9 @@ fn print_help() {
         "  backtest --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD --factors factor_id[,factor_id...]"
     );
     println!("  strategy-run --config strategy_config/stock/strategy_001.toml");
+    println!(
+        "  derive-bar --asset stock --source minute --bar-size N --start-date YYYYMMDD --end-date YYYYMMDD"
+    );
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
@@ -1100,6 +1183,7 @@ fn print_help() {
     println!("  --config D:/path/to/config.toml");
     println!("  --project-config D:/path/to/config.toml (strategy-run project config)");
     println!("  --detail true|false (strategy-run minute detail output; default false)");
+    println!("  --overwrite true|false (derive-bar default true)");
 }
 
 #[cfg(test)]

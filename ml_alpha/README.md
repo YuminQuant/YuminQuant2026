@@ -13,6 +13,10 @@ Run from the `ml_alpha` directory when you do not want to install the package:
 ```powershell
 cd ml_alpha
 python -m yq_ml_alpha run --config configs\mdl_000001.toml
+cd D:\yuminwu_workspace\Internship\YuminQuant
+cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 15 --start-date 20110101 --end-date 20260424
+
+cd D:\yuminwu_workspace\Internship\YuminQuant\ml_alpha
 python -m yq_ml_alpha run --config configs\mdl_000006.toml
 python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml
 python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
@@ -438,11 +442,11 @@ is not a persistent cache of synthesized source bars.
 ```toml
 [features]
 type = "bar_panel"
-root = "data/stock_data/minute"
+root = "data/derived/stock/bar/15m"
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [features.params]
-source_frequency = "minute"
+source_frequency = "minute_bar"
 bar_size = 15
 lookback_sessions = 20
 time_series_scale = "mean"
@@ -508,8 +512,8 @@ time_series_scale = "last"
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [features.panels.minute]
-root = "data/stock_data/minute"
-source_frequency = "minute"
+root = "data/derived/stock/bar/15m"
+source_frequency = "minute_bar"
 bar_size = 15
 lookback_sessions = 20
 time_series_scale = "mean"

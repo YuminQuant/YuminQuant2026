@@ -190,7 +190,7 @@ class BarPanelProvider(FeatureProvider):
         if progress is not None:
             progress(f"date={trade_date} cache=miss step=read")
         if self.source_frequency in {"minute_bar", "derived_minute"}:
-            frame = _read_derived_minute_session(self.root, trade_date)
+            frame = _read_derived_minute_session(self.root, trade_date, self.bar_size)
             if progress is not None:
                 progress(f"date={trade_date} step=pivot derived_rows={len(frame)}")
             session = _derived_minute_session_to_wide(
@@ -360,13 +360,13 @@ def _read_minute_session(root: Path, trade_date: int) -> pd.DataFrame:
     return pd.read_parquet(path, columns=MINUTE_REQUIRED_COLUMNS)
 
 
-def _read_derived_minute_session(root: Path, trade_date: int) -> pd.DataFrame:
+def _read_derived_minute_session(root: Path, trade_date: int, bar_size: int) -> pd.DataFrame:
     path = root / str(trade_date // 10000) / f"{trade_date}.parquet"
     if not path.exists():
         raise FileNotFoundError(
             f"missing derived minute bar file for {trade_date}: {path}. "
             "Run: cargo run --release --manifest-path factor_engine\\Cargo.toml -- "
-            f"derive-bar --asset stock --source minute --bar-size <N> --start-date {trade_date} --end-date {trade_date}"
+            f"derive-bar --asset stock --source minute --bar-size {bar_size} --start-date {trade_date} --end-date {trade_date}"
         )
     return pd.read_parquet(path, columns=DERIVED_MINUTE_REQUIRED_COLUMNS)
 

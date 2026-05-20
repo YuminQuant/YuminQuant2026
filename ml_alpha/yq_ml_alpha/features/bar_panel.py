@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
@@ -362,18 +363,17 @@ def _aggregate_minute_session(
         .groupby(indexed["ts_code"])
         .resample(
             f"{bar_size}min",
-            origin="start_day",
-            offset="9h30min",
-            label="right",
-            closed="right",
+            **_minute_resample_kwargs(),
         )
         .agg(
-            open=("open", "first"),
-            high=("high", "max"),
-            low=("low", "min"),
-            close=("close", "last"),
-            vol=("vol", "sum"),
-            amount=("amount", "sum"),
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "vol": "sum",
+                "amount": "sum",
+            }
         )
         .dropna(subset=["open"])
         .reset_index()
@@ -391,6 +391,28 @@ def _aggregate_minute_session(
     agg = agg.rename(columns={"vol": "volume"})
     agg["vwap"] = np.where(agg["volume"].astype("float64").abs() > 1e-12, agg["amount"] / agg["volume"], np.nan)
     return _bars_to_wide(agg, steps_per_session, strict)
+
+
+@lru_cache(maxsize=1)
+def _resample_supports_origin() -> bool:
+    return "origin" in inspect.signature(pd.DataFrame.resample).parameters
+
+
+def _minute_resample_kwargs() -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "label": "right",
+        "closed": "right",
+    }
+    if _resample_supports_origin():
+        kwargs.update(
+            {
+                "origin": "start_day",
+                "offset": "9h30min",
+            }
+        )
+    else:
+        kwargs["base"] = 30
+    return kwargs
 
 
 def _aggregate_daily_bars(frame: pd.DataFrame, bar_size: int, steps_per_session: int) -> pd.DataFrame:
@@ -450,10 +472,7 @@ def _canonical_minute_bar_labels(bar_size: int) -> list[str]:
     labels = (
         frame.resample(
             f"{bar_size}min",
-            origin="start_day",
-            offset="9h30min",
-            label="right",
-            closed="right",
+            **_minute_resample_kwargs(),
         )
         .agg({"value": "first"})
         .dropna()

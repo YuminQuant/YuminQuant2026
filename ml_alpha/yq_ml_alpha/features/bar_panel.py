@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,7 @@ from yq_ml_alpha.features.base import FeatureProvider
 BAR_FEATURES = ["open", "high", "low", "close", "vwap", "volume"]
 MINUTE_REQUIRED_COLUMNS = ["ts_code", "trade_time", "open", "high", "low", "close", "vol", "amount"]
 DAILY_REQUIRED_COLUMNS = ["open", "high", "low", "close", "vol", "amount"]
+ProgressCallback = Callable[[str], None]
 
 
 class BarPanelProvider(FeatureProvider):
@@ -55,12 +56,13 @@ class BarPanelProvider(FeatureProvider):
         *,
         exclude_bj: bool = False,
         st_symbols_by_date: dict[int, set[str]] | None = None,
+        progress: ProgressCallback | None = None,
     ) -> pd.DataFrame:
         history = list(history_dates)[-self.lookback_sessions :]
         if len(history) < self.lookback_sessions:
             return self.empty_frame(trade_date)
         if self.source_frequency in {"minute", "1m"}:
-            return self._load_minute_window(trade_date, history, exclude_bj, st_symbols_by_date or {})
+            return self._load_minute_window(trade_date, history, exclude_bj, st_symbols_by_date or {}, progress)
         if self.source_frequency in {"daily", "day", "1d"}:
             return self._load_daily_window(trade_date, history)
         raise ValueError(f"unsupported bar_panel source_frequency: {self.source_frequency}")
@@ -74,10 +76,20 @@ class BarPanelProvider(FeatureProvider):
         history: list[int],
         exclude_bj: bool,
         st_symbols_by_date: dict[int, set[str]],
+        progress: ProgressCallback | None,
     ) -> pd.DataFrame:
         frames = []
         for day_idx, date in enumerate(history):
-            daily = self._load_minute_session(date, exclude_bj, st_symbols_by_date.get(date, set()))
+            daily = self._load_minute_session(
+                date,
+                exclude_bj,
+                st_symbols_by_date.get(date, set()),
+                progress=(
+                    (lambda message, idx=day_idx: progress(f"source {idx + 1}/{len(history)} {message}"))
+                    if progress is not None
+                    else None
+                ),
+            )
             if daily.empty and self.strict:
                 return self.empty_frame(trade_date)
             renamed = daily.rename(
@@ -152,12 +164,19 @@ class BarPanelProvider(FeatureProvider):
         trade_date: int,
         exclude_bj: bool = False,
         st_symbols: set[str] | None = None,
+        progress: ProgressCallback | None = None,
     ) -> pd.DataFrame:
         cache_key = (trade_date, bool(exclude_bj), frozenset(st_symbols or set()))
         cached = self._cache_get(cache_key)
         if cached is not None:
+            if progress is not None:
+                progress(f"date={trade_date} cache=hit rows={len(cached)}")
             return cached
+        if progress is not None:
+            progress(f"date={trade_date} cache=miss step=read")
         frame = _read_minute_session(self.root, trade_date)
+        if progress is not None:
+            progress(f"date={trade_date} step=resample raw_rows={len(frame)}")
         session = _aggregate_minute_session(
             frame,
             trade_date,
@@ -168,6 +187,8 @@ class BarPanelProvider(FeatureProvider):
             st_symbols=st_symbols or set(),
         )
         self._cache_put(cache_key, session)
+        if progress is not None:
+            progress(f"date={trade_date} step=done stocks={len(session)}")
         return session
 
     def _read_daily_session(self, trade_date: int) -> pd.DataFrame:
@@ -242,6 +263,7 @@ class MultiBarPanelProvider(FeatureProvider):
         *,
         exclude_bj: bool = False,
         st_symbols_by_date: dict[int, set[str]] | None = None,
+        progress: ProgressCallback | None = None,
     ) -> pd.DataFrame:
         frames: list[pd.DataFrame] = []
         for prefix, provider in self.panels:
@@ -250,6 +272,11 @@ class MultiBarPanelProvider(FeatureProvider):
                 history_dates,
                 exclude_bj=exclude_bj,
                 st_symbols_by_date=st_symbols_by_date,
+                progress=(
+                    (lambda message, panel=prefix: progress(f"panel={panel} {message}"))
+                    if progress is not None
+                    else None
+                ),
             )
             if frame.empty and self.strict:
                 return self.empty_frame(trade_date)

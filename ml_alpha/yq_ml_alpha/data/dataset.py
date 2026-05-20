@@ -130,15 +130,20 @@ class DatasetBuilder:
         if not isinstance(self.feature_provider, (BarPanelProvider, MultiBarPanelProvider)):
             raise TypeError("load_bar_panel requires BarPanelProvider or MultiBarPanelProvider")
         frames = []
-        for trade_date in dates:
+        total_dates = len(dates)
+        split_name = "labeled" if include_label else "predict"
+        for date_idx, trade_date in enumerate(dates, start=1):
             history_dates = calendar.between(calendar.dates[0], trade_date)
             source_dates = self.feature_provider.required_history_dates(history_dates)
+            progress = _bar_panel_progress(split_name, date_idx, total_dates, trade_date)
             features = self.feature_provider.load_window(
                 trade_date,
                 history_dates,
                 exclude_bj=self.config.filters.exclude_bj,
                 st_symbols_by_date=self._source_st_symbols_by_date(source_dates),
+                progress=progress,
             )
+            progress(f"target_done feature_rows={len(features)}")
             if features.empty:
                 continue
             frame = self.universe.filter(features, trade_date)
@@ -248,6 +253,16 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
     if config.features.type == "multi_bar_panel":
         return MultiBarPanelProvider(config.features.params)
     raise ValueError(f"unsupported features.type: {config.features.type}")
+
+
+def _bar_panel_progress(split_name: str, current: int, total: int, trade_date: int):
+    def emit(message: str) -> None:
+        print(
+            f"bar-panel {split_name} [{current}/{total}] target={trade_date} {message}",
+            flush=True,
+        )
+
+    return emit
 
 
 def _sequence_dates(

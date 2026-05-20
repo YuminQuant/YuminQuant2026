@@ -32,6 +32,7 @@ class DatasetBuilder:
         self.feature_provider = make_feature_provider(config)
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
+        self._source_st_symbol_cache: dict[int, set[str]] = {}
 
     def load(self, dates: list[int], include_label: bool) -> DatasetBundle:
         frames = []
@@ -131,7 +132,13 @@ class DatasetBuilder:
         frames = []
         for trade_date in dates:
             history_dates = calendar.between(calendar.dates[0], trade_date)
-            features = self.feature_provider.load_window(trade_date, history_dates)
+            source_dates = self.feature_provider.required_history_dates(history_dates)
+            features = self.feature_provider.load_window(
+                trade_date,
+                history_dates,
+                exclude_bj=self.config.filters.exclude_bj,
+                st_symbols_by_date=self._source_st_symbols_by_date(source_dates),
+            )
             if features.empty:
                 continue
             frame = self.universe.filter(features, trade_date)
@@ -156,6 +163,32 @@ class DatasetBuilder:
             output = pd.DataFrame(columns=columns)
         self._maybe_cache(output, dates, include_label)
         return DatasetBundle(output, self.feature_provider.feature_columns, self.config.label.id)
+
+    def _source_st_symbols_by_date(self, dates: list[int]) -> dict[int, set[str]]:
+        if not self.config.filters.exclude_st:
+            return {}
+        output: dict[int, set[str]] = {}
+        for trade_date in dates:
+            if trade_date < 20160101:
+                continue
+            path = (
+                Path(self.config.data_root)
+                / "stock_data"
+                / "daily"
+                / "trade_filter"
+                / str(trade_date // 10000)
+                / f"{trade_date}.parquet"
+            )
+            if not path.exists():
+                raise FileNotFoundError(f"missing trade_filter for {trade_date}: {path}")
+            if trade_date not in self._source_st_symbol_cache:
+                mask = pd.read_parquet(path, columns=["ts_code", "is_st"])
+                st_mask = mask["is_st"].fillna(False).astype(bool)
+                self._source_st_symbol_cache[trade_date] = set(mask.loc[st_mask, "ts_code"].astype(str))
+            symbols = self._source_st_symbol_cache[trade_date]
+            if symbols:
+                output[trade_date] = symbols
+        return output
 
     def _preprocess(self, frame: pd.DataFrame, include_label: bool) -> pd.DataFrame:
         columns = list(self.feature_provider.feature_columns)

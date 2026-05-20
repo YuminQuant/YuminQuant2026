@@ -373,11 +373,47 @@ synthesized bars as standalone files.
 
 ```text
 读取某一天 1m parquet / read one daily 1m parquet
-  -> 合成目标 bar，例如 16 根 15m bar / aggregate into requested bars
+  -> 过滤 .BJ、当日 ST、09:30 行 / filter .BJ, same-day ST, and 09:30 rows
+  -> groupby(ts_code).resample(...) 合成目标 bar / aggregate with pandas resample
   -> 只在进程内 LRU cache 保留合成后的日度 bar / keep aggregated day in cache
   -> 释放原始 1m DataFrame / release raw 1m DataFrame
   -> 读取下一天 / read the next day
 ```
+
+分钟 resample 口径 / Minute resample rule:
+
+```python
+df = df.sort_values(["ts_code", "trade_time"])
+bars = (
+    df.set_index("trade_time")
+      .groupby("ts_code")
+      .resample(
+          f"{bar_size}min",
+          origin="start_day",
+          offset="9h30min",
+          label="right",
+          closed="right",
+      )
+      .agg({
+          "open": "first",
+          "high": "max",
+          "low": "min",
+          "close": "last",
+          "vol": "sum",
+          "amount": "sum",
+      })
+      .dropna(subset=["open"])
+      .reset_index()
+)
+```
+
+`strict=true` 表示每只股票必须有完整的标准 bar 序列；不再要求每根 bar
+内部刚好有 `bar_size` 条 1m 数据。`bar_size=15` 时，标准 A 股日内样本
+会得到 16 根 15 分钟 bar。
+
+With `strict=true`, each stock must have the full canonical bar sequence. The
+implementation no longer requires each bar to contain exactly `bar_size` one-minute
+rows. With `bar_size=15`, a standard A-share session yields 16 15-minute bars.
 
 日频源数据流程 / Daily source flow:
 

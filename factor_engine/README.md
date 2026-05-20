@@ -9,6 +9,7 @@
 ```text
 data/factors/{asset}/{frequency}/{year}/{trade_date}.parquet
 data/factors/_cache/intraday_daily/chn_stock/{year}/{trade_date}.parquet
+data/derived/stock/bar/{bar_size}m/{year}/{trade_date}.parquet
 data/barra/{asset}/daily/CNE6/{year}/{trade_date}.parquet
 data/label/{asset}/{frequency}/{year}/{trade_date}.parquet
 data/backtest/stock/daily/{returns,ic,factor_stats,holdings,industry_weights}/
@@ -46,6 +47,21 @@ Important flags:
 --profile
 --refresh-minute-cache
 ```
+
+## Derived Data / Derived Bars
+
+`derive-bar` builds reusable stock minute bars from raw 1m data. It processes
+multiple trading days in parallel; `--date-batch-size N` controls concurrent
+dates and defaults to `20`.
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 15 --start-date 20110101 --end-date 20260424
+cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 120 --start-date 20260424 --end-date 20260424 --date-batch-size 20
+```
+
+Allowed stock minute `bar_size` values are divisors of 240 with
+`1 < bar_size <= 120`; `120` means one morning bar and one afternoon bar.
+Output is written to `data/derived/stock/bar/{bar_size}m/{year}/{trade_date}.parquet`.
 
 ## Barra 与 Label / Barra And Labels
 

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::core::AssetClass;
 
-pub const DEFAULT_DERIVE_DATE_BATCH_SIZE: usize = 120;
+pub const DEFAULT_DERIVE_DATE_BATCH_SIZE: usize = 20;
 
 #[derive(Clone, Debug)]
 pub struct DeriveBarRequest {

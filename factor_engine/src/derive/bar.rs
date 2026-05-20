@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use crate::data::Table;
 use crate::error::{err, Result};
 
-pub const ALLOWED_STOCK_MINUTE_BAR_SIZES: &[usize] =
-    &[2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80];
+pub const ALLOWED_STOCK_MINUTE_BAR_SIZES: &[usize] = &[
+    2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80, 120,
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DerivedBarRow {
@@ -97,7 +98,7 @@ pub fn validate_stock_minute_bar_size(bar_size: usize) -> Result<()> {
         Ok(())
     } else {
         Err(err(format!(
-            "stock minute bar_size must be a divisor of 240 and satisfy 1 < bar_size < 120; allowed values: {}",
+            "stock minute bar_size must be a divisor of 240 and satisfy 1 < bar_size <= 120; allowed values: {}",
             ALLOWED_STOCK_MINUTE_BAR_SIZES
                 .iter()
                 .map(|value| value.to_string())
@@ -258,7 +259,8 @@ mod tests {
     fn validates_stock_minute_bar_size() {
         assert_eq!(bars_per_stock_session(15).unwrap(), 16);
         assert_eq!(bars_per_stock_session(80).unwrap(), 3);
-        for invalid in [1, 7, 120, 121] {
+        assert_eq!(bars_per_stock_session(120).unwrap(), 2);
+        for invalid in [1, 7, 121] {
             assert!(validate_stock_minute_bar_size(invalid).is_err());
         }
     }
@@ -269,6 +271,8 @@ mod tests {
         assert_eq!(bar_end_label(7, 15), "11:30:00");
         assert_eq!(bar_end_label(15, 15), "15:00:00");
         assert_eq!(bar_end_label(2, 80), "15:00:00");
+        assert_eq!(bar_end_label(0, 120), "11:30:00");
+        assert_eq!(bar_end_label(1, 120), "15:00:00");
     }
 
     #[test]

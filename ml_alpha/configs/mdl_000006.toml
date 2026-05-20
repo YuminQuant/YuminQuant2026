@@ -35,11 +35,11 @@ feature_fill_value = 0.0
 
 [features]
 type = "bar_panel"
-root = "data/stock_data/minute"
+root = "data/derived/stock/bar/15m"
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [features.params]
-source_frequency = "minute"
+source_frequency = "minute_bar"
 bar_size = 15
 lookback_sessions = 20
 time_series_scale = "mean"

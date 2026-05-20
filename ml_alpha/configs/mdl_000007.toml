@@ -47,8 +47,8 @@ max_cache_sessions = 120
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [features.panels.minute]
-root = "data/stock_data/minute"
-source_frequency = "minute"
+root = "data/derived/stock/bar/15m"
+source_frequency = "minute_bar"
 bar_size = 15
 lookback_sessions = 20
 time_series_scale = "mean"

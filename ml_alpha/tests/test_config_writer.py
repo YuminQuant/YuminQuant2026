@@ -877,6 +877,41 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                     {"source_frequency": "minute", "bar_size": 121, "lookback_sessions": 1},
                 )
 
+    def test_bar_panel_provider_reads_derived_minute_bars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "derived" / "stock" / "bar" / "15m"
+            (root / "2026").mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105, 20260105, 20260105],
+                    "trade_time": ["09:45:00", "10:00:00", "09:45:00"],
+                    "bar_index": [0, 1, 0],
+                    "ts_code": ["000001.SZ", "000001.SZ", "000002.SZ"],
+                    "open": [10.0, 11.0, 20.0],
+                    "high": [10.5, 11.5, 20.5],
+                    "low": [9.5, 10.5, 19.5],
+                    "close": [10.2, 11.2, 20.2],
+                    "volume": [100.0, 200.0, 100.0],
+                    "amount": [1000.0, 2200.0, 2000.0],
+                    "vwap": [10.0, 11.0, 20.0],
+                    "minute_count": [15, 15, 15],
+                }
+            ).to_parquet(root / "2026" / "20260105.parquet", index=False)
+
+            provider = BarPanelProvider(
+                root,
+                ["open", "high", "low", "close", "vwap", "volume"],
+                {"source_frequency": "minute_bar", "bar_size": 15, "lookback_sessions": 1, "strict": False},
+            )
+            window = provider.load_window(
+                20260105,
+                [20260105],
+                st_symbols_by_date={20260105: {"000002.SZ"}},
+            )
+            self.assertEqual(window["ts_code"].tolist(), ["000001.SZ"])
+            self.assertAlmostEqual(float(window.iloc[0]["open__t000"]), 10.0, places=7)
+            self.assertAlmostEqual(float(window.iloc[0]["volume__t001"]), 200.0, places=7)
+
     def test_bar_panel_provider_aggregates_daily_bars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "daily"
@@ -1798,7 +1833,8 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             if filename == "mdl_000006.toml":
                 self.assertEqual(config.features.type, "bar_panel")
                 self.assertEqual(config.features.columns, ["open", "high", "low", "close", "vwap", "volume"])
-                self.assertEqual(config.features.params["source_frequency"], "minute")
+                self.assertEqual(config.features.params["source_frequency"], "minute_bar")
+                self.assertIn("data/derived/stock/bar/15m", str(config.features.root).replace("\\", "/"))
                 self.assertEqual(config.features.params["bar_size"], 15)
                 self.assertEqual(config.features.params["lookback_sessions"], 20)
             elif filename in {"mdl_000007.toml", "mdl_000008.toml"}:
@@ -1806,6 +1842,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertIn("daily", config.features.params["panels"])
                 self.assertIn("minute", config.features.params["panels"])
                 self.assertEqual(config.features.params["panels"]["daily"]["time_series_scale"], "last")
+                self.assertEqual(config.features.params["panels"]["minute"]["source_frequency"], "minute_bar")
                 self.assertEqual(config.features.params["panels"]["minute"]["bar_size"], 15)
             else:
                 self.assertEqual(config.features.columns, "__all__")

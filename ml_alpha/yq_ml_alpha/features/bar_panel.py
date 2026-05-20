@@ -338,8 +338,8 @@ def _steps_per_session(source_frequency: str, bar_size: int, lookback_sessions: 
         if bar_size < 1 or bar_size > 120:
             raise ValueError("minute bar_panel requires 1 <= bar_size <= 120")
         if source_frequency in {"minute_bar", "derived_minute"}:
-            if 240 % bar_size != 0 or bar_size <= 1 or bar_size >= 120:
-                raise ValueError("derived minute bar_panel requires bar_size to divide 240 and satisfy 1 < bar_size < 120")
+            if 240 % bar_size != 0 or bar_size <= 1 or bar_size > 120:
+                raise ValueError("derived minute bar_panel requires bar_size to divide 240 and satisfy 1 < bar_size <= 120")
             return 240 // bar_size
         return len(_canonical_minute_bar_labels(bar_size))
     if source_frequency in {"daily", "day", "1d"}:

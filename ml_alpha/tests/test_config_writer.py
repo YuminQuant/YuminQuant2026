@@ -877,6 +877,15 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                     {"source_frequency": "minute", "bar_size": 121, "lookback_sessions": 1},
                 )
 
+    def test_bar_panel_accepts_derived_120_minute_bar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = BarPanelProvider(
+                Path(tmp),
+                ["open", "high", "low", "close", "vwap", "volume"],
+                {"source_frequency": "minute_bar", "bar_size": 120, "lookback_sessions": 1},
+            )
+            self.assertEqual(provider.steps_per_session, 2)
+
     def test_bar_panel_provider_reads_derived_minute_bars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "derived" / "stock" / "bar" / "15m"

@@ -16,6 +16,8 @@ python -m yq_ml_alpha run --config configs\mdl_000001.toml
 cd D:\yuminwu_workspace\Internship\YuminQuant
 cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 15 --start-date 20110101 --end-date 20260424
 
+`derive-bar` accepts stock minute bar sizes that divide 240 and satisfy `1 < bar_size <= 120`; `120` means one morning bar and one afternoon bar.
+
 cd D:\yuminwu_workspace\Internship\YuminQuant\ml_alpha
 python -m yq_ml_alpha run --config configs\mdl_000006.toml
 python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml

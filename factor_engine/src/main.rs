@@ -1133,6 +1133,7 @@ fn print_help() {
     println!(
         "  derive-bar --asset stock --source minute --bar-size N --start-date YYYYMMDD --end-date YYYYMMDD"
     );
+    println!("    derive-bar stock minute allowed N: divisors of 240 with 1 < N <= 120");
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
@@ -1169,6 +1170,10 @@ fn print_help() {
     println!(
         "  --date-batch-size N (run default {}, backtest default {})",
         DEFAULT_DATE_BATCH_SIZE, DEFAULT_BACKTEST_DATE_BATCH_SIZE
+    );
+    println!(
+        "  --date-batch-size N for derive-bar controls concurrent dates (default {})",
+        DEFAULT_DERIVE_DATE_BATCH_SIZE
     );
     println!(
         "  --label-batch-size N (default {})",

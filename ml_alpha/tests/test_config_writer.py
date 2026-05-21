@@ -718,7 +718,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.features.params["bar_size"], 5)
         self.assertEqual(config.features.params["order"], 10)
         self.assertEqual(config.features.params["volume_column"], "volume")
-        self.assertEqual(config.features.params["cache_days"], 128)
+        self.assertEqual(config.features.params["cache_days"], "auto")
         self.assertEqual(config.label.id, "future_vwap_return_5d")
         self.assertEqual(config.sample.train_frequency, "5")
         self.assertEqual(config.sample.predict_frequency, "daily")
@@ -739,6 +739,28 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(provider.feature_columns[0], "sig_0001")
         self.assertEqual(provider.feature_columns[-1], "sig_2046")
         self.assertEqual(signature_width(10), 2046)
+
+    def test_logsig_signature_provider_auto_cache_uses_target_stride(self) -> None:
+        provider = LogsigSignatureProvider(
+            "data/derived/stock/bar/5m",
+            "__all__",
+            {"lookback_days": 20, "bar_size": 5, "order": 1, "cache_days": "auto"},
+        )
+        provider.set_calendar_dates(list(range(1, 41)))
+        provider.set_cache_days_for_target_dates([20, 25, 30])
+        self.assertEqual(provider.cache_days, 15)
+        provider.set_cache_days_for_target_dates([20, 21, 22])
+        self.assertEqual(provider.cache_days, 19)
+
+    def test_logsig_signature_provider_explicit_cache_overrides_auto_stride(self) -> None:
+        provider = LogsigSignatureProvider(
+            "data/derived/stock/bar/5m",
+            "__all__",
+            {"lookback_days": 20, "bar_size": 5, "order": 1, "cache_days": 7},
+        )
+        provider.set_calendar_dates(list(range(1, 41)))
+        provider.set_cache_days_for_target_dates([20, 21, 22])
+        self.assertEqual(provider.cache_days, 7)
 
     def test_logsig_signature_matches_reference_lead_lag_path(self) -> None:
         volumes = np.array([1.0, 10.0], dtype=np.float64)

@@ -41,6 +41,8 @@ class DatasetBuilder:
         frames = []
         total_dates = len(dates)
         split_name = "labeled" if include_label else "predict"
+        if isinstance(self.feature_provider, LogsigSignatureProvider):
+            self.feature_provider.set_cache_days_for_target_dates(dates)
         for date_idx, trade_date in enumerate(dates, start=1):
             if isinstance(self.feature_provider, LogsigSignatureProvider):
                 progress = _logsig_signature_progress(split_name, date_idx, total_dates, trade_date)

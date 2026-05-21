@@ -50,7 +50,7 @@ lookback_days = 20
 bar_size = 5
 order = 10
 volume_column = "volume"
-cache_days = 128
+cache_days = "auto"
 
 [materialize]
 cache_samples = false

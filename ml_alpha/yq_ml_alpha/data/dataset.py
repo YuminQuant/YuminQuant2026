@@ -15,6 +15,7 @@ from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
+from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
@@ -30,6 +31,8 @@ class DatasetBuilder:
     def __init__(self, config: MlAlphaConfig) -> None:
         self.config = config
         self.feature_provider = make_feature_provider(config)
+        if hasattr(self.feature_provider, "set_calendar_dates"):
+            self.feature_provider.set_calendar_dates(TradingCalendar.load(config.data_root).dates)
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
         self._source_st_symbol_cache: dict[int, set[str]] = {}
@@ -248,6 +251,8 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return FactorFrameProvider(config.features.root, config.features.columns)
     if config.features.type == "raw_panel":
         return RawPanelProvider(config.features.root, config.features.columns)
+    if config.features.type == "logsig_signature":
+        return LogsigSignatureProvider(config.features.root, config.features.columns, config.features.params)
     if config.features.type == "bar_panel":
         return BarPanelProvider(config.features.root, config.features.columns, config.features.params)
     if config.features.type == "multi_bar_panel":

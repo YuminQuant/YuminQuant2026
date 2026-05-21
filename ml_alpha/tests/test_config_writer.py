@@ -18,6 +18,11 @@ from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.data.sampler import refit_dates, sample_dates
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
+from yq_ml_alpha.features.logsig_signature import (
+    LogsigSignatureProvider,
+    _signature_from_volume,
+    signature_width,
+)
 from yq_ml_alpha.features.transforms import (
     apply_cross_section_transform,
     available_transforms,
@@ -695,6 +700,14 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         config = load_config(Path(__file__).resolve().parents[1] / "factors" / "logsig_alpha_v.toml")
         self.assertEqual(config.factor_id, "logsig_alpha_v")
         self.assertEqual(config.output.id, "logsig_alpha_v")
+        self.assertEqual(config.features.type, "logsig_signature")
+        self.assertIn("data\\derived\\stock\\bar\\5m", str(config.features.root))
+        self.assertEqual(config.features.columns, "__all__")
+        self.assertEqual(config.features.params["lookback_days"], 20)
+        self.assertEqual(config.features.params["bar_size"], 5)
+        self.assertEqual(config.features.params["order"], 10)
+        self.assertEqual(config.features.params["volume_column"], "volume")
+        self.assertEqual(config.features.params["cache_days"], 128)
         self.assertEqual(config.label.id, "future_vwap_return_5d")
         self.assertEqual(config.sample.train_frequency, "5")
         self.assertEqual(config.sample.predict_frequency, "daily")
@@ -705,6 +718,125 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.postprocess.neutralize.size, "barra_cne6_size")
         self.assertEqual(config.model.params["base_factors"], 8)
         self.assertEqual(config.model.params["orthogonal_lambda"], 0.05)
+
+    def test_logsig_signature_provider_exposes_expected_feature_columns(self) -> None:
+        provider = LogsigSignatureProvider(
+            "data/derived/stock/bar/5m",
+            "__all__",
+            {"lookback_days": 20, "bar_size": 5, "order": 10},
+        )
+        self.assertEqual(len(provider.feature_columns), 2046)
+        self.assertEqual(provider.feature_columns[0], "sig_0001")
+        self.assertEqual(provider.feature_columns[-1], "sig_2046")
+        self.assertEqual(signature_width(10), 2046)
+
+    def test_logsig_signature_matches_reference_lead_lag_path(self) -> None:
+        volumes = np.array([1.0, 10.0], dtype=np.float64)
+        actual = _signature_from_volume(volumes, 3)
+        reference = self._reference_lead_lag_signature(np.log(np.maximum(volumes, 1.0)), 3)
+        self.assertTrue(np.allclose(actual, reference, atol=1e-12))
+
+    def test_logsig_signature_clips_zero_volume_before_log(self) -> None:
+        with_zero = _signature_from_volume(np.array([0.0, 10.0], dtype=np.float64), 2)
+        clipped = _signature_from_volume(np.array([1.0, 10.0], dtype=np.float64), 2)
+        self.assertTrue(np.allclose(with_zero, clipped, atol=1e-12))
+
+    def test_logsig_signature_provider_reuses_cached_bar_days(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "bar" / "5m"
+            for trade_date, base in [(20260101, 1.0), (20260102, 2.0), (20260105, 3.0)]:
+                self._write_bar_day(
+                    root,
+                    trade_date,
+                    [
+                        ("000001.SZ", [base, base + 1.0]),
+                        ("000002.SZ", [base + 2.0, base + 3.0]),
+                    ],
+                )
+            provider = LogsigSignatureProvider(
+                root,
+                "__all__",
+                {"lookback_days": 2, "bar_size": 120, "order": 2, "cache_days": 4},
+            )
+            provider.set_calendar_dates([20260101, 20260102, 20260105])
+            original = pd.read_parquet
+            read_paths: list[str] = []
+
+            def counting_read_parquet(path, *args, **kwargs):
+                read_paths.append(str(path))
+                return original(path, *args, **kwargs)
+
+            with mock.patch("pandas.read_parquet", side_effect=counting_read_parquet):
+                first = provider.load(20260102)
+                second = provider.load(20260105)
+
+            self.assertEqual(len(first), 2)
+            self.assertEqual(len(second), 2)
+            self.assertEqual(len(read_paths), 3)
+            self.assertEqual(len(set(read_paths)), 3)
+
+    def test_logsig_signature_provider_returns_empty_for_incomplete_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "bar" / "5m"
+            self._write_bar_day(root, 20260101, [("000001.SZ", [1.0, 2.0])])
+            self._write_bar_day(root, 20260102, [("000001.SZ", [3.0])])
+            provider = LogsigSignatureProvider(
+                root,
+                "__all__",
+                {"lookback_days": 2, "bar_size": 120, "order": 2},
+            )
+            provider.set_calendar_dates([20260101, 20260102])
+            output = provider.load(20260102)
+            self.assertTrue(output.empty)
+            self.assertEqual(list(output.columns), ["trade_date", "ts_code", *provider.feature_columns])
+
+    @staticmethod
+    def _write_bar_day(root: Path, trade_date: int, symbols: list[tuple[str, list[float]]]) -> None:
+        path = root / str(trade_date)[:4] / f"{trade_date}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for ts_code, volumes in symbols:
+            for bar_index, volume in enumerate(volumes):
+                rows.append(
+                    {
+                        "trade_date": trade_date,
+                        "ts_code": ts_code,
+                        "bar_index": bar_index,
+                        "volume": volume,
+                    }
+                )
+        pd.DataFrame(rows).to_parquet(path, index=False)
+
+    @staticmethod
+    def _reference_lead_lag_signature(values: np.ndarray, order: int) -> np.ndarray:
+        state: dict[tuple[int, ...], float] = {(): 1.0}
+
+        def append_axis_segment(axis: int, delta: float) -> None:
+            segment: dict[tuple[int, ...], float] = {(): 1.0}
+            value = 1.0
+            for length in range(1, order + 1):
+                value *= delta / length
+                segment[(axis,) * length] = value
+            updated: dict[tuple[int, ...], float] = {}
+            for word, word_value in state.items():
+                for suffix, suffix_value in segment.items():
+                    combined = word + suffix
+                    if len(combined) <= order:
+                        updated[combined] = updated.get(combined, 0.0) + word_value * suffix_value
+            state.clear()
+            state.update(updated)
+
+        for idx in range(1, len(values)):
+            delta = float(values[idx] - values[idx - 1])
+            append_axis_segment(0, delta)
+            append_axis_segment(1, delta)
+
+        output = []
+        for level in range(1, order + 1):
+            for word in range(2**level):
+                letters = tuple((word >> bit) & 1 for bit in range(level - 1, -1, -1))
+                output.append(state.get(letters, 0.0))
+        return np.asarray(output, dtype=np.float64)
 
     def test_daily_wide_writer_overwrites_target_and_unions_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

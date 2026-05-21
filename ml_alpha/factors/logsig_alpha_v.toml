@@ -46,9 +46,16 @@ industry = "sw_l1"
 size = "barra_cne6_size"
 
 [features]
-type = "raw_panel"
-root = "data/derived/stock/logsig_alpha_v/signature_o10_20d_5m"
-columns = "*"
+type = "logsig_signature"
+root = "data/derived/stock/bar/5m"
+columns = "__all__"
+
+[features.params]
+lookback_days = 20
+bar_size = 5
+order = 10
+volume_column = "volume"
+cache_days = 128
 
 [materialize]
 cache_samples = false

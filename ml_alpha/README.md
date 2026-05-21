@@ -55,7 +55,7 @@ For a formal factor such as `logsig_alpha_v`, `factor_id`, `name`, and `output_c
 
 `logsig_alpha_v` is a formal end-to-end factor using volume-path signature features and an orthogonal MLP.
 
-### Derive Signature Features
+### Prepare 5-Minute Bars
 
 First generate 5-minute stock bars if they do not exist:
 
@@ -63,19 +63,13 @@ First generate 5-minute stock bars if they do not exist:
 cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 5 --start-date 20110101 --end-date 20260424
 ```
 
-Then derive 20-day order-10 lead-lag volume signatures:
-
-```powershell
-cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- derive-logsig-volume-signature --asset stock --bar-size 5 --lookback-days 20 --order 10 --start-date 20110101 --end-date 20260424
-```
-
-Output:
+`logsig_alpha_v` reads those bars from:
 
 ```text
-data/derived/stock/logsig_alpha_v/signature_o10_20d_5m/{year}/{YYYYMMDD}.parquet
+data/derived/stock/bar/5m/{year}/{YYYYMMDD}.parquet
 ```
 
-The derived feature table contains `trade_date`, `ts_code`, and `sig_0001` through `sig_2046`.
+The 20-day order-10 lead-lag volume signatures are computed on demand in Python with Numba. They are not written as intermediate parquet files. The provider returns `trade_date`, `ts_code`, and `sig_0001` through `sig_2046`, while reusing an in-process LRU cache of 5-minute bar days during train, validation, and prediction loads.
 
 ### Train And Materialize
 

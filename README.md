@@ -135,10 +135,10 @@ Run from `ml_alpha` when you do not want to install the package:
 
 ```powershell
 Push-Location .\ml_alpha
-python -m yq_ml_alpha run --config configs\mdl_000001.toml
-python -m yq_ml_alpha run --config configs\monthly_xgb_36.toml
-python -m yq_ml_alpha run --config configs\monthly_mlp_36.toml
-python -m yq_ml_alpha run --config configs\monthly_elstm_ranknet_36.toml
+python -m yq_ml_alpha model-run --config models\mdl_000001.toml
+python -m yq_ml_alpha model-run --config models\experiments\monthly_xgb_36.toml
+python -m yq_ml_alpha model-run --config models\experiments\monthly_mlp_36.toml
+python -m yq_ml_alpha model-run --config models\experiments\monthly_elstm_ranknet_36.toml
 Pop-Location
 ```
 

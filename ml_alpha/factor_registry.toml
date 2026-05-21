@@ -1,0 +1,29 @@
+[[factors]]
+factor_id = "e2e_fct_000001"
+config = "factors/e2e_fct_000001.toml"
+status = "active"
+display_name = "15m bar GRU end-to-end factor"
+model_class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_20d"
+tags = ["e2e", "bar_gru", "minute", "ic_loss"]
+
+[[factors]]
+factor_id = "e2e_fct_000002"
+config = "factors/e2e_fct_000002.toml"
+status = "active"
+display_name = "Daily + 15m multi-bar GRU end-to-end factor"
+model_class = "yq_ml_alpha.models.multi_bar_gru_model.MultiBarGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_20d"
+tags = ["e2e", "multi_bar_gru", "daily", "minute", "ic_loss"]
+
+[[factors]]
+factor_id = "e2e_fct_000003"
+config = "factors/e2e_fct_000003.toml"
+status = "active"
+display_name = "Residual multi-bar GRU end-to-end factor"
+model_class = "yq_ml_alpha.models.residual_multi_bar_gru_model.ResidualMultiBarGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_20d"
+tags = ["e2e", "residual_multi_bar_gru", "daily", "minute", "ic_loss"]

@@ -4,6 +4,7 @@ import inspect
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -51,6 +52,8 @@ from yq_ml_alpha.models.tree_model import RandomForestAlphaModel
 from yq_ml_alpha.models.xgb_optuna_model import XGBoostOptunaAlphaModel
 from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
+from yq_ml_alpha.output.daily_wide_writer import DailyWideWriter
+from yq_ml_alpha.output.factor_metadata import write_factor_metadata
 from yq_ml_alpha.pipelines.train import build_windows, _split_by_validation_ratio
 
 
@@ -676,6 +679,242 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             self.assertIn("alpha_a", table.columns)
             self.assertIn("alpha_b", table.columns)
             self.assertEqual(str(table["alpha_a"].dtype), "float32")
+
+    def test_factor_config_uses_factor_identity(self) -> None:
+        config = load_config(Path(__file__).resolve().parents[1] / "factors" / "e2e_fct_000002.toml")
+        self.assertEqual(config.factor_id, "e2e_fct_000002")
+        self.assertEqual(config.run_id, "e2e_fct_000002")
+        self.assertEqual(config.alpha_id, "e2e_fct_000002")
+        self.assertEqual(config.output.kind, "factor")
+        self.assertEqual(config.output.id, "e2e_fct_000002")
+        self.assertIn("data\\factors", str(config.output.root))
+        self.assertNotIn("mdl_", str(config.model.artifact_dir))
+
+    def test_daily_wide_writer_overwrites_target_and_unions_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "factors"
+            path = output_root / "stock" / "daily" / "2026" / "20260105.parquet"
+            path.parent.mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105, 20260105],
+                    "ts_code": ["000001.SZ", "000002.SZ"],
+                    "e2e_fct_000001": [100.0, 200.0],
+                    "old_factor": [1.0, 2.0],
+                }
+            ).to_parquet(path, index=False)
+
+            writer = DailyWideWriter(output_root, "e2e_fct_000001", layout="standard", write_workers=1)
+            writer.write(
+                pd.DataFrame(
+                    {
+                        "trade_date": [20260105, 20260105],
+                        "ts_code": ["000002.SZ", "000003.SZ"],
+                        "score": [9.0, 10.0],
+                    }
+                ),
+                coverage_dates=[20260105],
+            )
+
+            table = pd.read_parquet(path)
+            self.assertEqual(list(table["ts_code"]), ["000001.SZ", "000002.SZ", "000003.SZ"])
+            self.assertTrue(pd.isna(table.loc[0, "e2e_fct_000001"]))
+            self.assertEqual(float(table.loc[1, "e2e_fct_000001"]), 9.0)
+            self.assertEqual(float(table.loc[2, "e2e_fct_000001"]), 10.0)
+            self.assertEqual(float(table.loc[0, "old_factor"]), 1.0)
+            self.assertEqual(str(table["e2e_fct_000001"].dtype), "float32")
+
+    def test_daily_wide_writer_keeps_coverage_schema_consistent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "factors"
+            first = output_root / "stock" / "daily" / "2026" / "20260105.parquet"
+            second = output_root / "stock" / "daily" / "2026" / "20260106.parquet"
+            first.parent.mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105],
+                    "ts_code": ["000001.SZ"],
+                    "old_factor": [1.0],
+                }
+            ).to_parquet(first, index=False)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260106],
+                    "ts_code": ["000002.SZ"],
+                }
+            ).to_parquet(second, index=False)
+
+            writer = DailyWideWriter(output_root, "e2e_fct_000001", layout="standard", write_workers=1)
+            writer.write(
+                pd.DataFrame(
+                    {
+                        "trade_date": [20260105],
+                        "ts_code": ["000001.SZ"],
+                        "score": [2.0],
+                    }
+                ),
+                coverage_dates=[20260105, 20260106],
+            )
+
+            first_table = pd.read_parquet(first)
+            second_table = pd.read_parquet(second)
+            self.assertEqual(list(first_table.columns), list(second_table.columns))
+            self.assertEqual(list(first_table.columns), ["trade_date", "ts_code", "e2e_fct_000001", "old_factor"])
+            self.assertTrue(pd.isna(second_table.loc[0, "e2e_fct_000001"]))
+            self.assertTrue(pd.isna(second_table.loc[0, "old_factor"]))
+
+    def test_daily_wide_writer_uses_full_schema_dates_across_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "factors"
+            first = output_root / "stock" / "daily" / "2026" / "20260105.parquet"
+            second = output_root / "stock" / "daily" / "2026" / "20260106.parquet"
+            first.parent.mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105],
+                    "ts_code": ["000001.SZ"],
+                    "old_a": [1.0],
+                }
+            ).to_parquet(first, index=False)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260106],
+                    "ts_code": ["000002.SZ"],
+                    "old_b": [2.0],
+                }
+            ).to_parquet(second, index=False)
+
+            writer = DailyWideWriter(output_root, "e2e_fct_000001", layout="standard", write_workers=1)
+            schema_dates = [20260105, 20260106]
+            writer.write(
+                pd.DataFrame({"trade_date": [20260105], "ts_code": ["000001.SZ"], "score": [3.0]}),
+                coverage_dates=[20260105],
+                schema_dates=schema_dates,
+            )
+            writer.write(
+                pd.DataFrame(columns=["trade_date", "ts_code", "score"]),
+                coverage_dates=[20260106],
+                schema_dates=schema_dates,
+            )
+
+            first_table = pd.read_parquet(first)
+            second_table = pd.read_parquet(second)
+            expected_columns = ["trade_date", "ts_code", "e2e_fct_000001", "old_a", "old_b"]
+            self.assertEqual(list(first_table.columns), expected_columns)
+            self.assertEqual(list(second_table.columns), expected_columns)
+            self.assertEqual(float(first_table.loc[0, "e2e_fct_000001"]), 3.0)
+            self.assertTrue(pd.isna(second_table.loc[0, "e2e_fct_000001"]))
+
+    def test_daily_wide_writer_uses_daily_pv_for_empty_coverage_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "factors"
+            base_root = Path(tmp) / "daily_pv"
+            (base_root / "2026").mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260106, 20260106],
+                    "ts_code": ["000004.SZ", "000005.SZ"],
+                }
+            ).to_parquet(base_root / "2026" / "20260106.parquet", index=False)
+
+            writer = DailyWideWriter(
+                output_root,
+                "e2e_fct_000001",
+                layout="standard",
+                base_root=base_root,
+                write_workers=1,
+            )
+            writer.write(pd.DataFrame(columns=["trade_date", "ts_code", "score"]), coverage_dates=[20260106])
+
+            table = pd.read_parquet(output_root / "stock" / "daily" / "2026" / "20260106.parquet")
+            self.assertEqual(list(table.columns), ["trade_date", "ts_code", "e2e_fct_000001"])
+            self.assertEqual(list(table["ts_code"]), ["000004.SZ", "000005.SZ"])
+            self.assertTrue(table["e2e_fct_000001"].isna().all())
+
+    def test_factor_metadata_writer_uses_factor_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "e2e_fct_000099.toml"
+            path.write_text(
+                f"""
+factor_id = "e2e_fct_000099"
+data_root = "data"
+
+[output]
+kind = "factor"
+id = "e2e_fct_000099"
+root = "{Path(tmp).as_posix()}/factors"
+asset = "stock"
+frequency = "daily"
+
+[dates]
+train = [20200101, 20200131]
+valid = []
+predict = [20200201, 20200228]
+
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+train_lookback = "3y"
+validation_ratio = 0.2
+
+[label]
+id = "future_vwap_return_20d"
+
+[features]
+type = "bar_panel"
+root = "data/derived/stock/bar/15m"
+columns = ["open", "high", "low", "close", "vwap", "volume"]
+
+[features.params]
+source_frequency = "minute_bar"
+bar_size = 15
+lookback_sessions = 20
+
+[model]
+name = "bar_gru"
+class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            metadata_path = write_factor_metadata(config)
+            self.assertIsNotNone(metadata_path)
+            table = pd.read_parquet(metadata_path)
+            row = table.iloc[0].to_dict()
+            self.assertEqual(row["factor_id"], "e2e_fct_000099")
+            self.assertEqual(row["output_column"], "e2e_fct_000099")
+            self.assertEqual(row["name"], "e2e_fct_000099")
+            self.assertNotIn("mdl_", "".join(str(value) for value in row.values()))
+
+    def test_pipeline_dispatches_model_and_factor_configs(self) -> None:
+        from yq_ml_alpha.pipelines import dispatch, factor, model
+
+        root = Path(__file__).resolve().parents[1]
+        model_path = root / "models" / "mdl_000001.toml"
+        factor_path = root / "factors" / "e2e_fct_000001.toml"
+        with mock.patch.object(model, "run_config", return_value=[Path("model")]) as model_run:
+            self.assertEqual(dispatch.run(model_path), [Path("model")])
+            self.assertTrue(model_run.called)
+        with mock.patch.object(factor, "run_config", return_value=[Path("factor")]) as factor_run:
+            self.assertEqual(dispatch.run(factor_path), [Path("factor")])
+            self.assertTrue(factor_run.called)
+        with self.assertRaisesRegex(ValueError, "model pipeline requires"):
+            model.run(factor_path)
+        with self.assertRaisesRegex(ValueError, "factor pipeline requires"):
+            factor.run(model_path)
+
+    def test_cli_exposes_explicit_model_and_factor_commands(self) -> None:
+        from yq_ml_alpha import cli
+
+        with mock.patch("yq_ml_alpha.pipelines.model.run", return_value=[]), mock.patch(
+            "yq_ml_alpha.pipelines.factor.run", return_value=[]
+        ):
+            cli.main(["model-run", "--config", "models/mdl_000001.toml"])
+            cli.main(["factor-run", "--config", "factors/e2e_fct_000001.toml"])
 
     def test_factor_frame_all_columns_discovers_union_and_fills_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1795,7 +2034,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
     def test_monthly_mlp_config_parses(self) -> None:
-        config = load_config(Path(__file__).resolve().parents[1] / "configs" / "monthly_mlp_36.toml")
+        config = load_config(Path(__file__).resolve().parents[1] / "models" / "experiments" / "monthly_mlp_36.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_mlp")
         self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.mlp_model.MLPAlphaModel")
@@ -1808,7 +2047,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
 
     def test_monthly_ic_sign_config_parses(self) -> None:
         config = load_config(
-            Path(__file__).resolve().parents[1] / "configs" / "monthly_ic_sign_equal_weight.toml"
+            Path(__file__).resolve().parents[1] / "models" / "experiments" / "monthly_ic_sign_equal_weight.toml"
         )
         self.assertEqual(config.alpha_id, "ml_alpha_ic_sign_ew")
         self.assertEqual(config.features.columns, "__all__")
@@ -1817,48 +2056,34 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         self.assertFalse(config.diagnostics.enabled)
 
     def test_new_model_configs_parse(self) -> None:
-        config_dir = Path(__file__).resolve().parents[1] / "configs"
+        model_dir = Path(__file__).resolve().parents[1] / "models"
+        experiment_dir = model_dir / "experiments"
         expected = {
-            "mdl_000001.toml": ("mdl_000001", "LinearRegressionAlphaModel"),
-            "mdl_000002.toml": ("mdl_000002", "LassoAlphaModel"),
-            "mdl_000003.toml": ("mdl_000003", "RidgeAlphaModel"),
-            "mdl_000004.toml": ("mdl_000004", "ElasticNetAlphaModel"),
-            "mdl_000005.toml": ("mdl_000005", "PCAOLSAlphaModel"),
-            "mdl_000006.toml": ("mdl_000006", "BarGRUAlphaModel"),
-            "mdl_000007.toml": ("mdl_000007", "MultiBarGRUAlphaModel"),
-            "mdl_000008.toml": ("mdl_000008", "ResidualMultiBarGRUAlphaModel"),
-            "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
-            "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
-            "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
-            "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
-            "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),
-            "monthly_xgb_optuna_36.toml": ("ml_alpha_xgb_optuna", "XGBoostOptunaAlphaModel"),
-            "monthly_lgbm_optuna_36.toml": ("ml_alpha_lgbm_optuna", "LightGBMOptunaAlphaModel"),
+            model_dir / "mdl_000001.toml": ("mdl_000001", "LinearRegressionAlphaModel"),
+            model_dir / "mdl_000002.toml": ("mdl_000002", "LassoAlphaModel"),
+            model_dir / "mdl_000003.toml": ("mdl_000003", "RidgeAlphaModel"),
+            model_dir / "mdl_000004.toml": ("mdl_000004", "ElasticNetAlphaModel"),
+            model_dir / "mdl_000005.toml": ("mdl_000005", "PCAOLSAlphaModel"),
+            model_dir / "mdl_80000.toml": ("mdl_80000", "LSTMAlphaModel"),
+            experiment_dir / "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
+            experiment_dir / "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
+            experiment_dir / "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
+            experiment_dir / "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
+            experiment_dir / "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),
+            experiment_dir / "monthly_xgb_optuna_36.toml": ("ml_alpha_xgb_optuna", "XGBoostOptunaAlphaModel"),
+            experiment_dir / "monthly_lgbm_optuna_36.toml": ("ml_alpha_lgbm_optuna", "LightGBMOptunaAlphaModel"),
         }
-        for filename, (alpha_id, class_name) in expected.items():
-            config = load_config(config_dir / filename)
+        for path, (alpha_id, class_name) in expected.items():
+            filename = path.name
+            config = load_config(path)
             self.assertEqual(config.alpha_id, alpha_id)
             self.assertTrue(config.model.class_path.endswith(class_name))
-            if filename == "mdl_000006.toml":
-                self.assertEqual(config.features.type, "bar_panel")
-                self.assertEqual(config.features.columns, ["open", "high", "low", "close", "vwap", "volume"])
-                self.assertEqual(config.features.params["source_frequency"], "minute_bar")
-                self.assertIn("data/derived/stock/bar/15m", str(config.features.root).replace("\\", "/"))
-                self.assertEqual(config.features.params["bar_size"], 15)
-                self.assertEqual(config.features.params["lookback_sessions"], 20)
-            elif filename in {"mdl_000007.toml", "mdl_000008.toml"}:
-                self.assertEqual(config.features.type, "multi_bar_panel")
-                self.assertIn("daily", config.features.params["panels"])
-                self.assertIn("minute", config.features.params["panels"])
-                self.assertEqual(config.features.params["panels"]["daily"]["time_series_scale"], "last")
-                self.assertEqual(config.features.params["panels"]["minute"]["source_frequency"], "minute_bar")
-                self.assertEqual(config.features.params["panels"]["minute"]["bar_size"], 15)
-            else:
-                self.assertEqual(config.features.columns, "__all__")
+            self.assertEqual(config.features.columns, "__all__")
             if filename in {
                 "mdl_000002.toml",
                 "mdl_000003.toml",
                 "mdl_000004.toml",
+                "mdl_80000.toml",
                 "monthly_xgb_optuna_36.toml",
                 "monthly_lgbm_optuna_36.toml",
                 "monthly_mlp_36.toml",
@@ -1868,10 +2093,6 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 "monthly_cnn_36.toml",
             }:
                 self.assertEqual(config.train_scheme.validation_sample_count, 1)
-            elif filename in {"mdl_000006.toml", "mdl_000007.toml", "mdl_000008.toml"}:
-                self.assertEqual(config.train_scheme.validation_sample_count, 0)
-                self.assertEqual(config.train_scheme.validation_ratio, 0.2)
-                self.assertEqual(config.train_scheme.train_lookback, "3y")
             else:
                 self.assertEqual(config.train_scheme.validation_sample_count, 0)
                 self.assertIsNone(config.train_scheme.validation_ratio)
@@ -1886,40 +2107,29 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertTrue(config.diagnostics.enabled)
                 self.assertTrue(config.diagnostics.write_model_info)
                 self.assertTrue(config.diagnostics.write_window_summary)
-            if class_name == "BarGRUAlphaModel":
-                self.assertEqual(config.model.params["sequence_length"], 320)
-                self.assertEqual(config.model.params["input_size"], 6)
-                self.assertEqual(config.model.params["hidden_size"], 30)
-                self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
-                self.assertEqual(config.preprocess.cross_section_transform, "zscore")
-            if class_name == "MultiBarGRUAlphaModel":
-                self.assertEqual(config.model.params["daily_sequence_length"], 40)
-                self.assertEqual(config.model.params["minute_sequence_length"], 320)
-                self.assertEqual(config.model.params["input_size"], 6)
-                self.assertEqual(config.model.params["hidden_size"], 30)
-                self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
-                self.assertEqual(config.preprocess.cross_section_transform, "zscore")
-            if class_name == "ResidualMultiBarGRUAlphaModel":
-                self.assertEqual(config.model.params["daily_sequence_length"], 40)
-                self.assertEqual(config.model.params["minute_sequence_length"], 320)
-                self.assertEqual(config.model.params["input_size"], 6)
-                self.assertEqual(config.model.params["hidden_size"], 30)
-                self.assertEqual(config.model.params["stage1_epochs"], 100)
-                self.assertEqual(config.model.params["stage2_epochs"], 100)
-                self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
-                self.assertEqual(config.preprocess.cross_section_transform, "zscore")
+
+    def test_mdl_end_to_end_configs_migrated_to_factors(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for name in ["mdl_000006.toml", "mdl_000007.toml", "mdl_000008.toml"]:
+            self.assertFalse((root / "models" / name).exists())
+            self.assertFalse((root / "configs" / name).exists())
+        registry = (root / "model_registry.toml").read_text(encoding="utf-8")
+        self.assertNotIn("mdl_000006", registry)
+        self.assertNotIn("mdl_000007", registry)
+        self.assertNotIn("mdl_000008", registry)
 
     def test_tuned_configs_expose_search_space(self) -> None:
-        config_dir = Path(__file__).resolve().parents[1] / "configs"
-        lasso = load_config(config_dir / "mdl_000002.toml")
+        model_dir = Path(__file__).resolve().parents[1] / "models"
+        experiment_dir = model_dir / "experiments"
+        lasso = load_config(model_dir / "mdl_000002.toml")
         self.assertIn("alpha", lasso.model.search["space"])
 
-        xgb = load_config(config_dir / "monthly_xgb_optuna_36.toml")
+        xgb = load_config(experiment_dir / "monthly_xgb_optuna_36.toml")
         self.assertIn("space", xgb.model.search)
         self.assertEqual(xgb.model.search["space"]["n_estimators"]["type"], "int")
         self.assertTrue(xgb.model.search["space"]["learning_rate"]["log"])
 
-        lgbm = load_config(config_dir / "monthly_lgbm_optuna_36.toml")
+        lgbm = load_config(experiment_dir / "monthly_lgbm_optuna_36.toml")
         self.assertIn("num_leaves", lgbm.model.search["space"])
 
     def test_optuna_space_supports_toml_distributions(self) -> None:

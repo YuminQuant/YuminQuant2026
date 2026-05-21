@@ -1186,7 +1186,7 @@ fn print_help() {
     println!("  --refresh-minute-cache");
     println!("  --refresh-label-cache");
     println!("  --config D:/path/to/config.toml");
-    println!("  --project-config D:/path/to/config.toml (strategy-run project config)");
+    println!("  --project-config D:/path/to/config.toml (project config)");
     println!("  --detail true|false (strategy-run minute detail output; default false)");
     println!("  --overwrite true|false (derive-bar default true)");
 }

@@ -56,17 +56,8 @@ class PreprocessConfig:
 
 
 @dataclass(frozen=True)
-class NeutralizeConfig:
-    enabled: bool = False
-    industry: str = "none"
-    size: str = "none"
-    barra_root: Path = Path("data/barra/stock/daily/CNE6")
-    sw_classification_path: Path = Path("data/index_data/member_sw/sw_members.parquet")
-
-
-@dataclass(frozen=True)
 class PostprocessConfig:
-    neutralize: NeutralizeConfig = field(default_factory=NeutralizeConfig)
+    pass
 
 
 @dataclass(frozen=True)
@@ -317,25 +308,15 @@ def _sample_config(section: dict[str, Any]) -> SampleConfig:
 
 
 def _postprocess_config(section: dict[str, Any], data_root: Path) -> PostprocessConfig:
-    neutralize = section.get("neutralize", {})
-    if not isinstance(neutralize, dict):
-        neutralize = {}
-    return PostprocessConfig(
-        neutralize=NeutralizeConfig(
-            enabled=bool(neutralize.get("enabled", False)),
-            industry=str(neutralize.get("industry", "none")).strip().lower(),
-            size=str(neutralize.get("size", "none")).strip().lower(),
-            barra_root=_project_path(
-                neutralize.get("barra_root", data_root / "barra" / "stock" / "daily" / "CNE6")
-            ),
-            sw_classification_path=_project_path(
-                neutralize.get(
-                    "sw_classification_path",
-                    data_root / "index_data" / "member_sw" / "sw_members.parquet",
-                )
-            ),
+    _ = data_root
+    legacy_keys = {"neutralize", "neutralize_rust_binary", "neutralize_temp_root"} & set(section)
+    if legacy_keys:
+        keys = ", ".join(sorted(f"postprocess.{key}" for key in legacy_keys))
+        raise ValueError(
+            f"{keys} is no longer supported; move neutralization to "
+            "model.params.neutralize so the model owns the Rust import call"
         )
-    )
+    return PostprocessConfig()
 
 
 def _project_path(value: str | Path) -> Path:

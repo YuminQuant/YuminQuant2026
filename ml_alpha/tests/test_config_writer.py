@@ -713,11 +713,9 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.sample.predict_frequency, "daily")
         self.assertEqual(config.train_scheme.train_lookback, "4y")
         self.assertEqual(config.train_scheme.validation_ratio, 0.25)
-        self.assertTrue(config.postprocess.neutralize.enabled)
-        self.assertEqual(config.postprocess.neutralize.industry, "sw_l1")
-        self.assertEqual(config.postprocess.neutralize.size, "barra_cne6_size")
         self.assertEqual(config.model.params["base_factors"], 8)
         self.assertEqual(config.model.params["orthogonal_lambda"], 0.05)
+        self.assertEqual(config.model.params["neutralize"], "barra:SIZE+sector")
 
     def test_logsig_signature_provider_exposes_expected_feature_columns(self) -> None:
         provider = LogsigSignatureProvider(
@@ -1038,38 +1036,18 @@ class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
             self.assertEqual(row["name"], "semantic_factor")
             self.assertNotIn("mdl_", "".join(str(value) for value in row.values()))
 
-    def test_prediction_postprocess_neutralizes_size_and_industry(self) -> None:
-        from yq_ml_alpha.pipelines.postprocess import apply_prediction_postprocess
-
+    def test_postprocess_neutralize_config_raises_migration_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            sw_path = root / "sw_members.parquet"
-            barra_root = root / "barra"
-            (barra_root / "2026").mkdir(parents=True)
-            pd.DataFrame(
-                {
-                    "ts_code": ["a", "b", "c", "d"],
-                    "in_date": [20200101, 20200101, 20200101, 20200101],
-                    "out_date": [99991231, 99991231, 99991231, 99991231],
-                    "l1_code": ["I1", "I1", "I2", "I2"],
-                }
-            ).to_parquet(sw_path, index=False)
-            pd.DataFrame(
-                {
-                    "trade_date": [20260105] * 4,
-                    "ts_code": ["a", "b", "c", "d"],
-                    "SIZE": [1.0, 2.0, 3.0, 4.0],
-                }
-            ).to_parquet(barra_root / "2026" / "20260105.parquet", index=False)
-            path = root / "neutralize_factor.toml"
+            path = root / "plain_factor.toml"
             path.write_text(
                 f"""
-factor_id = "neutralize_factor"
+factor_id = "plain_factor"
 data_root = "data"
 
 [output]
 kind = "factor"
-id = "neutralize_factor"
+id = "plain_factor"
 root = "{root.as_posix()}/factors"
 
 [dates]
@@ -1091,21 +1069,53 @@ name = "mean"
 class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
 artifact_dir = "{root.as_posix()}/artifacts"
 
-[postprocess.neutralize]
-enabled = true
-industry = "sw_l1"
-size = "barra_cne6_size"
-barra_root = "{barra_root.as_posix()}"
-sw_classification_path = "{sw_path.as_posix()}"
+[postprocess]
+neutralize = "none"
 """,
                 encoding="utf-8",
             )
-            config = load_config(path)
-            source = pd.DataFrame({"trade_date": [20260105] * 4, "ts_code": ["a", "b", "c", "d"]})
-            score = pd.Series([11.0, 12.0, 23.0, 24.0], dtype="float32")
-            output = apply_prediction_postprocess(config, source, score)
-            self.assertAlmostEqual(float(output.mean()), 0.0, places=6)
-            self.assertTrue(np.isfinite(output.to_numpy()).all())
+            with self.assertRaisesRegex(ValueError, "model.params.neutralize"):
+                load_config(path)
+
+    def test_logsig_rust_neutralization_adapter_restores_order(self) -> None:
+        from yq_ml_alpha.models.logsig_orthogonal_mlp_model import _apply_rust_neutralization
+
+        class FakeNeutralizer:
+            calls: list[tuple] = []
+
+            @staticmethod
+            def neutralize_daily(*args):
+                FakeNeutralizer.calls.append(args)
+                return [100.0, None, 300.0]
+
+        source = pd.DataFrame(
+            {"trade_date": [20260105, 20260105, 20260106], "ts_code": ["a", "b", "c"]},
+            index=[10, 11, 12],
+        )
+        score = pd.Series([1.0, np.nan, 3.0], index=source.index, dtype="float32")
+        with mock.patch.dict(sys.modules, {"yq_factor_engine_py": FakeNeutralizer}):
+            output = _apply_rust_neutralization(source, score, "barra:SIZE+sector")
+
+        self.assertEqual(output.index.tolist(), [10, 11, 12])
+        self.assertEqual(output.tolist()[0], 100.0)
+        self.assertTrue(np.isnan(output.tolist()[1]))
+        self.assertEqual(output.tolist()[2], 300.0)
+        call = FakeNeutralizer.calls[0]
+        self.assertEqual(call[0], [20260105, 20260105, 20260106])
+        self.assertEqual(call[1], ["a", "b", "c"])
+        self.assertEqual(call[2], [1.0, None, 3.0])
+        self.assertEqual(call[3], "barra:SIZE+sector")
+        self.assertEqual(call[6], 20260105)
+        self.assertEqual(call[7], 20260106)
+
+    def test_logsig_rust_neutralization_missing_extension_has_build_hint(self) -> None:
+        from yq_ml_alpha.models.logsig_orthogonal_mlp_model import _apply_rust_neutralization
+
+        source = pd.DataFrame({"trade_date": [20260105], "ts_code": ["a"]})
+        score = pd.Series([1.0], dtype="float32")
+        with mock.patch.dict(sys.modules, {"yq_factor_engine_py": None}):
+            with self.assertRaisesRegex(ImportError, "maturin develop"):
+                _apply_rust_neutralization(source, score, "sector")
 
     def test_pipeline_rejects_wrong_config_layer(self) -> None:
         from yq_ml_alpha.pipelines import factor, model

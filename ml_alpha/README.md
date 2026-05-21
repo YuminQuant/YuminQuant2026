@@ -74,6 +74,8 @@ The 20-day order-10 lead-lag volume signatures are computed on demand in Python 
 ### Train And Materialize
 
 ```powershell
+D:\Users\Devin\anaconda383\python.exe -m pip install maturin
+D:\Users\Devin\anaconda383\python.exe -m maturin develop --manifest-path ..\factor_engine\python\yq_factor_engine_py\Cargo.toml
 python -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
 ```
 
@@ -87,6 +89,6 @@ The config uses:
 - model: `LogsigOrthogonalMLPAlphaModel`
 - base factors: 8
 - orthogonal penalty: `0.05`
-- postprocess: SW level-1 industry + Barra CNE6 `SIZE` neutralization
+- model-owned Rust neutralization: `model.params.neutralize = "barra:SIZE+sector"`
 
 Base factors are model artifacts/diagnostics only. The formal factor library receives only the final neutralized `logsig_alpha_v` column.

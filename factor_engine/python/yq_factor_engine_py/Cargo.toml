@@ -1,0 +1,12 @@
+[package]
+name = "yq-factor-engine-py"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "yq_factor_engine_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22.6", features = ["extension-module", "abi3-py38"] }
+yq-factor-engine = { path = "../.." }

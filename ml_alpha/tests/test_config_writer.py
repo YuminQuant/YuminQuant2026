@@ -37,6 +37,7 @@ from yq_ml_alpha.models.ic_sign_model import ICSignEqualWeightAlphaModel
 from yq_ml_alpha.models.linear_model import LinearRegressionAlphaModel
 from yq_ml_alpha.models.lgbm_optuna_model import LightGBMOptunaAlphaModel
 from yq_ml_alpha.models.mlp_model import MLPAlphaModel
+from yq_ml_alpha.models.logsig_orthogonal_mlp_model import LogsigOrthogonalMLPAlphaModel
 from yq_ml_alpha.models.bar_gru_model import BarGRUAlphaModel
 from yq_ml_alpha.models.multi_bar_gru_model import MultiBarGRUAlphaModel
 from yq_ml_alpha.models.optuna_space import suggest_params
@@ -54,7 +55,7 @@ from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
 from yq_ml_alpha.output.daily_wide_writer import DailyWideWriter
 from yq_ml_alpha.output.factor_metadata import write_factor_metadata
-from yq_ml_alpha.pipelines.train import build_windows, _split_by_validation_ratio
+from yq_ml_alpha.pipelines.runtime import build_windows, _split_by_validation_ratio
 
 
 class ConfigAndWriterTests(unittest.TestCase):
@@ -681,14 +682,29 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             self.assertEqual(str(table["alpha_a"].dtype), "float32")
 
     def test_factor_config_uses_factor_identity(self) -> None:
-        config = load_config(Path(__file__).resolve().parents[1] / "factors" / "e2e_fct_000002.toml")
-        self.assertEqual(config.factor_id, "e2e_fct_000002")
-        self.assertEqual(config.run_id, "e2e_fct_000002")
-        self.assertEqual(config.alpha_id, "e2e_fct_000002")
+        config = load_config(Path(__file__).resolve().parents[1] / "factors" / "multi_bar_gru_daily_15m.toml")
+        self.assertEqual(config.factor_id, "multi_bar_gru_daily_15m")
+        self.assertEqual(config.run_id, "multi_bar_gru_daily_15m")
+        self.assertEqual(config.alpha_id, "multi_bar_gru_daily_15m")
         self.assertEqual(config.output.kind, "factor")
-        self.assertEqual(config.output.id, "e2e_fct_000002")
+        self.assertEqual(config.output.id, "multi_bar_gru_daily_15m")
         self.assertIn("data\\factors", str(config.output.root))
         self.assertNotIn("mdl_", str(config.model.artifact_dir))
+
+    def test_logsig_alpha_v_config_uses_semantic_identity(self) -> None:
+        config = load_config(Path(__file__).resolve().parents[1] / "factors" / "logsig_alpha_v.toml")
+        self.assertEqual(config.factor_id, "logsig_alpha_v")
+        self.assertEqual(config.output.id, "logsig_alpha_v")
+        self.assertEqual(config.label.id, "future_vwap_return_5d")
+        self.assertEqual(config.sample.train_frequency, "5")
+        self.assertEqual(config.sample.predict_frequency, "daily")
+        self.assertEqual(config.train_scheme.train_lookback, "4y")
+        self.assertEqual(config.train_scheme.validation_ratio, 0.25)
+        self.assertTrue(config.postprocess.neutralize.enabled)
+        self.assertEqual(config.postprocess.neutralize.industry, "sw_l1")
+        self.assertEqual(config.postprocess.neutralize.size, "barra_cne6_size")
+        self.assertEqual(config.model.params["base_factors"], 8)
+        self.assertEqual(config.model.params["orthogonal_lambda"], 0.05)
 
     def test_daily_wide_writer_overwrites_target_and_unions_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -699,12 +715,12 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 {
                     "trade_date": [20260105, 20260105],
                     "ts_code": ["000001.SZ", "000002.SZ"],
-                    "e2e_fct_000001": [100.0, 200.0],
+                    "bar_gru_15m": [100.0, 200.0],
                     "old_factor": [1.0, 2.0],
                 }
             ).to_parquet(path, index=False)
 
-            writer = DailyWideWriter(output_root, "e2e_fct_000001", layout="standard", write_workers=1)
+            writer = DailyWideWriter(output_root, "bar_gru_15m", layout="standard", write_workers=1)
             writer.write(
                 pd.DataFrame(
                     {
@@ -718,11 +734,11 @@ artifact_dir = "data/model_workspace/r1/artifacts"
 
             table = pd.read_parquet(path)
             self.assertEqual(list(table["ts_code"]), ["000001.SZ", "000002.SZ", "000003.SZ"])
-            self.assertTrue(pd.isna(table.loc[0, "e2e_fct_000001"]))
-            self.assertEqual(float(table.loc[1, "e2e_fct_000001"]), 9.0)
-            self.assertEqual(float(table.loc[2, "e2e_fct_000001"]), 10.0)
+            self.assertTrue(pd.isna(table.loc[0, "bar_gru_15m"]))
+            self.assertEqual(float(table.loc[1, "bar_gru_15m"]), 9.0)
+            self.assertEqual(float(table.loc[2, "bar_gru_15m"]), 10.0)
             self.assertEqual(float(table.loc[0, "old_factor"]), 1.0)
-            self.assertEqual(str(table["e2e_fct_000001"].dtype), "float32")
+            self.assertEqual(str(table["bar_gru_15m"].dtype), "float32")
 
     def test_daily_wide_writer_keeps_coverage_schema_consistent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -744,7 +760,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 }
             ).to_parquet(second, index=False)
 
-            writer = DailyWideWriter(output_root, "e2e_fct_000001", layout="standard", write_workers=1)
+            writer = DailyWideWriter(output_root, "bar_gru_15m", layout="standard", write_workers=1)
             writer.write(
                 pd.DataFrame(
                     {
@@ -759,8 +775,8 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             first_table = pd.read_parquet(first)
             second_table = pd.read_parquet(second)
             self.assertEqual(list(first_table.columns), list(second_table.columns))
-            self.assertEqual(list(first_table.columns), ["trade_date", "ts_code", "e2e_fct_000001", "old_factor"])
-            self.assertTrue(pd.isna(second_table.loc[0, "e2e_fct_000001"]))
+            self.assertEqual(list(first_table.columns), ["trade_date", "ts_code", "bar_gru_15m", "old_factor"])
+            self.assertTrue(pd.isna(second_table.loc[0, "bar_gru_15m"]))
             self.assertTrue(pd.isna(second_table.loc[0, "old_factor"]))
 
     def test_daily_wide_writer_uses_full_schema_dates_across_batches(self) -> None:
@@ -784,7 +800,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
                 }
             ).to_parquet(second, index=False)
 
-            writer = DailyWideWriter(output_root, "e2e_fct_000001", layout="standard", write_workers=1)
+            writer = DailyWideWriter(output_root, "bar_gru_15m", layout="standard", write_workers=1)
             schema_dates = [20260105, 20260106]
             writer.write(
                 pd.DataFrame({"trade_date": [20260105], "ts_code": ["000001.SZ"], "score": [3.0]}),
@@ -799,11 +815,11 @@ artifact_dir = "data/model_workspace/r1/artifacts"
 
             first_table = pd.read_parquet(first)
             second_table = pd.read_parquet(second)
-            expected_columns = ["trade_date", "ts_code", "e2e_fct_000001", "old_a", "old_b"]
+            expected_columns = ["trade_date", "ts_code", "bar_gru_15m", "old_a", "old_b"]
             self.assertEqual(list(first_table.columns), expected_columns)
             self.assertEqual(list(second_table.columns), expected_columns)
-            self.assertEqual(float(first_table.loc[0, "e2e_fct_000001"]), 3.0)
-            self.assertTrue(pd.isna(second_table.loc[0, "e2e_fct_000001"]))
+            self.assertEqual(float(first_table.loc[0, "bar_gru_15m"]), 3.0)
+            self.assertTrue(pd.isna(second_table.loc[0, "bar_gru_15m"]))
 
     def test_daily_wide_writer_uses_daily_pv_for_empty_coverage_date(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -819,7 +835,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
 
             writer = DailyWideWriter(
                 output_root,
-                "e2e_fct_000001",
+                "bar_gru_15m",
                 layout="standard",
                 base_root=base_root,
                 write_workers=1,
@@ -827,21 +843,21 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             writer.write(pd.DataFrame(columns=["trade_date", "ts_code", "score"]), coverage_dates=[20260106])
 
             table = pd.read_parquet(output_root / "stock" / "daily" / "2026" / "20260106.parquet")
-            self.assertEqual(list(table.columns), ["trade_date", "ts_code", "e2e_fct_000001"])
+            self.assertEqual(list(table.columns), ["trade_date", "ts_code", "bar_gru_15m"])
             self.assertEqual(list(table["ts_code"]), ["000004.SZ", "000005.SZ"])
-            self.assertTrue(table["e2e_fct_000001"].isna().all())
+            self.assertTrue(table["bar_gru_15m"].isna().all())
 
     def test_factor_metadata_writer_uses_factor_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "e2e_fct_000099.toml"
+            path = Path(tmp) / "semantic_factor.toml"
             path.write_text(
                 f"""
-factor_id = "e2e_fct_000099"
+factor_id = "semantic_factor"
 data_root = "data"
 
 [output]
 kind = "factor"
-id = "e2e_fct_000099"
+id = "semantic_factor"
 root = "{Path(tmp).as_posix()}/factors"
 asset = "stock"
 frequency = "daily"
@@ -885,23 +901,86 @@ class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
             self.assertIsNotNone(metadata_path)
             table = pd.read_parquet(metadata_path)
             row = table.iloc[0].to_dict()
-            self.assertEqual(row["factor_id"], "e2e_fct_000099")
-            self.assertEqual(row["output_column"], "e2e_fct_000099")
-            self.assertEqual(row["name"], "e2e_fct_000099")
+            self.assertEqual(row["factor_id"], "semantic_factor")
+            self.assertEqual(row["output_column"], "semantic_factor")
+            self.assertEqual(row["name"], "semantic_factor")
             self.assertNotIn("mdl_", "".join(str(value) for value in row.values()))
 
-    def test_pipeline_dispatches_model_and_factor_configs(self) -> None:
-        from yq_ml_alpha.pipelines import dispatch, factor, model
+    def test_prediction_postprocess_neutralizes_size_and_industry(self) -> None:
+        from yq_ml_alpha.pipelines.postprocess import apply_prediction_postprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sw_path = root / "sw_members.parquet"
+            barra_root = root / "barra"
+            (barra_root / "2026").mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "ts_code": ["a", "b", "c", "d"],
+                    "in_date": [20200101, 20200101, 20200101, 20200101],
+                    "out_date": [99991231, 99991231, 99991231, 99991231],
+                    "l1_code": ["I1", "I1", "I2", "I2"],
+                }
+            ).to_parquet(sw_path, index=False)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105] * 4,
+                    "ts_code": ["a", "b", "c", "d"],
+                    "SIZE": [1.0, 2.0, 3.0, 4.0],
+                }
+            ).to_parquet(barra_root / "2026" / "20260105.parquet", index=False)
+            path = root / "neutralize_factor.toml"
+            path.write_text(
+                f"""
+factor_id = "neutralize_factor"
+data_root = "data"
+
+[output]
+kind = "factor"
+id = "neutralize_factor"
+root = "{root.as_posix()}/factors"
+
+[dates]
+train = [20260101, 20260131]
+
+[sample]
+train_frequency = "daily"
+
+[label]
+id = "future_vwap_return_5d"
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = ["x"]
+
+[model]
+name = "mean"
+class = "yq_ml_alpha.models.base.MeanFeatureAlphaModel"
+artifact_dir = "{root.as_posix()}/artifacts"
+
+[postprocess.neutralize]
+enabled = true
+industry = "sw_l1"
+size = "barra_cne6_size"
+barra_root = "{barra_root.as_posix()}"
+sw_classification_path = "{sw_path.as_posix()}"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            source = pd.DataFrame({"trade_date": [20260105] * 4, "ts_code": ["a", "b", "c", "d"]})
+            score = pd.Series([11.0, 12.0, 23.0, 24.0], dtype="float32")
+            output = apply_prediction_postprocess(config, source, score)
+            self.assertAlmostEqual(float(output.mean()), 0.0, places=6)
+            self.assertTrue(np.isfinite(output.to_numpy()).all())
+
+    def test_pipeline_rejects_wrong_config_layer(self) -> None:
+        from yq_ml_alpha.pipelines import factor, model
 
         root = Path(__file__).resolve().parents[1]
         model_path = root / "models" / "mdl_000001.toml"
-        factor_path = root / "factors" / "e2e_fct_000001.toml"
-        with mock.patch.object(model, "run_config", return_value=[Path("model")]) as model_run:
-            self.assertEqual(dispatch.run(model_path), [Path("model")])
-            self.assertTrue(model_run.called)
-        with mock.patch.object(factor, "run_config", return_value=[Path("factor")]) as factor_run:
-            self.assertEqual(dispatch.run(factor_path), [Path("factor")])
-            self.assertTrue(factor_run.called)
+        factor_path = root / "factors" / "bar_gru_15m.toml"
         with self.assertRaisesRegex(ValueError, "model pipeline requires"):
             model.run(factor_path)
         with self.assertRaisesRegex(ValueError, "factor pipeline requires"):
@@ -914,7 +993,9 @@ class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
             "yq_ml_alpha.pipelines.factor.run", return_value=[]
         ):
             cli.main(["model-run", "--config", "models/mdl_000001.toml"])
-            cli.main(["factor-run", "--config", "factors/e2e_fct_000001.toml"])
+            cli.main(["factor-run", "--config", "factors/bar_gru_15m.toml"])
+        with self.assertRaises(SystemExit):
+            cli.main(["run", "--config", "factors/bar_gru_15m.toml"])
 
     def test_factor_frame_all_columns_discovers_union_and_fills_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1641,6 +1722,56 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             loaded_pred = loaded.predict(train, context)
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
+    def test_logsig_orthogonal_mlp_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        rows = []
+        for trade_date, offset in [(1, 0.0), (2, 0.2)]:
+            for idx, symbol in enumerate(["a", "b", "c", "d"]):
+                rows.append(
+                    {
+                        "trade_date": trade_date,
+                        "ts_code": symbol,
+                        "sig_0001": offset + float(idx),
+                        "sig_0002": offset + float(3 - idx),
+                        "sig_0003": offset + float(idx % 2),
+                        "y": float(idx),
+                    }
+                )
+        train = pd.DataFrame(rows)
+        context = ModelContext(
+            run_id="logsig_alpha_v",
+            alpha_id="logsig_alpha_v",
+            feature_columns=["sig_0001", "sig_0002", "sig_0003"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "hidden_layers": [6],
+                "base_factors": 3,
+                "orthogonal_lambda": 0.05,
+                "epochs": 2,
+                "batch_size": 4,
+                "patience": 0,
+                "seed": 7,
+                "device": "cpu",
+            },
+            model_search={},
+        )
+        model = LogsigOrthogonalMLPAlphaModel()
+        model.fit(train, pd.DataFrame(), context)
+        self.assertEqual(model.model_info["base_factors"], 3)
+        pred = model.predict(train, context)
+        self.assertEqual(len(pred), len(train))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.pt"
+            model.save(path)
+            loaded = LogsigOrthogonalMLPAlphaModel.load(path)
+            loaded_pred = loaded.predict(train, context)
+            self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-6))
+
     def test_sequence_models_smoke_and_pad_features_when_installed(self) -> None:
         try:
             import torch  # noqa: F401
@@ -2110,10 +2241,17 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         for name in ["mdl_000006.toml", "mdl_000007.toml", "mdl_000008.toml"]:
             self.assertFalse((root / "models" / name).exists())
             self.assertFalse((root / "configs" / name).exists())
+        for name in ["e2e_fct_000001.toml", "e2e_fct_000002.toml", "e2e_fct_000003.toml"]:
+            self.assertFalse((root / "factors" / name).exists())
+        for name in ["bar_gru_15m.toml", "multi_bar_gru_daily_15m.toml", "residual_multi_bar_gru.toml"]:
+            self.assertTrue((root / "factors" / name).exists())
         registry = (root / "model_registry.toml").read_text(encoding="utf-8")
         self.assertNotIn("mdl_000006", registry)
         self.assertNotIn("mdl_000007", registry)
         self.assertNotIn("mdl_000008", registry)
+        factor_registry = (root / "factor_registry.toml").read_text(encoding="utf-8")
+        self.assertNotIn("e2e_fct_", factor_registry)
+        self.assertIn("logsig_alpha_v", factor_registry)
 
     def test_tuned_configs_expose_search_space(self) -> None:
         model_dir = Path(__file__).resolve().parents[1] / "models"

@@ -1,9 +1,9 @@
-factor_id = "e2e_fct_000002"
+factor_id = "bar_gru_15m"
 data_root = "data"
 
 [output]
 kind = "factor"
-id = "e2e_fct_000002"
+id = "bar_gru_15m"
 root = "data/factors"
 asset = "stock"
 frequency = "daily"
@@ -41,32 +41,22 @@ cross_section_transform = "zscore"
 feature_fill_value = 0.0
 
 [features]
-type = "multi_bar_panel"
-
-[features.panels.daily]
-root = "data/stock_data/daily/pv"
-source_frequency = "daily"
-bar_size = 1
-lookback_sessions = 40
-time_series_scale = "last"
-strict = true
-max_cache_sessions = 120
+type = "bar_panel"
+root = "data/derived/stock/bar/15m"
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
-[features.panels.minute]
-root = "data/derived/stock/bar/15m"
+[features.params]
 source_frequency = "minute_bar"
 bar_size = 15
 lookback_sessions = 20
 time_series_scale = "mean"
 strict = true
 max_cache_sessions = 120
-columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [materialize]
 cache_samples = false
-cache_dir = "data/model_workspace/e2e_fct_000002/cache"
-predict_batch_size = 10
+cache_dir = "data/model_workspace/bar_gru_15m/cache"
+predict_batch_size = 5
 
 [diagnostics]
 enabled = true
@@ -76,13 +66,12 @@ write_model_info = true
 write_window_summary = true
 
 [model]
-name = "multi_bar_gru"
-class = "yq_ml_alpha.models.multi_bar_gru_model.MultiBarGRUAlphaModel"
-artifact_dir = "data/model_workspace/e2e_fct_000002/artifacts"
+name = "bar_gru"
+class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
+artifact_dir = "data/model_workspace/bar_gru_15m/artifacts"
 
 [model.params]
-daily_sequence_length = 40
-minute_sequence_length = 320
+sequence_length = 320
 input_size = 6
 hidden_size = 30
 num_layers = 1

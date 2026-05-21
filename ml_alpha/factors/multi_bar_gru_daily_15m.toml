@@ -1,9 +1,9 @@
-factor_id = "e2e_fct_000003"
+factor_id = "multi_bar_gru_daily_15m"
 data_root = "data"
 
 [output]
 kind = "factor"
-id = "e2e_fct_000003"
+id = "multi_bar_gru_daily_15m"
 root = "data/factors"
 asset = "stock"
 frequency = "daily"
@@ -65,8 +65,8 @@ columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [materialize]
 cache_samples = false
-cache_dir = "data/model_workspace/e2e_fct_000003/cache"
-predict_batch_size = 5
+cache_dir = "data/model_workspace/multi_bar_gru_daily_15m/cache"
+predict_batch_size = 10
 
 [diagnostics]
 enabled = true
@@ -76,9 +76,9 @@ write_model_info = true
 write_window_summary = true
 
 [model]
-name = "residual_multi_bar_gru"
-class = "yq_ml_alpha.models.residual_multi_bar_gru_model.ResidualMultiBarGRUAlphaModel"
-artifact_dir = "data/model_workspace/e2e_fct_000003/artifacts"
+name = "multi_bar_gru"
+class = "yq_ml_alpha.models.multi_bar_gru_model.MultiBarGRUAlphaModel"
+artifact_dir = "data/model_workspace/multi_bar_gru_daily_15m/artifacts"
 
 [model.params]
 daily_sequence_length = 40
@@ -87,12 +87,10 @@ input_size = 6
 hidden_size = 30
 num_layers = 1
 dropout = 0.0
-stage1_epochs = 100
-stage2_epochs = 100
-stage1_patience = 10
-stage2_patience = 10
+epochs = 100
 batch_size = 5000
 lr = 0.001
 weight_decay = 0.0
 seed = 42
 device = "auto"
+patience = 10

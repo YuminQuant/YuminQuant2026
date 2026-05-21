@@ -1,6 +1,6 @@
 [[factors]]
-factor_id = "e2e_fct_000001"
-config = "factors/e2e_fct_000001.toml"
+factor_id = "bar_gru_15m"
+config = "factors/bar_gru_15m.toml"
 status = "active"
 display_name = "15m bar GRU end-to-end factor"
 model_class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
@@ -9,8 +9,8 @@ label = "future_vwap_return_20d"
 tags = ["e2e", "bar_gru", "minute", "ic_loss"]
 
 [[factors]]
-factor_id = "e2e_fct_000002"
-config = "factors/e2e_fct_000002.toml"
+factor_id = "multi_bar_gru_daily_15m"
+config = "factors/multi_bar_gru_daily_15m.toml"
 status = "active"
 display_name = "Daily + 15m multi-bar GRU end-to-end factor"
 model_class = "yq_ml_alpha.models.multi_bar_gru_model.MultiBarGRUAlphaModel"
@@ -19,11 +19,21 @@ label = "future_vwap_return_20d"
 tags = ["e2e", "multi_bar_gru", "daily", "minute", "ic_loss"]
 
 [[factors]]
-factor_id = "e2e_fct_000003"
-config = "factors/e2e_fct_000003.toml"
+factor_id = "residual_multi_bar_gru"
+config = "factors/residual_multi_bar_gru.toml"
 status = "active"
 display_name = "Residual multi-bar GRU end-to-end factor"
 model_class = "yq_ml_alpha.models.residual_multi_bar_gru_model.ResidualMultiBarGRUAlphaModel"
 output = "data/factors/stock/daily"
 label = "future_vwap_return_20d"
 tags = ["e2e", "residual_multi_bar_gru", "daily", "minute", "ic_loss"]
+
+[[factors]]
+factor_id = "logsig_alpha_v"
+config = "factors/logsig_alpha_v.toml"
+status = "active"
+display_name = "Logsig-Alpha-v"
+model_class = "yq_ml_alpha.models.logsig_orthogonal_mlp_model.LogsigOrthogonalMLPAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_5d"
+tags = ["e2e", "logsig", "signature", "volume", "orthogonal_mlp", "neutralized"]

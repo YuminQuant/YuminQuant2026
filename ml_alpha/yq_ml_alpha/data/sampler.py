@@ -14,6 +14,8 @@ def sample_dates(calendar: TradingCalendar, date_range: tuple[int, int], frequen
         return _period_ends(dates, lambda date: date // 100)
     if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
         return _period_ends(dates, _semiannual_key)
+    if frequency in {"annual", "annual_end", "yearly", "yearly_end", "year_end"}:
+        return _period_ends(dates, lambda date: date // 10000)
     step = _fixed_step(frequency)
     if step is not None:
         return dates[::step]
@@ -32,6 +34,8 @@ def refit_dates(calendar: TradingCalendar, predict_dates: list[int], frequency: 
         return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "weekly_end")
     if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
         return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "semiannual_end")
+    if frequency in {"annual", "annual_end", "yearly", "yearly_end", "year_end"}:
+        return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "annual_end")
     if _fixed_step(frequency) is not None:
         return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), frequency)
     return [predict_dates[0]]

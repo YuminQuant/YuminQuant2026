@@ -279,6 +279,8 @@ def _is_actual_period_end(calendar: TradingCalendar, date: int, frequency: str) 
             return next_open // 100 != date // 100
         if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
             return _semiannual_key(next_open) != _semiannual_key(date)
+        if frequency in {"annual", "annual_end", "yearly", "yearly_end", "year_end"}:
+            return next_open // 10000 != date // 10000
         if frequency in {"weekly", "weekly_end"}:
             return _iso_week_key(next_open) != _iso_week_key(date)
     if frequency in {"monthly", "monthly_end"}:
@@ -293,6 +295,15 @@ def _is_actual_period_end(calendar: TradingCalendar, date: int, frequency: str) 
         text = str(date)
         month = int(text[4:6])
         if month not in {6, 12}:
+            return False
+        last_day = cal.monthrange(int(text[:4]), month)[1]
+        return int(text[6:]) >= last_day - 3
+    if frequency in {"annual", "annual_end", "yearly", "yearly_end", "year_end"}:
+        import calendar as cal
+
+        text = str(date)
+        month = int(text[4:6])
+        if month != 12:
             return False
         last_day = cal.monthrange(int(text[:4]), month)[1]
         return int(text[6:]) >= last_day - 3

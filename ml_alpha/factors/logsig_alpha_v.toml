@@ -21,7 +21,7 @@ predict_frequency = "daily"
 
 [train_scheme]
 type = "rolling"
-refit_frequency = "semiannual_end"
+refit_frequency = "annual_end"
 train_lookback = "4y"
 validation_ratio = 0.25
 

@@ -16,19 +16,6 @@ pub struct DeriveBarRequest {
     pub project_config_path: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
-pub struct DeriveLogsigVolumeSignatureRequest {
-    pub asset_class: AssetClass,
-    pub bar_size: usize,
-    pub lookback_days: usize,
-    pub order: usize,
-    pub start_date: i32,
-    pub end_date: i32,
-    pub overwrite: bool,
-    pub date_batch_size: usize,
-    pub project_config_path: Option<PathBuf>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BarSource {
     Minute,

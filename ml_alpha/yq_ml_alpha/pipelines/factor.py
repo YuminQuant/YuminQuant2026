@@ -185,3 +185,5 @@ def _ensure_factor_config(config: MlAlphaConfig) -> None:
         raise ValueError("factor pipeline requires output.id to match factor_id")
     if config.run_id.startswith("mdl_") or config.alpha_id.startswith("mdl_"):
         raise ValueError("factor pipeline must not use mdl_* run_id or alpha_id")
+    if config.factor_id.startswith("e2e_fct_"):
+        raise ValueError("factor pipeline requires semantic factor_id, not e2e_fct_*")

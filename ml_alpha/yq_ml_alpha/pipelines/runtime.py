@@ -16,6 +16,7 @@ from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.data.sampler import refit_dates, sample_dates
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
 from yq_ml_alpha.output.artifacts import window_artifact_path
+from yq_ml_alpha.pipelines.postprocess import apply_prediction_postprocess
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ def _predict_write_window(
         batch_context = context or _context(config, window.window_id, predict_bundle.feature_columns)
         progress.step(f"predict {batch_idx}/{len(batches)}")
         score = model.predict(predict_bundle.frame, batch_context)
+        score = apply_prediction_postprocess(config, predict_bundle.frame, score)
         progress.step(f"write {batch_idx}/{len(batches)}")
         written.extend(
             writer.write(_prediction_frame(predict_bundle.frame, score), coverage_dates=dates, schema_dates=schema_dates)

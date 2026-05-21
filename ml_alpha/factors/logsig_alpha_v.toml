@@ -1,0 +1,81 @@
+factor_id = "logsig_alpha_v"
+data_root = "data"
+
+[output]
+kind = "factor"
+id = "logsig_alpha_v"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20110101, 20260424]
+valid = []
+predict = [20110101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+train_lookback = "4y"
+validation_ratio = 0.25
+
+[label]
+id = "future_vwap_return_5d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[postprocess.neutralize]
+enabled = true
+industry = "sw_l1"
+size = "barra_cne6_size"
+
+[features]
+type = "raw_panel"
+root = "data/derived/stock/logsig_alpha_v/signature_o10_20d_5m"
+columns = "*"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/logsig_alpha_v/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "logsig_orthogonal_mlp"
+class = "yq_ml_alpha.models.logsig_orthogonal_mlp_model.LogsigOrthogonalMLPAlphaModel"
+artifact_dir = "data/model_workspace/logsig_alpha_v/artifacts"
+
+[model.params]
+base_factors = 8
+orthogonal_lambda = 0.05
+hidden_layers = [256, 128]
+dropout = 0.1
+epochs = 50
+batch_size = 8192
+lr = 0.001
+weight_decay = 0.00001
+seed = 42
+device = "auto"
+patience = 10

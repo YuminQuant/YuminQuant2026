@@ -1,9 +1,9 @@
-factor_id = "e2e_fct_000001"
+factor_id = "residual_multi_bar_gru"
 data_root = "data"
 
 [output]
 kind = "factor"
-id = "e2e_fct_000001"
+id = "residual_multi_bar_gru"
 root = "data/factors"
 asset = "stock"
 frequency = "daily"
@@ -41,21 +41,31 @@ cross_section_transform = "zscore"
 feature_fill_value = 0.0
 
 [features]
-type = "bar_panel"
-root = "data/derived/stock/bar/15m"
+type = "multi_bar_panel"
+
+[features.panels.daily]
+root = "data/stock_data/daily/pv"
+source_frequency = "daily"
+bar_size = 1
+lookback_sessions = 40
+time_series_scale = "last"
+strict = true
+max_cache_sessions = 120
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
-[features.params]
+[features.panels.minute]
+root = "data/derived/stock/bar/15m"
 source_frequency = "minute_bar"
 bar_size = 15
 lookback_sessions = 20
 time_series_scale = "mean"
 strict = true
 max_cache_sessions = 120
+columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [materialize]
 cache_samples = false
-cache_dir = "data/model_workspace/e2e_fct_000001/cache"
+cache_dir = "data/model_workspace/residual_multi_bar_gru/cache"
 predict_batch_size = 5
 
 [diagnostics]
@@ -66,20 +76,23 @@ write_model_info = true
 write_window_summary = true
 
 [model]
-name = "bar_gru"
-class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
-artifact_dir = "data/model_workspace/e2e_fct_000001/artifacts"
+name = "residual_multi_bar_gru"
+class = "yq_ml_alpha.models.residual_multi_bar_gru_model.ResidualMultiBarGRUAlphaModel"
+artifact_dir = "data/model_workspace/residual_multi_bar_gru/artifacts"
 
 [model.params]
-sequence_length = 320
+daily_sequence_length = 40
+minute_sequence_length = 320
 input_size = 6
 hidden_size = 30
 num_layers = 1
 dropout = 0.0
-epochs = 100
+stage1_epochs = 100
+stage2_epochs = 100
+stage1_patience = 10
+stage2_patience = 10
 batch_size = 5000
 lr = 0.001
 weight_decay = 0.0
 seed = 42
 device = "auto"
-patience = 10

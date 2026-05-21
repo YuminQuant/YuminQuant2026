@@ -3,17 +3,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from yq_ml_alpha.pipelines import dispatch, factor, model
+from yq_ml_alpha.pipelines import factor, model
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="yq-ml-alpha")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name in [
-        "train",
-        "predict",
-        "run",
-        "materialize",
         "model-train",
         "model-predict",
         "model-run",
@@ -27,15 +23,7 @@ def main(argv: list[str] | None = None) -> None:
         command.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
 
-    if args.command == "train":
-        paths = dispatch.train_only(args.config)
-    elif args.command == "predict":
-        paths = dispatch.predict_only(args.config)
-    elif args.command == "run":
-        paths = dispatch.run(args.config)
-    elif args.command == "materialize":
-        paths = dispatch.materialize_only(args.config)
-    elif args.command == "model-train":
+    if args.command == "model-train":
         paths = model.train_only(args.config)
     elif args.command == "model-predict":
         paths = model.predict_only(args.config)

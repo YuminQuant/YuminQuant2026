@@ -56,6 +56,20 @@ class PreprocessConfig:
 
 
 @dataclass(frozen=True)
+class NeutralizeConfig:
+    enabled: bool = False
+    industry: str = "none"
+    size: str = "none"
+    barra_root: Path = Path("data/barra/stock/daily/CNE6")
+    sw_classification_path: Path = Path("data/index_data/member_sw/sw_members.parquet")
+
+
+@dataclass(frozen=True)
+class PostprocessConfig:
+    neutralize: NeutralizeConfig = field(default_factory=NeutralizeConfig)
+
+
+@dataclass(frozen=True)
 class LabelConfig:
     id: str
     root: Path = Path("data/label/stock/daily")
@@ -129,6 +143,7 @@ class MlAlphaConfig:
     universe: UniverseConfig
     filters: FiltersConfig
     preprocess: PreprocessConfig
+    postprocess: PostprocessConfig
     features: FeaturesConfig
     materialize: MaterializeConfig
     diagnostics: DiagnosticsConfig
@@ -168,6 +183,8 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             raise ValueError("factor output.id must match factor_id")
         if run_id.startswith("mdl_") or alpha_id.startswith("mdl_"):
             raise ValueError("factor configs must not use mdl_* run_id or alpha_id")
+        if factor_id.startswith("e2e_fct_"):
+            raise ValueError("factor configs must use semantic factor_id, not e2e_fct_*")
     default_output_root = "data/factors" if output_kind == "factor" else "data/models"
     output_root = _project_path(output.get("root", raw.get("output_root", default_output_root)))
 
@@ -176,6 +193,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     universe = raw.get("universe", {})
     filters = raw.get("filters", {})
     preprocess = raw.get("preprocess", {})
+    postprocess = raw.get("postprocess", {})
     features = raw.get("features", {})
     materialize = raw.get("materialize", {})
     diagnostics = raw.get("diagnostics", {})
@@ -218,6 +236,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             cross_section_transform=preprocess.get("cross_section_transform", "none"),
             feature_fill_value=float(preprocess.get("feature_fill_value", 0.0)),
         ),
+        postprocess=_postprocess_config(postprocess, data_root),
         features=FeaturesConfig(
             type=feature_type,
             root=_feature_root(features, feature_type, data_root),
@@ -294,6 +313,28 @@ def _sample_config(section: dict[str, Any]) -> SampleConfig:
     return SampleConfig(
         train_frequency=str(train_frequency),
         predict_frequency=section.get("predict_frequency"),
+    )
+
+
+def _postprocess_config(section: dict[str, Any], data_root: Path) -> PostprocessConfig:
+    neutralize = section.get("neutralize", {})
+    if not isinstance(neutralize, dict):
+        neutralize = {}
+    return PostprocessConfig(
+        neutralize=NeutralizeConfig(
+            enabled=bool(neutralize.get("enabled", False)),
+            industry=str(neutralize.get("industry", "none")).strip().lower(),
+            size=str(neutralize.get("size", "none")).strip().lower(),
+            barra_root=_project_path(
+                neutralize.get("barra_root", data_root / "barra" / "stock" / "daily" / "CNE6")
+            ),
+            sw_classification_path=_project_path(
+                neutralize.get(
+                    "sw_classification_path",
+                    data_root / "index_data" / "member_sw" / "sw_members.parquet",
+                )
+            ),
+        )
     )
 
 

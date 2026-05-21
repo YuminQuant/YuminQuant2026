@@ -83,6 +83,7 @@ The config uses:
 
 - label: `future_vwap_return_5d`
 - rolling window: 4 years
+- refit frequency: annual end
 - train/validation split: first 75% sampled dates for train, last 25% for validation
 - sample frequency: every 5 trading days
 - prediction frequency: daily

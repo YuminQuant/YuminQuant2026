@@ -204,6 +204,17 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             [20260630, 20261231],
         )
 
+    def test_annual_end_frequency(self) -> None:
+        calendar = TradingCalendar([20251231, 20260105, 20261230, 20261231, 20270104])
+        self.assertEqual(
+            sample_dates(calendar, (20260105, 20261231), "annual_end"),
+            [20261231],
+        )
+        self.assertEqual(
+            refit_dates(calendar, [20260105, 20261230, 20261231], "annual_end"),
+            [20261231],
+        )
+
     def test_zscore_log_rank_fills_features_but_not_label(self) -> None:
         frame = pd.DataFrame(
             {
@@ -711,6 +722,7 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.label.id, "future_vwap_return_5d")
         self.assertEqual(config.sample.train_frequency, "5")
         self.assertEqual(config.sample.predict_frequency, "daily")
+        self.assertEqual(config.train_scheme.refit_frequency, "annual_end")
         self.assertEqual(config.train_scheme.train_lookback, "4y")
         self.assertEqual(config.train_scheme.validation_ratio, 0.25)
         self.assertEqual(config.model.params["base_factors"], 8)

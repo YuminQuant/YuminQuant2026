@@ -41,7 +41,7 @@ def _fixed_step(frequency: str) -> int | None:
     if frequency.isdigit():
         step = int(frequency)
     elif frequency.startswith("every_") and frequency.endswith("_days"):
-        step = int(frequency.removeprefix("every_").removesuffix("_days"))
+        step = int(frequency[len("every_") : -len("_days")])
     else:
         return None
     if step <= 0:

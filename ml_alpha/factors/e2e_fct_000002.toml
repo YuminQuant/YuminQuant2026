@@ -1,7 +1,14 @@
-run_id = "mdl_000006"
-alpha_id = "mdl_000006"
+factor_id = "e2e_fct_000002"
 data_root = "data"
-output_root = "data/models"
+
+[output]
+kind = "factor"
+id = "e2e_fct_000002"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/stock_data/daily/pv"
+write_workers = 4
 
 [dates]
 train = [20110101, 20260424]
@@ -34,22 +41,32 @@ cross_section_transform = "zscore"
 feature_fill_value = 0.0
 
 [features]
-type = "bar_panel"
-root = "data/derived/stock/bar/15m"
+type = "multi_bar_panel"
+
+[features.panels.daily]
+root = "data/stock_data/daily/pv"
+source_frequency = "daily"
+bar_size = 1
+lookback_sessions = 40
+time_series_scale = "last"
+strict = true
+max_cache_sessions = 120
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
-[features.params]
+[features.panels.minute]
+root = "data/derived/stock/bar/15m"
 source_frequency = "minute_bar"
 bar_size = 15
 lookback_sessions = 20
 time_series_scale = "mean"
 strict = true
 max_cache_sessions = 120
+columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [materialize]
 cache_samples = false
-cache_dir = "data/model_workspace/mdl_000006/cache"
-predict_batch_size = 5
+cache_dir = "data/model_workspace/e2e_fct_000002/cache"
+predict_batch_size = 10
 
 [diagnostics]
 enabled = true
@@ -59,12 +76,13 @@ write_model_info = true
 write_window_summary = true
 
 [model]
-name = "bar_gru"
-class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000006/artifacts"
+name = "multi_bar_gru"
+class = "yq_ml_alpha.models.multi_bar_gru_model.MultiBarGRUAlphaModel"
+artifact_dir = "data/model_workspace/e2e_fct_000002/artifacts"
 
 [model.params]
-sequence_length = 320
+daily_sequence_length = 40
+minute_sequence_length = 320
 input_size = 6
 hidden_size = 30
 num_layers = 1

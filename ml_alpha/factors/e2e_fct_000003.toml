@@ -1,7 +1,14 @@
-run_id = "mdl_000008"
-alpha_id = "mdl_000008"
+factor_id = "e2e_fct_000003"
 data_root = "data"
-output_root = "data/models"
+
+[output]
+kind = "factor"
+id = "e2e_fct_000003"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/stock_data/daily/pv"
+write_workers = 4
 
 [dates]
 train = [20110101, 20260424]
@@ -58,7 +65,7 @@ columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [materialize]
 cache_samples = false
-cache_dir = "data/model_workspace/mdl_000008/cache"
+cache_dir = "data/model_workspace/e2e_fct_000003/cache"
 predict_batch_size = 5
 
 [diagnostics]
@@ -71,7 +78,7 @@ write_window_summary = true
 [model]
 name = "residual_multi_bar_gru"
 class = "yq_ml_alpha.models.residual_multi_bar_gru_model.ResidualMultiBarGRUAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000008/artifacts"
+artifact_dir = "data/model_workspace/e2e_fct_000003/artifacts"
 
 [model.params]
 daily_sequence_length = 40

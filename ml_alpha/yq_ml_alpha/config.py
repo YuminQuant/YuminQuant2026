@@ -107,6 +107,18 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class OutputConfig:
+    kind: str = "signal"
+    id: str = ""
+    root: Path = Path("data/models")
+    asset: str = "stock"
+    frequency: str = "daily"
+    base_root: Path = Path("data/stock_data/daily/pv")
+    write_workers: int = 4
+    write_metadata: bool = True
+
+
+@dataclass(frozen=True)
 class MlAlphaConfig:
     run_id: str
     alpha_id: str
@@ -121,6 +133,8 @@ class MlAlphaConfig:
     materialize: MaterializeConfig
     diagnostics: DiagnosticsConfig
     model: ModelConfig
+    output: OutputConfig
+    factor_id: str | None = None
     data_root: Path = Path("data")
     output_root: Path = Path("data/models")
 
@@ -134,9 +148,28 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         raw = _tomllib.load(str(config_path))
 
     data_root = _project_path(raw.get("data_root", "data"))
-    output_root = _project_path(raw.get("output_root", "data/models"))
-    run_id = _required(raw, "run_id")
-    alpha_id = _required(raw, "alpha_id")
+    factor_id = raw.get("factor_id")
+    output = raw.get("output", {})
+    output_kind = str(output.get("kind", "factor" if factor_id else "signal")).strip().lower()
+    output_id = str(output.get("id", factor_id or raw.get("alpha_id", ""))).strip()
+    run_id = str(raw.get("run_id", factor_id or "")).strip()
+    alpha_id = str(raw.get("alpha_id", output_id)).strip()
+    if not run_id:
+        run_id = _required(raw, "run_id")
+    if not alpha_id:
+        alpha_id = _required(raw, "alpha_id")
+    if not output_id:
+        output_id = alpha_id
+    if factor_id is not None:
+        factor_id = str(factor_id).strip()
+        if not factor_id:
+            raise ValueError("factor_id cannot be empty")
+        if output_id != factor_id:
+            raise ValueError("factor output.id must match factor_id")
+        if run_id.startswith("mdl_") or alpha_id.startswith("mdl_"):
+            raise ValueError("factor configs must not use mdl_* run_id or alpha_id")
+    default_output_root = "data/factors" if output_kind == "factor" else "data/models"
+    output_root = _project_path(output.get("root", raw.get("output_root", default_output_root)))
 
     dates = raw.get("dates", {})
     label = raw.get("label", {})
@@ -210,6 +243,17 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             params=model_params,
             search=model_search,
         ),
+        output=OutputConfig(
+            kind=output_kind,
+            id=output_id,
+            root=output_root,
+            asset=str(output.get("asset", "stock")).strip().lower(),
+            frequency=str(output.get("frequency", "daily")).strip().lower(),
+            base_root=_project_path(output.get("base_root", data_root / "stock_data" / "daily" / "pv")),
+            write_workers=max(1, int(output.get("write_workers", 4))),
+            write_metadata=bool(output.get("write_metadata", True)),
+        ),
+        factor_id=factor_id,
         data_root=data_root,
         output_root=output_root,
     )

@@ -3,25 +3,54 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from yq_ml_alpha.pipelines import materialize, predict, train
+from yq_ml_alpha.pipelines import dispatch, factor, model
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="yq-ml-alpha")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ["train", "predict", "run", "materialize"]:
+    for name in [
+        "train",
+        "predict",
+        "run",
+        "materialize",
+        "model-train",
+        "model-predict",
+        "model-run",
+        "model-materialize",
+        "factor-train",
+        "factor-predict",
+        "factor-run",
+        "factor-materialize",
+    ]:
         command = subparsers.add_parser(name)
         command.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
 
     if args.command == "train":
-        paths = train.train_only(args.config)
+        paths = dispatch.train_only(args.config)
     elif args.command == "predict":
-        paths = predict.run(args.config)
+        paths = dispatch.predict_only(args.config)
     elif args.command == "run":
-        paths = train.run(args.config)
+        paths = dispatch.run(args.config)
     elif args.command == "materialize":
-        paths = materialize.run(args.config)
+        paths = dispatch.materialize_only(args.config)
+    elif args.command == "model-train":
+        paths = model.train_only(args.config)
+    elif args.command == "model-predict":
+        paths = model.predict_only(args.config)
+    elif args.command == "model-run":
+        paths = model.run(args.config)
+    elif args.command == "model-materialize":
+        paths = model.materialize_only(args.config)
+    elif args.command == "factor-train":
+        paths = factor.train_only(args.config)
+    elif args.command == "factor-predict":
+        paths = factor.predict_only(args.config)
+    elif args.command == "factor-run":
+        paths = factor.run(args.config)
+    elif args.command == "factor-materialize":
+        paths = factor.materialize_only(args.config)
     else:  # pragma: no cover
         raise ValueError(args.command)
 

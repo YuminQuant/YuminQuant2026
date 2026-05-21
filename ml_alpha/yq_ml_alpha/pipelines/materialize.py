@@ -3,14 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from yq_ml_alpha.calendar import TradingCalendar
-from yq_ml_alpha.config import load_config
+from yq_ml_alpha.config import MlAlphaConfig, load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.data.sampler import sample_dates
-from yq_ml_alpha.pipelines.train import _load_bundle, _predict_frequency, _train_frequency
+from yq_ml_alpha.pipelines.runtime import _load_bundle, _predict_frequency, _train_frequency
 
 
 def run(config_path: str | Path) -> list[Path]:
     config = load_config(config_path)
+    return run_config(config)
+
+
+def run_config(config: MlAlphaConfig) -> list[Path]:
     if not config.materialize.cache_samples:
         raise ValueError("set [materialize].cache_samples = true to write debug sample cache")
     calendar = TradingCalendar.load(config.data_root)

@@ -39,8 +39,15 @@ class DatasetBuilder:
 
     def load(self, dates: list[int], include_label: bool) -> DatasetBundle:
         frames = []
-        for trade_date in dates:
-            features = self.feature_provider.load(trade_date)
+        total_dates = len(dates)
+        split_name = "labeled" if include_label else "predict"
+        for date_idx, trade_date in enumerate(dates, start=1):
+            if isinstance(self.feature_provider, LogsigSignatureProvider):
+                progress = _logsig_signature_progress(split_name, date_idx, total_dates, trade_date)
+                features = self.feature_provider.load(trade_date, progress=progress)
+                progress(f"target_done feature_rows={len(features)}")
+            else:
+                features = self.feature_provider.load(trade_date)
             if features.empty:
                 continue
             frame = self.universe.filter(features, trade_date)
@@ -264,6 +271,16 @@ def _bar_panel_progress(split_name: str, current: int, total: int, trade_date: i
     def emit(message: str) -> None:
         print(
             f"bar-panel {split_name} [{current}/{total}] target={trade_date} {message}",
+            flush=True,
+        )
+
+    return emit
+
+
+def _logsig_signature_progress(split_name: str, current: int, total: int, trade_date: int):
+    def emit(message: str) -> None:
+        print(
+            f"logsig-signature {split_name} [{current}/{total}] target={trade_date} {message}",
             flush=True,
         )
 

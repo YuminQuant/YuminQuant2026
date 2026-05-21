@@ -2034,7 +2034,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
     def test_monthly_mlp_config_parses(self) -> None:
-        config = load_config(Path(__file__).resolve().parents[1] / "models" / "experiments" / "monthly_mlp_36.toml")
+        config = load_config(Path(__file__).resolve().parents[1] / "models" / "monthly_mlp_36.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_mlp")
         self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.mlp_model.MLPAlphaModel")
@@ -2046,9 +2046,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         self.assertTrue(config.diagnostics.write_window_summary)
 
     def test_monthly_ic_sign_config_parses(self) -> None:
-        config = load_config(
-            Path(__file__).resolve().parents[1] / "models" / "experiments" / "monthly_ic_sign_equal_weight.toml"
-        )
+        config = load_config(Path(__file__).resolve().parents[1] / "models" / "monthly_ic_sign_equal_weight.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_ic_sign_ew")
         self.assertEqual(config.features.columns, "__all__")
         self.assertEqual(config.model.class_path, "yq_ml_alpha.models.ic_sign_model.ICSignEqualWeightAlphaModel")
@@ -2057,7 +2055,6 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
 
     def test_new_model_configs_parse(self) -> None:
         model_dir = Path(__file__).resolve().parents[1] / "models"
-        experiment_dir = model_dir / "experiments"
         expected = {
             model_dir / "mdl_000001.toml": ("mdl_000001", "LinearRegressionAlphaModel"),
             model_dir / "mdl_000002.toml": ("mdl_000002", "LassoAlphaModel"),
@@ -2065,13 +2062,13 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             model_dir / "mdl_000004.toml": ("mdl_000004", "ElasticNetAlphaModel"),
             model_dir / "mdl_000005.toml": ("mdl_000005", "PCAOLSAlphaModel"),
             model_dir / "mdl_80000.toml": ("mdl_80000", "LSTMAlphaModel"),
-            experiment_dir / "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
-            experiment_dir / "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
-            experiment_dir / "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
-            experiment_dir / "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
-            experiment_dir / "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),
-            experiment_dir / "monthly_xgb_optuna_36.toml": ("ml_alpha_xgb_optuna", "XGBoostOptunaAlphaModel"),
-            experiment_dir / "monthly_lgbm_optuna_36.toml": ("ml_alpha_lgbm_optuna", "LightGBMOptunaAlphaModel"),
+            model_dir / "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
+            model_dir / "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
+            model_dir / "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
+            model_dir / "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
+            model_dir / "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),
+            model_dir / "monthly_xgb_optuna_36.toml": ("ml_alpha_xgb_optuna", "XGBoostOptunaAlphaModel"),
+            model_dir / "monthly_lgbm_optuna_36.toml": ("ml_alpha_lgbm_optuna", "LightGBMOptunaAlphaModel"),
         }
         for path, (alpha_id, class_name) in expected.items():
             filename = path.name
@@ -2120,16 +2117,15 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
 
     def test_tuned_configs_expose_search_space(self) -> None:
         model_dir = Path(__file__).resolve().parents[1] / "models"
-        experiment_dir = model_dir / "experiments"
         lasso = load_config(model_dir / "mdl_000002.toml")
         self.assertIn("alpha", lasso.model.search["space"])
 
-        xgb = load_config(experiment_dir / "monthly_xgb_optuna_36.toml")
+        xgb = load_config(model_dir / "monthly_xgb_optuna_36.toml")
         self.assertIn("space", xgb.model.search)
         self.assertEqual(xgb.model.search["space"]["n_estimators"]["type"], "int")
         self.assertTrue(xgb.model.search["space"]["learning_rate"]["log"])
 
-        lgbm = load_config(experiment_dir / "monthly_lgbm_optuna_36.toml")
+        lgbm = load_config(model_dir / "monthly_lgbm_optuna_36.toml")
         self.assertIn("num_leaves", lgbm.model.search["space"])
 
     def test_optuna_space_supports_toml_distributions(self) -> None:

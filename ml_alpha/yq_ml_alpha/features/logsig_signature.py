@@ -32,7 +32,13 @@ class LogsigSignatureProvider(FeatureProvider):
         self.bar_size = int(params.get("bar_size", 5))
         self.order = int(params.get("order", 10))
         self.volume_column = str(params.get("volume_column", "volume"))
-        self.cache_days = max(1, int(params.get("cache_days", 128)))
+        cache_days = params.get("cache_days", "auto")
+        self.cache_days_auto = str(cache_days).strip().lower() in {"", "auto"}
+        self.cache_days = (
+            max(1, self.lookback_days - 1)
+            if self.cache_days_auto
+            else max(1, int(cache_days))
+        )
         self.progress_interval = max(1, int(params.get("progress_interval", 500)))
         if self.lookback_days <= 0:
             raise ValueError("logsig_signature lookback_days must be positive")
@@ -50,16 +56,25 @@ class LogsigSignatureProvider(FeatureProvider):
     def set_calendar_dates(self, dates: list[int]) -> None:
         self._calendar_dates = list(dates)
 
+    def set_cache_days_for_target_dates(self, dates: list[int]) -> None:
+        if not self.cache_days_auto:
+            return
+        self.cache_days = self._recommended_cache_days(dates)
+        self._trim_cache()
+
     def load(self, trade_date: int, progress: ProgressCallback | None = None) -> pd.DataFrame:
         source_dates = self._source_dates(trade_date)
         if len(source_dates) < self.lookback_days:
             if progress is not None:
-                progress(f"source_days={len(source_dates)}/{self.lookback_days} step=insufficient_history")
+                progress(
+                    f"source_days={len(source_dates)}/{self.lookback_days} cache_days={self.cache_days} "
+                    "step=insufficient_history"
+                )
             return self._empty_frame()
         if progress is not None:
             progress(
                 f"source_days={len(source_dates)} window_steps={self.window_steps} "
-                f"order={self.order} width={len(self.feature_columns)} step=read"
+                f"order={self.order} width={len(self.feature_columns)} cache_days={self.cache_days} step=read"
             )
         daily_frames = []
         for day_idx, source_date in enumerate(source_dates, start=1):
@@ -136,6 +151,17 @@ class LogsigSignatureProvider(FeatureProvider):
         history = [date for date in candidates if date <= trade_date]
         return history[-self.lookback_days :]
 
+    def _recommended_cache_days(self, dates: list[int]) -> int:
+        if len(dates) < 2 or not self._calendar_dates:
+            return max(1, self.lookback_days - 1)
+        index_by_date = {date: idx for idx, date in enumerate(self._calendar_dates)}
+        indices = [index_by_date[date] for date in dates if date in index_by_date]
+        strides = [right - left for left, right in zip(indices, indices[1:]) if right > left]
+        if not strides:
+            return max(1, self.lookback_days - 1)
+        min_stride = min(strides)
+        return max(1, self.lookback_days - min(min_stride, self.lookback_days))
+
     def _load_bar_day(self, trade_date: int, progress: ProgressCallback | None = None) -> pd.DataFrame:
         if trade_date in self._bar_cache:
             frame = self._bar_cache.pop(trade_date)
@@ -157,14 +183,17 @@ class LogsigSignatureProvider(FeatureProvider):
         frame["bar_index"] = frame["bar_index"].astype("int32")
         frame["ts_code"] = frame["ts_code"].astype(str)
         self._bar_cache[trade_date] = frame[columns]
-        while len(self._bar_cache) > self.cache_days:
-            self._bar_cache.popitem(last=False)
+        self._trim_cache()
         if progress is not None:
             progress(
                 f"date={trade_date} step=done rows={len(self._bar_cache[trade_date])} "
                 f"stocks={self._bar_cache[trade_date]['ts_code'].nunique()}"
             )
         return self._bar_cache[trade_date]
+
+    def _trim_cache(self) -> None:
+        while len(self._bar_cache) > self.cache_days:
+            self._bar_cache.popitem(last=False)
 
     def _empty_frame(self) -> pd.DataFrame:
         return pd.DataFrame(columns=["trade_date", "ts_code", *self.feature_columns])

@@ -9,6 +9,7 @@ pub mod engine;
 pub mod error;
 pub mod factor;
 pub mod label;
+pub mod neutralize;
 pub mod operators;
 pub mod progress;
 pub mod storage;
@@ -21,4 +22,7 @@ pub use derive::{DeriveBarReport, DeriveBarRequest, DeriveEngine};
 pub use engine::{Engine, RunReport, RunRequest};
 pub use error::Result;
 pub use label::engine::{LabelEngine, LabelRunReport, LabelRunRequest};
+pub use neutralize::{
+    neutralize_barra_columns, neutralize_daily_values, NeutralizeDailyValuesRequest,
+};
 pub use strategy::{StrategyEngine, StrategyRunReport};

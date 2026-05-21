@@ -40,11 +40,6 @@ exclude_bj = true
 cross_section_transform = "none"
 feature_fill_value = 0.0
 
-[postprocess.neutralize]
-enabled = true
-industry = "sw_l1"
-size = "barra_cne6_size"
-
 [features]
 type = "logsig_signature"
 root = "data/derived/stock/bar/5m"
@@ -86,3 +81,4 @@ weight_decay = 0.00001
 seed = 42
 device = "auto"
 patience = 10
+neutralize = "barra:SIZE+sector"

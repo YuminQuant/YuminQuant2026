@@ -142,6 +142,10 @@ python -m yq_ml_alpha model-run --config models\monthly_elstm_ranknet_36.toml
 Pop-Location
 ```
 
+端到端 bar 序列因子现在使用 tensor 数据通路：`bar_panel` / `multi_bar_panel` 直接构造 `[N,T,F]`，并使用 `max_cache_sessions = "auto"` 控制 session cache。详见 [ml_alpha/README.md](ml_alpha/README.md)。
+
+End-to-end bar sequence factors now use a tensor data path: `bar_panel` / `multi_bar_panel` build `[N,T,F]` tensors directly and use `max_cache_sessions = "auto"` for session cache sizing. See [ml_alpha/README.md](ml_alpha/README.md).
+
 输出写入 / Output:
 
 ```text

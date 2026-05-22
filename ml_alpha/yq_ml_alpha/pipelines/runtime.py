@@ -44,15 +44,19 @@ def _predict_write_window(
         predict_bundle = _load_bundle(config, dataset, calendar, dates, include_label=False)
         if predict_bundle.frame.empty:
             progress.step(f"write {batch_idx}/{len(batches)}")
-            written.extend(writer.write(_empty_prediction_frame(), coverage_dates=dates, schema_dates=schema_dates))
+            empty_prediction = _empty_prediction_frame()
+            written.extend(writer.write(empty_prediction, coverage_dates=dates, schema_dates=schema_dates))
+            del predict_bundle, empty_prediction
             continue
         batch_context = context or _context(config, window.window_id, predict_bundle.feature_columns)
         progress.step(f"predict {batch_idx}/{len(batches)}")
         score = model.predict(predict_bundle.frame, batch_context)
         progress.step(f"write {batch_idx}/{len(batches)}")
+        prediction = _prediction_frame(predict_bundle.frame, score)
         written.extend(
-            writer.write(_prediction_frame(predict_bundle.frame, score), coverage_dates=dates, schema_dates=schema_dates)
+            writer.write(prediction, coverage_dates=dates, schema_dates=schema_dates)
         )
+        del predict_bundle, score, prediction
     return written
 
 

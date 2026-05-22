@@ -70,6 +70,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
             written.extend(model.write_diagnostics(context))
         progress.step("save")
         model.save(window_artifact_path(config.model.artifact_dir, window.window_id))
+        del train_bundle, valid_bundle
         written.extend(
             _predict_write_window(
                 config,

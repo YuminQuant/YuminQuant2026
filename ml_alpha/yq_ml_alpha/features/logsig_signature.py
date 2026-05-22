@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from collections import OrderedDict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,7 +16,17 @@ ProgressCallback = Callable[[str], None]
 
 
 def signature_width(order: int) -> int:
+    return logsignature_width(order)
+
+
+def tensor_signature_width(order: int) -> int:
+    if order <= 0:
+        raise ValueError("logsig_signature order must be positive")
     return sum(2**level for level in range(1, order + 1))
+
+
+def logsignature_width(order: int) -> int:
+    return len(_lyndon_words(order))
 
 
 class LogsigSignatureProvider(FeatureProvider):
@@ -50,7 +61,7 @@ class LogsigSignatureProvider(FeatureProvider):
         self.steps_per_day = 240 // self.bar_size
         self.window_steps = self.lookback_days * self.steps_per_day
         width = signature_width(self.order)
-        self.feature_columns = [f"sig_{idx:04}" for idx in range(1, width + 1)]
+        self.feature_columns = [f"logsig_{idx:04}" for idx in range(1, width + 1)]
         self._bar_cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
         self._calendar_dates: list[int] = []
 
@@ -92,49 +103,28 @@ class LogsigSignatureProvider(FeatureProvider):
                     progress(f"source {day_idx}/{len(source_dates)} date={source_date} step=empty")
                 return self._empty_frame()
             daily_frames.append(frame)
-        stacked = pd.concat(daily_frames, ignore_index=True)
+        if progress is not None:
+            progress(f"step=matrix_start source_days={len(daily_frames)}")
+        (
+            ts_codes,
+            volume_matrix,
+            skipped_incomplete,
+            skipped_nonfinite,
+            candidate_count,
+        ) = self._build_volume_matrix(daily_frames)
         if progress is not None:
             progress(
-                f"step=stack rows={len(stacked)} stocks={stacked['ts_code'].nunique()} "
-                f"columns=trade_date,ts_code,bar_index,{self.volume_column}"
+                f"step=matrix_done candidates={candidate_count} stocks={len(ts_codes)} "
+                f"shape={volume_matrix.shape[0]}x{volume_matrix.shape[1] if volume_matrix.ndim == 2 else 0} "
+                f"skipped_incomplete={skipped_incomplete} skipped_nonfinite={skipped_nonfinite}"
             )
-        ts_codes = []
-        volume_rows = []
-        groups = stacked.groupby("ts_code", sort=True)
-        total_groups = groups.ngroups
-        skipped_incomplete = 0
-        skipped_nonfinite = 0
-        if progress is not None:
-            progress(f"step=signature_input_start stocks={total_groups}")
-        for group_idx, (ts_code, group) in enumerate(groups, start=1):
-            group = (
-                group.sort_values(["trade_date", "bar_index"], kind="mergesort")
-                .drop_duplicates(["trade_date", "bar_index"], keep="last")
-            )
-            if len(group) != self.window_steps:
-                skipped_incomplete += 1
-                continue
-            volumes = group[self.volume_column].astype("float64").to_numpy()
-            if not np.isfinite(volumes).all():
-                skipped_nonfinite += 1
-                continue
-            ts_codes.append(str(ts_code))
-            volume_rows.append(volumes)
-            if progress is not None and (
-                group_idx == total_groups or group_idx % self.progress_interval == 0
-            ):
-                progress(
-                    f"step=signature_input progress={group_idx}/{total_groups} stocks={len(volume_rows)} "
-                    f"skipped_incomplete={skipped_incomplete} skipped_nonfinite={skipped_nonfinite}"
-                )
-        if not volume_rows:
+        if not ts_codes:
             if progress is not None:
                 progress(
                     f"step=signature_done stocks=0 skipped_incomplete={skipped_incomplete} "
                     f"skipped_nonfinite={skipped_nonfinite}"
                 )
             return self._empty_frame()
-        volume_matrix = np.ascontiguousarray(np.vstack(volume_rows), dtype=np.float64)
         data, backend = _signature_batch_from_volume(volume_matrix, self.order, progress)
         output = pd.DataFrame(data, columns=self.feature_columns)
         output.insert(0, "ts_code", ts_codes)
@@ -145,6 +135,54 @@ class LogsigSignatureProvider(FeatureProvider):
                 f"skipped_nonfinite={skipped_nonfinite}"
             )
         return output
+
+    def _build_volume_matrix(
+        self,
+        daily_frames: list[pd.DataFrame],
+    ) -> tuple[list[str], np.ndarray, int, int, int]:
+        processed_frames: list[pd.DataFrame] = []
+        candidate_symbols: set[str] = set()
+        columns = ["ts_code", "bar_index", self.volume_column]
+        for frame in daily_frames:
+            daily = frame[columns]
+            daily = daily.loc[
+                (daily["bar_index"] >= 0) & (daily["bar_index"] < self.steps_per_day),
+                columns,
+            ]
+            daily = daily.drop_duplicates(["ts_code", "bar_index"], keep="last")
+            processed_frames.append(daily)
+            if not daily.empty:
+                candidate_symbols.update(daily["ts_code"].astype(str).unique())
+
+        ts_codes = sorted(candidate_symbols)
+        candidate_count = len(ts_codes)
+        if not ts_codes:
+            return [], np.empty((0, self.window_steps), dtype=np.float64), 0, 0, 0
+
+        row_by_symbol = {symbol: idx for idx, symbol in enumerate(ts_codes)}
+        matrix = np.full((candidate_count, self.window_steps), np.nan, dtype=np.float64)
+        valid_counts = np.zeros(candidate_count, dtype=np.int32)
+        for day_idx, daily in enumerate(processed_frames):
+            if daily.empty:
+                continue
+            rows = daily["ts_code"].map(row_by_symbol).to_numpy(dtype=np.int64)
+            bar_index = daily["bar_index"].to_numpy(dtype=np.int64, copy=False)
+            cols = day_idx * self.steps_per_day + bar_index
+            values = daily[self.volume_column].to_numpy(dtype=np.float64, copy=False)
+            matrix[rows, cols] = values
+            np.add.at(valid_counts, rows, 1)
+
+        complete = valid_counts == self.window_steps
+        finite = np.zeros(candidate_count, dtype=bool)
+        if complete.any():
+            finite[complete] = np.isfinite(matrix[complete]).all(axis=1)
+        keep = complete & finite
+        kept_indices = np.flatnonzero(keep)
+        kept_symbols = [ts_codes[idx] for idx in kept_indices]
+        kept_matrix = np.ascontiguousarray(matrix[kept_indices], dtype=np.float64)
+        skipped_incomplete = int((~complete).sum())
+        skipped_nonfinite = int((complete & ~finite).sum())
+        return kept_symbols, kept_matrix, skipped_incomplete, skipped_nonfinite, candidate_count
 
     def _source_dates(self, trade_date: int) -> list[int]:
         if self._calendar_dates:
@@ -204,13 +242,8 @@ class LogsigSignatureProvider(FeatureProvider):
 
 def _signature_from_volume(volume: np.ndarray, order: int) -> np.ndarray:
     log_values = np.log(np.maximum(volume, 1.0)).astype(np.float64)
-    width = signature_width(order)
-    level_offsets = np.empty(order + 1, dtype=np.int64)
-    running = 0
-    level_offsets[0] = 0
-    for level in range(1, order + 1):
-        level_offsets[level] = running
-        running += 2**level
+    width = tensor_signature_width(order)
+    level_offsets = np.asarray(_level_offsets(order), dtype=np.int64)
     levels = np.zeros(width, dtype=np.float64)
     previous = np.empty(width, dtype=np.float64)
     scaled = np.empty(order + 1, dtype=np.float64)
@@ -230,22 +263,177 @@ def _signature_batch_from_volume(
         rust = importlib.import_module("yq_factor_engine_py")
         rust_fn = getattr(rust, "logsig_signature_batch")
         if progress is not None:
-            progress(f"step=signature_compute backend=rust rows={volume.shape[0]} width={signature_width(order)}")
+            progress(f"step=signature_compute backend=rust_logsig rows={volume.shape[0]} width={signature_width(order)}")
         result = rust_fn(volume, int(order))
         output = np.asarray(result, dtype="float32")
         expected_shape = (volume.shape[0], signature_width(order))
         if output.shape != expected_shape:
             raise ValueError(f"Rust logsig signature returned shape {output.shape}, expected {expected_shape}")
-        return np.ascontiguousarray(output, dtype="float32"), "rust"
+        return np.ascontiguousarray(output, dtype="float32"), "rust_logsig"
     except Exception as exc:
         if progress is not None:
             reason = " ".join(str(exc).split())
             progress(
-                f"step=signature_compute backend=numba rows={volume.shape[0]} "
+                f"step=signature_compute backend=numba_signature_fallback rows={volume.shape[0]} "
                 f"width={signature_width(order)} fallback_reason={type(exc).__name__}: {reason}"
             )
-        output = np.vstack([_signature_from_volume(row, order) for row in volume]).astype("float32", copy=False)
-        return output, "numba"
+        output = np.vstack([_logsignature_from_volume_fallback(row, order) for row in volume]).astype(
+            "float32",
+            copy=False,
+        )
+        return output, "numba_signature_fallback"
+
+
+def _logsignature_from_volume_fallback(volume: np.ndarray, order: int) -> np.ndarray:
+    signature = _signature_from_volume(volume, order)
+    tensor_log = _tensor_log_from_signature(signature, order)
+    return _project_tensor_log_to_lyndon(tensor_log, order)
+
+
+@lru_cache(maxsize=None)
+def _level_offsets(order: int) -> tuple[int, ...]:
+    offsets = [0] * (order + 1)
+    running = 0
+    for level in range(1, order + 1):
+        offsets[level] = running
+        running += 2**level
+    return tuple(offsets)
+
+
+def _tensor_log_from_signature(signature: np.ndarray, order: int) -> np.ndarray:
+    offsets = _level_offsets(order)
+    powers = [np.zeros_like(signature) for _ in range(order + 1)]
+    powers[1][:] = signature
+    for power in range(2, order + 1):
+        for level in range(power, order + 1):
+            width = 2**level
+            offset = offsets[level]
+            for word in range(width):
+                value = 0.0
+                for prefix_len in range(1, level - power + 2):
+                    suffix_len = level - prefix_len
+                    prefix_word = word >> suffix_len
+                    suffix_word = word & ((1 << suffix_len) - 1)
+                    value += (
+                        signature[offsets[prefix_len] + prefix_word]
+                        * powers[power - 1][offsets[suffix_len] + suffix_word]
+                    )
+                powers[power][offset + word] = value
+
+    output = np.zeros_like(signature)
+    for power in range(1, order + 1):
+        coefficient = (1.0 if power % 2 == 1 else -1.0) / power
+        output += coefficient * powers[power]
+    return output
+
+
+def _project_tensor_log_to_lyndon(tensor_log: np.ndarray, order: int) -> np.ndarray:
+    words, expansions = _lyndon_basis(order)
+    offsets = _level_offsets(order)
+    output: list[float] = []
+    start = 0
+    while start < len(words):
+        degree = words[start][0]
+        end = start
+        while end < len(words) and words[end][0] == degree:
+            end += 1
+        residual = tensor_log[offsets[degree] : offsets[degree] + 2**degree].copy()
+        for idx in range(start, end):
+            word = words[idx][1]
+            coefficient = float(residual[word])
+            output.append(coefficient)
+            for expanded_word, expanded_coeff in expansions[idx].items():
+                residual[expanded_word] -= coefficient * expanded_coeff
+        start = end
+    return np.asarray(output, dtype=np.float64)
+
+
+@lru_cache(maxsize=None)
+def _lyndon_words(order: int) -> tuple[tuple[int, int], ...]:
+    if order <= 0:
+        raise ValueError("logsignature order must be positive")
+    words = []
+    for length in range(1, order + 1):
+        for word in range(2**length):
+            if _is_lyndon(word, length):
+                words.append((length, word))
+    return tuple(words)
+
+
+def _is_lyndon(word: int, length: int) -> bool:
+    if length == 1:
+        return True
+    return all(word < _rotate_left_word(word, length, shift) for shift in range(1, length))
+
+
+def _rotate_left_word(word: int, length: int, shift: int) -> int:
+    output = 0
+    for pos in range(length):
+        source_pos = (pos + shift) % length
+        output = (output << 1) | ((word >> (length - 1 - source_pos)) & 1)
+    return output
+
+
+@lru_cache(maxsize=None)
+def _lyndon_basis(order: int) -> tuple[tuple[tuple[int, int], ...], tuple[dict[int, float], ...]]:
+    words = _lyndon_words(order)
+    word_set = set(words)
+    expansions_by_word: dict[tuple[int, int], dict[int, float]] = {}
+    expansions: list[dict[int, float]] = []
+    for length, word in words:
+        if length == 1:
+            expansion = {word: 1.0}
+        else:
+            prefix_len, prefix_word, suffix_len, suffix_word = _standard_factorization(
+                length,
+                word,
+                word_set,
+            )
+            expansion = _bracket_expansion(
+                expansions_by_word[(prefix_len, prefix_word)],
+                prefix_len,
+                expansions_by_word[(suffix_len, suffix_word)],
+                suffix_len,
+            )
+        leading = expansion.get(word, 0.0)
+        if abs(leading - 1.0) > 1e-10:
+            raise ValueError(f"invalid Lyndon basis expansion for word {word}: leading coefficient {leading}")
+        expansions_by_word[(length, word)] = expansion
+        expansions.append(expansion)
+    return words, tuple(expansions)
+
+
+def _standard_factorization(
+    length: int,
+    word: int,
+    word_set: set[tuple[int, int]],
+) -> tuple[int, int, int, int]:
+    for suffix_len in range(length - 1, 0, -1):
+        suffix_word = word & ((1 << suffix_len) - 1)
+        if (suffix_len, suffix_word) not in word_set:
+            continue
+        prefix_len = length - suffix_len
+        prefix_word = word >> suffix_len
+        if (prefix_len, prefix_word) in word_set:
+            return prefix_len, prefix_word, suffix_len, suffix_word
+    raise ValueError(f"could not factor Lyndon word length={length} word={word}")
+
+
+def _bracket_expansion(
+    left: dict[int, float],
+    left_len: int,
+    right: dict[int, float],
+    right_len: int,
+) -> dict[int, float]:
+    output: dict[int, float] = {}
+    for left_word, left_coeff in left.items():
+        for right_word, right_coeff in right.items():
+            coeff = left_coeff * right_coeff
+            lr_word = (left_word << right_len) | right_word
+            rl_word = (right_word << left_len) | left_word
+            output[lr_word] = output.get(lr_word, 0.0) + coeff
+            output[rl_word] = output.get(rl_word, 0.0) - coeff
+    return {word: value for word, value in output.items() if abs(value) > 1e-14}
 
 
 try:

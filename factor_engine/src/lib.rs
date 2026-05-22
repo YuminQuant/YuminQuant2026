@@ -9,6 +9,7 @@ pub mod engine;
 pub mod error;
 pub mod factor;
 pub mod label;
+pub mod logsig_signature;
 pub mod neutralize;
 pub mod operators;
 pub mod progress;
@@ -22,6 +23,7 @@ pub use derive::{DeriveBarReport, DeriveBarRequest, DeriveEngine};
 pub use engine::{Engine, RunReport, RunRequest};
 pub use error::Result;
 pub use label::engine::{LabelEngine, LabelRunReport, LabelRunRequest};
+pub use logsig_signature::{logsig_signature_batch_from_volume, signature_width};
 pub use neutralize::{
     neutralize_barra_columns, neutralize_daily_values, NeutralizeDailyValuesRequest,
 };

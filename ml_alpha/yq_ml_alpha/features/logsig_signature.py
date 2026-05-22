@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
@@ -97,13 +98,14 @@ class LogsigSignatureProvider(FeatureProvider):
                 f"step=stack rows={len(stacked)} stocks={stacked['ts_code'].nunique()} "
                 f"columns=trade_date,ts_code,bar_index,{self.volume_column}"
             )
-        rows = []
+        ts_codes = []
+        volume_rows = []
         groups = stacked.groupby("ts_code", sort=True)
         total_groups = groups.ngroups
         skipped_incomplete = 0
         skipped_nonfinite = 0
         if progress is not None:
-            progress(f"step=signature_start stocks={total_groups}")
+            progress(f"step=signature_input_start stocks={total_groups}")
         for group_idx, (ts_code, group) in enumerate(groups, start=1):
             group = (
                 group.sort_values(["trade_date", "bar_index"], kind="mergesort")
@@ -116,29 +118,30 @@ class LogsigSignatureProvider(FeatureProvider):
             if not np.isfinite(volumes).all():
                 skipped_nonfinite += 1
                 continue
-            values = _signature_from_volume(volumes, self.order).astype("float32", copy=False)
-            rows.append((str(ts_code), values))
+            ts_codes.append(str(ts_code))
+            volume_rows.append(volumes)
             if progress is not None and (
                 group_idx == total_groups or group_idx % self.progress_interval == 0
             ):
                 progress(
-                    f"step=signature progress={group_idx}/{total_groups} stocks={len(rows)} "
+                    f"step=signature_input progress={group_idx}/{total_groups} stocks={len(volume_rows)} "
                     f"skipped_incomplete={skipped_incomplete} skipped_nonfinite={skipped_nonfinite}"
                 )
-        if not rows:
+        if not volume_rows:
             if progress is not None:
                 progress(
                     f"step=signature_done stocks=0 skipped_incomplete={skipped_incomplete} "
                     f"skipped_nonfinite={skipped_nonfinite}"
                 )
             return self._empty_frame()
-        data = np.vstack([values for _, values in rows]).astype("float32", copy=False)
+        volume_matrix = np.ascontiguousarray(np.vstack(volume_rows), dtype=np.float64)
+        data, backend = _signature_batch_from_volume(volume_matrix, self.order, progress)
         output = pd.DataFrame(data, columns=self.feature_columns)
-        output.insert(0, "ts_code", [ts_code for ts_code, _ in rows])
+        output.insert(0, "ts_code", ts_codes)
         output.insert(0, "trade_date", np.int32(trade_date))
         if progress is not None:
             progress(
-                f"step=signature_done stocks={len(output)} skipped_incomplete={skipped_incomplete} "
+                f"step=signature_done backend={backend} stocks={len(output)} skipped_incomplete={skipped_incomplete} "
                 f"skipped_nonfinite={skipped_nonfinite}"
             )
         return output
@@ -216,6 +219,33 @@ def _signature_from_volume(volume: np.ndarray, order: int) -> np.ndarray:
         return levels
     except NameError as exc:  # pragma: no cover
         raise ImportError("LogsigSignatureProvider requires installing numba") from exc
+
+
+def _signature_batch_from_volume(
+    volume: np.ndarray,
+    order: int,
+    progress: ProgressCallback | None = None,
+) -> tuple[np.ndarray, str]:
+    try:
+        rust = importlib.import_module("yq_factor_engine_py")
+        rust_fn = getattr(rust, "logsig_signature_batch")
+        if progress is not None:
+            progress(f"step=signature_compute backend=rust rows={volume.shape[0]} width={signature_width(order)}")
+        result = rust_fn(volume, int(order))
+        output = np.asarray(result, dtype="float32")
+        expected_shape = (volume.shape[0], signature_width(order))
+        if output.shape != expected_shape:
+            raise ValueError(f"Rust logsig signature returned shape {output.shape}, expected {expected_shape}")
+        return np.ascontiguousarray(output, dtype="float32"), "rust"
+    except Exception as exc:
+        if progress is not None:
+            reason = " ".join(str(exc).split())
+            progress(
+                f"step=signature_compute backend=numba rows={volume.shape[0]} "
+                f"width={signature_width(order)} fallback_reason={type(exc).__name__}: {reason}"
+            )
+        output = np.vstack([_signature_from_volume(row, order) for row in volume]).astype("float32", copy=False)
+        return output, "numba"
 
 
 try:

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import load_config
-from yq_ml_alpha.data.dataset import DatasetBuilder
+from yq_ml_alpha.data.dataset import DatasetBuilder, DatasetBundle
 from yq_ml_alpha.data.sampler import refit_dates, sample_dates
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
@@ -1343,6 +1343,93 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             )
             self.assertEqual(len(bundle.frame), 2)
 
+    def test_bar_panel_dataset_returns_tensor_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            daily_root = root / "daily"
+            label_root = root / "labels"
+            (daily_root / "2026").mkdir(parents=True)
+            (label_root / "2026").mkdir(parents=True)
+            for trade_date, offset in [(20260105, 0.0), (20260106, 1.0)]:
+                pd.DataFrame(
+                    {
+                        "trade_date": [trade_date, trade_date],
+                        "ts_code": ["000001.SZ", "000002.SZ"],
+                        "open": [10.0 + offset, 20.0 + offset],
+                        "high": [11.0 + offset, 21.0 + offset],
+                        "low": [9.0 + offset, 19.0 + offset],
+                        "close": [10.5 + offset, 20.5 + offset],
+                        "vol": [100.0, 200.0],
+                        "amount": [1000.0, 4000.0],
+                    }
+                ).to_parquet(daily_root / "2026" / f"{trade_date}.parquet", index=False)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260106, 20260106],
+                    "ts_code": ["000001.SZ", "000002.SZ"],
+                    "y": [1.0, 2.0],
+                }
+            ).to_parquet(label_root / "2026" / "20260106.parquet", index=False)
+
+            config_path = root / "run.toml"
+            config_path.write_text(
+                f"""
+run_id = "r1"
+alpha_id = "a1"
+data_root = "{root.as_posix()}"
+
+[dates]
+train = [20260105, 20260106]
+valid = []
+predict = []
+
+[sample]
+train_frequency = "daily"
+predict_frequency = "daily"
+
+[features]
+type = "bar_panel"
+root = "{daily_root.as_posix()}"
+columns = ["open", "volume"]
+
+[features.params]
+source_frequency = "daily"
+bar_size = 1
+lookback_sessions = 2
+time_series_scale = "none"
+strict = true
+max_cache_sessions = "auto"
+
+[label]
+id = "y"
+root = "{label_root.as_posix()}"
+
+[filters]
+exclude_limit = false
+exclude_st = false
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "zscore"
+feature_fill_value = 0.0
+
+[model]
+name = "bar_gru"
+class = "yq_ml_alpha.models.bar_gru_model.BarGRUAlphaModel"
+artifact_dir = "{(root / "artifacts").as_posix()}"
+""",
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+            builder = DatasetBuilder(config)
+            bundle = builder.load_bar_panel([20260106], True, TradingCalendar([20260105, 20260106]))
+            self.assertEqual(list(bundle.frame.columns), ["trade_date", "ts_code", "y"])
+            self.assertEqual(bundle.tensors["bar"].shape, (2, 2, 2))
+            self.assertEqual(bundle.tensors["bar"].dtype, np.float32)
+            self.assertEqual(float(bundle.tensors["bar"][0, 0, 0]), -1.0)
+            self.assertEqual(float(bundle.tensors["bar"][1, 0, 0]), 1.0)
+            self.assertEqual(bundle.frame["y"].tolist(), [-1.0, 1.0])
+
     def test_bar_panel_provider_aggregates_minute_bars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "minute"
@@ -1477,6 +1564,66 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertEqual(window["ts_code"].tolist(), ["000001.SZ"])
             self.assertAlmostEqual(float(window.iloc[0]["open__t000"]), 10.0, places=7)
             self.assertAlmostEqual(float(window.iloc[0]["volume__t001"]), 200.0, places=7)
+
+    def test_bar_panel_provider_auto_cache_and_tensor_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "derived" / "stock" / "bar" / "120m"
+            (root / "2026").mkdir(parents=True)
+            for trade_date, base in [(20260102, 10.0), (20260105, 20.0)]:
+                rows = []
+                for symbol, offset in [("000001.SZ", 0.0), ("000002.SZ", 100.0)]:
+                    for bar_idx in [0, 1]:
+                        if symbol == "000002.SZ" and trade_date == 20260105 and bar_idx == 1:
+                            continue
+                        price = base + offset + bar_idx
+                        rows.append(
+                            {
+                                "trade_date": trade_date,
+                                "trade_time": "11:30:00" if bar_idx == 0 else "15:00:00",
+                                "bar_index": bar_idx,
+                                "ts_code": symbol,
+                                "open": price,
+                                "high": price + 1.0,
+                                "low": price - 1.0,
+                                "close": price + 0.5,
+                                "volume": 100.0 + bar_idx,
+                                "amount": price * (100.0 + bar_idx),
+                                "vwap": price,
+                                "minute_count": 120,
+                            }
+                        )
+                pd.DataFrame(rows).to_parquet(root / "2026" / f"{trade_date}.parquet", index=False)
+
+            provider = BarPanelProvider(
+                root,
+                ["open", "volume"],
+                {
+                    "source_frequency": "minute_bar",
+                    "bar_size": 120,
+                    "lookback_sessions": 2,
+                    "time_series_scale": "none",
+                    "strict": True,
+                    "max_cache_sessions": "auto",
+                },
+            )
+            provider.set_cache_sessions_for_target_dates([20260105, 20260106], [20260102, 20260105, 20260106])
+            self.assertEqual(provider.max_cache_sessions, 1)
+            window = provider.load_window_tensor(20260105, [20260102, 20260105])
+            self.assertEqual(window.frame["ts_code"].tolist(), ["000001.SZ"])
+            self.assertEqual(window.tensors["bar"].shape, (1, 4, 2))
+            self.assertEqual(window.tensors["bar"].dtype, np.float32)
+            self.assertEqual(float(window.tensors["bar"][0, 0, 0]), 10.0)
+            self.assertEqual(float(window.tensors["bar"][0, 3, 1]), 101.0)
+            self.assertEqual(window.skipped_incomplete, 1)
+
+            provider_20 = BarPanelProvider(
+                root,
+                ["open"],
+                {"source_frequency": "minute_bar", "bar_size": 120, "lookback_sessions": 20, "max_cache_sessions": "auto"},
+            )
+            calendar_dates = list(range(20260101, 20260131))
+            provider_20.set_cache_sessions_for_target_dates([20260106, 20260111], calendar_dates)
+            self.assertEqual(provider_20.max_cache_sessions, 15)
 
     def test_bar_panel_provider_aggregates_daily_bars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2108,6 +2255,60 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             loaded = BarGRUAlphaModel.load(path)
             loaded_pred = loaded.predict(train, context)
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-6))
+
+    def test_bar_gru_model_bundle_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        feature_columns = [f"f{feature}__t{step:03d}" for step in range(4) for feature in range(2)]
+        rows = []
+        for trade_date, base in [(1, 0.0), (2, 1.0)]:
+            for idx, symbol in enumerate(["a", "b", "c", "d"]):
+                row = {"trade_date": trade_date, "ts_code": symbol, "y": float(idx)}
+                for col_idx, column in enumerate(feature_columns):
+                    row[column] = base + idx * 0.1 + col_idx * 0.01
+                rows.append(row)
+        train = pd.DataFrame(rows)
+        tensor = train[feature_columns].to_numpy(dtype="float32").reshape(len(train), 4, 2)
+        bundle = DatasetBundle(
+            train[["trade_date", "ts_code", "y"]].copy().reset_index(drop=True),
+            feature_columns,
+            "y",
+            tensors={"bar": tensor},
+            tensor_columns={"bar": feature_columns},
+        )
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=feature_columns,
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "sequence_length": 4,
+                "input_size": 2,
+                "hidden_size": 4,
+                "num_layers": 1,
+                "epochs": 2,
+                "batch_size": 10,
+                "patience": 0,
+                "seed": 7,
+                "device": "cpu",
+            },
+            model_search={},
+        )
+        model = BarGRUAlphaModel()
+        empty = DatasetBundle(
+            pd.DataFrame(columns=["trade_date", "ts_code", "y"]),
+            feature_columns,
+            "y",
+            tensors={"bar": np.empty((0, 4, 2), dtype="float32")},
+            tensor_columns={"bar": feature_columns},
+        )
+        model.fit_bundle(bundle, empty, context)
+        pred = model.predict_bundle(bundle, context)
+        self.assertEqual(len(pred), len(train))
+        self.assertTrue(np.isfinite(pred.to_numpy()).all())
 
     def test_multi_bar_gru_model_smoke_when_installed(self) -> None:
         try:

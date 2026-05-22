@@ -18,7 +18,12 @@ from yq_ml_alpha.models.bar_gru_model import (
     _torch_modules,
 )
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
-from yq_ml_alpha.models.multi_bar_gru_model import _multi_bar_tensors
+from yq_ml_alpha.models.multi_bar_gru_model import (
+    _multi_bar_batch,
+    _multi_bar_tensors,
+    _optional_multi_bundle_tensors,
+    _require_multi_bundle_tensors,
+)
 
 
 class ResidualMultiBarGRUAlphaModel(AlphaModel):
@@ -31,6 +36,26 @@ class ResidualMultiBarGRUAlphaModel(AlphaModel):
         self.model_info: dict[str, Any] = {}
 
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
+        self._fit(train_data, valid_data, context, train_tensors=None, valid_tensors=None)
+
+    def fit_bundle(self, train_bundle, valid_bundle, context: ModelContext) -> None:
+        self._fit(
+            train_bundle.frame,
+            valid_bundle.frame,
+            context,
+            train_tensors=_require_multi_bundle_tensors(train_bundle),
+            valid_tensors=_optional_multi_bundle_tensors(valid_bundle),
+        )
+
+    def _fit(
+        self,
+        train_data: pd.DataFrame,
+        valid_data: pd.DataFrame,
+        context: ModelContext,
+        *,
+        train_tensors: dict[str, np.ndarray] | None,
+        valid_tensors: dict[str, np.ndarray] | None,
+    ) -> None:
         torch, nn = _torch_modules()
         self.params = _params(context.model_params)
         diagnostics = _diagnostics(context)
@@ -65,6 +90,8 @@ class ResidualMultiBarGRUAlphaModel(AlphaModel):
             diagnostics=diagnostics,
             window_id=window_id,
             started_at=started_at,
+            train_tensors=train_tensors,
+            valid_tensors=valid_tensors,
         )
         if stage1["best_state"] is not None:
             self.model.load_state_dict(stage1["best_state"])
@@ -88,6 +115,8 @@ class ResidualMultiBarGRUAlphaModel(AlphaModel):
             diagnostics=diagnostics,
             window_id=window_id,
             started_at=started_at,
+            train_tensors=train_tensors,
+            valid_tensors=valid_tensors,
         )
         if stage2["best_state"] is not None:
             self.model.load_state_dict(stage2["best_state"])
@@ -148,6 +177,30 @@ class ResidualMultiBarGRUAlphaModel(AlphaModel):
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
         return pd.Series(scores, index=data.index, dtype="float32")
+
+    def predict_bundle(self, bundle, context: ModelContext) -> pd.Series:
+        if self.model is None:
+            raise RuntimeError("model is not fitted")
+        torch, _ = _torch_modules()
+        device = _device(torch, str(self.params.get("device", "auto")))
+        self.model.to(device)
+        self.model.eval()
+
+        tensors = _require_multi_bundle_tensors(bundle)
+        batch_size = int(self.params["batch_size"])
+        scores = np.empty(len(bundle.frame), dtype="float32")
+        row_index = bundle.frame.index.to_numpy()
+        with torch.no_grad():
+            for start in range(0, len(row_index), batch_size):
+                batch_rows = row_index[start : start + batch_size]
+                daily_np, minute_np = _multi_bar_batch(bundle.frame, context.feature_columns, batch_rows, self.params, tensors)
+                pred = self.model.forward_residual(
+                    torch.from_numpy(daily_np).to(device),
+                    torch.from_numpy(minute_np).to(device),
+                )
+                scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
+        self.model.to("cpu")
+        return pd.Series(scores, index=bundle.frame.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:
         if self.model is None:
@@ -320,6 +373,8 @@ def _run_stage(
     diagnostics: dict[str, bool],
     window_id: str,
     started_at: float,
+    train_tensors: dict[str, np.ndarray] | None = None,
+    valid_tensors: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
     optimizer = torch.optim.Adam(
         list(trainable_parameters),
@@ -350,7 +405,13 @@ def _run_stage(
             for batch_rows in _date_batches(rows, int(params["batch_size"]), rng):
                 if len(batch_rows) < 2:
                     continue
-                daily_np, minute_np = _multi_bar_tensors(train_data, context.feature_columns, batch_rows, params)
+                daily_np, minute_np = _multi_bar_batch(
+                    train_data,
+                    context.feature_columns,
+                    batch_rows,
+                    params,
+                    train_tensors,
+                )
                 y_np = train_data.loc[batch_rows, context.label_column].astype("float32").to_numpy()
                 daily_tensor = torch.from_numpy(daily_np).to(device)
                 minute_tensor = torch.from_numpy(minute_np).to(device)
@@ -367,7 +428,17 @@ def _run_stage(
                 train_count += batch_count
 
         train_loss = train_loss_sum / train_count if train_count else None
-        valid_loss = _eval_stage_loss(torch, model, valid_data, valid_groups, context, params, device, forward_name)
+        valid_loss = _eval_stage_loss(
+            torch,
+            model,
+            valid_data,
+            valid_groups,
+            context,
+            params,
+            device,
+            forward_name,
+            tensors=valid_tensors,
+        )
         score_loss = valid_loss if valid_loss is not None else train_loss
         if score_loss is None:
             raise ValueError(f"ResidualMultiBarGRUAlphaModel could not compute finite {stage} IC loss")
@@ -424,7 +495,17 @@ def _forward(model, forward_name: str, daily_tensor, minute_tensor):
     raise ValueError(f"unsupported forward_name: {forward_name}")
 
 
-def _eval_stage_loss(torch, model, frame, groups, context, params, device, forward_name: str) -> float | None:
+def _eval_stage_loss(
+    torch,
+    model,
+    frame,
+    groups,
+    context,
+    params,
+    device,
+    forward_name: str,
+    tensors: dict[str, np.ndarray] | None = None,
+) -> float | None:
     if frame.empty or not groups:
         return None
     model.eval()
@@ -433,7 +514,7 @@ def _eval_stage_loss(torch, model, frame, groups, context, params, device, forwa
         for rows in groups.values():
             if len(rows) < 2:
                 continue
-            daily_np, minute_np = _multi_bar_tensors(frame, context.feature_columns, rows, params)
+            daily_np, minute_np = _multi_bar_batch(frame, context.feature_columns, rows, params, tensors)
             y_np = frame.loc[rows, context.label_column].astype("float32").to_numpy()
             pred = _forward(
                 model,

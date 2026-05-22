@@ -13,6 +13,7 @@ from yq_ml_alpha.pipelines.runtime import (
     _Progress,
     _aggregate_diagnostics,
     _context,
+    _fit_model,
     _load_bundle,
     _model_class,
     _new_model,
@@ -64,7 +65,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
             continue
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
-        model.fit(train_bundle.frame, valid_bundle.frame, context)
+        _fit_model(model, train_bundle, valid_bundle, context)
         if config.diagnostics.enabled:
             progress.step("diagnostics")
             written.extend(model.write_diagnostics(context))
@@ -107,7 +108,7 @@ def train_config(config: MlAlphaConfig) -> list[Path]:
         valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True)
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
-        model.fit(train_bundle.frame, valid_bundle.frame, context)
+        _fit_model(model, train_bundle, valid_bundle, context)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
         if config.diagnostics.enabled:
             progress.step("diagnostics")

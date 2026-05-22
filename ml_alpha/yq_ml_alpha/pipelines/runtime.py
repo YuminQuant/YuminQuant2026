@@ -50,7 +50,7 @@ def _predict_write_window(
             continue
         batch_context = context or _context(config, window.window_id, predict_bundle.feature_columns)
         progress.step(f"predict {batch_idx}/{len(batches)}")
-        score = model.predict(predict_bundle.frame, batch_context)
+        score = _predict_model(model, predict_bundle, batch_context)
         progress.step(f"write {batch_idx}/{len(batches)}")
         prediction = _prediction_frame(predict_bundle.frame, score)
         written.extend(
@@ -122,6 +122,21 @@ def _load_bundle(
         sequence_frequency = str(config.model.params.get("sequence_frequency", config.sample.train_frequency))
         return dataset.load_sequence(dates, include_label, calendar, sequence_length, sequence_frequency)
     return dataset.load(dates, include_label)
+
+
+def _fit_model(model: AlphaModel, train_bundle, valid_bundle, context: ModelContext) -> None:
+    fit_bundle = getattr(model, "fit_bundle", None)
+    if callable(fit_bundle) and train_bundle.tensors is not None:
+        fit_bundle(train_bundle, valid_bundle, context)
+        return
+    model.fit(train_bundle.frame, valid_bundle.frame, context)
+
+
+def _predict_model(model: AlphaModel, bundle, context: ModelContext):
+    predict_bundle = getattr(model, "predict_bundle", None)
+    if callable(predict_bundle) and bundle.tensors is not None:
+        return predict_bundle(bundle, context)
+    return model.predict(bundle.frame, context)
 
 
 def _uses_sequence_dataset(config: MlAlphaConfig) -> bool:

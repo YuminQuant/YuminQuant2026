@@ -50,7 +50,7 @@ bar_size = 1
 lookback_sessions = 40
 time_series_scale = "last"
 strict = true
-max_cache_sessions = 120
+max_cache_sessions = "auto"
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [features.panels.minute]
@@ -60,7 +60,7 @@ bar_size = 15
 lookback_sessions = 20
 time_series_scale = "mean"
 strict = true
-max_cache_sessions = 120
+max_cache_sessions = "auto"
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [materialize]

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import inspect
+import warnings
 from collections import OrderedDict
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
@@ -33,6 +35,15 @@ DAILY_REQUIRED_COLUMNS = ["open", "high", "low", "close", "vol", "amount"]
 ProgressCallback = Callable[[str], None]
 
 
+@dataclass
+class BarTensorWindow:
+    frame: pd.DataFrame
+    tensors: dict[str, np.ndarray]
+    tensor_columns: dict[str, list[str]]
+    skipped_incomplete: int = 0
+    skipped_nonfinite: int = 0
+
+
 class BarPanelProvider(FeatureProvider):
     """Build fixed-width end-to-end bar tensors from minute or daily OHLCV data."""
 
@@ -44,7 +55,9 @@ class BarPanelProvider(FeatureProvider):
         self.lookback_sessions = int(params.get("lookback_sessions", 1))
         self.time_series_scale = str(params.get("time_series_scale", "none")).strip().lower()
         self.strict = bool(params.get("strict", True))
-        self.max_cache_sessions = int(params.get("max_cache_sessions", params.get("max_cache_days", 80)))
+        self._max_cache_raw = params.get("max_cache_sessions", params.get("max_cache_days", 80))
+        self._cache_auto = str(self._max_cache_raw).strip().lower() == "auto"
+        self.max_cache_sessions = self.lookback_sessions if self._cache_auto else int(self._max_cache_raw)
         self.output_features = BAR_FEATURES if is_all_column_request(columns) else list(columns)
         _validate_features(self.output_features)
         self.steps_per_session = _steps_per_session(
@@ -63,6 +76,20 @@ class BarPanelProvider(FeatureProvider):
 
     def required_history_dates(self, history_dates: list[int]) -> list[int]:
         return list(history_dates)[-self.lookback_sessions :]
+
+    def set_cache_sessions_for_target_dates(self, dates: list[int], calendar_dates: list[int]) -> None:
+        if not self._cache_auto:
+            return
+        stride = _min_target_stride_sessions(dates, calendar_dates)
+        self.max_cache_sessions = max(0, self.lookback_sessions - stride)
+        self._trim_cache()
+
+    def cache_policy_summary(self) -> str:
+        mode = "auto" if self._cache_auto else "fixed"
+        return (
+            f"mode={mode} limit={self.max_cache_sessions} "
+            f"lookback={self.lookback_sessions} source_frequency={self.source_frequency} bar_size={self.bar_size}"
+        )
 
     def load_window(
         self,
@@ -84,6 +111,49 @@ class BarPanelProvider(FeatureProvider):
 
     def empty_frame(self, trade_date: int | None = None) -> pd.DataFrame:
         return pd.DataFrame(columns=["trade_date", "ts_code", *self.feature_columns])
+
+    def empty_tensor_window(self, trade_date: int | None = None, *, tensor_key: str = "bar") -> BarTensorWindow:
+        frame = pd.DataFrame(columns=["trade_date", "ts_code"])
+        tensor = np.empty((0, self.total_steps, len(self.output_features)), dtype="float32")
+        return BarTensorWindow(
+            frame=frame,
+            tensors={tensor_key: tensor},
+            tensor_columns={tensor_key: list(self.feature_columns)},
+        )
+
+    def load_window_tensor(
+        self,
+        trade_date: int,
+        history_dates: list[int],
+        *,
+        tensor_key: str = "bar",
+        exclude_bj: bool = False,
+        st_symbols_by_date: dict[int, set[str]] | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> BarTensorWindow:
+        history = list(history_dates)[-self.lookback_sessions :]
+        if len(history) < self.lookback_sessions:
+            return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
+        if self.source_frequency in {"minute", "1m", "minute_bar", "derived_minute"}:
+            output = self._load_minute_tensor_window(
+                trade_date,
+                history,
+                tensor_key,
+                exclude_bj,
+                st_symbols_by_date or {},
+                progress,
+            )
+        elif self.source_frequency in {"daily", "day", "1d"}:
+            output = self._load_daily_tensor_window(trade_date, history, tensor_key, progress)
+        else:
+            raise ValueError(f"unsupported bar_panel source_frequency: {self.source_frequency}")
+        if progress is not None:
+            tensor = output.tensors[tensor_key]
+            progress(
+                f"tensor_done key={tensor_key} shape={tensor.shape[0]}x{tensor.shape[1]}x{tensor.shape[2]} "
+                f"skipped_incomplete={output.skipped_incomplete} skipped_nonfinite={output.skipped_nonfinite}"
+            )
+        return output
 
     def _load_minute_window(
         self,
@@ -118,6 +188,32 @@ class BarPanelProvider(FeatureProvider):
             )
             frames.append(renamed[["ts_code", *[_feature_column(feature, day_idx * self.steps_per_session + bar_idx) for bar_idx in range(self.steps_per_session) for feature in self.output_features]]])
         return self._merge_window_frames(trade_date, frames)
+
+    def _load_minute_tensor_window(
+        self,
+        trade_date: int,
+        history: list[int],
+        tensor_key: str,
+        exclude_bj: bool,
+        st_symbols_by_date: dict[int, set[str]],
+        progress: ProgressCallback | None,
+    ) -> BarTensorWindow:
+        sessions: list[pd.DataFrame] = []
+        for day_idx, date in enumerate(history):
+            session = self._load_minute_session(
+                date,
+                exclude_bj,
+                st_symbols_by_date.get(date, set()),
+                progress=(
+                    (lambda message, idx=day_idx: progress(f"source {idx + 1}/{len(history)} {message}"))
+                    if progress is not None
+                    else None
+                ),
+            )
+            if session.empty and self.strict:
+                return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
+            sessions.append(session)
+        return self._sessions_to_tensor_window(trade_date, sessions, tensor_key)
 
     def _load_daily_window(
         self,
@@ -159,6 +255,18 @@ class BarPanelProvider(FeatureProvider):
             progress(f"daily step=done stocks={len(output)}")
         return output
 
+    def _load_daily_tensor_window(
+        self,
+        trade_date: int,
+        history: list[int],
+        tensor_key: str,
+        progress: ProgressCallback | None = None,
+    ) -> BarTensorWindow:
+        wide = self._load_daily_window(trade_date, history, progress)
+        if wide.empty:
+            return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
+        return self._wide_to_tensor_window(trade_date, wide, tensor_key)
+
     def _merge_window_frames(self, trade_date: int, frames: list[pd.DataFrame]) -> pd.DataFrame:
         if not frames:
             return self.empty_frame(trade_date)
@@ -189,6 +297,106 @@ class BarPanelProvider(FeatureProvider):
         else:
             raise ValueError(f"unsupported bar_panel time_series_scale: {self.time_series_scale}")
         return wide
+
+    def _sessions_to_tensor_window(
+        self,
+        trade_date: int,
+        sessions: list[pd.DataFrame],
+        tensor_key: str,
+    ) -> BarTensorWindow:
+        if not sessions:
+            return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
+        symbol_sets = [set(session["ts_code"].astype(str)) for session in sessions if not session.empty]
+        if not symbol_sets:
+            return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
+        union_symbols = set.union(*symbol_sets)
+        skipped_by_intersection = 0
+        if self.strict:
+            symbols = sorted(set.intersection(*symbol_sets))
+            skipped_by_intersection = len(union_symbols) - len(symbols)
+        else:
+            symbols = sorted(union_symbols)
+        if not symbols:
+            return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
+
+        tensor = np.full((len(symbols), self.total_steps, len(self.output_features)), np.nan, dtype="float64")
+        for day_idx, session in enumerate(sessions):
+            if session.empty:
+                continue
+            indexed = session.set_index("ts_code", drop=False)
+            block_columns = [
+                _session_column(feature, bar_idx)
+                for bar_idx in range(self.steps_per_session)
+                for feature in self.output_features
+            ]
+            block = indexed.reindex(symbols)[block_columns].to_numpy(dtype="float64", copy=False)
+            start = day_idx * self.steps_per_session
+            tensor[:, start : start + self.steps_per_session, :] = block.reshape(
+                len(symbols),
+                self.steps_per_session,
+                len(self.output_features),
+            )
+        output = self._finalize_tensor_window(trade_date, symbols, tensor, tensor_key)
+        output.skipped_incomplete += skipped_by_intersection
+        return output
+
+    def _wide_to_tensor_window(
+        self,
+        trade_date: int,
+        wide: pd.DataFrame,
+        tensor_key: str,
+    ) -> BarTensorWindow:
+        symbols = wide["ts_code"].astype(str).tolist()
+        if not symbols:
+            return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
+        values = wide[self.feature_columns].to_numpy(dtype="float64", copy=False).reshape(
+            len(symbols),
+            self.total_steps,
+            len(self.output_features),
+        )
+        return self._finalize_tensor_window(
+            trade_date,
+            symbols,
+            values,
+            tensor_key,
+            raw_already_strict=True,
+            already_scaled=True,
+        )
+
+    def _finalize_tensor_window(
+        self,
+        trade_date: int,
+        symbols: list[str],
+        tensor: np.ndarray,
+        tensor_key: str,
+        *,
+        raw_already_strict: bool = False,
+        already_scaled: bool = False,
+    ) -> BarTensorWindow:
+        skipped_incomplete = 0
+        if self.strict and not raw_already_strict:
+            valid = np.isfinite(tensor).all(axis=(1, 2))
+            skipped_incomplete = int((~valid).sum())
+            tensor = tensor[valid]
+            symbols = [symbol for symbol, keep in zip(symbols, valid) if bool(keep)]
+        if tensor.size == 0:
+            return BarTensorWindow(
+                frame=pd.DataFrame(columns=["trade_date", "ts_code"]),
+                tensors={tensor_key: np.empty((0, self.total_steps, len(self.output_features)), dtype="float32")},
+                tensor_columns={tensor_key: list(self.feature_columns)},
+                skipped_incomplete=skipped_incomplete,
+            )
+        if not already_scaled:
+            tensor = _scale_tensor(tensor, self.time_series_scale)
+        skipped_nonfinite = 0
+        frame = pd.DataFrame({"trade_date": int(trade_date), "ts_code": symbols})
+        return BarTensorWindow(
+            frame=frame,
+            tensors={tensor_key: tensor.astype("float32", copy=False)},
+            tensor_columns={tensor_key: list(self.feature_columns)},
+            skipped_incomplete=skipped_incomplete,
+            skipped_nonfinite=skipped_nonfinite,
+        )
 
     def _load_minute_session(
         self,
@@ -255,6 +463,9 @@ class BarPanelProvider(FeatureProvider):
 
     def _cache_put(self, key: Any, frame: pd.DataFrame) -> None:
         self._session_cache[key] = frame
+        self._trim_cache()
+
+    def _trim_cache(self) -> None:
         while len(self._session_cache) > self.max_cache_sessions:
             self._session_cache.popitem(last=False)
 
@@ -299,6 +510,15 @@ class MultiBarPanelProvider(FeatureProvider):
                     seen.add(date)
         return required
 
+    def set_cache_sessions_for_target_dates(self, dates: list[int], calendar_dates: list[int]) -> None:
+        for _, provider in self.panels:
+            provider.set_cache_sessions_for_target_dates(dates, calendar_dates)
+
+    def cache_policy_summary(self) -> str:
+        return " ".join(
+            f"panel={prefix}({provider.cache_policy_summary()})" for prefix, provider in self.panels
+        )
+
     def load_window(
         self,
         trade_date: int,
@@ -341,6 +561,85 @@ class MultiBarPanelProvider(FeatureProvider):
 
     def empty_frame(self, trade_date: int | None = None) -> pd.DataFrame:
         return pd.DataFrame(columns=["trade_date", "ts_code", *self.feature_columns])
+
+    def empty_tensor_window(self, trade_date: int | None = None) -> BarTensorWindow:
+        tensors = {
+            prefix: np.empty((0, provider.total_steps, len(provider.output_features)), dtype="float32")
+            for prefix, provider in self.panels
+        }
+        tensor_columns = {
+            prefix: _prefix_columns(prefix, provider.feature_columns) for prefix, provider in self.panels
+        }
+        return BarTensorWindow(
+            frame=pd.DataFrame(columns=["trade_date", "ts_code"]),
+            tensors=tensors,
+            tensor_columns=tensor_columns,
+        )
+
+    def load_window_tensor(
+        self,
+        trade_date: int,
+        history_dates: list[int],
+        *,
+        exclude_bj: bool = False,
+        st_symbols_by_date: dict[int, set[str]] | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> BarTensorWindow:
+        windows: list[tuple[str, BarTensorWindow]] = []
+        for prefix, provider in self.panels:
+            window = provider.load_window_tensor(
+                trade_date,
+                history_dates,
+                tensor_key=prefix,
+                exclude_bj=exclude_bj,
+                st_symbols_by_date=st_symbols_by_date,
+                progress=(
+                    (lambda message, panel=prefix: progress(f"panel={panel} {message}"))
+                    if progress is not None
+                    else None
+                ),
+            )
+            if window.frame.empty and self.strict:
+                return self.empty_tensor_window(trade_date)
+            windows.append((prefix, window))
+        if not windows:
+            return self.empty_tensor_window(trade_date)
+
+        symbol_sets = [set(window.frame["ts_code"].astype(str)) for _, window in windows if not window.frame.empty]
+        if not symbol_sets:
+            return self.empty_tensor_window(trade_date)
+        if self.strict:
+            symbols = sorted(set.intersection(*symbol_sets))
+        else:
+            symbols = sorted(set.union(*symbol_sets))
+        if not symbols:
+            return self.empty_tensor_window(trade_date)
+
+        tensors: dict[str, np.ndarray] = {}
+        tensor_columns: dict[str, list[str]] = {}
+        skipped_incomplete = 0
+        skipped_nonfinite = 0
+        for prefix, window in windows:
+            tensor = window.tensors[prefix]
+            source_symbols = window.frame["ts_code"].astype(str).tolist()
+            tensors[prefix] = _align_tensor_rows(tensor, source_symbols, symbols)
+            tensor_columns[prefix] = list(window.tensor_columns[prefix])
+            skipped_incomplete += window.skipped_incomplete
+            skipped_nonfinite += window.skipped_nonfinite
+        frame = pd.DataFrame({"trade_date": int(trade_date), "ts_code": symbols})
+        if progress is not None:
+            shapes = ",".join(f"{key}={value.shape[0]}x{value.shape[1]}x{value.shape[2]}" for key, value in tensors.items())
+            progress(
+                f"tensor_done panels={len(tensors)} shapes={shapes} "
+                f"skipped_incomplete={skipped_incomplete} skipped_nonfinite={skipped_nonfinite}"
+            )
+        return BarTensorWindow(
+            frame=frame,
+            tensors=tensors,
+            tensor_columns=tensor_columns,
+            skipped_incomplete=skipped_incomplete,
+            skipped_nonfinite=skipped_nonfinite,
+        )
 
 
 def _validate_features(features: list[str]) -> None:
@@ -589,6 +888,58 @@ def _time_series_last_scale(frame: pd.DataFrame, features: list[str], total_step
         scaled.loc[~valid, :] = np.nan
         output[columns] = scaled.astype("float32")
     return output
+
+
+def _scale_tensor(values: np.ndarray, scale: str) -> np.ndarray:
+    mode = scale.strip().lower()
+    output = values.astype("float64", copy=True)
+    if mode == "mean":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            means = np.nanmean(np.where(np.isfinite(output), output, np.nan), axis=1)
+        valid = np.isfinite(means) & (np.abs(means) > 1e-12)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            output = output / means[:, None, :]
+        output[~valid[:, None, :].repeat(output.shape[1], axis=1)] = np.nan
+        return output
+    if mode == "last":
+        last = output[:, -1, :]
+        valid = np.isfinite(last) & (np.abs(last) > 1e-12)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            output = output / last[:, None, :]
+        output[~valid[:, None, :].repeat(output.shape[1], axis=1)] = np.nan
+        return output
+    if mode in {"", "none"}:
+        return output
+    raise ValueError(f"unsupported bar_panel time_series_scale: {scale}")
+
+
+def _align_tensor_rows(tensor: np.ndarray, source_symbols: list[str], target_symbols: list[str]) -> np.ndarray:
+    output = np.full((len(target_symbols), tensor.shape[1], tensor.shape[2]), np.nan, dtype="float32")
+    source_pos = {symbol: idx for idx, symbol in enumerate(source_symbols)}
+    take_source = []
+    take_target = []
+    for target_idx, symbol in enumerate(target_symbols):
+        source_idx = source_pos.get(symbol)
+        if source_idx is not None:
+            take_source.append(source_idx)
+            take_target.append(target_idx)
+    if take_source:
+        output[np.asarray(take_target, dtype=np.int64)] = tensor[np.asarray(take_source, dtype=np.int64)]
+    return output
+
+
+def _min_target_stride_sessions(dates: list[int], calendar_dates: list[int]) -> int:
+    if len(dates) < 2:
+        return 1
+    positions = {int(date): idx for idx, date in enumerate(calendar_dates)}
+    indices = [positions[int(date)] for date in dates if int(date) in positions]
+    if len(indices) < 2:
+        return 1
+    strides = [right - left for left, right in zip(indices, indices[1:]) if right > left]
+    if not strides:
+        return 1
+    return max(1, min(strides))
 
 
 def _feature_columns(features: list[str], total_steps: int) -> list[str]:

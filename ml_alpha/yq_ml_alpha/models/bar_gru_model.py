@@ -21,6 +21,26 @@ class BarGRUAlphaModel(AlphaModel):
         self.model_info: dict[str, Any] = {}
 
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
+        self._fit(train_data, valid_data, context, train_tensor=None, valid_tensor=None)
+
+    def fit_bundle(self, train_bundle, valid_bundle, context: ModelContext) -> None:
+        self._fit(
+            train_bundle.frame,
+            valid_bundle.frame,
+            context,
+            train_tensor=_require_bar_bundle_tensor(train_bundle),
+            valid_tensor=_optional_bar_bundle_tensor(valid_bundle),
+        )
+
+    def _fit(
+        self,
+        train_data: pd.DataFrame,
+        valid_data: pd.DataFrame,
+        context: ModelContext,
+        *,
+        train_tensor: np.ndarray | None,
+        valid_tensor: np.ndarray | None,
+    ) -> None:
         torch, nn = _torch_modules()
         self.params = _params(context.model_params)
         diagnostics = _diagnostics(context)
@@ -64,7 +84,7 @@ class BarGRUAlphaModel(AlphaModel):
                 for batch_rows in _date_batches(rows, int(self.params["batch_size"]), rng):
                     if len(batch_rows) < 2:
                         continue
-                    x_np = _bar_tensor(train_data, context.feature_columns, batch_rows, self.params)
+                    x_np = _bar_tensor_batch(train_data, context.feature_columns, batch_rows, self.params, train_tensor)
                     y_np = train_data.loc[batch_rows, context.label_column].astype("float32").to_numpy()
                     x_tensor = torch.from_numpy(x_np).to(device)
                     y_tensor = torch.from_numpy(y_np).to(device)
@@ -80,7 +100,16 @@ class BarGRUAlphaModel(AlphaModel):
                     train_count += batch_count
 
             train_loss = train_loss_sum / train_count if train_count else None
-            valid_loss = _eval_date_loss(torch, self.model, valid_data, valid_groups, context, self.params, device)
+            valid_loss = _eval_date_loss(
+                torch,
+                self.model,
+                valid_data,
+                valid_groups,
+                context,
+                self.params,
+                device,
+                tensor=valid_tensor,
+            )
             score_loss = valid_loss if valid_loss is not None else train_loss
             if score_loss is None:
                 raise ValueError("BarGRUAlphaModel could not compute any finite train or valid IC loss")
@@ -164,6 +193,30 @@ class BarGRUAlphaModel(AlphaModel):
             for start in range(0, len(row_index), batch_size):
                 batch_rows = row_index[start : start + batch_size]
                 x_np = _bar_tensor(data, context.feature_columns, batch_rows, self.params)
+                pred = self.model(torch.from_numpy(x_np).to(device))
+                scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
+        self.model.to("cpu")
+        return pd.Series(scores, index=data.index, dtype="float32")
+
+    def predict_bundle(self, bundle, context: ModelContext) -> pd.Series:
+        tensor = _require_bar_bundle_tensor(bundle)
+        return self._predict_tensor(bundle.frame, tensor, context)
+
+    def _predict_tensor(self, data: pd.DataFrame, tensor: np.ndarray, context: ModelContext) -> pd.Series:
+        if self.model is None:
+            raise RuntimeError("model is not fitted")
+        torch, _ = _torch_modules()
+        device = _device(torch, str(self.params.get("device", "auto")))
+        self.model.to(device)
+        self.model.eval()
+
+        batch_size = int(self.params["batch_size"])
+        scores = np.empty(len(data), dtype="float32")
+        row_index = data.index.to_numpy()
+        with torch.no_grad():
+            for start in range(0, len(row_index), batch_size):
+                batch_rows = row_index[start : start + batch_size]
+                x_np = _bar_tensor_from_array(tensor, batch_rows, self.params)
                 pred = self.model(torch.from_numpy(x_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
@@ -312,6 +365,44 @@ def _bar_tensor(
     )
 
 
+def _bar_tensor_batch(
+    frame: pd.DataFrame,
+    columns: list[str],
+    rows: np.ndarray,
+    params: dict[str, Any],
+    tensor: np.ndarray | None,
+) -> np.ndarray:
+    if tensor is None:
+        return _bar_tensor(frame, columns, rows, params)
+    return _bar_tensor_from_array(tensor, rows, params)
+
+
+def _bar_tensor_from_array(tensor: np.ndarray, rows: np.ndarray, params: dict[str, Any]) -> np.ndarray:
+    expected_shape = (int(params["sequence_length"]), int(params["input_size"]))
+    if tensor.ndim != 3 or tuple(tensor.shape[1:]) != expected_shape:
+        raise ValueError(f"bar GRU expects tensor shape [N,{expected_shape[0]},{expected_shape[1]}], got {tensor.shape}")
+    output = np.ascontiguousarray(tensor[np.asarray(rows, dtype=np.int64)], dtype="float32")
+    if not np.isfinite(output).all():
+        output = np.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0).astype("float32", copy=False)
+    return output
+
+
+def _require_bar_bundle_tensor(bundle) -> np.ndarray:
+    tensors = getattr(bundle, "tensors", None)
+    if not tensors or "bar" not in tensors:
+        raise ValueError("BarGRUAlphaModel requires DatasetBundle.tensors['bar']")
+    return tensors["bar"]
+
+
+def _optional_bar_bundle_tensor(bundle) -> np.ndarray | None:
+    if bundle is None:
+        return None
+    tensors = getattr(bundle, "tensors", None)
+    if not tensors:
+        return None
+    return tensors.get("bar")
+
+
 def _negative_ic_loss(torch, pred, target):
     if pred.numel() < 2:
         return None
@@ -333,7 +424,7 @@ def _negative_ic_loss(torch, pred, target):
     return -ic
 
 
-def _eval_date_loss(torch, model, frame, groups, context, params, device) -> float | None:
+def _eval_date_loss(torch, model, frame, groups, context, params, device, tensor: np.ndarray | None = None) -> float | None:
     if frame.empty or not groups:
         return None
     model.eval()
@@ -342,7 +433,7 @@ def _eval_date_loss(torch, model, frame, groups, context, params, device) -> flo
         for rows in groups.values():
             if len(rows) < 2:
                 continue
-            x_np = _bar_tensor(frame, context.feature_columns, rows, params)
+            x_np = _bar_tensor_batch(frame, context.feature_columns, rows, params, tensor)
             y_np = frame.loc[rows, context.label_column].astype("float32").to_numpy()
             pred = model(torch.from_numpy(x_np).to(device))
             target = torch.from_numpy(y_np).to(device)

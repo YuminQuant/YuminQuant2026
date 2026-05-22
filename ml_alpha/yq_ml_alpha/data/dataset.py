@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,8 @@ class DatasetBundle:
     frame: pd.DataFrame
     feature_columns: list[str]
     label_column: str
+    tensors: dict[str, np.ndarray] | None = None
+    tensor_columns: dict[str, list[str]] | None = None
 
 
 class DatasetBuilder:
@@ -142,24 +145,39 @@ class DatasetBuilder:
         if not isinstance(self.feature_provider, (BarPanelProvider, MultiBarPanelProvider)):
             raise TypeError("load_bar_panel requires BarPanelProvider or MultiBarPanelProvider")
         frames = []
+        tensor_chunks: list[dict[str, np.ndarray]] = []
+        tensor_columns: dict[str, list[str]] | None = None
         total_dates = len(dates)
         split_name = "labeled" if include_label else "predict"
+        if hasattr(self.feature_provider, "set_cache_sessions_for_target_dates"):
+            self.feature_provider.set_cache_sessions_for_target_dates(dates, calendar.dates)
+        if hasattr(self.feature_provider, "cache_policy_summary"):
+            print(
+                f"bar-panel {split_name} cache_auto {self.feature_provider.cache_policy_summary()}",
+                flush=True,
+            )
         for date_idx, trade_date in enumerate(dates, start=1):
             history_dates = calendar.between(calendar.dates[0], trade_date)
             source_dates = self.feature_provider.required_history_dates(history_dates)
             progress = _bar_panel_progress(split_name, date_idx, total_dates, trade_date)
-            features = self.feature_provider.load_window(
+            window = self.feature_provider.load_window_tensor(
                 trade_date,
                 history_dates,
                 exclude_bj=self.config.filters.exclude_bj,
                 st_symbols_by_date=self._source_st_symbols_by_date(source_dates),
                 progress=progress,
             )
-            progress(f"target_done feature_rows={len(features)}")
-            if features.empty:
+            progress(f"target_done feature_rows={len(window.frame)}")
+            if window.frame.empty:
                 continue
-            frame = self.universe.filter(features, trade_date)
+            frame = self.universe.filter(window.frame, trade_date)
             frame = self.filters.apply(frame, trade_date)
+            frame = frame[["trade_date", "ts_code"]].reset_index(drop=True)
+            tensors = _select_tensors_by_symbols(
+                window.tensors,
+                window.frame["ts_code"].astype(str).tolist(),
+                frame["ts_code"].astype(str).tolist(),
+            )
             if include_label:
                 labels = read_daily(self.config.label.root, trade_date, [self.config.label.id])
                 frame = frame.merge(
@@ -167,19 +185,33 @@ class DatasetBuilder:
                     on=["trade_date", "ts_code"],
                     how="left",
                 )
-            frame = self._preprocess(frame, include_label)
+            frame, tensors = self._preprocess_tensors(frame, tensors, include_label)
             if include_label:
-                frame = frame.loc[frame[self.config.label.id].notna()]
+                keep = frame[self.config.label.id].notna().to_numpy()
+                frame = frame.loc[keep].reset_index(drop=True)
+                tensors = _take_tensor_rows(tensors, keep)
+            else:
+                frame = frame.reset_index(drop=True)
             frames.append(frame)
+            tensor_chunks.append(tensors)
+            tensor_columns = window.tensor_columns
         if frames:
             output = pd.concat(frames, ignore_index=True)
+            output_tensors = _concat_tensor_chunks(tensor_chunks)
         else:
-            columns = ["trade_date", "ts_code", *self.feature_provider.feature_columns]
+            columns = ["trade_date", "ts_code"]
             if include_label:
                 columns.append(self.config.label.id)
             output = pd.DataFrame(columns=columns)
+            output_tensors, tensor_columns = _empty_provider_tensors(self.feature_provider)
         self._maybe_cache(output, dates, include_label)
-        return DatasetBundle(output, self.feature_provider.feature_columns, self.config.label.id)
+        return DatasetBundle(
+            output,
+            self.feature_provider.feature_columns,
+            self.config.label.id,
+            tensors=output_tensors,
+            tensor_columns=tensor_columns,
+        )
 
     def _source_st_symbols_by_date(self, dates: list[int]) -> dict[int, set[str]]:
         if not self.config.filters.exclude_st:
@@ -225,6 +257,44 @@ class DatasetBuilder:
             [],
             label_columns=[self.config.label.id] if self.config.label.id in frame.columns else [],
             feature_fill_value=self.config.preprocess.feature_fill_value,
+        )
+
+    def _preprocess_tensors(
+        self,
+        frame: pd.DataFrame,
+        tensors: dict[str, np.ndarray],
+        include_label: bool,
+    ) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+        transform = self.config.preprocess.cross_section_transform.strip().lower()
+        label_frame = self._preprocess_labels(frame) if include_label else frame.copy()
+        if transform in {"", "none"}:
+            return label_frame, {
+                key: _fill_tensor_features(value, self.config.preprocess.feature_fill_value)
+                for key, value in tensors.items()
+            }
+        if transform in {"zscore", "cs_zscore"}:
+            return label_frame, {
+                key: _zscore_tensor_features(value, self.config.preprocess.feature_fill_value)
+                for key, value in tensors.items()
+            }
+        return self._preprocess_tensors_via_frame(label_frame, tensors)
+
+    def _preprocess_tensors_via_frame(
+        self,
+        frame: pd.DataFrame,
+        tensors: dict[str, np.ndarray],
+    ) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+        flat, columns_by_key = _flatten_tensors(frame, tensors)
+        processed = apply_cross_section_transform(
+            flat,
+            self.config.preprocess.cross_section_transform,
+            [column for columns in columns_by_key.values() for column in columns],
+            label_columns=[],
+            feature_fill_value=self.config.preprocess.feature_fill_value,
+        )
+        return (
+            processed[[column for column in frame.columns]].copy(),
+            _unflatten_tensors(processed, columns_by_key, tensors),
         )
 
     def _sequence_feature_frame(self, trade_date: int, cache: dict[int, pd.DataFrame]) -> pd.DataFrame:
@@ -287,6 +357,86 @@ def _logsig_signature_progress(split_name: str, current: int, total: int, trade_
         )
 
     return emit
+
+
+def _select_tensors_by_symbols(
+    tensors: dict[str, np.ndarray],
+    source_symbols: list[str],
+    target_symbols: list[str],
+) -> dict[str, np.ndarray]:
+    source_pos = {symbol: idx for idx, symbol in enumerate(source_symbols)}
+    source_indices = [source_pos[symbol] for symbol in target_symbols]
+    return {key: value[np.asarray(source_indices, dtype=np.int64)] for key, value in tensors.items()}
+
+
+def _take_tensor_rows(tensors: dict[str, np.ndarray], keep: np.ndarray) -> dict[str, np.ndarray]:
+    return {key: value[keep] for key, value in tensors.items()}
+
+
+def _concat_tensor_chunks(chunks: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
+    if not chunks:
+        return {}
+    keys = list(chunks[0])
+    return {key: np.concatenate([chunk[key] for chunk in chunks], axis=0) for key in keys}
+
+
+def _empty_provider_tensors(provider) -> tuple[dict[str, np.ndarray], dict[str, list[str]]]:
+    if hasattr(provider, "empty_tensor_window"):
+        window = provider.empty_tensor_window()
+        return window.tensors, window.tensor_columns
+    return {}, {}
+
+
+def _fill_tensor_features(values: np.ndarray, fill_value: float) -> np.ndarray:
+    data = np.asarray(values, dtype="float64")
+    data = np.where(np.isfinite(data), data, float(fill_value))
+    return data.astype("float32", copy=False)
+
+
+def _zscore_tensor_features(values: np.ndarray, fill_value: float) -> np.ndarray:
+    data = np.asarray(values, dtype="float64")
+    finite = np.isfinite(data)
+    masked = np.where(finite, data, np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            mean = np.nanmean(masked, axis=0)
+            std = np.nanstd(masked, axis=0)
+        transformed = (data - mean[None, :, :]) / std[None, :, :]
+    bad_std = (~np.isfinite(std)) | (std <= 0.0)
+    if np.any(bad_std):
+        bad = bad_std[None, :, :]
+        transformed = np.where(bad & finite, 0.0, transformed)
+    transformed = np.where(finite, transformed, np.nan)
+    transformed = np.where(np.isfinite(transformed), transformed, float(fill_value))
+    return transformed.astype("float32", copy=False)
+
+
+def _flatten_tensors(frame: pd.DataFrame, tensors: dict[str, np.ndarray]) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    output = frame.copy()
+    columns_by_key: dict[str, list[str]] = {}
+    for key, tensor in tensors.items():
+        columns = [
+            f"{key}__t{step:03d}__f{feature:03d}"
+            for step in range(tensor.shape[1])
+            for feature in range(tensor.shape[2])
+        ]
+        output[columns] = tensor.reshape(tensor.shape[0], tensor.shape[1] * tensor.shape[2])
+        columns_by_key[key] = columns
+    return output, columns_by_key
+
+
+def _unflatten_tensors(
+    frame: pd.DataFrame,
+    columns_by_key: dict[str, list[str]],
+    original: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    tensors: dict[str, np.ndarray] = {}
+    for key, columns in columns_by_key.items():
+        shape = original[key].shape
+        values = frame[columns].to_numpy(dtype="float32", copy=False)
+        tensors[key] = values.reshape(shape[0], shape[1], shape[2]).astype("float32", copy=False)
+    return tensors
 
 
 def _sequence_dates(

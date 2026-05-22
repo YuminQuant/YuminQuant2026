@@ -30,6 +30,26 @@ class MultiBarGRUAlphaModel(AlphaModel):
         self.model_info: dict[str, Any] = {}
 
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
+        self._fit(train_data, valid_data, context, train_tensors=None, valid_tensors=None)
+
+    def fit_bundle(self, train_bundle, valid_bundle, context: ModelContext) -> None:
+        self._fit(
+            train_bundle.frame,
+            valid_bundle.frame,
+            context,
+            train_tensors=_require_multi_bundle_tensors(train_bundle),
+            valid_tensors=_optional_multi_bundle_tensors(valid_bundle),
+        )
+
+    def _fit(
+        self,
+        train_data: pd.DataFrame,
+        valid_data: pd.DataFrame,
+        context: ModelContext,
+        *,
+        train_tensors: dict[str, np.ndarray] | None,
+        valid_tensors: dict[str, np.ndarray] | None,
+    ) -> None:
         torch, nn = _torch_modules()
         self.params = _params(context.model_params)
         diagnostics = _diagnostics(context)
@@ -73,11 +93,12 @@ class MultiBarGRUAlphaModel(AlphaModel):
                 for batch_rows in _date_batches(rows, int(self.params["batch_size"]), rng):
                     if len(batch_rows) < 2:
                         continue
-                    daily_np, minute_np = _multi_bar_tensors(
+                    daily_np, minute_np = _multi_bar_batch(
                         train_data,
                         context.feature_columns,
                         batch_rows,
                         self.params,
+                        train_tensors,
                     )
                     y_np = train_data.loc[batch_rows, context.label_column].astype("float32").to_numpy()
                     daily_tensor = torch.from_numpy(daily_np).to(device)
@@ -103,6 +124,7 @@ class MultiBarGRUAlphaModel(AlphaModel):
                 context,
                 self.params,
                 device,
+                tensors=valid_tensors,
             )
             score_loss = valid_loss if valid_loss is not None else train_loss
             if score_loss is None:
@@ -191,6 +213,27 @@ class MultiBarGRUAlphaModel(AlphaModel):
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
         return pd.Series(scores, index=data.index, dtype="float32")
+
+    def predict_bundle(self, bundle, context: ModelContext) -> pd.Series:
+        if self.model is None:
+            raise RuntimeError("model is not fitted")
+        torch, _ = _torch_modules()
+        device = _device(torch, str(self.params.get("device", "auto")))
+        self.model.to(device)
+        self.model.eval()
+
+        tensors = _require_multi_bundle_tensors(bundle)
+        batch_size = int(self.params["batch_size"])
+        scores = np.empty(len(bundle.frame), dtype="float32")
+        row_index = bundle.frame.index.to_numpy()
+        with torch.no_grad():
+            for start in range(0, len(row_index), batch_size):
+                batch_rows = row_index[start : start + batch_size]
+                daily_np, minute_np = _multi_bar_batch(bundle.frame, context.feature_columns, batch_rows, self.params, tensors)
+                pred = self.model(torch.from_numpy(daily_np).to(device), torch.from_numpy(minute_np).to(device))
+                scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
+        self.model.to("cpu")
+        return pd.Series(scores, index=bundle.frame.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:
         if self.model is None:
@@ -338,6 +381,54 @@ def _multi_bar_tensors(
     return daily, minute
 
 
+def _multi_bar_batch(
+    frame: pd.DataFrame,
+    columns: list[str],
+    rows: np.ndarray,
+    params: dict[str, Any],
+    tensors: dict[str, np.ndarray] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    if tensors is None:
+        return _multi_bar_tensors(frame, columns, rows, params)
+    return (
+        _branch_tensor_from_array(tensors["daily"], rows, int(params["daily_sequence_length"]), int(params["input_size"]), "daily"),
+        _branch_tensor_from_array(tensors["minute"], rows, int(params["minute_sequence_length"]), int(params["input_size"]), "minute"),
+    )
+
+
+def _branch_tensor_from_array(
+    tensor: np.ndarray,
+    rows: np.ndarray,
+    sequence_length: int,
+    input_size: int,
+    label: str,
+) -> np.ndarray:
+    if tensor.ndim != 3 or tensor.shape[1] != sequence_length or tensor.shape[2] != input_size:
+        raise ValueError(f"{label} branch expects tensor shape [N,{sequence_length},{input_size}], got {tensor.shape}")
+    output = np.ascontiguousarray(tensor[np.asarray(rows, dtype=np.int64)], dtype="float32")
+    if not np.isfinite(output).all():
+        output = np.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0).astype("float32", copy=False)
+    return output
+
+
+def _require_multi_bundle_tensors(bundle) -> dict[str, np.ndarray]:
+    tensors = getattr(bundle, "tensors", None)
+    if not tensors or "daily" not in tensors or "minute" not in tensors:
+        raise ValueError("MultiBarGRUAlphaModel requires DatasetBundle.tensors['daily'] and ['minute']")
+    return tensors
+
+
+def _optional_multi_bundle_tensors(bundle) -> dict[str, np.ndarray] | None:
+    if bundle is None:
+        return None
+    tensors = getattr(bundle, "tensors", None)
+    if not tensors:
+        return None
+    if "daily" not in tensors or "minute" not in tensors:
+        return None
+    return tensors
+
+
 def _prefixed_columns(columns: list[str], prefix: str) -> list[str]:
     wanted = f"{prefix}__"
     return [column for column in columns if column.startswith(wanted)]
@@ -364,7 +455,16 @@ def _panel_tensor(
     return flat.reshape(flat.shape[0], sequence_length, input_size).astype("float32", copy=False)
 
 
-def _eval_multi_date_loss(torch, model, frame, groups, context, params, device) -> float | None:
+def _eval_multi_date_loss(
+    torch,
+    model,
+    frame,
+    groups,
+    context,
+    params,
+    device,
+    tensors: dict[str, np.ndarray] | None = None,
+) -> float | None:
     if frame.empty or not groups:
         return None
     model.eval()
@@ -373,7 +473,7 @@ def _eval_multi_date_loss(torch, model, frame, groups, context, params, device) 
         for rows in groups.values():
             if len(rows) < 2:
                 continue
-            daily_np, minute_np = _multi_bar_tensors(frame, context.feature_columns, rows, params)
+            daily_np, minute_np = _multi_bar_batch(frame, context.feature_columns, rows, params, tensors)
             y_np = frame.loc[rows, context.label_column].astype("float32").to_numpy()
             pred = model(torch.from_numpy(daily_np).to(device), torch.from_numpy(minute_np).to(device))
             target = torch.from_numpy(y_np).to(device)

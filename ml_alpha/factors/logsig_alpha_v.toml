@@ -16,7 +16,7 @@ valid = []
 predict = [20110101, 20260424]
 
 [sample]
-train_frequency = "5"
+train_frequency = "10"
 predict_frequency = "daily"
 
 [train_scheme]
@@ -26,7 +26,7 @@ train_lookback = "4y"
 validation_ratio = 0.25
 
 [label]
-id = "future_vwap_return_5d"
+id = "future_vwap_return_20d"
 
 [universe]
 id = "mkt_all"
@@ -72,12 +72,12 @@ artifact_dir = "data/model_workspace/logsig_alpha_v/artifacts"
 [model.params]
 base_factors = 8
 orthogonal_lambda = 0.05
-hidden_layers = [256, 128]
+hidden_layers = [64]
 dropout = 0.1
-epochs = 50
-batch_size = 8192
+epochs = 100
+batch_size = 5000
 lr = 0.001
-weight_decay = 0.00001
+weight_decay = 0.0
 seed = 42
 device = "auto"
 patience = 10

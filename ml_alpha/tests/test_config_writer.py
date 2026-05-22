@@ -793,9 +793,11 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             provider.set_calendar_dates([20260101, 20260102, 20260105])
             original = pd.read_parquet
             read_paths: list[str] = []
+            read_columns: list[list[str]] = []
 
             def counting_read_parquet(path, *args, **kwargs):
                 read_paths.append(str(path))
+                read_columns.append(list(kwargs.get("columns", [])))
                 return original(path, *args, **kwargs)
 
             with mock.patch("pandas.read_parquet", side_effect=counting_read_parquet):
@@ -806,6 +808,63 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             self.assertEqual(len(second), 2)
             self.assertEqual(len(read_paths), 3)
             self.assertEqual(len(set(read_paths)), 3)
+            self.assertTrue(
+                all(columns == ["trade_date", "ts_code", "bar_index", "volume"] for columns in read_columns)
+            )
+
+    def test_logsig_signature_provider_calls_rust_batch_once_per_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "bar" / "5m"
+            for trade_date, base in [(20260101, 1.0), (20260102, 2.0)]:
+                self._write_bar_day(
+                    root,
+                    trade_date,
+                    [
+                        ("000001.SZ", [base, base + 1.0]),
+                        ("000002.SZ", [base + 2.0, base + 3.0]),
+                    ],
+                )
+            provider = LogsigSignatureProvider(
+                root,
+                "__all__",
+                {"lookback_days": 2, "bar_size": 120, "order": 2},
+            )
+            provider.set_calendar_dates([20260101, 20260102])
+            calls = []
+
+            class FakeRust:
+                @staticmethod
+                def logsig_signature_batch(volume, order):
+                    calls.append((volume.copy(), order))
+                    return np.ones((volume.shape[0], signature_width(order)), dtype=np.float32)
+
+            logs: list[str] = []
+            with mock.patch.dict(sys.modules, {"yq_factor_engine_py": FakeRust}):
+                output = provider.load(20260102, progress=logs.append)
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][0].shape, (2, 4))
+            self.assertEqual(calls[0][1], 2)
+            self.assertEqual(len(output), 2)
+            self.assertTrue(any("backend=rust" in line for line in logs))
+
+    def test_logsig_signature_provider_falls_back_to_numba_when_rust_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "bar" / "5m"
+            self._write_bar_day(root, 20260101, [("000001.SZ", [1.0, 10.0])])
+            provider = LogsigSignatureProvider(
+                root,
+                "__all__",
+                {"lookback_days": 1, "bar_size": 120, "order": 3},
+            )
+            provider.set_calendar_dates([20260101])
+            logs: list[str] = []
+            with mock.patch.dict(sys.modules, {"yq_factor_engine_py": None}):
+                output = provider.load(20260101, progress=logs.append)
+            expected = _signature_from_volume(np.array([1.0, 10.0], dtype=np.float64), 3)
+            actual = output[provider.feature_columns].to_numpy(dtype="float64")[0]
+            self.assertTrue(np.allclose(actual, expected, atol=1e-6))
+            self.assertTrue(any("backend=numba" in line for line in logs))
 
     def test_logsig_signature_provider_returns_empty_for_incomplete_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -71,6 +71,12 @@ data/derived/stock/bar/5m/{year}/{YYYYMMDD}.parquet
 
 The 20-day order-10 lead-lag volume logsignatures are computed on demand. Python reads the 5-minute bars with column projection, builds an aligned `N x 960` volume matrix, and calls the Rust extension for `log(max(volume, 1)) -> lead-lag -> tensor signature -> Lyndon-basis logsignature`. The provider returns `trade_date`, `ts_code`, and `logsig_0001` through `logsig_0226`; the old Numba tensor-signature path remains only as a compatibility fallback and is logged as such.
 
+Rust logsignature computation uses a small dedicated thread pool by default (`3` threads). Override it before launching training when needed:
+
+```powershell
+$env:YQ_LOGSIG_THREADS="2"
+```
+
 ### Train And Materialize
 
 ```powershell
@@ -81,11 +87,11 @@ python -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
 
 The config uses:
 
-- label: `future_vwap_return_20d`
+- label: `future_vwap_return_5d`
 - rolling window: 4 years
 - refit frequency: annual end
 - train/validation split: first 75% sampled dates for train, last 25% for validation
-- sample frequency: every 10 trading days
+- sample frequency: every 5 trading days
 - prediction frequency: daily
 - model: `LogsigOrthogonalMLPAlphaModel`
 - base factors: 8

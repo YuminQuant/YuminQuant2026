@@ -35,5 +35,5 @@ status = "active"
 display_name = "Logsig-Alpha-v"
 model_class = "yq_ml_alpha.models.logsig_orthogonal_mlp_model.LogsigOrthogonalMLPAlphaModel"
 output = "data/factors/stock/daily"
-label = "future_vwap_return_20d"
+label = "future_vwap_return_5d"
 tags = ["e2e", "logsig", "signature", "volume", "orthogonal_mlp", "neutralized"]

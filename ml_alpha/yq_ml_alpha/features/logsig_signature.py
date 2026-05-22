@@ -263,7 +263,10 @@ def _signature_batch_from_volume(
         rust = importlib.import_module("yq_factor_engine_py")
         rust_fn = getattr(rust, "logsig_signature_batch")
         if progress is not None:
-            progress(f"step=signature_compute backend=rust_logsig rows={volume.shape[0]} width={signature_width(order)}")
+            progress(
+                f"step=signature_compute backend=rust_logsig rows={volume.shape[0]} "
+                f"width={signature_width(order)} threads={_rust_logsig_threads(rust)}"
+            )
         result = rust_fn(volume, int(order))
         output = np.asarray(result, dtype="float32")
         expected_shape = (volume.shape[0], signature_width(order))
@@ -282,6 +285,13 @@ def _signature_batch_from_volume(
             copy=False,
         )
         return output, "numba_signature_fallback"
+
+
+def _rust_logsig_threads(rust: Any) -> str:
+    try:
+        return str(getattr(rust, "logsig_signature_threads")())
+    except Exception:
+        return "unknown"
 
 
 def _logsignature_from_volume_fallback(volume: np.ndarray, order: int) -> np.ndarray:

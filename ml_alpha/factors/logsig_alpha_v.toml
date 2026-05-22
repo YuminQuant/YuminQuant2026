@@ -16,7 +16,7 @@ valid = []
 predict = [20110101, 20260424]
 
 [sample]
-train_frequency = "10"
+train_frequency = "5"
 predict_frequency = "daily"
 
 [train_scheme]
@@ -26,7 +26,7 @@ train_lookback = "4y"
 validation_ratio = 0.25
 
 [label]
-id = "future_vwap_return_20d"
+id = "future_vwap_return_5d"
 
 [universe]
 id = "mkt_all"

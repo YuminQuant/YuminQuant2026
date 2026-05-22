@@ -1,13 +1,25 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 
 use crate::error::{err, Result};
+
+const DEFAULT_LOGSIG_THREADS: usize = 3;
+static LOGSIG_THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 struct LyndonBasis {
     words: Vec<(usize, usize)>,
     expansions: Vec<BTreeMap<usize, f64>>,
+}
+
+pub fn logsig_thread_count() -> usize {
+    configured_logsig_thread_count(
+        std::env::var("YQ_LOGSIG_THREADS").ok(),
+        std::env::var("RAYON_NUM_THREADS").ok(),
+    )
 }
 
 pub fn signature_width(order: usize) -> Result<usize> {
@@ -69,11 +81,37 @@ pub fn logsig_signature_batch_from_volume(
     let level_offsets = level_offsets(order)?;
     let basis = lyndon_basis(order)?;
     let mut output = vec![0.0f32; rows * logsig_width];
-    output
-        .par_chunks_mut(logsig_width)
-        .zip(volume.par_chunks(cols))
-        .try_for_each(|(out, row)| compute_row(row, order, tensor_width, &level_offsets, &basis, out))?;
+    logsig_thread_pool()
+        .install(|| {
+            output
+                .par_chunks_mut(logsig_width)
+                .zip(volume.par_chunks(cols))
+                .try_for_each(|(out, row)| {
+                    compute_row(row, order, tensor_width, &level_offsets, &basis, out)
+                })
+        })?;
     Ok(output)
+}
+
+fn configured_logsig_thread_count(
+    logsig_threads: Option<String>,
+    rayon_threads: Option<String>,
+) -> usize {
+    logsig_threads
+        .or(rayon_threads)
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_LOGSIG_THREADS)
+}
+
+fn logsig_thread_pool() -> &'static ThreadPool {
+    LOGSIG_THREAD_POOL.get_or_init(|| {
+        ThreadPoolBuilder::new()
+            .num_threads(logsig_thread_count())
+            .thread_name(|idx| format!("yq-logsig-{idx}"))
+            .build()
+            .expect("failed to build logsig signature thread pool")
+    })
 }
 
 fn level_offsets(order: usize) -> Result<Vec<usize>> {
@@ -377,6 +415,20 @@ mod tests {
         assert_eq!(logsignature_width(10).unwrap(), 226);
         assert_eq!(signature_width(10).unwrap(), 226);
         assert_eq!(tensor_signature_width(10).unwrap(), 2046);
+    }
+
+    #[test]
+    fn default_logsig_thread_count_is_small_and_overridable() {
+        assert_eq!(configured_logsig_thread_count(None, None), 3);
+        assert_eq!(configured_logsig_thread_count(Some("2".to_string()), None), 2);
+        assert_eq!(
+            configured_logsig_thread_count(None, Some("4".to_string())),
+            4
+        );
+        assert_eq!(
+            configured_logsig_thread_count(Some("0".to_string()), Some("0".to_string())),
+            3
+        );
     }
 
     #[test]

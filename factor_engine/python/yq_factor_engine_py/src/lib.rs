@@ -7,7 +7,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use yq_factor_engine::backtest::request::NeutralizeSpec;
 use yq_factor_engine::core::{AssetClass, Frequency};
-use yq_factor_engine::logsig_signature::{logsig_signature_batch_from_volume, signature_width};
+use yq_factor_engine::logsig_signature::{
+    logsig_signature_batch_from_volume, logsig_thread_count, signature_width,
+};
 use yq_factor_engine::neutralize::{neutralize_daily_values, NeutralizeDailyValuesRequest};
 
 #[pyfunction]
@@ -112,9 +114,15 @@ fn logsig_signature_batch(
     Ok(reshaped.into_py(py))
 }
 
+#[pyfunction]
+fn logsig_signature_threads() -> usize {
+    logsig_thread_count()
+}
+
 #[pymodule]
 fn yq_factor_engine_py(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(neutralize_daily, module)?)?;
     module.add_function(wrap_pyfunction!(logsig_signature_batch, module)?)?;
+    module.add_function(wrap_pyfunction!(logsig_signature_threads, module)?)?;
     Ok(())
 }

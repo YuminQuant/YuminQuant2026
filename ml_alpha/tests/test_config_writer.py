@@ -20,6 +20,7 @@ from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.logsig_signature import (
     LogsigSignatureProvider,
+    _logsignature_from_volume_fallback,
     _signature_from_volume,
     signature_width,
 )
@@ -719,8 +720,8 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.features.params["order"], 10)
         self.assertEqual(config.features.params["volume_column"], "volume")
         self.assertEqual(config.features.params["cache_days"], "auto")
-        self.assertEqual(config.label.id, "future_vwap_return_5d")
-        self.assertEqual(config.sample.train_frequency, "5")
+        self.assertEqual(config.label.id, "future_vwap_return_20d")
+        self.assertEqual(config.sample.train_frequency, "10")
         self.assertEqual(config.sample.predict_frequency, "daily")
         self.assertEqual(config.train_scheme.refit_frequency, "annual_end")
         self.assertEqual(config.train_scheme.train_lookback, "4y")
@@ -735,10 +736,10 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             "__all__",
             {"lookback_days": 20, "bar_size": 5, "order": 10},
         )
-        self.assertEqual(len(provider.feature_columns), 2046)
-        self.assertEqual(provider.feature_columns[0], "sig_0001")
-        self.assertEqual(provider.feature_columns[-1], "sig_2046")
-        self.assertEqual(signature_width(10), 2046)
+        self.assertEqual(len(provider.feature_columns), 226)
+        self.assertEqual(provider.feature_columns[0], "logsig_0001")
+        self.assertEqual(provider.feature_columns[-1], "logsig_0226")
+        self.assertEqual(signature_width(10), 226)
 
     def test_logsig_signature_provider_auto_cache_uses_target_stride(self) -> None:
         provider = LogsigSignatureProvider(
@@ -840,7 +841,8 @@ artifact_dir = "data/model_workspace/r1/artifacts"
 
             logs: list[str] = []
             with mock.patch.dict(sys.modules, {"yq_factor_engine_py": FakeRust}):
-                output = provider.load(20260102, progress=logs.append)
+                with mock.patch("pandas.concat", side_effect=AssertionError("pd.concat should not be used")):
+                    output = provider.load(20260102, progress=logs.append)
 
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][0].shape, (2, 4))
@@ -861,10 +863,10 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             logs: list[str] = []
             with mock.patch.dict(sys.modules, {"yq_factor_engine_py": None}):
                 output = provider.load(20260101, progress=logs.append)
-            expected = _signature_from_volume(np.array([1.0, 10.0], dtype=np.float64), 3)
+            expected = _logsignature_from_volume_fallback(np.array([1.0, 10.0], dtype=np.float64), 3)
             actual = output[provider.feature_columns].to_numpy(dtype="float64")[0]
             self.assertTrue(np.allclose(actual, expected, atol=1e-6))
-            self.assertTrue(any("backend=numba" in line for line in logs))
+            self.assertTrue(any("backend=numba_signature_fallback" in line for line in logs))
 
     def test_logsig_signature_provider_returns_empty_for_incomplete_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1969,9 +1971,9 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                     {
                         "trade_date": trade_date,
                         "ts_code": symbol,
-                        "sig_0001": offset + float(idx),
-                        "sig_0002": offset + float(3 - idx),
-                        "sig_0003": offset + float(idx % 2),
+                        "logsig_0001": offset + float(idx),
+                        "logsig_0002": offset + float(3 - idx),
+                        "logsig_0003": offset + float(idx % 2),
                         "y": float(idx),
                     }
                 )
@@ -1979,7 +1981,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         context = ModelContext(
             run_id="logsig_alpha_v",
             alpha_id="logsig_alpha_v",
-            feature_columns=["sig_0001", "sig_0002", "sig_0003"],
+            feature_columns=["logsig_0001", "logsig_0002", "logsig_0003"],
             label_column="y",
             artifact_dir=Path("tmp"),
             model_params={

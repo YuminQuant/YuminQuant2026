@@ -94,27 +94,33 @@ class MultiBarGRUAlphaModel(AlphaModel):
                 for batch_rows in _date_batches(rows, int(self.params["batch_size"]), rng):
                     if len(batch_rows) < 2:
                         continue
-                    daily_np, minute_np = _multi_bar_batch(
-                        train_data,
-                        context.feature_columns,
-                        batch_rows,
-                        self.params,
-                        train_tensors,
-                    )
-                    y_np = train_data.loc[batch_rows, context.label_column].astype("float32").to_numpy()
-                    daily_tensor = torch.from_numpy(daily_np).to(device)
-                    minute_tensor = torch.from_numpy(minute_np).to(device)
-                    y_tensor = torch.from_numpy(y_np).to(device)
-                    optimizer.zero_grad()
-                    pred = self.model(daily_tensor, minute_tensor)
-                    loss = _negative_ic_loss(torch, pred, y_tensor)
-                    if loss is None:
-                        continue
-                    loss.backward()
-                    optimizer.step()
-                    batch_count = int(len(batch_rows))
-                    train_loss_sum += float(loss.detach().cpu().item()) * batch_count
-                    train_count += batch_count
+                    daily_tensor = minute_tensor = y_tensor = pred = loss = None
+                    try:
+                        daily_np, minute_np = _multi_bar_batch(
+                            train_data,
+                            context.feature_columns,
+                            batch_rows,
+                            self.params,
+                            train_tensors,
+                        )
+                        y_np = train_data.loc[batch_rows, context.label_column].astype("float32").to_numpy()
+                        daily_tensor = torch.from_numpy(daily_np).to(device)
+                        minute_tensor = torch.from_numpy(minute_np).to(device)
+                        y_tensor = torch.from_numpy(y_np).to(device)
+                        optimizer.zero_grad()
+                        pred = self.model(daily_tensor, minute_tensor)
+                        loss = _negative_ic_loss(torch, pred, y_tensor)
+                        if loss is None:
+                            continue
+                        loss.backward()
+                        optimizer.step()
+                        batch_count = int(len(batch_rows))
+                        train_loss_sum += float(loss.detach().cpu().item()) * batch_count
+                        train_count += batch_count
+                    finally:
+                        del daily_tensor, minute_tensor, y_tensor, pred, loss
+                if getattr(device, "type", None) == "cuda":
+                    torch.cuda.empty_cache()
 
             train_loss = train_loss_sum / train_count if train_count else None
             valid_loss = _eval_multi_date_loss(

@@ -28,6 +28,24 @@ pub const MIN_PERIODS: usize = 1;
 const RAW_WINDOW_DAYS: usize = 1;
 const FIVE_MINUTE_RETURN_COUNT: usize = 48;
 const EPS: f64 = f64::EPSILON;
+const DEPRECATED_FACTOR_IDS: &[&str] = &[
+    "var90_week",
+    "cvar90_week",
+    "var90_rt_week",
+    "cvar90_rt_week",
+    "vovar90",
+    "vocvar90",
+    "vovar90_rt",
+    "vocvar90_rt",
+    "id_var90_week",
+    "id_cvar90_week",
+    "id_var90_rt_week",
+    "id_cvar90_rt_week",
+    "id_vovar90",
+    "id_vocvar90",
+    "id_vovar90_rt",
+    "id_vocvar90_rt",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DbzqPostProcess {
@@ -164,7 +182,7 @@ pub fn factor_spec(def: DbzqFactorDef) -> FactorSpec {
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
-        tags: tags(),
+        tags: tags(def.id),
         description: format!(
             "{} based on 5-minute intraday log returns and neutralized by Barra SIZE and SW sector.",
             def.name
@@ -321,8 +339,12 @@ pub fn minute_compute_many_for(
     Ok(output)
 }
 
-fn tags() -> Vec<String> {
-    [
+fn is_deprecated_factor_id(id: &str) -> bool {
+    DEPRECATED_FACTOR_IDS.contains(&id)
+}
+
+fn tags(id: &str) -> Vec<String> {
+    let mut values = [
         "price_volume",
         "return",
         "risk",
@@ -338,7 +360,11 @@ fn tags() -> Vec<String> {
     ]
     .iter()
     .map(|value| value.to_string())
-    .collect()
+    .collect::<Vec<_>>();
+    if is_deprecated_factor_id(id) {
+        values.push("deprecated".to_string());
+    }
+    values
 }
 
 fn dependencies() -> Vec<DataRequest> {
@@ -810,5 +836,26 @@ mod tests {
     fn dbzq_uncertainty_rejects_zero_mean() {
         assert_eq!(safe_div(Some(1.0), Some(0.0)), None);
         assert_close(safe_div(Some(2.0), Some(4.0)), Some(0.5));
+    }
+
+    #[test]
+    fn dbzq_factor_spec_marks_only_90_parameter_variants_deprecated() {
+        let deprecated = factor_spec(DbzqFactorDef {
+            id: "var90_week",
+            alias: "VaR90_week",
+            name: "VaR90 Week",
+            raw_id: VAR90_5MIN_RAW_ID,
+            postprocess: DbzqPostProcess::WeekMean,
+        });
+        let retained = factor_spec(DbzqFactorDef {
+            id: "var95_week",
+            alias: "VaR95_week",
+            name: "VaR95 Week",
+            raw_id: VAR95_5MIN_RAW_ID,
+            postprocess: DbzqPostProcess::WeekMean,
+        });
+
+        assert!(deprecated.tags.iter().any(|tag| tag == "deprecated"));
+        assert!(!retained.tags.iter().any(|tag| tag == "deprecated"));
     }
 }

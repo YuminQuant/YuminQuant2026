@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import argparse
+import os
 from pathlib import Path
 
-import pandas as pd
+import pyarrow.parquet as pq
 
 
 DEFAULT_COLUMNS = [
@@ -63,13 +66,23 @@ def iter_factor_files(root: Path, start_date: int, end_date: int):
 
 
 def remove_columns(path: Path, columns: list[str], dry_run: bool) -> list[str]:
-    df = pd.read_parquet(path)
-    existing = [column for column in columns if column in df.columns]
+    column_set = set(columns)
+    schema = pq.read_schema(path)
+    schema_columns = list(schema.names)
+    existing = [column for column in columns if column in schema_columns]
     if not existing:
         return []
     if not dry_run:
-        df = df.drop(columns=existing)
-        df.to_parquet(path, index=False)
+        keep_columns = [column for column in schema_columns if column not in column_set]
+        table = pq.read_table(path, columns=keep_columns)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp_remove_columns")
+        try:
+            pq.write_table(table, tmp, compression="snappy")
+            tmp.replace(path)
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
     return existing
 
 

@@ -42,6 +42,18 @@ def materialize_only(config_path: str | Path) -> list[Path]:
     return materialize.run_config(config)
 
 
+def metadata_only(config_paths: list[str | Path] | None = None, config_dir: str | Path | None = None) -> list[Path]:
+    paths = _metadata_config_paths(config_paths, config_dir)
+    written: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        metadata_path = write_factor_metadata(_load_factor_config(path))
+        if metadata_path is not None and metadata_path not in seen:
+            written.append(metadata_path)
+            seen.add(metadata_path)
+    return written
+
+
 def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     _ensure_factor_config(config)
     calendar = TradingCalendar.load(config.data_root)
@@ -205,6 +217,16 @@ def _window_with_predict_dates(window: TrainingWindow, predict_dates: list[int])
         valid_dates=window.valid_dates,
         predict_dates=predict_dates,
     )
+
+
+def _metadata_config_paths(config_paths: list[str | Path] | None, config_dir: str | Path | None) -> list[Path]:
+    if config_paths:
+        return [Path(path) for path in config_paths]
+    root = Path(config_dir) if config_dir is not None else Path(__file__).resolve().parents[2] / "factors"
+    paths = sorted(root.glob("*.toml"))
+    if not paths:
+        raise FileNotFoundError(f"no factor TOML files found under {root}")
+    return paths
 
 
 def _new_writer(config: MlAlphaConfig) -> DailyWideWriter:

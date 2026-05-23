@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import importlib
 import json
 import math
@@ -137,6 +138,20 @@ def _predict_model(model: AlphaModel, bundle, context: ModelContext):
     if callable(predict_bundle) and bundle.tensors is not None:
         return predict_bundle(bundle, context)
     return model.predict(bundle.frame, context)
+
+
+def _release_accelerator_memory() -> None:
+    gc.collect()
+    try:
+        torch = importlib.import_module("torch")
+    except Exception:
+        return
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        return
 
 
 def _uses_sequence_dataset(config: MlAlphaConfig) -> bool:

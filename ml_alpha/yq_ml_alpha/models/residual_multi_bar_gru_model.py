@@ -14,6 +14,7 @@ from yq_ml_alpha.models.bar_gru_model import (
     _date_groups,
     _device,
     _negative_ic_loss,
+    _release_torch_memory,
     _set_seed,
     _torch_modules,
 )
@@ -124,6 +125,7 @@ class ResidualMultiBarGRUAlphaModel(AlphaModel):
 
         self.loss_history = [*stage1["history"], *stage2["history"]]
         self.model.to("cpu")
+        _release_torch_memory(torch)
         self.model_info = {
             "window_id": window_id,
             "model_class": self.__class__.__name__,
@@ -176,6 +178,7 @@ class ResidualMultiBarGRUAlphaModel(AlphaModel):
                 )
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
+        _release_torch_memory(torch)
         return pd.Series(scores, index=data.index, dtype="float32")
 
     def predict_bundle(self, bundle, context: ModelContext) -> pd.Series:
@@ -200,6 +203,7 @@ class ResidualMultiBarGRUAlphaModel(AlphaModel):
                 )
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
+        _release_torch_memory(torch)
         return pd.Series(scores, index=bundle.frame.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:
@@ -209,6 +213,7 @@ class ResidualMultiBarGRUAlphaModel(AlphaModel):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.model.to("cpu")
+        _release_torch_memory(torch)
         torch.save(
             {
                 "params": self.params,

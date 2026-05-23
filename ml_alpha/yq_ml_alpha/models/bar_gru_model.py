@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import time
 from pathlib import Path
@@ -153,6 +154,7 @@ class BarGRUAlphaModel(AlphaModel):
         if best_state is not None:
             self.model.load_state_dict(best_state)
         self.model.to("cpu")
+        _release_torch_memory(torch)
         self.model_info = {
             "window_id": window_id,
             "model_class": self.__class__.__name__,
@@ -196,6 +198,7 @@ class BarGRUAlphaModel(AlphaModel):
                 pred = self.model(torch.from_numpy(x_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
+        _release_torch_memory(torch)
         return pd.Series(scores, index=data.index, dtype="float32")
 
     def predict_bundle(self, bundle, context: ModelContext) -> pd.Series:
@@ -220,6 +223,7 @@ class BarGRUAlphaModel(AlphaModel):
                 pred = self.model(torch.from_numpy(x_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
+        _release_torch_memory(torch)
         return pd.Series(scores, index=data.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:
@@ -229,6 +233,7 @@ class BarGRUAlphaModel(AlphaModel):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.model.to("cpu")
+        _release_torch_memory(torch)
         torch.save(
             {
                 "params": self.params,
@@ -453,6 +458,16 @@ def _torch_modules():
     except ImportError as exc:  # pragma: no cover - depends on optional local package
         raise ImportError("BarGRUAlphaModel requires installing the optional torch package") from exc
     return torch, nn
+
+
+def _release_torch_memory(torch) -> None:
+    gc.collect()
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        return
 
 
 def _device(torch, value: str):

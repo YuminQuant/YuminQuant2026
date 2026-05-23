@@ -26,7 +26,7 @@ train_lookback = "3y"
 validation_ratio = 0.2
 
 [label]
-id = "future_vwap_return_20d"
+id = "future_vwap_return_5d"
 
 [universe]
 id = "mkt_all"

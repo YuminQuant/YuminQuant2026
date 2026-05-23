@@ -117,6 +117,28 @@ Benefits / 好处：
 - 更可解释的缓存：`"auto"` 跟随实际复用窗口，不再固定保留 120 个 session。
 - 不影响 tabular 因子：`logsig_alpha_v`、raw panel、factor frame、monthly tabular 模型仍走原来的数据路径。
 
+## GRU CUDA Memory Cleanup / GRU CUDA 显存清理
+
+English:
+
+The three GRU-based end-to-end factor models automatically move the model back to CPU and release PyTorch CUDA cache at stage boundaries:
+
+- `bar_gru_15m`
+- `multi_bar_gru_daily_15m`
+- `residual_multi_bar_gru`
+
+This cleanup runs after model `fit`, `predict`, and `save`, and the factor pipeline also performs a window-level cleanup after each window's prediction/write stage. No TOML option is required. It is intentionally not run after every batch, because PyTorch's CUDA cache improves batch-to-batch reuse and clearing it too frequently can slow training.
+
+中文：
+
+三个基于 GRU 的端到端因子模型会在阶段边界自动把模型移回 CPU，并释放 PyTorch CUDA cache：
+
+- `bar_gru_15m`
+- `multi_bar_gru_daily_15m`
+- `residual_multi_bar_gru`
+
+清理会在模型 `fit`、`predict`、`save` 之后执行；因子 pipeline 也会在每个 window 的预测和写出结束后做一次 window 级清理。不需要在 TOML 里额外配置。清理不会放在每个 batch 后执行，因为 PyTorch 的 CUDA cache 对 batch 间复用有帮助，过于频繁地清理会拖慢训练。
+
 ## Formal Factor Output
 
 Factor configs write daily wide parquet files under:

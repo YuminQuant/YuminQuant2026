@@ -1317,15 +1317,21 @@ neutralize = "none"
 
         with mock.patch("yq_ml_alpha.pipelines.model.run", return_value=[]) as model_run, mock.patch(
             "yq_ml_alpha.pipelines.factor.run", return_value=[]
-        ) as factor_run, mock.patch("yq_ml_alpha.pipelines.factor.train_only", return_value=[]) as factor_train:
+        ) as factor_run, mock.patch("yq_ml_alpha.pipelines.factor.train_only", return_value=[]) as factor_train, mock.patch(
+            "yq_ml_alpha.pipelines.factor.metadata_only", return_value=[]
+        ) as factor_metadata:
             cli.main(["model-run", "--config", "models/mdl_000001.toml"])
             cli.main(["factor-run", "--config", "factors/bar_gru_15m.toml"])
             cli.main(["factor-run", "--config", "factors/bar_gru_15m.toml", "--resume"])
             cli.main(["factor-train", "--config", "factors/bar_gru_15m.toml", "--resume"])
+            cli.main(["factor-metadata"])
+            cli.main(["factor-metadata", "--config", "factors/bar_gru_15m.toml"])
         model_run.assert_called_once_with(Path("models/mdl_000001.toml"))
         self.assertEqual(factor_run.call_args_list[0], mock.call(Path("factors/bar_gru_15m.toml"), resume=False))
         self.assertEqual(factor_run.call_args_list[1], mock.call(Path("factors/bar_gru_15m.toml"), resume=True))
         factor_train.assert_called_once_with(Path("factors/bar_gru_15m.toml"), resume=True)
+        self.assertEqual(factor_metadata.call_args_list[0], mock.call(None, None))
+        self.assertEqual(factor_metadata.call_args_list[1], mock.call([Path("factors/bar_gru_15m.toml")], None))
         with self.assertRaises(SystemExit):
             cli.main(["run", "--config", "factors/bar_gru_15m.toml"])
 

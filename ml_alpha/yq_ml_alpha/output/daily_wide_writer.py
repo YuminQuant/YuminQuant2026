@@ -63,11 +63,58 @@ class DailyWideWriter:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             return list(pool.map(lambda item: self._write_one(item[0], item[1], item[2]), tasks))
 
+    def dates_missing_output_column(self, coverage_dates: Iterable[int]) -> list[int]:
+        dates = sorted({int(date) for date in coverage_dates})
+        missing = []
+        for trade_date in dates:
+            path = self._path(trade_date)
+            if not path.exists():
+                missing.append(trade_date)
+                continue
+            if self.output_id not in parquet_columns(path):
+                missing.append(trade_date)
+        return missing
+
+    def ensure_output_column(self, coverage_dates: Iterable[int]) -> list[Path]:
+        dates = sorted({int(date) for date in coverage_dates})
+        if not dates:
+            return []
+        missing_dates = self.dates_missing_output_column(dates)
+        if not missing_dates:
+            return []
+        print(
+            f"daily-wide ensure_output_column id={self.output_id} missing={len(missing_dates)} "
+            f"dates={_date_span(missing_dates)}",
+            flush=True,
+        )
+        schema_columns = self._schema_columns(dates)
+        tasks = [(date, schema_columns) for date in missing_dates]
+        if self.write_workers == 1 or len(tasks) <= 1:
+            paths = [self._ensure_output_column_one(date, columns) for date, columns in tasks]
+        else:
+            workers = min(self.write_workers, len(tasks))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                paths = list(pool.map(lambda item: self._ensure_output_column_one(item[0], item[1]), tasks))
+        return [path for path in paths if path is not None]
+
     def _write_one(self, trade_date: int, daily: pd.DataFrame | None, columns: list[str]) -> Path:
         path = self._path(trade_date)
         path.parent.mkdir(parents=True, exist_ok=True)
         base = self._load_base(path, trade_date, daily)
         values = _daily_values(trade_date, daily, self.output_id)
+        merged = _merge_values(base, values, self.output_id, columns)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        merged.to_parquet(tmp, index=False)
+        tmp.replace(path)
+        return path
+
+    def _ensure_output_column_one(self, trade_date: int, columns: list[str]) -> Path | None:
+        path = self._path(trade_date)
+        if path.exists() and self.output_id in parquet_columns(path):
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        base = self._load_base(path, trade_date, None)
+        values = pd.DataFrame(columns=[*KEY_COLUMNS, self.output_id])
         merged = _merge_values(base, values, self.output_id, columns)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         merged.to_parquet(tmp, index=False)
@@ -116,6 +163,14 @@ def _coverage_dates(predictions: pd.DataFrame, coverage_dates: Iterable[int] | N
     if not predictions.empty:
         dates.update(int(date) for date in predictions["trade_date"].dropna().unique())
     return sorted(dates)
+
+
+def _date_span(dates: list[int]) -> str:
+    if not dates:
+        return "none"
+    if len(dates) == 1:
+        return str(dates[0])
+    return f"{dates[0]}..{dates[-1]}"
 
 
 def _prediction_groups(predictions: pd.DataFrame) -> dict[int, pd.DataFrame]:

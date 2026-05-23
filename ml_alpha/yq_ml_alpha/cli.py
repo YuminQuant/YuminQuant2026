@@ -21,6 +21,8 @@ def main(argv: list[str] | None = None) -> None:
     ]:
         command = subparsers.add_parser(name)
         command.add_argument("--config", required=True, type=Path)
+        if name in {"factor-run", "factor-train"}:
+            command.add_argument("--resume", action="store_true", help="resume factor windows from existing outputs/artifacts")
     args = parser.parse_args(argv)
 
     if args.command == "model-train":
@@ -32,11 +34,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "model-materialize":
         paths = model.materialize_only(args.config)
     elif args.command == "factor-train":
-        paths = factor.train_only(args.config)
+        paths = factor.train_only(args.config, resume=args.resume)
     elif args.command == "factor-predict":
         paths = factor.predict_only(args.config)
     elif args.command == "factor-run":
-        paths = factor.run(args.config)
+        paths = factor.run(args.config, resume=args.resume)
     elif args.command == "factor-materialize":
         paths = factor.materialize_only(args.config)
     else:  # pragma: no cover

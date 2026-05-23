@@ -19,17 +19,18 @@ from yq_ml_alpha.pipelines.runtime import (
     _new_model,
     _predict_dates,
     _predict_write_window,
-    _write_missing_coverage,
+    _release_accelerator_memory,
+    TrainingWindow,
     build_windows,
 )
 
 
-def run(config_path: str | Path) -> list[Path]:
-    return run_config(_load_factor_config(config_path))
+def run(config_path: str | Path, *, resume: bool = False) -> list[Path]:
+    return run_config(_load_factor_config(config_path), resume=resume)
 
 
-def train_only(config_path: str | Path) -> list[Path]:
-    return train_config(_load_factor_config(config_path))
+def train_only(config_path: str | Path, *, resume: bool = False) -> list[Path]:
+    return train_config(_load_factor_config(config_path), resume=resume)
 
 
 def predict_only(config_path: str | Path) -> list[Path]:
@@ -41,7 +42,7 @@ def materialize_only(config_path: str | Path) -> list[Path]:
     return materialize.run_config(config)
 
 
-def run_config(config: MlAlphaConfig) -> list[Path]:
+def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     _ensure_factor_config(config)
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
@@ -52,16 +53,45 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
         written.append(metadata_path)
     windows = build_windows(config, calendar)
     all_predict_dates = _predict_dates(config, calendar)
-    covered_dates: set[int] = set()
     progress = _Progress("ml-alpha factor run", len(windows))
+    model_class = _model_class(config.model.class_path) if resume else None
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
+        resume_predict_dates: list[int] | None = None
+        artifact_path = window_artifact_path(config.model.artifact_dir, window.window_id)
+        if resume:
+            resume_predict_dates = writer.dates_missing_output_column(window.predict_dates)
+            if not resume_predict_dates:
+                progress.step("resume_skip output_complete")
+                continue
+            if artifact_path.exists():
+                progress.step(f"resume_load_model missing_predict={len(resume_predict_dates)}")
+                model = model_class.load(artifact_path)
+                resume_window = _window_with_predict_dates(window, resume_predict_dates)
+                written.extend(
+                    _predict_write_window(
+                        config,
+                        dataset,
+                        writer,
+                        model,
+                        resume_window,
+                        progress,
+                        calendar,
+                        schema_dates=all_predict_dates,
+                    )
+                )
+                progress.step("cleanup")
+                del model
+                _release_accelerator_memory()
+                continue
         model = _new_model(config)
         progress.step("load_train")
         train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True)
         progress.step("load_valid")
         valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True)
         if train_bundle.frame.empty:
+            del model, train_bundle, valid_bundle
+            _release_accelerator_memory()
             continue
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
@@ -70,7 +100,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
             progress.step("diagnostics")
             written.extend(model.write_diagnostics(context))
         progress.step("save")
-        model.save(window_artifact_path(config.model.artifact_dir, window.window_id))
+        model.save(artifact_path)
         del train_bundle, valid_bundle
         written.extend(
             _predict_write_window(
@@ -85,14 +115,17 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
                 schema_dates=all_predict_dates,
             )
         )
-        covered_dates.update(window.predict_dates)
-    written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates))
+        progress.step("cleanup")
+        del model, context
+        _release_accelerator_memory()
+    progress.step("ensure_output_column")
+    written.extend(writer.ensure_output_column(all_predict_dates))
     written.extend(_aggregate_diagnostics(config))
     progress.done()
     return written
 
 
-def train_config(config: MlAlphaConfig) -> list[Path]:
+def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     _ensure_factor_config(config)
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
@@ -101,6 +134,10 @@ def train_config(config: MlAlphaConfig) -> list[Path]:
     progress = _Progress("ml-alpha factor train", len(windows))
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
+        path = window_artifact_path(config.model.artifact_dir, window.window_id)
+        if resume and path.exists():
+            progress.step("resume_skip artifact_exists")
+            continue
         model = _new_model(config)
         progress.step("load_train")
         train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True)
@@ -109,7 +146,6 @@ def train_config(config: MlAlphaConfig) -> list[Path]:
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         _fit_model(model, train_bundle, valid_bundle, context)
-        path = window_artifact_path(config.model.artifact_dir, window.window_id)
         if config.diagnostics.enabled:
             progress.step("diagnostics")
             paths.extend(model.write_diagnostics(context))
@@ -135,7 +171,6 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
     model_class = _model_class(config.model.class_path)
     windows = build_windows(config, calendar)
     all_predict_dates = _predict_dates(config, calendar)
-    covered_dates: set[int] = set()
     progress = _Progress("ml-alpha factor predict", len(windows))
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
@@ -154,10 +189,22 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
                 schema_dates=all_predict_dates,
             )
         )
-        covered_dates.update(window.predict_dates)
-    written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates))
+        progress.step("cleanup")
+        del model
+        _release_accelerator_memory()
+    progress.step("ensure_output_column")
+    written.extend(writer.ensure_output_column(all_predict_dates))
     progress.done()
     return written
+
+
+def _window_with_predict_dates(window: TrainingWindow, predict_dates: list[int]) -> TrainingWindow:
+    return TrainingWindow(
+        window_id=window.window_id,
+        train_dates=window.train_dates,
+        valid_dates=window.valid_dates,
+        predict_dates=predict_dates,
+    )
 
 
 def _new_writer(config: MlAlphaConfig) -> DailyWideWriter:

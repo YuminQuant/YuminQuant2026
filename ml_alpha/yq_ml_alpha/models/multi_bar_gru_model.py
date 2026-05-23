@@ -14,6 +14,7 @@ from yq_ml_alpha.models.bar_gru_model import (
     _date_groups,
     _device,
     _negative_ic_loss,
+    _release_torch_memory,
     _set_seed,
     _torch_modules,
 )
@@ -168,6 +169,7 @@ class MultiBarGRUAlphaModel(AlphaModel):
         if best_state is not None:
             self.model.load_state_dict(best_state)
         self.model.to("cpu")
+        _release_torch_memory(torch)
         self.model_info = {
             "window_id": window_id,
             "model_class": self.__class__.__name__,
@@ -212,6 +214,7 @@ class MultiBarGRUAlphaModel(AlphaModel):
                 pred = self.model(torch.from_numpy(daily_np).to(device), torch.from_numpy(minute_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
+        _release_torch_memory(torch)
         return pd.Series(scores, index=data.index, dtype="float32")
 
     def predict_bundle(self, bundle, context: ModelContext) -> pd.Series:
@@ -233,6 +236,7 @@ class MultiBarGRUAlphaModel(AlphaModel):
                 pred = self.model(torch.from_numpy(daily_np).to(device), torch.from_numpy(minute_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
         self.model.to("cpu")
+        _release_torch_memory(torch)
         return pd.Series(scores, index=bundle.frame.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:
@@ -242,6 +246,7 @@ class MultiBarGRUAlphaModel(AlphaModel):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.model.to("cpu")
+        _release_torch_memory(torch)
         torch.save(
             {
                 "params": self.params,

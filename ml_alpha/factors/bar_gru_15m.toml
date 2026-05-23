@@ -16,7 +16,7 @@ valid = []
 predict = [20110101, 20260424]
 
 [sample]
-train_frequency = "5"
+train_frequency = "10"
 predict_frequency = "daily"
 
 [train_scheme]
@@ -26,7 +26,7 @@ train_lookback = "3y"
 validation_ratio = 0.2
 
 [label]
-id = "future_vwap_return_10d"
+id = "future_vwap_return_5d"
 
 [universe]
 id = "mkt_all"
@@ -56,7 +56,7 @@ max_cache_sessions = "auto"
 [materialize]
 cache_samples = false
 cache_dir = "data/model_workspace/bar_gru_15m/cache"
-predict_batch_size = 5
+predict_batch_size = 20
 
 [diagnostics]
 enabled = true

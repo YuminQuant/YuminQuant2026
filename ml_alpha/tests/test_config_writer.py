@@ -64,6 +64,22 @@ from yq_ml_alpha.output.factor_metadata import write_factor_metadata
 from yq_ml_alpha.pipelines.runtime import build_windows, _split_by_validation_ratio
 
 
+def _skip_unless_sklearn_ready(testcase: unittest.TestCase) -> None:
+    try:
+        from sklearn.decomposition import PCA  # noqa: F401
+    except Exception as exc:
+        testcase.skipTest(f"scikit-learn runtime is not available: {exc}")
+
+
+def _skip_unless_xgboost_sklearn_ready(testcase: unittest.TestCase) -> None:
+    try:
+        import xgboost as xgb
+
+        xgb.XGBRegressor(n_estimators=1)
+    except Exception as exc:
+        testcase.skipTest(f"xgboost sklearn runtime is not available: {exc}")
+
+
 class ConfigAndWriterTests(unittest.TestCase):
     def test_config_preserves_model_params(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1072,6 +1088,79 @@ artifact_dir = "data/model_workspace/r1/artifacts"
             self.assertEqual(list(table["ts_code"]), ["000004.SZ", "000005.SZ"])
             self.assertTrue(table["bar_gru_15m"].isna().all())
 
+    def test_daily_wide_writer_ensure_output_column_skips_existing_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "factors"
+            path = output_root / "stock" / "daily" / "2026" / "20260105.parquet"
+            path.parent.mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105],
+                    "ts_code": ["000001.SZ"],
+                    "bar_gru_15m": [7.0],
+                    "old_factor": [1.0],
+                }
+            ).to_parquet(path, index=False)
+
+            writer = DailyWideWriter(output_root, "bar_gru_15m", layout="standard", write_workers=1)
+            self.assertEqual(writer.dates_missing_output_column([20260105]), [])
+            self.assertEqual(writer.ensure_output_column([20260105]), [])
+
+            table = pd.read_parquet(path)
+            self.assertEqual(float(table.loc[0, "bar_gru_15m"]), 7.0)
+            self.assertEqual(float(table.loc[0, "old_factor"]), 1.0)
+
+    def test_daily_wide_writer_ensure_output_column_adds_missing_target_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "factors"
+            path = output_root / "stock" / "daily" / "2026" / "20260105.parquet"
+            path.parent.mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105],
+                    "ts_code": ["000001.SZ"],
+                    "old_factor": [1.0],
+                }
+            ).to_parquet(path, index=False)
+
+            writer = DailyWideWriter(output_root, "bar_gru_15m", layout="standard", write_workers=1)
+            self.assertEqual(writer.dates_missing_output_column([20260105]), [20260105])
+            written = writer.ensure_output_column([20260105])
+
+            self.assertEqual(written, [path])
+            table = pd.read_parquet(path)
+            self.assertEqual(list(table.columns), ["trade_date", "ts_code", "bar_gru_15m", "old_factor"])
+            self.assertTrue(table["bar_gru_15m"].isna().all())
+            self.assertEqual(float(table.loc[0, "old_factor"]), 1.0)
+
+    def test_daily_wide_writer_ensure_output_column_uses_daily_pv_for_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "factors"
+            base_root = Path(tmp) / "daily_pv"
+            (base_root / "2026").mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "trade_date": [20260105, 20260105],
+                    "ts_code": ["000001.SZ", "000002.SZ"],
+                }
+            ).to_parquet(base_root / "2026" / "20260105.parquet", index=False)
+
+            writer = DailyWideWriter(
+                output_root,
+                "bar_gru_15m",
+                layout="standard",
+                base_root=base_root,
+                write_workers=1,
+            )
+            written = writer.ensure_output_column([20260105])
+
+            path = output_root / "stock" / "daily" / "2026" / "20260105.parquet"
+            self.assertEqual(written, [path])
+            table = pd.read_parquet(path)
+            self.assertEqual(list(table.columns), ["trade_date", "ts_code", "bar_gru_15m"])
+            self.assertEqual(list(table["ts_code"]), ["000001.SZ", "000002.SZ"])
+            self.assertTrue(table["bar_gru_15m"].isna().all())
+
     def test_factor_metadata_writer_uses_factor_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "semantic_factor.toml"
@@ -1226,13 +1315,128 @@ neutralize = "none"
     def test_cli_exposes_explicit_model_and_factor_commands(self) -> None:
         from yq_ml_alpha import cli
 
-        with mock.patch("yq_ml_alpha.pipelines.model.run", return_value=[]), mock.patch(
+        with mock.patch("yq_ml_alpha.pipelines.model.run", return_value=[]) as model_run, mock.patch(
             "yq_ml_alpha.pipelines.factor.run", return_value=[]
-        ):
+        ) as factor_run, mock.patch("yq_ml_alpha.pipelines.factor.train_only", return_value=[]) as factor_train:
             cli.main(["model-run", "--config", "models/mdl_000001.toml"])
             cli.main(["factor-run", "--config", "factors/bar_gru_15m.toml"])
+            cli.main(["factor-run", "--config", "factors/bar_gru_15m.toml", "--resume"])
+            cli.main(["factor-train", "--config", "factors/bar_gru_15m.toml", "--resume"])
+        model_run.assert_called_once_with(Path("models/mdl_000001.toml"))
+        self.assertEqual(factor_run.call_args_list[0], mock.call(Path("factors/bar_gru_15m.toml"), resume=False))
+        self.assertEqual(factor_run.call_args_list[1], mock.call(Path("factors/bar_gru_15m.toml"), resume=True))
+        factor_train.assert_called_once_with(Path("factors/bar_gru_15m.toml"), resume=True)
         with self.assertRaises(SystemExit):
             cli.main(["run", "--config", "factors/bar_gru_15m.toml"])
+
+    def test_factor_train_resume_skips_existing_artifact(self) -> None:
+        from yq_ml_alpha.pipelines import factor as factor_pipeline
+        from yq_ml_alpha.pipelines.runtime import TrainingWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifacts"
+            existing = artifact_dir / "w1" / "model.pkl"
+            existing.parent.mkdir(parents=True)
+            existing.write_bytes(b"done")
+            config = mock.Mock()
+            config.data_root = Path(tmp)
+            config.run_id = "bar_gru_15m"
+            config.alpha_id = "bar_gru_15m"
+            config.factor_id = "bar_gru_15m"
+            config.output.kind = "factor"
+            config.output.id = "bar_gru_15m"
+            config.model.artifact_dir = artifact_dir
+            config.diagnostics.enabled = False
+            windows = [
+                TrainingWindow("w1", [20260105], [], []),
+                TrainingWindow("w2", [20260106], [], []),
+            ]
+            train_bundle = DatasetBundle(
+                pd.DataFrame({"trade_date": [20260106], "ts_code": ["000001.SZ"], "label": [1.0]}),
+                ["f"],
+                "label",
+            )
+            valid_bundle = DatasetBundle(pd.DataFrame(columns=["trade_date", "ts_code", "label"]), ["f"], "label")
+            model_instance = mock.Mock()
+
+            with mock.patch.object(factor_pipeline.TradingCalendar, "load", return_value=mock.Mock()), mock.patch.object(
+                factor_pipeline, "DatasetBuilder", return_value=mock.Mock()
+            ), mock.patch.object(factor_pipeline, "build_windows", return_value=windows), mock.patch.object(
+                factor_pipeline, "_load_bundle", side_effect=[train_bundle, valid_bundle]
+            ) as load_bundle, mock.patch.object(
+                factor_pipeline, "_context", return_value=mock.Mock()
+            ), mock.patch.object(
+                factor_pipeline, "_new_model", return_value=model_instance
+            ), mock.patch.object(
+                factor_pipeline, "_fit_model"
+            ) as fit_model, mock.patch.object(
+                factor_pipeline, "_aggregate_diagnostics", return_value=[]
+            ):
+                factor_pipeline.train_config(config, resume=True)
+
+            self.assertEqual(load_bundle.call_count, 2)
+            fit_model.assert_called_once()
+            model_instance.save.assert_called_once()
+
+    def test_factor_run_resume_skips_complete_window_and_predicts_missing_with_artifact(self) -> None:
+        from yq_ml_alpha.pipelines import factor as factor_pipeline
+        from yq_ml_alpha.pipelines.runtime import TrainingWindow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifacts"
+            existing = artifact_dir / "w2" / "model.pkl"
+            existing.parent.mkdir(parents=True)
+            existing.write_bytes(b"done")
+            config = mock.Mock()
+            config.data_root = Path(tmp)
+            config.run_id = "bar_gru_15m"
+            config.alpha_id = "bar_gru_15m"
+            config.factor_id = "bar_gru_15m"
+            config.output.kind = "factor"
+            config.output.id = "bar_gru_15m"
+            config.model.artifact_dir = artifact_dir
+            config.model.class_path = "dummy.Model"
+            config.diagnostics.enabled = False
+            windows = [
+                TrainingWindow("w1", [20250101], [], [20260105]),
+                TrainingWindow("w2", [20250102], [], [20260106, 20260107]),
+            ]
+            writer = mock.Mock()
+            writer.dates_missing_output_column.side_effect = [[], [20260107]]
+            writer.ensure_output_column.return_value = []
+            loaded_model = mock.Mock()
+            model_class = mock.Mock()
+            model_class.load.return_value = loaded_model
+
+            with mock.patch.object(factor_pipeline.TradingCalendar, "load", return_value=mock.Mock()), mock.patch.object(
+                factor_pipeline, "DatasetBuilder", return_value=mock.Mock()
+            ), mock.patch.object(factor_pipeline, "_new_writer", return_value=writer), mock.patch.object(
+                factor_pipeline, "write_factor_metadata", return_value=None
+            ), mock.patch.object(
+                factor_pipeline, "build_windows", return_value=windows
+            ), mock.patch.object(
+                factor_pipeline, "_predict_dates", return_value=[20260105, 20260106, 20260107]
+            ), mock.patch.object(
+                factor_pipeline, "_model_class", return_value=model_class
+            ), mock.patch.object(
+                factor_pipeline, "_new_model"
+            ) as new_model, mock.patch.object(
+                factor_pipeline, "_load_bundle"
+            ) as load_bundle, mock.patch.object(
+                factor_pipeline, "_predict_write_window", return_value=[Path(tmp) / "out.parquet"]
+            ) as predict_write, mock.patch.object(
+                factor_pipeline, "_aggregate_diagnostics", return_value=[]
+            ):
+                paths = factor_pipeline.run_config(config, resume=True)
+
+            self.assertEqual(paths, [Path(tmp) / "out.parquet"])
+            model_class.load.assert_called_once_with(existing)
+            new_model.assert_not_called()
+            load_bundle.assert_not_called()
+            predict_window = predict_write.call_args.args[4]
+            self.assertEqual(predict_window.window_id, "w2")
+            self.assertEqual(predict_window.predict_dates, [20260107])
+            writer.ensure_output_column.assert_called_once_with([20260105, 20260106, 20260107])
 
     def test_factor_frame_all_columns_discovers_union_and_fills_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1773,10 +1977,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         self.assertTrue(np.allclose(pred.to_numpy(), [3.0, 5.0, 7.0], atol=1e-5))
 
     def test_regularized_linear_models_fit_search_and_save(self) -> None:
-        try:
-            import sklearn  # noqa: F401
-        except ImportError:
-            self.skipTest("scikit-learn is not installed")
+        _skip_unless_sklearn_ready(self)
         train = pd.DataFrame(
             {
                 "trade_date": [1, 1, 1, 1, 1, 1],
@@ -1845,10 +2046,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
     def test_regularized_linear_search_uses_explicit_validation_when_available(self) -> None:
-        try:
-            import sklearn  # noqa: F401
-        except ImportError:
-            self.skipTest("scikit-learn is not installed")
+        _skip_unless_sklearn_ready(self)
         train = pd.DataFrame(
             {
                 "trade_date": [1, 1, 1, 1],
@@ -1888,10 +2086,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         self.assertTrue(np.isfinite(pred.to_numpy()).all())
 
     def test_random_forest_model_smoke_when_installed(self) -> None:
-        try:
-            import sklearn  # noqa: F401
-        except ImportError:
-            self.skipTest("scikit-learn is not installed")
+        _skip_unless_sklearn_ready(self)
         model = RandomForestAlphaModel()
         context = ModelContext(
             run_id="r",
@@ -1917,10 +2112,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         self.assertTrue(np.isfinite(pred.to_numpy()).all())
 
     def test_xgboost_model_smoke_when_installed(self) -> None:
-        try:
-            import xgboost  # noqa: F401
-        except ImportError:
-            self.skipTest("xgboost is not installed")
+        _skip_unless_xgboost_sklearn_ready(self)
         model = XGBoostAlphaModel()
         context = ModelContext(
             run_id="r",
@@ -1939,9 +2131,9 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
     def test_xgboost_optuna_model_smoke_when_installed(self) -> None:
         try:
             import optuna  # noqa: F401
-            import xgboost  # noqa: F401
         except ImportError:
-            self.skipTest("optuna or xgboost is not installed")
+            self.skipTest("optuna is not installed")
+        _skip_unless_xgboost_sklearn_ready(self)
         model = XGBoostOptunaAlphaModel()
         context = ModelContext(
             run_id="r",
@@ -2560,6 +2752,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
     def test_pca_ols_model_fit_predict_save_load(self) -> None:
+        _skip_unless_sklearn_ready(self)
         context = ModelContext(
             run_id="mdl_000005",
             alpha_id="mdl_000005",

@@ -27,6 +27,10 @@ def main(argv: list[str] | None = None) -> None:
     factor_metadata = subparsers.add_parser("factor-metadata")
     factor_metadata.add_argument("--config", action="append", type=Path, help="refresh one factor config; may be repeated")
     factor_metadata.add_argument("--config-dir", type=Path, help="refresh all *.toml factor configs in this directory")
+    factor_metadata_all = subparsers.add_parser("factor-metadata-all")
+    factor_metadata_all.add_argument("--config", action="append", type=Path, help="refresh one ml_alpha factor config after Rust metadata; may be repeated")
+    factor_metadata_all.add_argument("--config-dir", type=Path, help="refresh all ml_alpha *.toml factor configs in this directory after Rust metadata")
+    factor_metadata_all.add_argument("--rust-manifest", type=Path, help="path to factor_engine Cargo.toml")
     args = parser.parse_args(argv)
 
     if args.command == "model-train":
@@ -47,6 +51,8 @@ def main(argv: list[str] | None = None) -> None:
         paths = factor.materialize_only(args.config)
     elif args.command == "factor-metadata":
         paths = factor.metadata_only(args.config, args.config_dir)
+    elif args.command == "factor-metadata-all":
+        paths = factor.all_metadata(args.config, args.config_dir, args.rust_manifest)
     else:  # pragma: no cover
         raise ValueError(args.command)
 

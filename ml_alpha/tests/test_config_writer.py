@@ -1319,21 +1319,39 @@ neutralize = "none"
             "yq_ml_alpha.pipelines.factor.run", return_value=[]
         ) as factor_run, mock.patch("yq_ml_alpha.pipelines.factor.train_only", return_value=[]) as factor_train, mock.patch(
             "yq_ml_alpha.pipelines.factor.metadata_only", return_value=[]
-        ) as factor_metadata:
+        ) as factor_metadata, mock.patch("yq_ml_alpha.pipelines.factor.all_metadata", return_value=[]) as factor_metadata_all:
             cli.main(["model-run", "--config", "models/mdl_000001.toml"])
             cli.main(["factor-run", "--config", "factors/bar_gru_15m.toml"])
             cli.main(["factor-run", "--config", "factors/bar_gru_15m.toml", "--resume"])
             cli.main(["factor-train", "--config", "factors/bar_gru_15m.toml", "--resume"])
             cli.main(["factor-metadata"])
             cli.main(["factor-metadata", "--config", "factors/bar_gru_15m.toml"])
+            cli.main(["factor-metadata-all"])
         model_run.assert_called_once_with(Path("models/mdl_000001.toml"))
         self.assertEqual(factor_run.call_args_list[0], mock.call(Path("factors/bar_gru_15m.toml"), resume=False))
         self.assertEqual(factor_run.call_args_list[1], mock.call(Path("factors/bar_gru_15m.toml"), resume=True))
         factor_train.assert_called_once_with(Path("factors/bar_gru_15m.toml"), resume=True)
         self.assertEqual(factor_metadata.call_args_list[0], mock.call(None, None))
         self.assertEqual(factor_metadata.call_args_list[1], mock.call([Path("factors/bar_gru_15m.toml")], None))
+        factor_metadata_all.assert_called_once_with(None, None, None)
         with self.assertRaises(SystemExit):
             cli.main(["run", "--config", "factors/bar_gru_15m.toml"])
+
+    def test_factor_metadata_all_runs_rust_then_python_metadata(self) -> None:
+        from yq_ml_alpha.pipelines import factor as factor_pipeline
+
+        with mock.patch.object(factor_pipeline.subprocess, "run") as run, mock.patch.object(
+            factor_pipeline, "metadata_only", return_value=[Path("data/factors/factor_metadata.parquet")]
+        ) as metadata_only:
+            paths = factor_pipeline.all_metadata([Path("factors/bar_gru_15m.toml")], rust_manifest="factor_engine/Cargo.toml")
+
+        self.assertEqual(paths, [Path("data/factors/factor_metadata.parquet")])
+        run.assert_called_once()
+        args, kwargs = run.call_args
+        self.assertEqual(args[0][-1], "metadata")
+        self.assertTrue(str(args[0][4]).endswith("factor_engine\\Cargo.toml") or str(args[0][4]).endswith("factor_engine/Cargo.toml"))
+        self.assertTrue(kwargs["check"])
+        metadata_only.assert_called_once_with([Path("factors/bar_gru_15m.toml")], None)
 
     def test_factor_train_resume_skips_existing_artifact(self) -> None:
         from yq_ml_alpha.pipelines import factor as factor_pipeline

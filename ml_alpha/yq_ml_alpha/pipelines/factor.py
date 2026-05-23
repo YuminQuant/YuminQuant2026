@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from yq_ml_alpha.calendar import TradingCalendar
-from yq_ml_alpha.config import MlAlphaConfig, load_config
+from yq_ml_alpha.config import MlAlphaConfig, PROJECT_ROOT, load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.output.artifacts import window_artifact_path
 from yq_ml_alpha.output.daily_wide_writer import DailyWideWriter
@@ -52,6 +53,20 @@ def metadata_only(config_paths: list[str | Path] | None = None, config_dir: str 
             written.append(metadata_path)
             seen.add(metadata_path)
     return written
+
+
+def all_metadata(
+    config_paths: list[str | Path] | None = None,
+    config_dir: str | Path | None = None,
+    rust_manifest: str | Path | None = None,
+) -> list[Path]:
+    manifest = _project_path(rust_manifest or PROJECT_ROOT / "factor_engine" / "Cargo.toml")
+    subprocess.run(
+        ["cargo", "run", "--release", "--manifest-path", str(manifest), "--", "metadata"],
+        cwd=PROJECT_ROOT,
+        check=True,
+    )
+    return metadata_only(config_paths, config_dir)
 
 
 def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
@@ -227,6 +242,11 @@ def _metadata_config_paths(config_paths: list[str | Path] | None, config_dir: st
     if not paths:
         raise FileNotFoundError(f"no factor TOML files found under {root}")
     return paths
+
+
+def _project_path(path: str | Path) -> Path:
+    path = Path(path)
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 def _new_writer(config: MlAlphaConfig) -> DailyWideWriter:

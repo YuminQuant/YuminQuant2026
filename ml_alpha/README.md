@@ -25,12 +25,13 @@ python -m yq_ml_alpha model-run --config models\mdl_000001.toml
 python -m yq_ml_alpha factor-run --config factors\bar_gru_15m.toml
 python -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
 python -m yq_ml_alpha factor-metadata
+python -m yq_ml_alpha factor-metadata-all
 ```
 
 Available commands:
 
 - `model-run`, `model-train`, `model-predict`, `model-materialize`
-- `factor-run`, `factor-train`, `factor-predict`, `factor-materialize`, `factor-metadata`
+- `factor-run`, `factor-train`, `factor-predict`, `factor-materialize`, `factor-metadata`, `factor-metadata-all`
 
 The old generic `run/train/predict/materialize` CLI commands have been removed.
 
@@ -169,6 +170,14 @@ python -m yq_ml_alpha factor-metadata --config factors\bar_gru_15m.toml
 ```
 
 When Rust factor metadata is rebuilt with `factor_engine -- metadata`, run `factor-metadata` afterward so the Python-generated formal factors are added back into the shared metadata file.
+
+Or refresh the shared metadata in one step:
+
+```powershell
+python -m yq_ml_alpha factor-metadata-all
+```
+
+This command runs Rust `factor_engine -- metadata` first, then refreshes the `ml_alpha` factor rows, so the shared file contains both Rust-native and Python-generated factors.
 
 For a formal factor such as `logsig_alpha_v`, `factor_id`, `name`, and `output_column` are all `logsig_alpha_v`.
 

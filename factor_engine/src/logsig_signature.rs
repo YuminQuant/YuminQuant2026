@@ -68,7 +68,9 @@ pub fn logsig_signature_batch_from_volume(
         return Ok(Vec::new());
     }
     if cols == 0 {
-        return Err(err("logsig signature volume matrix must have at least one column"));
+        return Err(err(
+            "logsig signature volume matrix must have at least one column",
+        ));
     }
     if volume.len() != rows.saturating_mul(cols) {
         return Err(err(format!(
@@ -81,15 +83,14 @@ pub fn logsig_signature_batch_from_volume(
     let level_offsets = level_offsets(order)?;
     let basis = lyndon_basis(order)?;
     let mut output = vec![0.0f32; rows * logsig_width];
-    logsig_thread_pool()
-        .install(|| {
-            output
-                .par_chunks_mut(logsig_width)
-                .zip(volume.par_chunks(cols))
-                .try_for_each(|(out, row)| {
-                    compute_row(row, order, tensor_width, &level_offsets, &basis, out)
-                })
-        })?;
+    logsig_thread_pool().install(|| {
+        output
+            .par_chunks_mut(logsig_width)
+            .zip(volume.par_chunks(cols))
+            .try_for_each(|(out, row)| {
+                compute_row(row, order, tensor_width, &level_offsets, &basis, out)
+            })
+    })?;
     Ok(output)
 }
 
@@ -299,7 +300,10 @@ fn letter(word: usize, length: usize, pos: usize) -> usize {
 
 fn lyndon_basis(order: usize) -> Result<LyndonBasis> {
     let words = lyndon_words(order)?;
-    let word_set = words.iter().copied().collect::<std::collections::HashSet<_>>();
+    let word_set = words
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
     let mut expansions_by_word: HashMap<(usize, usize), BTreeMap<usize, f64>> = HashMap::new();
     let mut expansions = Vec::with_capacity(words.len());
 
@@ -420,7 +424,10 @@ mod tests {
     #[test]
     fn default_logsig_thread_count_is_small_and_overridable() {
         assert_eq!(configured_logsig_thread_count(None, None), 3);
-        assert_eq!(configured_logsig_thread_count(Some("2".to_string()), None), 2);
+        assert_eq!(
+            configured_logsig_thread_count(Some("2".to_string()), None),
+            2
+        );
         assert_eq!(
             configured_logsig_thread_count(None, Some("4".to_string())),
             4

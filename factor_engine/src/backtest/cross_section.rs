@@ -1,15 +1,18 @@
 use std::collections::BTreeMap;
 
-use crate::backtest::data::{BacktestInput, BacktestPanel, BenchmarkKind};
+use crate::backtest::data::{
+    BacktestInput, BacktestPanel, BenchmarkKind, CNE6_PRIMARY_BARRA_COLUMNS,
+};
 use crate::backtest::ic::{daily_ic_observation_with_universe, IcObservation};
 use crate::backtest::metrics::{
-    daily_factor_stats, FactorStatsDaily, HoldingWeight, IndustryWeight, PerformancePoint,
+    daily_factor_stats, BarraExposureRecord, FactorStatsDaily, HoldingWeight, IndustryWeight,
+    PerformancePoint,
 };
 use crate::backtest::preprocess::{
     coverage_stats_with_universe, equal_group_weights, group_assignments, keyed_values,
     long_short_weights, maybe_neutralize, portfolio_return, portfolio_scores, turnover,
 };
-use crate::backtest::request::BacktestRunRequest;
+use crate::backtest::request::{BacktestRunRequest, NeutralizeSpec};
 use crate::backtest::schedule::date_after;
 use crate::error::{err, Result};
 use crate::progress::ProgressBar;
@@ -23,6 +26,7 @@ pub struct CrossSectionBacktestOutput {
     pub factor_stats: Vec<FactorStatsDaily>,
     pub holdings: Vec<HoldingWeight>,
     pub industry_weights: Vec<IndustryWeight>,
+    pub barra_exposure: Vec<BarraExposureRecord>,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +69,7 @@ pub struct CrossSectionBacktestState {
     factor_stats: Vec<FactorStatsDaily>,
     holdings: Vec<HoldingWeight>,
     industry_weights: Vec<IndustryWeight>,
+    barra_exposure: Vec<BarraExposureRecord>,
 }
 
 impl CrossSectionBacktestState {
@@ -77,6 +82,7 @@ impl CrossSectionBacktestState {
             factor_stats: Vec::new(),
             holdings: Vec::new(),
             industry_weights: Vec::new(),
+            barra_exposure: Vec::new(),
         }
     }
 }
@@ -175,6 +181,7 @@ pub fn finalize_cross_section_backtest(
         output.factor_stats.extend(state.factor_stats);
         output.holdings.extend(state.holdings);
         output.industry_weights.extend(state.industry_weights);
+        output.barra_exposure.extend(state.barra_exposure);
         progress.tick(format!(
             "batch={}/{} factor={} dates={} rebalance={}",
             batch_index, batch_count, factor.factor_id, target_date_count, rebalance_count
@@ -208,7 +215,12 @@ fn update_factor_cross_section_state(
             stats.coverage,
             stats.inf_rate,
         ));
-        let barra = barra_cross_sections(input, date_idx, &factor.output_column)?;
+        let barra_exposure = named_barra_cross_sections(input, date_idx)?;
+        let neutralize_barra = neutralize_barra_cross_sections(
+            &request.neutralize,
+            &barra_exposure,
+            &factor.output_column,
+        );
         let sector_groups = input
             .sectors
             .as_ref()
@@ -219,7 +231,19 @@ fn update_factor_cross_section_state(
             .as_ref()
             .and_then(|by_date| by_date.get(date))
             .map(Vec::as_slice);
-        let processed = maybe_neutralize(&masked_raw, &request.neutralize, &barra, sector_groups);
+        let processed = maybe_neutralize(
+            &masked_raw,
+            &request.neutralize,
+            &neutralize_barra,
+            sector_groups,
+        );
+        record_barra_ic(
+            &mut state.barra_exposure,
+            &factor.factor_id,
+            *date,
+            &processed,
+            &barra_exposure,
+        );
 
         let label = input
             .panel
@@ -240,6 +264,14 @@ fn update_factor_cross_section_state(
 
         if rebalance_lookup.contains_key(date) {
             let weights = build_portfolio_weights(&processed, request.groups);
+            record_barra_group_exposure(
+                &mut state.barra_exposure,
+                &factor.factor_id,
+                *date,
+                &weights,
+                &barra_exposure,
+                request.groups,
+            );
             record_rebalance_detail(
                 request,
                 input,
@@ -304,6 +336,7 @@ fn finalize_factor_returns(state: &mut CrossSectionBacktestState, _group_count: 
     for row in &mut state.industry_weights {
         row.rank_ic_sign = long_short_sign;
     }
+    finalize_barra_exposure(state, &selected_portfolio, long_short_sign);
 }
 
 fn selected_long_group(rank_ic_sign: f64, group_count: usize) -> String {
@@ -517,6 +550,182 @@ fn record_industry_weights(
     }
 }
 
+const BARRA_IC_METRIC: &str = "barra_ic";
+const BARRA_IC_MEAN_METRIC: &str = "barra_ic_mean";
+const LONG_GROUP_EXPOSURE_METRIC: &str = "long_group_exposure";
+
+fn record_barra_ic(
+    output: &mut Vec<BarraExposureRecord>,
+    factor_id: &str,
+    trade_date: i32,
+    factor_values: &[Option<f64>],
+    barra: &[(String, Vec<Option<f64>>)],
+) {
+    for (barra_factor, exposure) in barra {
+        if !is_cne6_primary_barra_factor(barra_factor) {
+            continue;
+        }
+        let (value, pair_count) = pearson_corr_with_count(factor_values, exposure);
+        output.push(BarraExposureRecord {
+            factor_id: factor_id.to_string(),
+            trade_date: Some(trade_date),
+            metric: BARRA_IC_METRIC.to_string(),
+            barra_factor: barra_factor.clone(),
+            selected_group: None,
+            rank_ic_sign: None,
+            value,
+            pair_count: Some(pair_count as i64),
+        });
+    }
+}
+
+fn record_barra_group_exposure(
+    output: &mut Vec<BarraExposureRecord>,
+    factor_id: &str,
+    trade_date: i32,
+    weights: &BTreeMap<String, Vec<f64>>,
+    barra: &[(String, Vec<Option<f64>>)],
+    group_count: usize,
+) {
+    let mut endpoint_groups = vec![group_name(0), group_name(group_count.saturating_sub(1))];
+    endpoint_groups.sort();
+    endpoint_groups.dedup();
+    for portfolio in endpoint_groups {
+        let Some(group_weights) = weights.get(&portfolio) else {
+            continue;
+        };
+        for (barra_factor, exposure) in barra {
+            if !is_cne6_primary_barra_factor(barra_factor) {
+                continue;
+            }
+            let (value, pair_count) = weighted_exposure_mean(group_weights, exposure);
+            output.push(BarraExposureRecord {
+                factor_id: factor_id.to_string(),
+                trade_date: Some(trade_date),
+                metric: LONG_GROUP_EXPOSURE_METRIC.to_string(),
+                barra_factor: barra_factor.clone(),
+                selected_group: Some(portfolio.clone()),
+                rank_ic_sign: None,
+                value,
+                pair_count: Some(pair_count as i64),
+            });
+        }
+    }
+}
+
+fn finalize_barra_exposure(
+    state: &mut CrossSectionBacktestState,
+    selected_portfolio: &str,
+    rank_ic_sign: f64,
+) {
+    let mut ic_sums = BTreeMap::<String, (f64, usize)>::new();
+    for row in &state.barra_exposure {
+        if row.metric != BARRA_IC_METRIC {
+            continue;
+        }
+        let Some(value) = row.value.filter(|value| value.is_finite()) else {
+            continue;
+        };
+        let entry = ic_sums.entry(row.barra_factor.clone()).or_insert((0.0, 0));
+        entry.0 += value;
+        entry.1 += 1;
+    }
+    let factor_id = state
+        .barra_exposure
+        .first()
+        .map(|row| row.factor_id.clone());
+    if let Some(factor_id) = factor_id {
+        for (barra_factor, (sum, count)) in ic_sums {
+            state.barra_exposure.push(BarraExposureRecord {
+                factor_id: factor_id.clone(),
+                trade_date: None,
+                metric: BARRA_IC_MEAN_METRIC.to_string(),
+                barra_factor,
+                selected_group: None,
+                rank_ic_sign: None,
+                value: (count > 0).then_some(sum / count as f64),
+                pair_count: Some(count as i64),
+            });
+        }
+    }
+    state.barra_exposure.retain(|row| {
+        row.metric != LONG_GROUP_EXPOSURE_METRIC
+            || row.selected_group.as_deref() == Some(selected_portfolio)
+    });
+    for row in &mut state.barra_exposure {
+        if row.metric == LONG_GROUP_EXPOSURE_METRIC {
+            row.rank_ic_sign = Some(rank_ic_sign);
+        }
+    }
+}
+
+fn is_cne6_primary_barra_factor(column: &str) -> bool {
+    CNE6_PRIMARY_BARRA_COLUMNS.contains(&column)
+}
+
+fn pearson_corr_with_count(x: &[Option<f64>], y: &[Option<f64>]) -> (Option<f64>, usize) {
+    if x.len() != y.len() {
+        return (None, 0);
+    }
+    let pairs = x
+        .iter()
+        .zip(y)
+        .filter_map(|(x, y)| {
+            match (
+                x.filter(|value| value.is_finite()),
+                y.filter(|value| value.is_finite()),
+            ) {
+                (Some(x), Some(y)) => Some((x, y)),
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let pair_count = pairs.len();
+    if pair_count < 2 {
+        return (None, pair_count);
+    }
+    let mean_x = pairs.iter().map(|(x, _)| *x).sum::<f64>() / pair_count as f64;
+    let mean_y = pairs.iter().map(|(_, y)| *y).sum::<f64>() / pair_count as f64;
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
+    for (x, y) in pairs {
+        let dx = x - mean_x;
+        let dy = y - mean_y;
+        cov += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+    if var_x <= f64::EPSILON || var_y <= f64::EPSILON {
+        return (None, pair_count);
+    }
+    (Some(cov / (var_x.sqrt() * var_y.sqrt())), pair_count)
+}
+
+fn weighted_exposure_mean(weights: &[f64], exposure: &[Option<f64>]) -> (Option<f64>, usize) {
+    if weights.len() != exposure.len() {
+        return (None, 0);
+    }
+    let mut numerator = 0.0;
+    let mut denominator = 0.0;
+    let mut pair_count = 0usize;
+    for (weight, value) in weights.iter().zip(exposure) {
+        if weight.abs() <= f64::EPSILON {
+            continue;
+        }
+        let Some(value) = value.filter(|value| value.is_finite()) else {
+            continue;
+        };
+        numerator += *weight * value;
+        denominator += *weight;
+        pair_count += 1;
+    }
+    if denominator.abs() <= f64::EPSILON {
+        return (None, pair_count);
+    }
+    (Some(numerator / denominator), pair_count)
+}
+
 fn rank_ic_mean_sign(rows: &[IcObservation]) -> f64 {
     let mut sum = 0.0;
     let mut count = 0usize;
@@ -537,17 +746,30 @@ fn group_name(group_idx: usize) -> String {
     format!("group_{}", group_idx + 1)
 }
 
-fn barra_cross_sections(
+fn named_barra_cross_sections(
     input: &BacktestInput,
     date_idx: usize,
-    target_column: &str,
-) -> Result<Vec<Vec<Option<f64>>>> {
+) -> Result<Vec<(String, Vec<Option<f64>>)>> {
     input
         .barra_columns
         .iter()
-        .filter(|column| column.as_str() != target_column)
-        .map(|column| input.panel.cross_section(column, date_idx))
+        .map(|column| Ok((column.clone(), input.panel.cross_section(column, date_idx)?)))
         .collect()
+}
+
+fn neutralize_barra_cross_sections(
+    spec: &NeutralizeSpec,
+    barra: &[(String, Vec<Option<f64>>)],
+    target_column: &str,
+) -> Vec<Vec<Option<f64>>> {
+    match spec {
+        NeutralizeSpec::Barra { .. } => barra
+            .iter()
+            .filter(|(column, _)| column.as_str() != target_column)
+            .map(|(_, values)| values.clone())
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 #[allow(dead_code)]
@@ -579,9 +801,16 @@ pub fn ensure_backtest_inputs(request: &BacktestRunRequest) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_factor_returns, record_industry_weights, CrossSectionBacktestState};
+    use super::{
+        finalize_factor_returns, pearson_corr_with_count, record_barra_group_exposure,
+        record_industry_weights, weighted_exposure_mean, CrossSectionBacktestState,
+        BARRA_IC_MEAN_METRIC, BARRA_IC_METRIC, LONG_GROUP_EXPOSURE_METRIC,
+    };
     use crate::backtest::ic::IcObservation;
-    use crate::backtest::metrics::{HoldingWeight, IndustryWeight, PerformancePoint};
+    use crate::backtest::metrics::{
+        BarraExposureRecord, HoldingWeight, IndustryWeight, PerformancePoint,
+    };
+    use std::collections::BTreeMap;
 
     fn point(portfolio: &str, return_value: f64, benchmark_return: f64) -> PerformancePoint {
         PerformancePoint {
@@ -712,5 +941,129 @@ mod tests {
         assert_eq!(missing.sector_source, "ci_l1");
         assert_eq!(missing.weight, 0.5);
         assert_eq!(missing.stock_count, 1);
+    }
+
+    #[test]
+    fn barra_pearson_ic_skips_missing_and_constant_values() {
+        let factor = vec![Some(1.0), Some(2.0), None, Some(4.0)];
+        let barra = vec![Some(2.0), Some(4.0), Some(10.0), Some(8.0)];
+        let (ic, pair_count) = pearson_corr_with_count(&factor, &barra);
+
+        assert_eq!(pair_count, 3);
+        assert!(ic.unwrap() > 0.99);
+
+        let constant = vec![Some(1.0), Some(1.0), Some(1.0)];
+        let label = vec![Some(1.0), Some(2.0), Some(3.0)];
+        let (ic, pair_count) = pearson_corr_with_count(&constant, &label);
+        assert_eq!(pair_count, 3);
+        assert_eq!(ic, None);
+    }
+
+    #[test]
+    fn weighted_exposure_mean_renormalizes_finite_contributors() {
+        let weights = vec![0.5, 0.5, 0.0];
+        let exposure = vec![Some(1.0), None, Some(100.0)];
+        let (value, pair_count) = weighted_exposure_mean(&weights, &exposure);
+
+        assert_eq!(pair_count, 1);
+        assert_eq!(value, Some(1.0));
+    }
+
+    #[test]
+    fn finalize_barra_exposure_keeps_rank_ic_selected_long_side_and_adds_means() {
+        let mut state = CrossSectionBacktestState::new();
+        state.daily_ic.push(IcObservation {
+            factor_id: "factor_a".to_string(),
+            factor_date: 20260424,
+            label_date: 20260424,
+            settle_date: Some(20260428),
+            horizon: None,
+            ic: Some(0.1),
+            rank_ic: Some(-0.1),
+            pair_count: 10,
+            coverage: 1.0,
+            inf_rate: 0.0,
+        });
+        state.barra_exposure = vec![
+            BarraExposureRecord {
+                factor_id: "factor_a".to_string(),
+                trade_date: Some(20260424),
+                metric: BARRA_IC_METRIC.to_string(),
+                barra_factor: "SIZE".to_string(),
+                selected_group: None,
+                rank_ic_sign: None,
+                value: Some(0.2),
+                pair_count: Some(100),
+            },
+            BarraExposureRecord {
+                factor_id: "factor_a".to_string(),
+                trade_date: Some(20260425),
+                metric: BARRA_IC_METRIC.to_string(),
+                barra_factor: "SIZE".to_string(),
+                selected_group: None,
+                rank_ic_sign: None,
+                value: Some(0.4),
+                pair_count: Some(100),
+            },
+            BarraExposureRecord {
+                factor_id: "factor_a".to_string(),
+                trade_date: Some(20260424),
+                metric: LONG_GROUP_EXPOSURE_METRIC.to_string(),
+                barra_factor: "SIZE".to_string(),
+                selected_group: Some("group_1".to_string()),
+                rank_ic_sign: None,
+                value: Some(-0.3),
+                pair_count: Some(10),
+            },
+            BarraExposureRecord {
+                factor_id: "factor_a".to_string(),
+                trade_date: Some(20260424),
+                metric: LONG_GROUP_EXPOSURE_METRIC.to_string(),
+                barra_factor: "SIZE".to_string(),
+                selected_group: Some("group_2".to_string()),
+                rank_ic_sign: None,
+                value: Some(0.3),
+                pair_count: Some(10),
+            },
+        ];
+
+        finalize_factor_returns(&mut state, 2);
+
+        let selected = state
+            .barra_exposure
+            .iter()
+            .filter(|row| row.metric == LONG_GROUP_EXPOSURE_METRIC)
+            .collect::<Vec<_>>();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].selected_group.as_deref(), Some("group_1"));
+        assert_eq!(selected[0].rank_ic_sign, Some(-1.0));
+
+        let mean = state
+            .barra_exposure
+            .iter()
+            .find(|row| row.metric == BARRA_IC_MEAN_METRIC && row.barra_factor == "SIZE")
+            .expect("mean row");
+        assert!((mean.value.unwrap() - 0.3).abs() < 1e-12);
+        assert_eq!(mean.pair_count, Some(2));
+    }
+
+    #[test]
+    fn record_barra_group_exposure_records_only_endpoint_groups() {
+        let mut weights = BTreeMap::new();
+        weights.insert("group_1".to_string(), vec![1.0, 0.0]);
+        weights.insert("group_2".to_string(), vec![0.0, 1.0]);
+        weights.insert("long_short".to_string(), vec![-0.5, 0.5]);
+        let barra = vec![("SIZE".to_string(), vec![Some(-1.0), Some(2.0)])];
+        let mut rows = Vec::new();
+
+        record_barra_group_exposure(&mut rows, "factor_a", 20260424, &weights, &barra, 2);
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .all(|row| row.metric == LONG_GROUP_EXPOSURE_METRIC));
+        assert!(rows
+            .iter()
+            .all(|row| row.selected_group.as_deref() != Some("long_short")));
     }
 }

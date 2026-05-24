@@ -10,7 +10,7 @@ use crate::data::parquet_io::{parquet_column_names, read_parquet};
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
 use crate::factor::common::{ClassificationLevel, ClassificationMap};
-use crate::storage::{BarraStorage, FactorMetadata, FactorStorage, LabelStorage};
+use crate::storage::{FactorMetadata, FactorStorage, LabelStorage};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FactorRootLayout {
@@ -18,7 +18,7 @@ enum FactorRootLayout {
     DirectDaily,
 }
 
-const CNE6_PRIMARY_BARRA_COLUMNS: &[&str] = &[
+pub const CNE6_PRIMARY_BARRA_COLUMNS: &[&str] = &[
     "DIVIDEND_YIELD",
     "GROWTH",
     "LIQUIDITY",
@@ -271,7 +271,7 @@ pub fn prepare_backtest_data_plan(
     let trade_filter = load_trade_filter_plan(config, request, &target_dates, &instruments)?;
     let benchmark = load_benchmark_plan(config, &request.benchmark, &target_dates, &instruments)?;
 
-    let barra_columns = resolve_neutralize_barra_columns(config, request)?;
+    let barra_columns = resolve_backtest_barra_columns(request);
     let sector_map = if request.neutralize.uses_sector() {
         Some(load_backtest_classification_map(
             &config.stock_sw_classification_path,
@@ -336,36 +336,22 @@ fn load_backtest_classification_map(path: &Path) -> Result<ClassificationMap> {
     ClassificationMap::from_table(&table, ClassificationLevel::Sector)
 }
 
-fn resolve_neutralize_barra_columns(
-    config: &EngineConfig,
-    request: &BacktestRunRequest,
-) -> Result<Vec<String>> {
-    let mut columns = request.neutralize.barra_columns();
+fn resolve_backtest_barra_columns(request: &BacktestRunRequest) -> Vec<String> {
+    let mut columns = CNE6_PRIMARY_BARRA_COLUMNS
+        .iter()
+        .map(|column| (*column).to_string())
+        .collect::<Vec<_>>();
+    columns.extend(request.neutralize.barra_columns());
     if request.neutralize.uses_all_barra() {
-        let metadata = BarraStorage::new(config.barra_root.clone()).read_metadata()?;
         columns.extend(
-            metadata
-                .into_iter()
-                .filter(|item| item.model.eq_ignore_ascii_case(DEFAULT_BARRA_MODEL))
-                .filter(|item| item.asset_class == request.asset_class.as_str())
-                .filter(|item| item.frequency == request.frequency.as_str())
-                .filter(|item| is_cne6_primary_barra_column(&item.output_column))
-                .map(|item| item.output_column),
+            CNE6_PRIMARY_BARRA_COLUMNS
+                .iter()
+                .map(|column| (*column).to_string()),
         );
     }
     columns.sort();
     columns.dedup();
-    if request.neutralize.uses_all_barra() && columns.is_empty() {
-        return Err(err(format!(
-            "no Barra exposures found in metadata for model {}. Run `barra-metadata` first.",
-            DEFAULT_BARRA_MODEL
-        )));
-    }
-    Ok(columns)
-}
-
-fn is_cne6_primary_barra_column(column: &str) -> bool {
-    CNE6_PRIMARY_BARRA_COLUMNS.contains(&column)
+    columns
 }
 
 pub fn load_backtest_input_batch(
@@ -1630,8 +1616,8 @@ mod tests {
     use super::{
         apply_factor_forward_fill, effective_weights_by_date, external_factor_ids_from_root,
         factor_output_path, index_weight_path_may_overlap, index_weight_to_decimal,
-        instruments_from_table, is_cne6_primary_barra_column, parse_lookahead,
-        universe_list_date_floor, BacktestPanel, FactorFillState, FactorRootLayout, WeightRecord,
+        instruments_from_table, parse_lookahead, universe_list_date_floor, BacktestPanel,
+        FactorFillState, FactorRootLayout, WeightRecord, CNE6_PRIMARY_BARRA_COLUMNS,
     };
     use crate::core::{AssetClass, Frequency};
     use crate::data::parquet_io::write_parquet;
@@ -1760,13 +1746,13 @@ mod tests {
 
     #[test]
     fn barra_all_neutralization_means_primary_style_exposures_only() {
-        assert!(is_cne6_primary_barra_column("DIVIDEND_YIELD"));
-        assert!(is_cne6_primary_barra_column("SIZE"));
-        assert!(is_cne6_primary_barra_column("VOLATILITY"));
-        assert!(!is_cne6_primary_barra_column("DTOP"));
-        assert!(!is_cne6_primary_barra_column("Size"));
-        assert!(!is_cne6_primary_barra_column("Beta"));
-        assert!(!is_cne6_primary_barra_column("Residual_Volatility"));
+        assert!(CNE6_PRIMARY_BARRA_COLUMNS.contains(&"DIVIDEND_YIELD"));
+        assert!(CNE6_PRIMARY_BARRA_COLUMNS.contains(&"SIZE"));
+        assert!(CNE6_PRIMARY_BARRA_COLUMNS.contains(&"VOLATILITY"));
+        assert!(!CNE6_PRIMARY_BARRA_COLUMNS.contains(&"DTOP"));
+        assert!(!CNE6_PRIMARY_BARRA_COLUMNS.contains(&"Size"));
+        assert!(!CNE6_PRIMARY_BARRA_COLUMNS.contains(&"Beta"));
+        assert!(!CNE6_PRIMARY_BARRA_COLUMNS.contains(&"Residual_Volatility"));
     }
 
     fn test_output_dir(name: &str) -> PathBuf {

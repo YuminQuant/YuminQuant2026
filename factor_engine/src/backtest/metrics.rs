@@ -52,6 +52,18 @@ pub struct IndustryWeight {
 }
 
 #[derive(Clone, Debug)]
+pub struct BarraExposureRecord {
+    pub factor_id: String,
+    pub trade_date: Option<i32>,
+    pub metric: String,
+    pub barra_factor: String,
+    pub selected_group: Option<String>,
+    pub rank_ic_sign: Option<f64>,
+    pub value: Option<f64>,
+    pub pair_count: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
 pub struct FactorStatsSummary {
     pub factor_id: String,
     pub scope: String,

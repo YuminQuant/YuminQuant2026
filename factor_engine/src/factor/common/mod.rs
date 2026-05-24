@@ -14,6 +14,7 @@ pub mod intraday_daily;
 pub mod intraday_raw;
 pub mod minute;
 pub mod mszq_main_force_volatility;
+pub mod mszq_price_volume_tension;
 pub mod panel;
 pub mod price_volume;
 pub mod stock_daily_ops;

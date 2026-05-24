@@ -88,21 +88,41 @@ class DatasetBuilder:
         sequence_columns = _sequence_feature_columns(base_columns, sequence_length)
         feature_cache: dict[int, pd.DataFrame] = {}
         frames = []
+        total_dates = len(dates)
+        split_name = "labeled" if include_label else "predict"
 
-        for trade_date in dates:
+        for date_idx, trade_date in enumerate(dates, start=1):
+            progress = _factor_sequence_progress(split_name, date_idx, total_dates, trade_date)
             sequence_dates = _sequence_dates(calendar, trade_date, sequence_frequency, sequence_length)
             if len(sequence_dates) < sequence_length:
+                progress(
+                    f"step=skip insufficient_sequence got={len(sequence_dates)} required={sequence_length}"
+                )
                 continue
+            progress(
+                "step=sequence_dates "
+                f"source_dates={sequence_dates[0]}..{sequence_dates[-1]} "
+                f"sequence_length={sequence_length}"
+            )
 
+            progress("target step=read")
             target = self.feature_provider.load(trade_date)
+            progress(f"target step=done rows={len(target)}")
             if target.empty:
+                progress("target_done feature_rows=0")
                 continue
             target = self.universe.filter(target[["trade_date", "ts_code"]].copy(), trade_date)
             target = self.filters.apply(target, trade_date)
+            progress(f"target step=filter rows={len(target)}")
             frame = target[["trade_date", "ts_code"]].copy()
 
             for step, sequence_date in enumerate(sequence_dates):
-                features = self._sequence_feature_frame(sequence_date, feature_cache)
+                source_progress = (
+                    lambda message, source_idx=step, source_date=sequence_date: progress(
+                        f"source {source_idx + 1}/{sequence_length} date={source_date} {message}"
+                    )
+                )
+                features = self._sequence_feature_frame(sequence_date, feature_cache, source_progress)
                 renamed = features.rename(
                     columns={column: _sequence_feature_column(column, step) for column in base_columns}
                 )
@@ -124,6 +144,8 @@ class DatasetBuilder:
                     how="left",
                 )
                 frame = frame.loc[frame[self.config.label.id].notna()]
+                progress(f"label step=done rows={len(frame)}")
+            progress(f"target_done feature_rows={len(frame)}")
             frames.append(frame)
 
         if frames:
@@ -297,10 +319,21 @@ class DatasetBuilder:
             _unflatten_tensors(processed, columns_by_key, tensors),
         )
 
-    def _sequence_feature_frame(self, trade_date: int, cache: dict[int, pd.DataFrame]) -> pd.DataFrame:
+    def _sequence_feature_frame(
+        self,
+        trade_date: int,
+        cache: dict[int, pd.DataFrame],
+        progress=None,
+    ) -> pd.DataFrame:
         if trade_date in cache:
+            if progress is not None:
+                progress(f"cache=hit rows={len(cache[trade_date])}")
             return cache[trade_date]
+        if progress is not None:
+            progress("cache=miss step=read")
         features = self.feature_provider.load(trade_date)
+        if progress is not None:
+            progress(f"step=read_done rows={len(features)} columns={len(self.feature_provider.feature_columns)}")
         if features.empty:
             columns = ["trade_date", "ts_code", *self.feature_provider.feature_columns]
             frame = pd.DataFrame(columns=columns)
@@ -313,6 +346,8 @@ class DatasetBuilder:
                 feature_fill_value=self.config.preprocess.feature_fill_value,
             )
             frame = frame[["trade_date", "ts_code", *self.feature_provider.feature_columns]]
+        if progress is not None:
+            progress(f"step=done rows={len(frame)}")
         cache[trade_date] = frame
         return frame
 
@@ -353,6 +388,16 @@ def _logsig_signature_progress(split_name: str, current: int, total: int, trade_
     def emit(message: str) -> None:
         print(
             f"logsig-signature {split_name} [{current}/{total}] target={trade_date} {message}",
+            flush=True,
+        )
+
+    return emit
+
+
+def _factor_sequence_progress(split_name: str, current: int, total: int, trade_date: int):
+    def emit(message: str) -> None:
+        print(
+            f"factor-sequence {split_name} [{current}/{total}] target={trade_date} {message}",
             flush=True,
         )
 

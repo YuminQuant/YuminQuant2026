@@ -66,6 +66,9 @@ When `barra_exposure` is provided, the default figure uses a wide layout: cumula
 analysis_tools/plots/{factor_id}.jpg
 ```
 
+`plot_return_summary(..., save=True)` 默认不覆盖 Matplotlib `savefig` 的 `dpi`；如需高清图片，可显式传入 `dpi=150`。
+`plot_return_summary(..., save=True)` does not override Matplotlib's `savefig` DPI by default; pass `dpi=150` explicitly when a higher-resolution image is needed.
+
 ## 指标 / Metrics
 
 收益指标默认 `periods_per_year=240`，无风险收益率为 `0`。

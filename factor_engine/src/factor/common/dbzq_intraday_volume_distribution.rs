@@ -14,7 +14,7 @@ use crate::operators::{cs_zscore, ts_mean};
 
 pub const PROVIDER_KEY: &str = "dbzq_intraday_volume_distribution_provider";
 pub const RAW_VERSION: &str = "0.1.1";
-pub const VERSION: &str = "0.1.1";
+pub const VERSION: &str = "0.1.2";
 
 pub const V_P_SKEWNESS_RAW_ID: &str = "daily_dbzq_v_p_skewness";
 pub const V_P_REVERSAL_RAW_ID: &str = "daily_dbzq_v_p_reversal";
@@ -239,7 +239,7 @@ fn compute_volume_price_factor(
 
     let skew_component = rolling_mean_negative_zscore(&skew)?;
     let reversal_component = rolling_mean_negative_zscore(&reversal)?;
-    let composite = average_columns(&panel, &[&skew_component, &reversal_component])?;
+    let composite = subtract_columns(&panel, &skew_component, &reversal_component)?;
     let factor = neutralize_size_sector(&composite, &panel, data)?;
     Ok(factor.to_factor_series(factor_spec(def)))
 }
@@ -298,6 +298,26 @@ fn rolling_variance(values: &[Option<f64>], window: usize, min_periods: usize) -
         output[idx] = variance(&valid);
     }
     output
+}
+
+fn subtract_columns(
+    panel: &DailyPanel,
+    left: &PanelColumn,
+    right: &PanelColumn,
+) -> Result<PanelColumn> {
+    let mut values = Vec::with_capacity(panel.shape_len());
+    for offset in 0..panel.shape_len() {
+        values.push(
+            match (
+                finite_option(left.values()[offset]),
+                finite_option(right.values()[offset]),
+            ) {
+                (Some(left), Some(right)) => Some(left - right),
+                _ => None,
+            },
+        );
+    }
+    panel.column_from_values(values)
 }
 
 fn average_columns(panel: &DailyPanel, columns: &[&PanelColumn]) -> Result<PanelColumn> {
@@ -829,6 +849,29 @@ mod tests {
         let output = rolling_variance(&values, 3, 1);
 
         assert_close(output[2], 8.0 / 3.0);
+    }
+
+    #[test]
+    fn dbzq_volume_price_composite_subtracts_reversal_from_skew() {
+        let panel = DailyPanel::from_index(
+            vec![20260424],
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            &[20260424],
+            vec![true, true, true],
+        )
+        .unwrap();
+        let skew = panel
+            .column_from_values(vec![Some(1.5), Some(-1.0), Some(0.5)])
+            .unwrap();
+        let reversal = panel
+            .column_from_values(vec![Some(0.5), Some(2.0), None])
+            .unwrap();
+
+        let output = subtract_columns(&panel, &skew, &reversal).unwrap();
+
+        assert_close(output.values()[0], 1.0);
+        assert_close(output.values()[1], -3.0);
+        assert_eq!(output.values()[2], None);
     }
 
     #[test]

@@ -112,6 +112,7 @@ impl BacktestEngine {
                 &output.factor_stats,
                 &output.holdings,
                 &output.industry_weights,
+                &output.barra_exposure,
             )?);
         }
         progress.finish();

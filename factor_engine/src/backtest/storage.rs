@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::backtest::ic::IcObservation;
-use crate::backtest::metrics::{FactorStatsDaily, HoldingWeight, IndustryWeight, PerformancePoint};
+use crate::backtest::metrics::{
+    BarraExposureRecord, FactorStatsDaily, HoldingWeight, IndustryWeight, PerformancePoint,
+};
 use crate::data::parquet_io::write_parquet;
 use crate::data::{ColumnData, Table};
 use crate::error::Result;
@@ -14,6 +16,7 @@ pub fn write_backtest_outputs(
     factor_stats: &[FactorStatsDaily],
     holdings: &[HoldingWeight],
     industry_weights: &[IndustryWeight],
+    barra_exposure: &[BarraExposureRecord],
 ) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(output_dir)?;
     remove_legacy_outputs(output_dir)?;
@@ -59,6 +62,15 @@ pub fn write_backtest_outputs(
         for (factor_id, rows) in group_industry_weights_by_factor(industry_weights) {
             let path = industry_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
             write_parquet(&path, &industry_weights_table(&rows)?)?;
+            written.push(path);
+        }
+    }
+    if !barra_exposure.is_empty() {
+        let exposure_dir = output_dir.join("barra_exposure");
+        std::fs::create_dir_all(&exposure_dir)?;
+        for (factor_id, rows) in group_barra_exposure_by_factor(barra_exposure) {
+            let path = exposure_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+            write_parquet(&path, &barra_exposure_table(&rows)?)?;
             written.push(path);
         }
     }
@@ -142,6 +154,19 @@ fn group_industry_weights_by_factor(
     rows: &[IndustryWeight],
 ) -> BTreeMap<String, Vec<IndustryWeight>> {
     let mut grouped = BTreeMap::<String, Vec<IndustryWeight>>::new();
+    for row in rows {
+        grouped
+            .entry(row.factor_id.clone())
+            .or_default()
+            .push(row.clone());
+    }
+    grouped
+}
+
+fn group_barra_exposure_by_factor(
+    rows: &[BarraExposureRecord],
+) -> BTreeMap<String, Vec<BarraExposureRecord>> {
+    let mut grouped = BTreeMap::<String, Vec<BarraExposureRecord>>::new();
     for row in rows {
         grouped
             .entry(row.factor_id.clone())
@@ -321,6 +346,34 @@ fn industry_weights_table(rows: &[IndustryWeight]) -> Result<Table> {
             "stock_count",
             i64_col(rows.iter().map(|row| Some(row.stock_count))),
         ),
+    ]))
+}
+
+fn barra_exposure_table(rows: &[BarraExposureRecord]) -> Result<Table> {
+    table_from_columns(BTreeMap::from([
+        (
+            "factor_id",
+            utf8(rows.iter().map(|row| Some(row.factor_id.clone()))),
+        ),
+        ("trade_date", i32_col(rows.iter().map(|row| row.trade_date))),
+        (
+            "metric",
+            utf8(rows.iter().map(|row| Some(row.metric.clone()))),
+        ),
+        (
+            "barra_factor",
+            utf8(rows.iter().map(|row| Some(row.barra_factor.clone()))),
+        ),
+        (
+            "selected_group",
+            utf8(rows.iter().map(|row| row.selected_group.clone())),
+        ),
+        (
+            "rank_ic_sign",
+            f64_col(rows.iter().map(|row| row.rank_ic_sign)),
+        ),
+        ("value", f64_col(rows.iter().map(|row| row.value))),
+        ("pair_count", i64_col(rows.iter().map(|row| row.pair_count))),
     ]))
 }
 

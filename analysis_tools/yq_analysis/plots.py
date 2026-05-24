@@ -100,16 +100,16 @@ def _set_zero_aligned_limits(ax_left, ax_right, left_values: Iterable[float], ri
     ax_right.set_ylim(*limits(right_neg, right_pos))
 
 
-def _pad_single_axis(ax, values: Iterable[float]) -> None:
+def _pad_single_axis(ax, values: Iterable[float], pad_ratio: float = 0.05) -> None:
     finite = np.asarray([value for value in values if np.isfinite(value)], dtype=float)
     if finite.size == 0:
         return
     lower = min(float(finite.min()), 0.0)
     upper = max(float(finite.max()), 0.0)
     if abs(upper - lower) <= np.finfo(float).eps:
-        pad = max(abs(upper) * 0.05, 0.01)
+        pad = max(abs(upper) * pad_ratio, 0.01)
     else:
-        pad = (upper - lower) * 0.05
+        pad = (upper - lower) * pad_ratio
     ax.set_ylim(lower - pad, upper + pad)
 
 
@@ -198,26 +198,44 @@ def plot_return_summary(
     plt = _require_matplotlib()
     has_barra = barra_exposure is not None and not barra_exposure.empty
     if figsize is None:
-        figsize = (14.0, 13.0) if has_barra else (12.0, 10.0)
+        figsize = (18.5, 8.6) if has_barra else (16.4, 7.8)
     fig = plt.figure(figsize=figsize, constrained_layout=False)
     fig.subplots_adjust(
-        left=0.06,
-        right=0.84,
-        top=0.94 if title else 0.97,
-        bottom=0.06,
-        hspace=0.62,
+        left=0.048,
+        right=0.992,
+        top=0.945 if title else 0.978,
+        bottom=0.135 if has_barra else 0.105,
+        hspace=0.40,
         wspace=0.18,
     )
     if title:
         fig.suptitle(title, y=0.985, fontsize=13)
-    row_count = 5 if has_barra else 4
-    height_ratios = [2.2, 2.0, 2.0, 1.8, 2.2] if has_barra else [2.2, 2.0, 2.0, 1.8]
-    grid = fig.add_gridspec(row_count, 2, height_ratios=height_ratios, width_ratios=[1, 1])
-    ax_ret = fig.add_subplot(grid[0, :])
-    ax_excess = fig.add_subplot(grid[1, :], sharex=ax_ret)
-    ax_ann = fig.add_subplot(grid[2, 0])
-    ax_excess_ann = fig.add_subplot(grid[2, 1])
-    ax_turnover = fig.add_subplot(grid[3, :])
+    grid = fig.add_gridspec(3, 2, height_ratios=[1.25, 1.05, 0.95], width_ratios=[1.0, 1.6])
+    ax_ret = fig.add_subplot(grid[0, 0])
+    ax_excess = fig.add_subplot(grid[1, 0], sharex=ax_ret)
+    ax_turnover = fig.add_subplot(grid[2, 0], sharex=ax_ret)
+    if has_barra:
+        right_grid = grid[:, 1].subgridspec(
+            4,
+            2,
+            height_ratios=[0.78, 0.20, 0.78, 0.44],
+            hspace=0.20,
+            wspace=0.28,
+        )
+        annual_row = 0
+        barra_row = 2
+    else:
+        right_grid = grid[:, 1].subgridspec(
+            3,
+            2,
+            height_ratios=[0.78, 0.20, 1.00],
+            hspace=0.20,
+            wspace=0.28,
+        )
+        annual_row = 0
+        barra_row = None
+    ax_ann = fig.add_subplot(right_grid[annual_row, 0])
+    ax_excess_ann = fig.add_subplot(right_grid[annual_row, 1])
     ax_ls = ax_ret.twinx()
 
     group_names = _group_names(returns, groups)
@@ -267,8 +285,8 @@ def plot_return_summary(
     legend_handles.extend(turnover_handles)
     legend_labels.extend(turnover_labels)
     if has_barra:
-        ax_barra_ts = fig.add_subplot(grid[4, 0])
-        ax_barra_mean = fig.add_subplot(grid[4, 1])
+        ax_barra_ts = fig.add_subplot(right_grid[barra_row, 0])
+        ax_barra_mean = fig.add_subplot(right_grid[barra_row, 1])
         barra_colors = _barra_color_map(plt.get_cmap("viridis"))
         barra_handles, barra_labels = _plot_barra_exposure_timeseries(
             ax_barra_ts,
@@ -282,11 +300,11 @@ def plot_return_summary(
     fig.legend(
         legend_handles,
         legend_labels,
-        loc="upper left" if has_barra else "center left",
-        bbox_to_anchor=(0.855, 0.93 if has_barra else 0.58),
-        ncol=1,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.01),
+        ncol=6 if has_barra else 4,
         frameon=False,
-        fontsize=8 if has_barra else None,
+        fontsize=8 if has_barra else 9,
     )
 
     if save:
@@ -321,7 +339,7 @@ def _plot_annual_bars(
     ax.set_xticks(x)
     ax.set_xticklabels(report["portfolio"], rotation=45, ha="right")
     ax.set_title(title)
-    _pad_single_axis(ax, report["annual_return(%)"].tolist())
+    _pad_single_axis(ax, report["annual_return(%)"].tolist(), pad_ratio=0.025)
     _annotate_bars(ax, bars, report["annual_return(%)"], suffix="%")
 
 
@@ -469,16 +487,16 @@ def _plot_barra_ic_mean_bars(
     ax.set_xticks(x)
     ax.set_xticklabels(mean_frame["barra_factor"], rotation=45, ha="right")
     ax.set_title("Mean factor-Barra Pearson IC")
-    _pad_single_axis(ax, mean_frame["value"].tolist())
-    _annotate_bars(ax, bars, mean_frame["value"], suffix="")
+    _pad_single_axis(ax, mean_frame["value"].tolist(), pad_ratio=0.025)
+    _annotate_bars(ax, bars, mean_frame["value"], suffix="", offset_ratio=0.01)
 
 
-def _annotate_bars(ax, bars, values: Iterable[float], suffix: str = "") -> None:
+def _annotate_bars(ax, bars, values: Iterable[float], suffix: str = "", offset_ratio: float = 0.015) -> None:
     finite_values = [float(value) for value in values if np.isfinite(value)]
     if not finite_values:
         return
-    span = max(max(finite_values) - min(finite_values), 1.0)
-    offset = span * 0.015
+    span = max(max(finite_values) - min(finite_values), np.finfo(float).eps)
+    offset = span * offset_ratio
     for bar, value in zip(bars, values):
         if not np.isfinite(value):
             continue

@@ -57,6 +57,9 @@ fig = plot_return_summary(
 )
 ```
 
+传入 `barra_exposure` 时，默认图片使用横向布局：左侧为累计收益、累计超额收益和换手率，右侧为年化收益柱状图和 Barra 暴露诊断图。
+When `barra_exposure` is provided, the default figure uses a wide layout: cumulative returns, cumulative excess returns, and turnover on the left; annual return bars and Barra diagnostics on the right.
+
 默认图片输出 / Default plot output:
 
 ```text

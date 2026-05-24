@@ -1,0 +1,71 @@
+run_id = "mdl_000006"
+alpha_id = "mdl_000006"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20110101, 20260424]
+valid = []
+predict = [20110101, 20260424]
+
+[sample]
+train_frequency = "10"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+train_lookback = "3y"
+validation_ratio = 0.2
+
+[label]
+id = "future_vwap_return_5d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "rank_gauss"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000006/cache"
+predict_batch_size = 20
+
+[model]
+name = "lstm"
+class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000006/artifacts"
+
+[model.params]
+sequence_length = 5
+sequence_frequency = "daily"
+hidden_size = 64
+num_layers = 1
+dropout = 0.0
+epochs = 100
+batch_size = 4096
+lr = 0.0001
+weight_decay = 0.00001
+seed = 42
+device = "auto"
+patience = 10
+loss = "pearson_ic"
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true

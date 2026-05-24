@@ -120,9 +120,11 @@ def _group_color_map(group_names: list[str], cmap) -> dict[str, object]:
     }
 
 
-def _barra_color_map(cmap) -> dict[str, object]:
+def _barra_color_map(colors: list[object]) -> dict[str, object]:
+    if not colors:
+        raise ValueError("Barra color list cannot be empty")
     return {
-        name: cmap(idx / max(len(CNE6_BARRA_FACTORS) - 1, 1))
+        name: colors[idx % len(colors)]
         for idx, name in enumerate(CNE6_BARRA_FACTORS)
     }
 
@@ -290,7 +292,8 @@ def plot_return_summary(
     if has_barra:
         ax_barra_ts = fig.add_subplot(right_grid[barra_row, 0])
         ax_barra_mean = fig.add_subplot(right_grid[barra_row, 1])
-        barra_colors = _barra_color_map(plt.get_cmap("viridis"))
+        default_colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        barra_colors = _barra_color_map(default_colors)
         barra_handles, barra_labels = _plot_barra_exposure_timeseries(
             ax_barra_ts,
             barra_exposure,
@@ -434,6 +437,8 @@ def _plot_barra_exposure_timeseries(
             series.values,
             color=color_map.get(factor),
             linewidth=1.1,
+            marker="o",
+            markersize=2.0,
             alpha=0.95,
             label=factor,
         )

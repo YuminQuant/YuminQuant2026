@@ -13,7 +13,7 @@ def _read_optional(path: Path) -> pd.DataFrame | None:
 
 
 def load_backtest_result(root: str | Path, factor_id: str) -> dict[str, pd.DataFrame | None]:
-    """Load the three standard Rust backtest outputs for one factor.
+    """Load the standard Rust backtest outputs for one factor.
 
     Missing files are returned as None so callers can analyze just returns or IC.
     """
@@ -23,6 +23,7 @@ def load_backtest_result(root: str | Path, factor_id: str) -> dict[str, pd.DataF
         "returns": _read_optional(root / "returns" / f"{factor_id}.parquet"),
         "ic": _read_optional(root / "ic" / f"{factor_id}.parquet"),
         "factor_stats": _read_optional(root / "factor_stats" / f"{factor_id}.parquet"),
+        "barra_exposure": _read_optional(root / "barra_exposure" / f"{factor_id}.parquet"),
     }
 
 

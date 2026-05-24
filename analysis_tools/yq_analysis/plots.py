@@ -10,6 +10,18 @@ import pandas as pd
 from yq_analysis.metrics import cumulative_curve
 from yq_analysis.report import make_return_report
 
+CNE6_BARRA_FACTORS = [
+    "DIVIDEND_YIELD",
+    "GROWTH",
+    "LIQUIDITY",
+    "MOMENTUM",
+    "QUALITY",
+    "SENTIMENT",
+    "SIZE",
+    "VALUE",
+    "VOLATILITY",
+]
+
 
 def _require_matplotlib():
     try:
@@ -108,6 +120,13 @@ def _group_color_map(group_names: list[str], cmap) -> dict[str, object]:
     }
 
 
+def _barra_color_map(cmap) -> dict[str, object]:
+    return {
+        name: cmap(idx / max(len(CNE6_BARRA_FACTORS) - 1, 1))
+        for idx, name in enumerate(CNE6_BARRA_FACTORS)
+    }
+
+
 def _plot_group_curves(
     ax,
     returns: pd.DataFrame,
@@ -161,14 +180,15 @@ def plot_return_summary(
     returns: pd.DataFrame,
     groups: int | None = None,
     return_col: str = "return",
-    figsize: tuple[float, float] = (12.0, 10.0),
+    figsize: tuple[float, float] | None = None,
     title: str | None = None,
     save: bool = True,
     save_dir: str | Path | None = None,
     factor_name: str | None = None,
     dpi: int = 150,
+    barra_exposure: pd.DataFrame | None = None,
 ):
-    """Plot group, excess, annual return, and turnover summaries."""
+    """Plot group, excess, annual return, turnover, and optional Barra exposure summaries."""
 
     if returns is None or returns.empty:
         raise ValueError("returns is empty")
@@ -176,11 +196,23 @@ def plot_return_summary(
         raise ValueError("returns must contain a portfolio column")
 
     plt = _require_matplotlib()
+    has_barra = barra_exposure is not None and not barra_exposure.empty
+    if figsize is None:
+        figsize = (14.0, 13.0) if has_barra else (12.0, 10.0)
     fig = plt.figure(figsize=figsize, constrained_layout=False)
-    fig.subplots_adjust(left=0.06, right=0.84, top=0.94 if title else 0.97, bottom=0.06, hspace=0.62, wspace=0.12)
+    fig.subplots_adjust(
+        left=0.06,
+        right=0.84,
+        top=0.94 if title else 0.97,
+        bottom=0.06,
+        hspace=0.62,
+        wspace=0.18,
+    )
     if title:
         fig.suptitle(title, y=0.985, fontsize=13)
-    grid = fig.add_gridspec(4, 2, height_ratios=[2.2, 2.0, 2.0, 1.8], width_ratios=[1, 1])
+    row_count = 5 if has_barra else 4
+    height_ratios = [2.2, 2.0, 2.0, 1.8, 2.2] if has_barra else [2.2, 2.0, 2.0, 1.8]
+    grid = fig.add_gridspec(row_count, 2, height_ratios=height_ratios, width_ratios=[1, 1])
     ax_ret = fig.add_subplot(grid[0, :])
     ax_excess = fig.add_subplot(grid[1, :], sharex=ax_ret)
     ax_ann = fig.add_subplot(grid[2, 0])
@@ -216,14 +248,8 @@ def plot_return_summary(
 
     handles_left, labels_left = ax_ret.get_legend_handles_labels()
     handles_right, labels_right = ax_ls.get_legend_handles_labels()
-    fig.legend(
-        handles_left + handles_right,
-        labels_left + labels_right,
-        loc="center left",
-        bbox_to_anchor=(0.855, 0.58),
-        ncol=1,
-        frameon=False,
-    )
+    legend_handles = handles_left + handles_right
+    legend_labels = labels_left + labels_right
 
     if "excess_return" in returns.columns:
         excess_values = _plot_group_curves(ax_excess, returns, group_names, "excess_return", color_map)
@@ -237,7 +263,31 @@ def plot_return_summary(
     _plot_annual_bars(ax_ann, returns, group_names, return_col, "Annual return by group", color_map)
     _plot_annual_bars(ax_excess_ann, returns, group_names, "excess_return", "Annual excess return by group", color_map)
 
-    _plot_turnover_lines(ax_turnover, returns, group_names)
+    turnover_handles, turnover_labels = _plot_turnover_lines(ax_turnover, returns, group_names)
+    legend_handles.extend(turnover_handles)
+    legend_labels.extend(turnover_labels)
+    if has_barra:
+        ax_barra_ts = fig.add_subplot(grid[4, 0])
+        ax_barra_mean = fig.add_subplot(grid[4, 1])
+        barra_colors = _barra_color_map(plt.get_cmap("viridis"))
+        barra_handles, barra_labels = _plot_barra_exposure_timeseries(
+            ax_barra_ts,
+            barra_exposure,
+            barra_colors,
+        )
+        legend_handles.extend(barra_handles)
+        legend_labels.extend(barra_labels)
+        _plot_barra_ic_mean_bars(ax_barra_mean, barra_exposure, barra_colors)
+
+    fig.legend(
+        legend_handles,
+        legend_labels,
+        loc="upper left" if has_barra else "center left",
+        bbox_to_anchor=(0.855, 0.93 if has_barra else 0.58),
+        ncol=1,
+        frameon=False,
+        fontsize=8 if has_barra else None,
+    )
 
     if save:
         _save_figure(fig, returns, title, save_dir, factor_name, dpi)
@@ -266,31 +316,180 @@ def _plot_annual_bars(
     report = report[report["portfolio"].isin(group_names)]
     x = np.arange(len(report))
     colors = [color_map[name] for name in report["portfolio"]]
-    ax.bar(x, report["annual_return(%)"], color=colors, width=0.72)
+    bars = ax.bar(x, report["annual_return(%)"], color=colors, width=0.72)
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels(report["portfolio"], rotation=45, ha="right")
     ax.set_title(title)
     _pad_single_axis(ax, report["annual_return(%)"].tolist())
+    _annotate_bars(ax, bars, report["annual_return(%)"], suffix="%")
 
 
-def _plot_turnover_lines(ax, returns: pd.DataFrame, group_names: list[str]) -> None:
+def _plot_turnover_lines(ax, returns: pd.DataFrame, group_names: list[str]) -> tuple[list[object], list[str]]:
     if not group_names or "turnover" not in returns.columns:
         ax.text(0.5, 0.5, "No turnover data", transform=ax.transAxes, ha="center", va="center")
         ax.set_axis_off()
-        return
+        return [], []
     selected = [group_names[0], group_names[-1]] if len(group_names) > 1 else [group_names[0]]
     values: list[float] = []
+    handles: list[object] = []
+    labels: list[str] = []
     for name, color in zip(selected, ["#3b6fb6", "#b63b3b"]):
         series = _series_by_portfolio(returns, name, "turnover")
         if series.empty:
             continue
         series = series * 100.0
-        ax.plot(series.index, series.values, linewidth=1.3, marker="o", markersize=2.0, label=f"{name} turnover", color=color)
+        (line,) = ax.plot(
+            series.index,
+            series.values,
+            linewidth=1.3,
+            marker="o",
+            markersize=2.0,
+            label=f"{name} turnover",
+            color=color,
+        )
+        handles.append(line)
+        labels.append(f"{name} turnover")
         values.extend(series.values.tolist())
     if not values:
         ax.text(0.5, 0.5, "No turnover data", transform=ax.transAxes, ha="center", va="center")
         ax.set_axis_off()
-        return
+        return [], []
     ax.set_title("End group turnover", pad=12)
     _pad_single_axis(ax, values)
+    return handles, labels
+
+
+def _bar_name_order(names: Iterable[str]) -> list[str]:
+    name_list = list(names)
+    name_set = set(name_list)
+    known = [name for name in CNE6_BARRA_FACTORS if name in name_set]
+    extras = sorted(name for name in name_list if name not in CNE6_BARRA_FACTORS)
+    return known + extras
+
+
+def _barra_date_index(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce").astype("Int64")
+    return pd.to_datetime(numeric.astype(str), format="%Y%m%d", errors="coerce")
+
+
+def _plot_barra_exposure_timeseries(
+    ax,
+    barra_exposure: pd.DataFrame,
+    color_map: dict[str, object],
+) -> tuple[list[object], list[str]]:
+    required = {"metric", "barra_factor", "trade_date", "value"}
+    if barra_exposure is None or barra_exposure.empty or not required.issubset(barra_exposure.columns):
+        ax.text(0.5, 0.5, "No Barra exposure data", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return [], []
+    frame = barra_exposure[barra_exposure["metric"] == "long_group_exposure"].copy()
+    if frame.empty:
+        ax.text(0.5, 0.5, "No long group Barra exposure", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return [], []
+    frame["date"] = _barra_date_index(frame["trade_date"])
+    frame["value"] = pd.to_numeric(frame["value"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    frame = frame.dropna(subset=["date", "value"])
+    if frame.empty:
+        ax.text(0.5, 0.5, "No long group Barra exposure", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return [], []
+    values: list[float] = []
+    handles: list[object] = []
+    labels: list[str] = []
+    factors = _bar_name_order(frame["barra_factor"].dropna().astype(str).unique())
+    for factor in factors:
+        series = (
+            frame[frame["barra_factor"] == factor]
+            .sort_values("date")
+            .set_index("date")["value"]
+        )
+        if series.empty:
+            continue
+        series = series.cumsum()
+        (line,) = ax.plot(
+            series.index,
+            series.values,
+            color=color_map.get(factor),
+            linewidth=1.1,
+            alpha=0.95,
+            label=factor,
+        )
+        handles.append(line)
+        labels.append(factor)
+        values.extend(series.values.tolist())
+    if not values:
+        ax.text(0.5, 0.5, "No long group Barra exposure", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return [], []
+    ax.axhline(0.0, color="#888888", linewidth=0.8, linestyle="--")
+    ax.set_title("Cumulative long group Barra exposure")
+    _pad_single_axis(ax, values)
+    return handles, labels
+
+
+def _plot_barra_ic_mean_bars(
+    ax,
+    barra_exposure: pd.DataFrame,
+    color_map: dict[str, object],
+) -> None:
+    required = {"metric", "barra_factor", "value"}
+    if barra_exposure is None or barra_exposure.empty or not required.issubset(barra_exposure.columns):
+        ax.text(0.5, 0.5, "No Barra IC data", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return
+    mean_frame = barra_exposure[barra_exposure["metric"] == "barra_ic_mean"].copy()
+    if mean_frame.empty:
+        daily = barra_exposure[barra_exposure["metric"] == "barra_ic"].copy()
+        if not daily.empty:
+            daily["value"] = pd.to_numeric(daily["value"], errors="coerce")
+            mean_frame = (
+                daily.groupby("barra_factor", as_index=False)["value"]
+                .mean()
+                .assign(metric="barra_ic_mean")
+            )
+    if mean_frame.empty:
+        ax.text(0.5, 0.5, "No Barra IC data", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return
+    mean_frame["barra_factor"] = mean_frame["barra_factor"].astype(str)
+    mean_frame["value"] = pd.to_numeric(mean_frame["value"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    mean_frame = mean_frame.dropna(subset=["value"])
+    factors = _bar_name_order(mean_frame["barra_factor"].dropna().unique())
+    mean_frame = mean_frame.set_index("barra_factor").reindex(factors).dropna(subset=["value"]).reset_index()
+    if mean_frame.empty:
+        ax.text(0.5, 0.5, "No Barra IC data", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return
+    x = np.arange(len(mean_frame))
+    colors = [color_map.get(name) for name in mean_frame["barra_factor"]]
+    bars = ax.bar(x, mean_frame["value"], color=colors, width=0.72)
+    ax.axhline(0.0, color="#777777", linewidth=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(mean_frame["barra_factor"], rotation=45, ha="right")
+    ax.set_title("Mean factor-Barra Pearson IC")
+    _pad_single_axis(ax, mean_frame["value"].tolist())
+    _annotate_bars(ax, bars, mean_frame["value"], suffix="")
+
+
+def _annotate_bars(ax, bars, values: Iterable[float], suffix: str = "") -> None:
+    finite_values = [float(value) for value in values if np.isfinite(value)]
+    if not finite_values:
+        return
+    span = max(max(finite_values) - min(finite_values), 1.0)
+    offset = span * 0.015
+    for bar, value in zip(bars, values):
+        if not np.isfinite(value):
+            continue
+        height = float(value)
+        va = "bottom" if height >= 0 else "top"
+        y = height + offset if height >= 0 else height - offset
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            y,
+            f"{height:.2f}{suffix}",
+            ha="center",
+            va=va,
+            fontsize=8,
+        )

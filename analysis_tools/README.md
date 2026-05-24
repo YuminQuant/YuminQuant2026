@@ -26,6 +26,7 @@ result = load_backtest_result(r"data/backtest/stock/daily", "SIZE")
 returns = result["returns"]
 ic = result["ic"]
 factor_stats = result["factor_stats"]
+barra_exposure = result["barra_exposure"]
 ```
 
 生成报表 / Build reports:
@@ -47,6 +48,13 @@ display(report["ic"])
 from yq_analysis.plots import plot_return_summary
 
 fig = plot_return_summary(returns, groups=10, save=True)
+
+fig = plot_return_summary(
+    returns,
+    groups=10,
+    barra_exposure=barra_exposure,
+    save=True,
+)
 ```
 
 默认图片输出 / Default plot output:
@@ -95,11 +103,20 @@ abs_ir
 {root}/returns/{factor_id}.parquet
 {root}/ic/{factor_id}.parquet
 {root}/factor_stats/{factor_id}.parquet
+{root}/barra_exposure/{factor_id}.parquet
 ```
 
 缺失文件返回 `None`，所以也可以只分析收益或只分析 IC。
 
 Missing files return `None`, so returns-only or IC-only analysis is supported.
+
+Barra exposure rows use the `metric` column:
+
+```text
+barra_ic              daily cross-sectional Pearson IC between factor and CNE6 style exposure
+barra_ic_mean         long-run mean of the daily Barra IC
+long_group_exposure   selected long-side group exposure on rebalance dates
+```
 
 ## 单指标函数 / Metric Functions
 

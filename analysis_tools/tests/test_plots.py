@@ -22,6 +22,28 @@ def _sample_returns() -> pd.DataFrame:
     )
 
 
+def _sample_barra_exposure() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "trade_date": [20250102, 20250103, 20250102, 20250103, None, None],
+            "factor_id": ["sample"] * 6,
+            "barra_factor": ["SIZE", "SIZE", "VALUE", "VALUE", "SIZE", "VALUE"],
+            "metric": [
+                "long_group_exposure",
+                "long_group_exposure",
+                "long_group_exposure",
+                "long_group_exposure",
+                "barra_ic_mean",
+                "barra_ic_mean",
+            ],
+            "pair_count": [100, 100, 100, 100, 2, 2],
+            "rank_ic_sign": [-1.0, -1.0, -1.0, -1.0, None, None],
+            "selected_group": ["group_1", "group_1", "group_1", "group_1", None, None],
+            "value": [0.1, 0.2, -0.1, -0.2, 0.12, -0.08],
+        }
+    )
+
+
 def test_plot_return_summary_returns_figure() -> None:
     pytest.importorskip("matplotlib")
     from matplotlib.figure import Figure
@@ -41,3 +63,26 @@ def test_plot_return_summary_can_save_jpg(tmp_path: Path) -> None:
     fig = plot_return_summary(_sample_returns(), groups=2, save=True, save_dir=tmp_path)
     assert (tmp_path / "sample.jpg").exists()
     assert not plt.fignum_exists(fig.number)
+
+
+def test_plot_return_summary_accepts_barra_exposure() -> None:
+    pytest.importorskip("matplotlib")
+    from matplotlib.figure import Figure
+
+    from yq_analysis.plots import plot_return_summary
+
+    fig = plot_return_summary(
+        _sample_returns(),
+        groups=2,
+        barra_exposure=_sample_barra_exposure(),
+        save=False,
+    )
+
+    assert isinstance(fig, Figure)
+    assert len(fig.axes) >= 8
+    titles = {axis.get_title() for axis in fig.axes}
+    assert "Cumulative long group Barra exposure" in titles
+    assert "Mean factor-Barra Pearson IC" in titles
+    labels = [text.get_text() for axis in fig.axes for text in axis.texts]
+    assert "0.12" in labels
+    assert any(label.endswith("%") for label in labels)

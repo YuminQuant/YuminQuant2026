@@ -436,9 +436,6 @@ def _plot_barra_exposure_timeseries(
             series.index,
             series.values,
             color=color_map.get(factor),
-            linewidth=1.1,
-            marker="o",
-            markersize=2.0,
             alpha=0.95,
             label=factor,
         )

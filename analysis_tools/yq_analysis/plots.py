@@ -203,7 +203,7 @@ def plot_return_summary(
     plt = _require_matplotlib()
     has_barra = barra_exposure is not None and not barra_exposure.empty
     if figsize is None:
-        figsize = (18.5, 8.6) if has_barra else (16.4, 7.8)
+        figsize = (18.5, 7.8) #if has_barra else (16.4, 7.8)
     fig = plt.figure(figsize=figsize, constrained_layout=False)
     fig.subplots_adjust(
         left=0.048,

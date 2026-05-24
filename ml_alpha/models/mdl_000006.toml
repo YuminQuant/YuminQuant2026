@@ -9,7 +9,7 @@ valid = []
 predict = [20110101, 20260424]
 
 [sample]
-train_frequency = "10"
+train_frequency = "20"
 predict_frequency = "daily"
 
 [train_scheme]

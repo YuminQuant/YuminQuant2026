@@ -1078,11 +1078,25 @@ fn select_factors(
 
     let storage = FactorStorage::new(config.factor_root.clone());
     let metadata = storage.read_metadata()?;
+    select_factors_from_metadata(metadata, request)
+}
+
+fn select_factors_from_metadata(
+    metadata: Vec<FactorMetadata>,
+    request: &BacktestRunRequest,
+) -> Result<Vec<FactorMetadata>> {
+    let base = metadata
+        .into_iter()
+        .filter(|row| {
+            row.asset_class == request.asset_class.as_str()
+                && row.frequency == request.frequency.as_str()
+        })
+        .collect::<Vec<_>>();
     let selected = match (&request.factor_ids, &request.tags, request.all_factors) {
         (Some(ids), None, false) => {
             let mut rows = Vec::new();
             for id in ids {
-                let Some(row) = metadata.iter().find(|row| &row.factor_id == id) else {
+                let Some(row) = base.iter().find(|row| factor_metadata_matches(row, id)) else {
                     return Err(err(format!("factor not found in metadata: {id}")));
                 };
                 if row.tags.iter().any(|tag| tag == "deprecated") {
@@ -1094,7 +1108,7 @@ fn select_factors(
             }
             rows
         }
-        (None, Some(tags), false) => metadata
+        (None, Some(tags), false) => base
             .into_iter()
             .filter(|row| !row.tags.iter().any(|tag| tag == "deprecated"))
             .filter(|row| {
@@ -1102,7 +1116,7 @@ fn select_factors(
                     .all(|tag| row.tags.iter().any(|row_tag| row_tag == tag))
             })
             .collect(),
-        (None, None, true) => metadata
+        (None, None, true) => base
             .into_iter()
             .filter(|row| !row.tags.iter().any(|tag| tag == "deprecated"))
             .collect(),
@@ -1116,6 +1130,12 @@ fn select_factors(
         }
     };
     Ok(dedup_factor_metadata(selected))
+}
+
+fn factor_metadata_matches(row: &FactorMetadata, id_or_name: &str) -> bool {
+    row.factor_id == id_or_name
+        || row.name == id_or_name
+        || row.aliases.iter().any(|alias| alias == id_or_name)
 }
 
 const EXTERNAL_FACTOR_KEY_COLUMNS: &[&str] = &["trade_date", "trade_time", "ts_code"];
@@ -1616,12 +1636,18 @@ mod tests {
     use super::{
         apply_factor_forward_fill, effective_weights_by_date, external_factor_ids_from_root,
         factor_output_path, index_weight_path_may_overlap, index_weight_to_decimal,
-        instruments_from_table, parse_lookahead, universe_list_date_floor, BacktestPanel,
-        FactorFillState, FactorRootLayout, WeightRecord, CNE6_PRIMARY_BARRA_COLUMNS,
+        instruments_from_table, parse_lookahead, select_factors_from_metadata,
+        universe_list_date_floor, BacktestPanel, FactorFillState, FactorRootLayout, WeightRecord,
+        CNE6_PRIMARY_BARRA_COLUMNS,
+    };
+    use crate::backtest::request::{
+        BacktestDetail, BacktestDetailSector, BacktestRunRequest, FactorFill, LimitSide,
+        NeutralizeSpec, RebalanceRule, DEFAULT_BENCHMARK, DEFAULT_UNIVERSE,
     };
     use crate::core::{AssetClass, Frequency};
     use crate::data::parquet_io::write_parquet;
     use crate::data::{ColumnData, Table};
+    use crate::storage::FactorMetadata;
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
 
@@ -1716,6 +1742,56 @@ mod tests {
     }
 
     #[test]
+    fn backtest_all_factors_filters_metadata_by_asset_and_frequency() {
+        let request = test_backtest_request(None, None, true);
+        let metadata = vec![
+            factor_metadata_row("stock_daily_alpha", "stock", "daily", &["price_volume"]),
+            factor_metadata_row("future_daily_alpha", "future", "daily", &["price_volume"]),
+            factor_metadata_row(
+                "stock_minute_alpha",
+                "stock",
+                "minute_1m",
+                &["price_volume"],
+            ),
+        ];
+
+        let selected = select_factors_from_metadata(metadata, &request).expect("select factors");
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].factor_id, "stock_daily_alpha");
+    }
+
+    #[test]
+    fn backtest_tag_selection_filters_metadata_by_asset_and_frequency() {
+        let request = test_backtest_request(None, Some(vec!["price_volume".to_string()]), false);
+        let metadata = vec![
+            factor_metadata_row("stock_daily_alpha", "stock", "daily", &["price_volume"]),
+            factor_metadata_row("future_daily_alpha", "future", "daily", &["price_volume"]),
+        ];
+
+        let selected = select_factors_from_metadata(metadata, &request).expect("select factors");
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].factor_id, "stock_daily_alpha");
+    }
+
+    #[test]
+    fn backtest_explicit_selection_rejects_factor_from_other_asset() {
+        let request =
+            test_backtest_request(Some(vec!["future_daily_alpha".to_string()]), None, false);
+        let metadata = vec![factor_metadata_row(
+            "future_daily_alpha",
+            "future",
+            "daily",
+            &["price_volume"],
+        )];
+
+        let err = select_factors_from_metadata(metadata, &request).expect_err("selection fails");
+
+        assert!(err.to_string().contains("factor not found in metadata"));
+    }
+
+    #[test]
     fn direct_daily_factor_output_path_supports_flat_root() {
         let root = test_output_dir("direct_daily_factor_output_path_supports_flat_root");
         assert_eq!(
@@ -1766,6 +1842,65 @@ mod tests {
         }
         std::fs::create_dir_all(&path).expect("create test output dir");
         path
+    }
+
+    fn test_backtest_request(
+        factor_ids: Option<Vec<String>>,
+        tags: Option<Vec<String>>,
+        all_factors: bool,
+    ) -> BacktestRunRequest {
+        BacktestRunRequest {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20240101,
+            end_date: 20240131,
+            factor_ids,
+            tags,
+            all_factors,
+            factor_root: None,
+            label_id: "future_vwap_return_1d".to_string(),
+            groups: 10,
+            rebalance: RebalanceRule::Daily,
+            neutralize: NeutralizeSpec::None,
+            universe: DEFAULT_UNIVERSE.to_string(),
+            benchmark: DEFAULT_BENCHMARK.to_string(),
+            exclude_limit: true,
+            exclude_st: true,
+            limit_side: LimitSide::Both,
+            factor_batch_size: 10,
+            date_batch_size: 120,
+            threads: None,
+            factor_fill: FactorFill::None,
+            detail: BacktestDetail::none(),
+            detail_sector: BacktestDetailSector::ShenwanL1,
+            output_dir: None,
+            config_path: None,
+        }
+    }
+
+    fn factor_metadata_row(
+        factor_id: &str,
+        asset_class: &str,
+        frequency: &str,
+        tags: &[&str],
+    ) -> FactorMetadata {
+        let aliases = vec![format!("{asset_class}.{frequency}.pv.{factor_id}")];
+        let tags = tags.iter().map(|tag| tag.to_string()).collect::<Vec<_>>();
+        FactorMetadata {
+            factor_id: factor_id.to_string(),
+            aliases_json: "[]".to_string(),
+            aliases,
+            version: "test".to_string(),
+            output_column: factor_id.to_string(),
+            name: factor_id.to_string(),
+            asset_class: asset_class.to_string(),
+            frequency: frequency.to_string(),
+            tags_json: "[]".to_string(),
+            tags,
+            dependencies_json: "[]".to_string(),
+            description: String::new(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
     }
 
     #[test]

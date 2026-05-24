@@ -1618,7 +1618,7 @@ mod tests {
     #[test]
     fn execution_groups_split_daily_and_intraday_daily_by_lookback() {
         let specs = vec![
-            spec_with_dataset("return_1d", DatasetId::StockDailyPv, 0),
+            spec_with_dataset("daily_factor", DatasetId::StockDailyPv, 0),
             spec_with_dataset("intraday_factor_lookback_0", DatasetId::StockMinute1m, 0),
             spec_with_dataset("intraday_factor_lookback_19", DatasetId::StockMinute1m, 19),
             spec_with_dataset("another_intraday_lookback_19", DatasetId::StockMinute1m, 19),
@@ -1644,7 +1644,7 @@ mod tests {
     #[test]
     fn execution_groups_route_intraday_raw_factors_to_postprocess_stage() {
         let specs = vec![
-            spec_with_dataset("return_1d", DatasetId::StockDailyPv, 0),
+            spec_with_dataset("daily_factor", DatasetId::StockDailyPv, 0),
             spec_with_raw("intraday_factor_lookback_0", "intraday_raw_lookback_0", 0),
             spec_with_raw(
                 "intraday_factor_lookback_19",
@@ -1717,7 +1717,7 @@ mod tests {
             frequency: Frequency::Daily,
             start_date: 20260105,
             end_date: 20260105,
-            factor_ids: Some(vec!["stock.daily.pv.return_1d".to_string()]),
+            factor_ids: Some(vec!["stock.daily.pv.daily_factor".to_string()]),
             tags: None,
             config_path: None,
             dry_run: false,
@@ -1728,12 +1728,17 @@ mod tests {
             refresh_minute_cache: false,
         };
         let metadata = vec![
-            metadata_row("return_1d", "stock", "daily", &["stock.daily.pv.return_1d"]),
             metadata_row(
-                "return_1d",
+                "daily_factor",
+                "stock",
+                "daily",
+                &["stock.daily.pv.daily_factor"],
+            ),
+            metadata_row(
+                "daily_factor",
                 "future",
                 "daily",
-                &["future.daily.pv.return_1d"],
+                &["future.daily.pv.daily_factor"],
             ),
         ];
 
@@ -1742,7 +1747,7 @@ mod tests {
         };
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].asset_class, "stock");
-        assert_eq!(selected[0].factor_id, "return_1d");
+        assert_eq!(selected[0].factor_id, "daily_factor");
     }
 
     #[test]

@@ -166,13 +166,16 @@ def _save_figure(
     title: str | None,
     save_dir: str | Path | None,
     factor_name: str | None,
-    dpi: int,
+    dpi: int | str | None,
 ) -> Path:
     output_dir = Path(save_dir) if save_dir is not None else Path(__file__).resolve().parents[1] / "plots"
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = _safe_filename(factor_name or _infer_factor_name(returns, title))
     path = output_dir / f"{stem}.jpg"
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    save_kwargs = {"bbox_inches": "tight"}
+    if dpi is not None:
+        save_kwargs["dpi"] = dpi
+    fig.savefig(path, **save_kwargs)
     return path
 
 
@@ -185,7 +188,7 @@ def plot_return_summary(
     save: bool = True,
     save_dir: str | Path | None = None,
     factor_name: str | None = None,
-    dpi: int = 150,
+    dpi: int | str | None = None,
     barra_exposure: pd.DataFrame | None = None,
 ):
     """Plot group, excess, annual return, turnover, and optional Barra exposure summaries."""

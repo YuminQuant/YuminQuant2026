@@ -86,6 +86,23 @@ components = ["all formal stock daily factors", "PCA cumulative explained varian
 tags = ["linear", "pca", "ols", "factor_frame", "rank_gauss"]
 
 [[models]]
+model_id = "mdl_000006"
+alpha_id = "mdl_000006"
+run_id = "mdl_000006"
+config = "models/mdl_000006.toml"
+status = "active"
+display_name = "LSTM 5D daily factor-frame combo"
+description = "LSTM model using 5-day daily formal factor sequences to predict 5-day future VWAP return."
+model_class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
+model_family = "sequence_lstm"
+label = "future_vwap_return_5d"
+preprocess = "rank_gauss"
+train_scheme = "rolling_3y_semiannual_refit_10d_sample_20pct_valid"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+components = ["all formal stock daily factors", "daily sequence length 5", "LSTM"]
+tags = ["lstm", "factor_frame", "rank_gauss", "daily_sequence", "5d_label"]
+
+[[models]]
 model_id = "mdl_80000"
 alpha_id = "mdl_80000"
 run_id = "mdl_80000"

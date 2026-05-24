@@ -13,8 +13,8 @@ use crate::factor::common::{DailyPanel, PanelColumn};
 use crate::operators::{cs_zscore, ts_mean};
 
 pub const PROVIDER_KEY: &str = "dbzq_intraday_volume_distribution_provider";
-pub const RAW_VERSION: &str = "0.1.0";
-pub const VERSION: &str = "0.1.0";
+pub const RAW_VERSION: &str = "0.1.1";
+pub const VERSION: &str = "0.1.1";
 
 pub const V_P_SKEWNESS_RAW_ID: &str = "daily_dbzq_v_p_skewness";
 pub const V_P_REVERSAL_RAW_ID: &str = "daily_dbzq_v_p_reversal";
@@ -49,9 +49,7 @@ struct FiveMinuteBarBuilder {
     open: Option<f64>,
     close: Option<f64>,
     volume: f64,
-    amount: f64,
     has_volume: bool,
-    has_amount: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -59,7 +57,6 @@ struct FiveMinuteBar {
     open: f64,
     close: f64,
     volume: f64,
-    amount: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -94,7 +91,7 @@ pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
     stock_minute_raw_spec(
         raw_id,
         RAW_VERSION,
-        &["open", "close", "vol", "amount"],
+        &["open", "close", "vol"],
         RAW_WINDOW_DAYS,
     )
 }
@@ -167,7 +164,6 @@ pub fn minute_compute_many(
         let open = table.required_f64_cast("open")?;
         let close = table.required_f64_cast("close")?;
         let volume = table.required_f64_cast("vol")?;
-        let amount = table.required_f64_cast("amount")?;
 
         let mut grouped = BTreeMap::<String, Vec<usize>>::new();
         for idx in 0..table.len {
@@ -182,14 +178,8 @@ pub fn minute_compute_many(
 
         for (ts_code, mut indices) in grouped {
             indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
-            let bars = five_minute_bars_from_indices(
-                &indices,
-                &trade_times,
-                &open,
-                &close,
-                &volume,
-                &amount,
-            );
+            let bars =
+                five_minute_bars_from_indices(&indices, &trade_times, &open, &close, &volume);
             let stats = daily_stats(&bars);
             let key = FactorRowKey::Daily {
                 trade_date: *trade_date,
@@ -358,7 +348,7 @@ fn tags(kind: DbzqIntradayVolumeDistributionKind) -> Vec<String> {
 fn description(def: DbzqIntradayVolumeDistributionFactorDef) -> String {
     match def.kind {
         DbzqIntradayVolumeDistributionKind::VolumePrice => format!(
-            "{} composites intraday 5-minute VWAP volume-at-price skewness and POC reversal raws from 1-minute bars, then z-scores subfactors and neutralizes by Barra SIZE and SW sector; it does not depend on derived 5-minute parquet bars.",
+            "{} composites intraday 5-minute close volume-at-price skewness and POC reversal raws from 1-minute bars, then z-scores subfactors and neutralizes by Barra SIZE and SW sector; it does not depend on derived 5-minute parquet bars.",
             def.name
         ),
         DbzqIntradayVolumeDistributionKind::SignificantUpVolumeReturn => format!(
@@ -396,7 +386,6 @@ fn five_minute_bars_from_indices(
     open: &[Option<f64>],
     close: &[Option<f64>],
     volume: &[Option<f64>],
-    amount: &[Option<f64>],
 ) -> Vec<FiveMinuteBar> {
     let mut builders = std::iter::repeat_with(FiveMinuteBarBuilder::default)
         .take(FIVE_MINUTE_BARS)
@@ -412,7 +401,7 @@ fn five_minute_bars_from_indices(
         if slot >= FIVE_MINUTE_BARS {
             continue;
         }
-        builders[slot].push(open[*idx], close[*idx], volume[*idx], amount[*idx]);
+        builders[slot].push(open[*idx], close[*idx], volume[*idx]);
     }
     builders
         .into_iter()
@@ -435,9 +424,9 @@ fn price_distribution_stats(bars: &[FiveMinuteBar]) -> (Option<f64>, Option<f64>
     let price_volume = bars
         .iter()
         .filter_map(|bar| {
-            let vwap = bar.vwap()?;
+            let price = finite_value(bar.close)?;
             let volume = finite_value(bar.volume)?;
-            (volume > EPS).then_some((vwap, volume))
+            (volume > EPS).then_some((price, volume))
         })
         .collect::<Vec<_>>();
     if price_volume.len() < MIN_PRICE_BARS {
@@ -644,13 +633,7 @@ fn bar_return(bar: &FiveMinuteBar) -> Option<f64> {
 }
 
 impl FiveMinuteBarBuilder {
-    fn push(
-        &mut self,
-        open: Option<f64>,
-        close: Option<f64>,
-        volume: Option<f64>,
-        amount: Option<f64>,
-    ) {
+    fn push(&mut self, open: Option<f64>, close: Option<f64>, volume: Option<f64>) {
         self.minute_count += 1;
         if self.open.is_none() {
             self.open = clean_positive(open);
@@ -662,31 +645,17 @@ impl FiveMinuteBarBuilder {
             self.volume += volume;
             self.has_volume = true;
         }
-        if let Some(amount) = clean_nonnegative(amount) {
-            self.amount += amount;
-            self.has_amount = true;
-        }
     }
 
     fn finish(self) -> Option<FiveMinuteBar> {
-        if self.minute_count != 5 || !self.has_volume || !self.has_amount {
+        if self.minute_count != 5 || !self.has_volume {
             return None;
         }
         Some(FiveMinuteBar {
             open: self.open?,
             close: self.close?,
             volume: self.volume,
-            amount: self.amount,
         })
-    }
-}
-
-impl FiveMinuteBar {
-    fn vwap(&self) -> Option<f64> {
-        if self.volume.abs() <= EPS {
-            return None;
-        }
-        finite_value(self.amount / self.volume)
     }
 }
 
@@ -806,16 +775,13 @@ mod tests {
     fn dbzq_volume_distribution_builds_complete_five_minute_bars() {
         let (indices, times, values) = minute_rows_for_one_hour();
         let volume = vec![Some(10.0); 60];
-        let amount = vec![Some(1000.0); 60];
 
-        let bars =
-            five_minute_bars_from_indices(&indices, &times, &values, &values, &volume, &amount);
+        let bars = five_minute_bars_from_indices(&indices, &times, &values, &values, &volume);
 
         assert_eq!(bars.len(), 12);
         assert_close(Some(bars[0].open), 1.0);
         assert_close(Some(bars[0].close), 5.0);
         assert_close(Some(bars[0].volume), 50.0);
-        assert_close(bars[0].vwap(), 100.0);
     }
 
     #[test]
@@ -827,7 +793,6 @@ mod tests {
                 open: 1.0,
                 close,
                 volume: 10.0 + idx as f64,
-                amount: 1000.0 + idx as f64,
             })
             .collect::<Vec<_>>();
 
@@ -838,13 +803,12 @@ mod tests {
     }
 
     #[test]
-    fn dbzq_volume_distribution_price_bins_and_poc_use_vwap_volume() {
+    fn dbzq_volume_distribution_price_bins_and_poc_use_close_volume() {
         let bars = (0..10)
             .map(|idx| FiveMinuteBar {
                 open: 10.0 + idx as f64,
                 close: 10.0 + idx as f64,
                 volume: if idx == 7 { 100.0 } else { 10.0 },
-                amount: (10.0 + idx as f64) * if idx == 7 { 100.0 } else { 10.0 },
             })
             .collect::<Vec<_>>();
 
@@ -852,10 +816,7 @@ mod tests {
 
         assert!(skewness.is_some());
         assert!(reversal.is_some());
-        let prices = bars
-            .iter()
-            .filter_map(FiveMinuteBar::vwap)
-            .collect::<Vec<_>>();
+        let prices = bars.iter().map(|bar| bar.close).collect::<Vec<_>>();
         let edges = price_quantile_edges(&prices).expect("edges");
         let close_bin = price_bin(bars.last().unwrap().close, &edges);
         assert_eq!(close_bin, Some(9));

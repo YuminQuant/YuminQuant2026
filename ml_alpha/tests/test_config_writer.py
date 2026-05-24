@@ -54,7 +54,7 @@ from yq_ml_alpha.models.regularized_linear_model import (
     LassoAlphaModel,
     RidgeAlphaModel,
 )
-from yq_ml_alpha.models.sequence_model import GRUAlphaModel, LSTMAlphaModel, RNNAlphaModel
+from yq_ml_alpha.models.sequence_model import GRUAlphaModel, LSTMAlphaModel, RNNAlphaModel, _negative_ic_loss
 from yq_ml_alpha.models.tree_model import RandomForestAlphaModel
 from yq_ml_alpha.models.xgb_optuna_model import XGBoostOptunaAlphaModel
 from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
@@ -2410,6 +2410,8 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             model = model_cls()
             context = ModelContext(**base_context)
             model.fit(train, pd.DataFrame(), context)
+            self.assertEqual(model.params["loss"], "mse")
+            self.assertEqual(model.model_info["loss"], "mse")
             self.assertGreater(len(model.loss_history), 0)
             self.assertIn("train_loss", model.loss_history[-1])
             self.assertEqual(model.model_info["epochs_run"], len(model.loss_history))
@@ -2424,6 +2426,78 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertEqual(loaded.model_info["rnn_type"], model.rnn_type)
                 loaded_pred = loaded.predict(train, context)
                 self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
+
+    def test_sequence_pearson_ic_loss_matches_bar_gru_semantics_when_installed(self) -> None:
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is not installed")
+        self.assertTrue(
+            torch.allclose(
+                _negative_ic_loss(torch, torch.tensor([1.0, 2.0, 3.0]), torch.tensor([10.0, 20.0, 30.0])),
+                torch.tensor(-1.0),
+                atol=1e-6,
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                _negative_ic_loss(torch, torch.tensor([1.0, 2.0, 3.0]), torch.tensor([30.0, 20.0, 10.0])),
+                torch.tensor(1.0),
+                atol=1e-6,
+            )
+        )
+        self.assertIsNone(_negative_ic_loss(torch, torch.tensor([1.0, 1.0]), torch.tensor([1.0, 2.0])))
+
+    def test_sequence_models_pearson_ic_smoke_when_installed(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            self.skipTest("torch is not installed")
+        rows = []
+        for trade_date, base in [(1, 0.0), (2, 1.0)]:
+            for idx, symbol in enumerate(["a", "b", "c", "d"]):
+                rows.append(
+                    {
+                        "trade_date": trade_date,
+                        "ts_code": symbol,
+                        "x1": base + idx * 0.1,
+                        "x2": 1.0 + idx * 0.2,
+                        "x3": 2.0 - idx * 0.1,
+                        "x4": 0.5 + idx * 0.3,
+                        "y": float(idx),
+                    }
+                )
+        train = pd.DataFrame(rows)
+        base_context = dict(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["x1", "x2", "x3", "x4"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={
+                "sequence_length": 2,
+                "hidden_size": 4,
+                "num_layers": 1,
+                "epochs": 1,
+                "batch_size": 2,
+                "patience": 0,
+                "seed": 7,
+                "device": "cpu",
+                "loss": "pearson_ic",
+            },
+            model_search={},
+        )
+        for model_cls in [RNNAlphaModel, LSTMAlphaModel, GRUAlphaModel]:
+            model = model_cls()
+            context = ModelContext(**base_context)
+            model.fit(train, pd.DataFrame(), context)
+            self.assertEqual(model.params["loss"], "pearson_ic")
+            self.assertEqual(model.model_info["loss"], "pearson_ic")
+            self.assertGreater(len(model.loss_history), 0)
+            self.assertTrue(np.isfinite(model.loss_history[-1]["train_loss"]))
+            pred = model.predict(train, context)
+            self.assertEqual(len(pred), len(train))
+            self.assertTrue(np.isfinite(pred.to_numpy()).all())
 
     def test_bar_gru_model_smoke_when_installed(self) -> None:
         try:
@@ -2847,6 +2921,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             model_dir / "mdl_000003.toml": ("mdl_000003", "RidgeAlphaModel"),
             model_dir / "mdl_000004.toml": ("mdl_000004", "ElasticNetAlphaModel"),
             model_dir / "mdl_000005.toml": ("mdl_000005", "PCAOLSAlphaModel"),
+            model_dir / "mdl_000006.toml": ("mdl_000006", "LSTMAlphaModel"),
             model_dir / "mdl_80000.toml": ("mdl_80000", "LSTMAlphaModel"),
             model_dir / "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
             model_dir / "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
@@ -2862,7 +2937,21 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertEqual(config.alpha_id, alpha_id)
             self.assertTrue(config.model.class_path.endswith(class_name))
             self.assertEqual(config.features.columns, "__all__")
-            if filename in {
+            if filename == "mdl_000006.toml":
+                self.assertEqual(config.label.id, "future_vwap_return_5d")
+                self.assertEqual(config.sample.train_frequency, "10")
+                self.assertEqual(config.sample.predict_frequency, "daily")
+                self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
+                self.assertEqual(config.train_scheme.train_lookback, "3y")
+                self.assertEqual(config.train_scheme.validation_ratio, 0.2)
+                self.assertEqual(config.train_scheme.validation_sample_count, 0)
+                self.assertEqual(config.model.params["sequence_length"], 5)
+                self.assertEqual(config.model.params["sequence_frequency"], "daily")
+                self.assertEqual(config.model.params["hidden_size"], 64)
+                self.assertEqual(config.model.params["num_layers"], 1)
+                self.assertEqual(config.model.params["dropout"], 0.0)
+                self.assertEqual(config.model.params["loss"], "pearson_ic")
+            elif filename in {
                 "mdl_000002.toml",
                 "mdl_000003.toml",
                 "mdl_000004.toml",
@@ -2893,7 +2982,8 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
 
     def test_mdl_end_to_end_configs_migrated_to_factors(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        for name in ["mdl_000006.toml", "mdl_000007.toml", "mdl_000008.toml"]:
+        self.assertTrue((root / "models" / "mdl_000006.toml").exists())
+        for name in ["mdl_000007.toml", "mdl_000008.toml"]:
             self.assertFalse((root / "models" / name).exists())
             self.assertFalse((root / "configs" / name).exists())
         for name in ["e2e_fct_000001.toml", "e2e_fct_000002.toml", "e2e_fct_000003.toml"]:
@@ -2901,7 +2991,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         for name in ["bar_gru_15m.toml", "multi_bar_gru_daily_15m.toml", "residual_multi_bar_gru.toml"]:
             self.assertTrue((root / "factors" / name).exists())
         registry = (root / "model_registry.toml").read_text(encoding="utf-8")
-        self.assertNotIn("mdl_000006", registry)
+        self.assertIn("mdl_000006", registry)
         self.assertNotIn("mdl_000007", registry)
         self.assertNotIn("mdl_000008", registry)
         factor_registry = (root / "factor_registry.toml").read_text(encoding="utf-8")

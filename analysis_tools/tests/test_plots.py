@@ -81,7 +81,7 @@ def test_plot_return_summary_accepts_barra_exposure() -> None:
     assert isinstance(fig, Figure)
     assert len(fig.axes) >= 8
     titles = {axis.get_title() for axis in fig.axes}
-    assert "Cumulative long group Barra exposure" in titles
+    assert "Rolling 10-period long group Barra exposure" in titles
     assert "Mean factor-Barra Pearson IC" in titles
     labels = [text.get_text() for axis in fig.axes for text in axis.texts]
     assert "0.12" in labels

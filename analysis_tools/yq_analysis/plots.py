@@ -431,7 +431,7 @@ def _plot_barra_exposure_timeseries(
         )
         if series.empty:
             continue
-        series = series.cumsum()
+        series = series.rolling(10, min_periods=1).mean()
         (line,) = ax.plot(
             series.index,
             series.values,
@@ -447,7 +447,7 @@ def _plot_barra_exposure_timeseries(
         ax.set_axis_off()
         return [], []
     ax.axhline(0.0, color="#888888", linewidth=0.8, linestyle="--")
-    ax.set_title("Cumulative long group Barra exposure")
+    ax.set_title("Rolling 10-period long group Barra exposure")
     _pad_single_axis(ax, values)
     return handles, labels
 

@@ -12,6 +12,7 @@ pub mod gfzq_hf_resid_std;
 pub mod gfzq_jump_vol_5min;
 pub mod intraday_daily;
 pub mod intraday_raw;
+pub mod kyzq_apm;
 pub mod minute;
 pub mod mszq_gravity_field;
 pub mod mszq_main_force_volatility;

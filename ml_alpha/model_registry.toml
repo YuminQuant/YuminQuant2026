@@ -101,20 +101,3 @@ train_scheme = "rolling_3y_semiannual_refit_10d_sample_20pct_valid"
 features = "factor_frame: data/factors/stock/daily, columns=__all__"
 components = ["all formal stock daily factors", "daily sequence length 5", "LSTM"]
 tags = ["lstm", "factor_frame", "rank_gauss", "daily_sequence", "5d_label"]
-
-[[models]]
-model_id = "mdl_80000"
-alpha_id = "mdl_80000"
-run_id = "mdl_80000"
-config = "models/mdl_80000.toml"
-status = "active"
-display_name = "LSTM factor-frame combo"
-description = "LSTM model using monthly formal daily factor sequences."
-model_class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
-model_family = "sequence_lstm"
-label = "future_vwap_return_20d"
-preprocess = "rank_gauss"
-train_scheme = "rolling_monthly_36_plus_1_valid"
-features = "factor_frame: data/factors/stock/daily, columns=__all__"
-components = ["all formal stock daily factors", "monthly_end sequence", "LSTM"]
-tags = ["lstm", "factor_frame", "rank_gauss"]

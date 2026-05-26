@@ -14,6 +14,22 @@ pub struct PerformancePoint {
 }
 
 #[derive(Clone, Debug)]
+pub struct IndexGroupReturnPoint {
+    pub factor_id: String,
+    pub index_id: String,
+    pub factor_date: i32,
+    pub trade_date: Option<i32>,
+    pub settle_date: Option<i32>,
+    pub portfolio: String,
+    pub return_value: Option<f64>,
+    pub benchmark_return: Option<f64>,
+    pub excess_return: Option<f64>,
+    pub turnover: Option<f64>,
+    pub member_count: i64,
+    pub benchmark_count: i64,
+}
+
+#[derive(Clone, Debug)]
 pub struct FactorStatsDaily {
     pub factor_id: String,
     pub trade_date: i32,

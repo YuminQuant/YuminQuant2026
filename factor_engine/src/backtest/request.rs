@@ -9,6 +9,7 @@ pub const DEFAULT_BENCHMARK: &str = "mkt_mean";
 pub const DEFAULT_GROUPS: usize = 10;
 pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 10;
 pub const DEFAULT_DATE_BATCH_SIZE: usize = 120;
+pub const DEFAULT_BACKTEST_THREADS: usize = 4;
 pub const DEFAULT_EXCLUDE_LIMIT: bool = true;
 pub const DEFAULT_EXCLUDE_ST: bool = true;
 

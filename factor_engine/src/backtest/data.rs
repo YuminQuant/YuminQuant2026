@@ -34,12 +34,14 @@ pub const CNE6_PRIMARY_BARRA_COLUMNS: &[&str] = &[
 pub struct BacktestInput {
     pub factor_metadata: Vec<FactorMetadata>,
     pub label_metadata: LabelMetadataInfo,
+    pub ic_label_metadata: Vec<IcLabelMetadataInfo>,
     pub target_dates: Vec<i32>,
     pub all_dates: Vec<i32>,
     pub panel: BacktestPanel,
     pub universe: BacktestUniverseBatch,
     pub trade_filter: BacktestTradeFilterBatch,
     pub benchmark: BenchmarkBatch,
+    pub index_groups: Vec<IndexGroupBatch>,
     pub sectors: Option<HashMap<i32, Vec<Option<String>>>>,
     pub detail_sectors: Option<HashMap<i32, Vec<Option<String>>>>,
     pub detail_sector_source: Option<String>,
@@ -54,6 +56,8 @@ pub struct BacktestDataPlan {
     pub all_dates: Vec<i32>,
     pub instruments: Vec<String>,
     label_table: Table,
+    ic_label_metadata: Vec<IcLabelMetadataInfo>,
+    max_label_lookahead: usize,
     barra_columns: Vec<String>,
     sector_map: Option<ClassificationMap>,
     detail_sector_map: Option<ClassificationMap>,
@@ -61,6 +65,7 @@ pub struct BacktestDataPlan {
     universe: BacktestUniversePlan,
     trade_filter: BacktestTradeFilterPlan,
     benchmark: BenchmarkPlan,
+    index_groups: Vec<IndexGroupPlan>,
 }
 
 #[derive(Clone, Debug)]
@@ -140,11 +145,37 @@ pub enum BenchmarkKind {
     Weighted(HashMap<i32, Vec<Option<f64>>>),
 }
 
+pub const INDEX_GROUP_IDS: &[&str] = &["000300.SH", "000905.SH", "000852.SH"];
+
+#[derive(Clone, Debug)]
+pub struct IndexGroupPlan {
+    pub id: String,
+    weights: HashMap<i32, Vec<Option<f64>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexGroupBatch {
+    pub id: String,
+    pub weights: HashMap<i32, Vec<Option<f64>>>,
+}
+
+impl IndexGroupBatch {
+    pub fn weights_for(&self, date: i32) -> Option<&[Option<f64>]> {
+        self.weights.get(&date).map(Vec::as_slice)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LabelMetadataInfo {
     pub label_id: String,
     pub output_column: String,
     pub lookahead: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct IcLabelMetadataInfo {
+    pub horizon: usize,
+    pub label: LabelMetadataInfo,
 }
 
 #[derive(Clone, Debug)]
@@ -249,14 +280,20 @@ pub fn prepare_backtest_data_plan(
     if factor_metadata.is_empty() {
         return Err(err("no factors selected for backtest"));
     }
-    let label_metadata = select_label(config, &request.label_id)?;
+    let (label_metadata, ic_label_metadata) = select_backtest_labels(config, &request.label_id)?;
+    let max_label_lookahead = ic_label_metadata
+        .iter()
+        .map(|row| row.label.lookahead)
+        .chain(std::iter::once(label_metadata.lookahead))
+        .max()
+        .unwrap_or(label_metadata.lookahead);
     let label_end = target_dates
         .last()
-        .and_then(|date| calendar.open_date_after(*date, label_metadata.lookahead))
+        .and_then(|date| calendar.open_date_after(*date, max_label_lookahead))
         .unwrap_or(*target_dates.last().expect("non-empty target dates"));
     let all_dates = calendar.open_dates_between(effective_start, label_end);
 
-    let label_columns = vec![label_metadata.output_column.clone()];
+    let label_columns = unique_label_columns(&label_metadata, &ic_label_metadata);
     let label_table = load_output_table(
         &config.label_root,
         request.asset_class,
@@ -270,6 +307,7 @@ pub fn prepare_backtest_data_plan(
     let universe = load_universe_plan(config, &request.universe, &target_dates, &instruments)?;
     let trade_filter = load_trade_filter_plan(config, request, &target_dates, &instruments)?;
     let benchmark = load_benchmark_plan(config, &request.benchmark, &target_dates, &instruments)?;
+    let index_groups = load_index_group_plans(config, &target_dates, &instruments)?;
 
     let barra_columns = resolve_backtest_barra_columns(request);
     let sector_map = if request.neutralize.uses_sector() {
@@ -299,6 +337,8 @@ pub fn prepare_backtest_data_plan(
         all_dates,
         instruments,
         label_table,
+        ic_label_metadata,
+        max_label_lookahead,
         barra_columns,
         sector_map,
         detail_sector_map,
@@ -306,6 +346,7 @@ pub fn prepare_backtest_data_plan(
         universe,
         trade_filter,
         benchmark,
+        index_groups,
     })
 }
 
@@ -371,7 +412,7 @@ pub fn load_backtest_input_batch(
         .iter()
         .map(|row| row.output_column.clone())
         .collect::<Vec<_>>();
-    let label_columns = vec![plan.label_metadata.output_column.clone()];
+    let label_columns = unique_label_columns(&plan.label_metadata, &plan.ic_label_metadata);
     let factor_root = request
         .factor_root
         .as_deref()
@@ -455,6 +496,7 @@ pub fn load_backtest_input_batch(
     Ok(BacktestInput {
         factor_metadata,
         label_metadata: plan.label_metadata.clone(),
+        ic_label_metadata: plan.ic_label_metadata.clone(),
         target_dates: target_dates.to_vec(),
         all_dates,
         panel,
@@ -462,6 +504,11 @@ pub fn load_backtest_input_batch(
         universe: plan.universe.slice(target_dates),
         trade_filter: plan.trade_filter.slice(target_dates),
         benchmark: plan.benchmark.slice(target_dates),
+        index_groups: plan
+            .index_groups
+            .iter()
+            .map(|index| index.slice(target_dates))
+            .collect(),
         sectors,
         detail_sectors,
         detail_sector_source: plan.detail_sector_source.clone(),
@@ -505,6 +552,18 @@ impl BenchmarkPlan {
         BenchmarkBatch {
             id: self.id.clone(),
             kind,
+        }
+    }
+}
+
+impl IndexGroupPlan {
+    fn slice(&self, dates: &[i32]) -> IndexGroupBatch {
+        IndexGroupBatch {
+            id: self.id.clone(),
+            weights: dates
+                .iter()
+                .filter_map(|date| self.weights.get(date).map(|values| (*date, values.clone())))
+                .collect(),
         }
     }
 }
@@ -795,6 +854,40 @@ fn load_benchmark_plan(
     })
 }
 
+fn load_index_group_plans(
+    config: &EngineConfig,
+    target_dates: &[i32],
+    instruments: &[String],
+) -> Result<Vec<IndexGroupPlan>> {
+    let mut plans = Vec::new();
+    for index_id in INDEX_GROUP_IDS {
+        let weights = match load_index_weight_records(config, index_id, target_dates) {
+            Ok(records) => effective_weights_by_date(&records, target_dates, instruments),
+            Err(error) => {
+                eprintln!(
+                    "warning: index group diagnostic for {index_id} will output NaN rows: {error}"
+                );
+                empty_weights_by_date(target_dates, instruments.len())
+            }
+        };
+        plans.push(IndexGroupPlan {
+            id: (*index_id).to_string(),
+            weights,
+        });
+    }
+    Ok(plans)
+}
+
+fn empty_weights_by_date(
+    target_dates: &[i32],
+    instrument_count: usize,
+) -> HashMap<i32, Vec<Option<f64>>> {
+    target_dates
+        .iter()
+        .map(|date| (*date, vec![None; instrument_count]))
+        .collect()
+}
+
 fn is_market_all_universe(value: &str) -> bool {
     value.eq_ignore_ascii_case("mkt_all") || value.eq_ignore_ascii_case("all")
 }
@@ -1032,7 +1125,7 @@ fn all_dates_for_batch(plan: &BacktestDataPlan, target_dates: &[i32]) -> Result<
         .iter()
         .position(|date| *date == last)
         .ok_or_else(|| err(format!("date {last} not found in backtest calendar")))?;
-    let forward_days = plan.label_metadata.lookahead.max(1);
+    let forward_days = plan.max_label_lookahead.max(1);
     let label_end_idx = (end_idx + forward_days).min(plan.all_dates.len() - 1);
     Ok(plan.all_dates[start_idx..=label_end_idx].to_vec())
 }
@@ -1217,9 +1310,33 @@ fn dedup_factor_metadata(rows: Vec<FactorMetadata>) -> Vec<FactorMetadata> {
     output
 }
 
-fn select_label(config: &EngineConfig, label_id: &str) -> Result<LabelMetadataInfo> {
+fn select_backtest_labels(
+    config: &EngineConfig,
+    label_id: &str,
+) -> Result<(LabelMetadataInfo, Vec<IcLabelMetadataInfo>)> {
+    let Some(base) = label_id.strip_suffix("_return_1d") else {
+        return Err(err(format!(
+            "--label must be a 1d return label ending with _return_1d for IC decay, got {label_id}"
+        )));
+    };
     let storage = LabelStorage::new(config.label_root.clone());
     let metadata = storage.read_metadata()?;
+    let main = label_from_metadata(&metadata, label_id)?;
+    let mut ic_labels = Vec::new();
+    for horizon in [1usize, 5, 20] {
+        let id = format!("{base}_return_{horizon}d");
+        ic_labels.push(IcLabelMetadataInfo {
+            horizon,
+            label: label_from_metadata(&metadata, &id)?,
+        });
+    }
+    Ok((main, ic_labels))
+}
+
+fn label_from_metadata(
+    metadata: &[crate::storage::LabelMetadata],
+    label_id: &str,
+) -> Result<LabelMetadataInfo> {
     let row = metadata
         .iter()
         .find(|row| row.label_id == label_id)
@@ -1229,6 +1346,21 @@ fn select_label(config: &EngineConfig, label_id: &str) -> Result<LabelMetadataIn
         output_column: row.output_column.clone(),
         lookahead: parse_lookahead(&row.dependencies_json).unwrap_or(2),
     })
+}
+
+fn unique_label_columns(
+    label_metadata: &LabelMetadataInfo,
+    ic_label_metadata: &[IcLabelMetadataInfo],
+) -> Vec<String> {
+    let mut columns = vec![label_metadata.output_column.clone()];
+    columns.extend(
+        ic_label_metadata
+            .iter()
+            .map(|row| row.label.output_column.clone()),
+    );
+    columns.sort();
+    columns.dedup();
+    columns
 }
 
 fn parse_lookahead(dependencies_json: &str) -> Option<usize> {

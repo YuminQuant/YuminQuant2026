@@ -12,7 +12,7 @@ from yq_analysis.io import load_backtest_result
 
 def test_load_backtest_result_reads_optional_barra_exposure(tmp_path: Path) -> None:
     factor_id = "sample"
-    for directory in ("returns", "ic", "factor_stats", "barra_exposure"):
+    for directory in ("returns", "ic", "factor_stats", "barra_exposure", "index_group_returns"):
         (tmp_path / directory).mkdir()
 
     pd.DataFrame({"factor_id": [factor_id], "portfolio": ["group_1"], "return": [0.01]}).to_parquet(
@@ -20,6 +20,9 @@ def test_load_backtest_result_reads_optional_barra_exposure(tmp_path: Path) -> N
     )
     pd.DataFrame({"factor_id": [factor_id], "metric": ["barra_ic_mean"], "value": [0.1]}).to_parquet(
         tmp_path / "barra_exposure" / f"{factor_id}.parquet"
+    )
+    pd.DataFrame({"factor_id": [factor_id], "index_id": ["000300.SH"], "excess_return": [0.02]}).to_parquet(
+        tmp_path / "index_group_returns" / f"{factor_id}.parquet"
     )
 
     result = load_backtest_result(tmp_path, factor_id)
@@ -29,6 +32,8 @@ def test_load_backtest_result_reads_optional_barra_exposure(tmp_path: Path) -> N
     assert result["factor_stats"] is None
     assert result["barra_exposure"] is not None
     assert result["barra_exposure"]["metric"].tolist() == ["barra_ic_mean"]
+    assert result["index_group_returns"] is not None
+    assert result["index_group_returns"]["index_id"].tolist() == ["000300.SH"]
 
 
 def test_load_backtest_result_keeps_missing_barra_exposure_optional(tmp_path: Path) -> None:
@@ -38,3 +43,4 @@ def test_load_backtest_result_keeps_missing_barra_exposure_optional(tmp_path: Pa
     assert result["ic"] is None
     assert result["factor_stats"] is None
     assert result["barra_exposure"] is None
+    assert result["index_group_returns"] is None

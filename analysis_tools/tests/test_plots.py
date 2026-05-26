@@ -44,6 +44,30 @@ def _sample_barra_exposure() -> pd.DataFrame:
     )
 
 
+def _sample_index_group_returns() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "trade_date": [20250102, 20250103] * 3,
+            "factor_id": ["sample"] * 6,
+            "index_id": ["000300.SH", "000300.SH", "000905.SH", "000905.SH", "000852.SH", "000852.SH"],
+            "portfolio": ["group_5"] * 6,
+            "excess_return": [0.01, 0.02, -0.01, 0.01, 0.0, 0.005],
+        }
+    )
+
+
+def _sample_ic() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "factor_id": ["sample"] * 6,
+            "factor_date": [20250102, 20250103] * 3,
+            "horizon": [1, 1, 5, 5, 20, 20],
+            "ic": [0.01, 0.03, 0.02, 0.04, -0.01, 0.01],
+            "rank_ic": [0.02, 0.04, 0.01, 0.03, -0.02, 0.0],
+        }
+    )
+
+
 def test_plot_return_summary_returns_figure() -> None:
     pytest.importorskip("matplotlib")
     from matplotlib.figure import Figure
@@ -75,14 +99,18 @@ def test_plot_return_summary_accepts_barra_exposure() -> None:
         _sample_returns(),
         groups=2,
         barra_exposure=_sample_barra_exposure(),
+        index_group_returns=_sample_index_group_returns(),
+        ic=_sample_ic(),
         save=False,
     )
 
     assert isinstance(fig, Figure)
-    assert len(fig.axes) >= 8
+    assert len(fig.axes) >= 9
     titles = {axis.get_title() for axis in fig.axes}
     assert "Rolling 10-period long group Barra exposure" in titles
     assert "Mean factor-Barra Pearson IC" in titles
+    assert "Index long group cumulative excess" in titles
+    assert "IC decay" in titles
     labels = [text.get_text() for axis in fig.axes for text in axis.texts]
     assert "0.12" in labels
     assert any(label.endswith("%") for label in labels)

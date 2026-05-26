@@ -41,7 +41,7 @@ impl Factor for StockDailyLargeOrderResidualFlowStrength {
             ],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback {
-                trading_days: WINDOW,
+                trading_days: WINDOW - 1,
             },
         }
     }

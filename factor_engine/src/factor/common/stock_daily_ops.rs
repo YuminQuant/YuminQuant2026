@@ -67,7 +67,7 @@ pub fn adjusted_20d_return(data: &DataPool, panel: &DailyPanel) -> Result<PanelC
     let adj_factor =
         panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
     let adj_close = close.zip_binary(&adj_factor, multiply_pair_value)?;
-    adj_close.ts(|series| exact_price_return(series, RET20_WINDOW))
+    adj_close.ts(|series| inclusive_price_return(series, RET20_WINDOW))
 }
 
 pub fn neutralize_ret20_size_sector(
@@ -142,10 +142,14 @@ fn multiply_pair_value(left: Option<f64>, right: Option<f64>) -> Option<f64> {
     }
 }
 
-fn exact_price_return(values: &[Option<f64>], window: usize) -> Vec<Option<f64>> {
+fn inclusive_price_return(values: &[Option<f64>], observations: usize) -> Vec<Option<f64>> {
     let mut output = vec![None; values.len()];
-    for idx in window..values.len() {
-        let (Some(current), Some(previous)) = (clean(values[idx]), clean(values[idx - window]))
+    if observations < 2 {
+        return output;
+    }
+    let offset = observations - 1;
+    for idx in offset..values.len() {
+        let (Some(current), Some(previous)) = (clean(values[idx]), clean(values[idx - offset]))
         else {
             continue;
         };
@@ -197,16 +201,17 @@ mod tests {
     }
 
     #[test]
-    fn stock_daily_ops_exact_price_return_requires_exact_window_price() {
+    fn stock_daily_ops_inclusive_price_return_uses_twenty_observations() {
         let mut values = vec![None; 21];
         values[0] = Some(100.0);
-        values[19] = Some(999.0);
+        values[1] = Some(101.0);
+        values[19] = Some(119.0);
         values[20] = Some(110.0);
 
-        let returns = exact_price_return(&values, 20);
+        let returns = inclusive_price_return(&values, 20);
 
-        assert_eq!(returns[19], None);
-        assert_close(returns[20], Some(0.10));
+        assert_close(returns[19], Some(0.19));
+        assert_close(returns[20], Some(110.0 / 101.0 - 1.0));
     }
 
     #[test]

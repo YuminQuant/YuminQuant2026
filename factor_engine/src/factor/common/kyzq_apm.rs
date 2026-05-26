@@ -69,7 +69,7 @@ pub fn factor_spec(def: KyzqApmFactorDef) -> FactorSpec {
             .map(|raw_id| IntradayDailyRawRequest::new(raw_id, APM_WINDOW - 1))
             .collect(),
         lookback: Lookback {
-            trading_days: APM_WINDOW,
+            trading_days: APM_WINDOW - 1,
         },
     }
 }
@@ -565,6 +565,7 @@ mod tests {
         assert!(spec.tags.iter().any(|tag| tag == "KYZQ"));
         assert!(spec.tags.iter().any(|tag| tag == "overnight"));
         assert_eq!(spec.intraday_raw_dependencies[0].raw_id, APM_PM_RET_RAW_ID);
+        assert_eq!(spec.lookback.trading_days, 19);
     }
 
     #[test]

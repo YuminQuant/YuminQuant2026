@@ -27,6 +27,7 @@ returns = result["returns"]
 ic = result["ic"]
 factor_stats = result["factor_stats"]
 barra_exposure = result["barra_exposure"]
+index_group_returns = result["index_group_returns"]
 ```
 
 生成报表 / Build reports:
@@ -52,7 +53,9 @@ fig = plot_return_summary(returns, groups=10, save=True)
 fig = plot_return_summary(
     returns,
     groups=10,
+    ic=ic,
     barra_exposure=barra_exposure,
+    index_group_returns=index_group_returns,
     save=True,
 )
 ```
@@ -110,6 +113,7 @@ abs_ir
 {root}/ic/{factor_id}.parquet
 {root}/factor_stats/{factor_id}.parquet
 {root}/barra_exposure/{factor_id}.parquet
+{root}/index_group_returns/{factor_id}.parquet
 ```
 
 缺失文件返回 `None`，所以也可以只分析收益或只分析 IC。

@@ -3,10 +3,11 @@ use std::path::PathBuf;
 
 use yq_factor_engine::backtest::request::{
     BacktestDetail, BacktestDetailSector, BacktestRunRequest, FactorFill, LimitSide,
-    NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL, DEFAULT_BENCHMARK,
-    DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE, DEFAULT_EXCLUDE_LIMIT,
-    DEFAULT_EXCLUDE_ST, DEFAULT_FACTOR_BATCH_SIZE as DEFAULT_BACKTEST_FACTOR_BATCH_SIZE,
-    DEFAULT_GROUPS, DEFAULT_UNIVERSE,
+    NeutralizeSpec, RebalanceRule, DEFAULT_BACKTEST_LABEL, DEFAULT_BACKTEST_THREADS,
+    DEFAULT_BENCHMARK, DEFAULT_DATE_BATCH_SIZE as DEFAULT_BACKTEST_DATE_BATCH_SIZE,
+    DEFAULT_EXCLUDE_LIMIT, DEFAULT_EXCLUDE_ST,
+    DEFAULT_FACTOR_BATCH_SIZE as DEFAULT_BACKTEST_FACTOR_BATCH_SIZE, DEFAULT_GROUPS,
+    DEFAULT_UNIVERSE,
 };
 use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
@@ -1181,7 +1182,10 @@ fn print_help() {
     );
     println!("  --label-batch-num N (alias of --label-batch-size)");
     println!("  --exposure-batch-size N (default 1 for one Barra family per batch)");
-    println!("  --threads N");
+    println!(
+        "  --threads N (backtest default {})",
+        DEFAULT_BACKTEST_THREADS
+    );
     println!("  --profile");
     println!("  --refresh-minute-cache");
     println!("  --refresh-label-cache");
@@ -1422,6 +1426,7 @@ mod tests {
         assert_eq!(request.factor_fill, FactorFill::None);
         assert_eq!(request.detail, BacktestDetail::none());
         assert_eq!(request.detail_sector, BacktestDetailSector::ShenwanL1);
+        assert_eq!(request.threads, None);
 
         let args = [
             "--asset",

@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use crate::backtest::ic::IcObservation;
 use crate::backtest::metrics::{
-    BarraExposureRecord, FactorStatsDaily, HoldingWeight, IndustryWeight, PerformancePoint,
+    BarraExposureRecord, FactorStatsDaily, HoldingWeight, IndexGroupReturnPoint, IndustryWeight,
+    PerformancePoint,
 };
 use crate::data::parquet_io::write_parquet;
 use crate::data::{ColumnData, Table};
@@ -12,6 +13,7 @@ use crate::error::Result;
 pub fn write_backtest_outputs(
     output_dir: &Path,
     returns: &[PerformancePoint],
+    index_group_returns: &[IndexGroupReturnPoint],
     daily_ic: &[IcObservation],
     factor_stats: &[FactorStatsDaily],
     holdings: &[HoldingWeight],
@@ -27,6 +29,14 @@ pub fn write_backtest_outputs(
     for (factor_id, rows) in group_returns_by_factor(returns) {
         let path = returns_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
         write_parquet(&path, &returns_table(&rows)?)?;
+        written.push(path);
+    }
+
+    let index_returns_dir = output_dir.join("index_group_returns");
+    std::fs::create_dir_all(&index_returns_dir)?;
+    for (factor_id, rows) in group_index_group_returns_by_factor(index_group_returns) {
+        let path = index_returns_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+        write_parquet(&path, &index_group_returns_table(&rows)?)?;
         written.push(path);
     }
 
@@ -106,6 +116,19 @@ fn remove_legacy_outputs(output_dir: &Path) -> Result<()> {
 
 fn group_returns_by_factor(rows: &[PerformancePoint]) -> BTreeMap<String, Vec<PerformancePoint>> {
     let mut grouped = BTreeMap::<String, Vec<PerformancePoint>>::new();
+    for row in rows {
+        grouped
+            .entry(row.factor_id.clone())
+            .or_default()
+            .push(row.clone());
+    }
+    grouped
+}
+
+fn group_index_group_returns_by_factor(
+    rows: &[IndexGroupReturnPoint],
+) -> BTreeMap<String, Vec<IndexGroupReturnPoint>> {
+    let mut grouped = BTreeMap::<String, Vec<IndexGroupReturnPoint>>::new();
     for row in rows {
         grouped
             .entry(row.factor_id.clone())
@@ -247,6 +270,50 @@ fn returns_table(rows: &[PerformancePoint]) -> Result<Table> {
             f64_col(rows.iter().map(|row| row.excess_return)),
         ),
         ("turnover", f64_col(rows.iter().map(|row| row.turnover))),
+    ]))
+}
+
+fn index_group_returns_table(rows: &[IndexGroupReturnPoint]) -> Result<Table> {
+    table_from_columns(BTreeMap::from([
+        (
+            "factor_id",
+            utf8(rows.iter().map(|row| Some(row.factor_id.clone()))),
+        ),
+        (
+            "index_id",
+            utf8(rows.iter().map(|row| Some(row.index_id.clone()))),
+        ),
+        (
+            "factor_date",
+            i32_col(rows.iter().map(|row| Some(row.factor_date))),
+        ),
+        ("trade_date", i32_col(rows.iter().map(|row| row.trade_date))),
+        (
+            "settle_date",
+            i32_col(rows.iter().map(|row| row.settle_date)),
+        ),
+        (
+            "portfolio",
+            utf8(rows.iter().map(|row| Some(row.portfolio.clone()))),
+        ),
+        ("return", f64_col(rows.iter().map(|row| row.return_value))),
+        (
+            "benchmark_return",
+            f64_col(rows.iter().map(|row| row.benchmark_return)),
+        ),
+        (
+            "excess_return",
+            f64_col(rows.iter().map(|row| row.excess_return)),
+        ),
+        ("turnover", f64_col(rows.iter().map(|row| row.turnover))),
+        (
+            "member_count",
+            i64_col(rows.iter().map(|row| Some(row.member_count))),
+        ),
+        (
+            "benchmark_count",
+            i64_col(rows.iter().map(|row| Some(row.benchmark_count))),
+        ),
     ]))
 }
 

@@ -22,6 +22,20 @@ CNE6_BARRA_FACTORS = [
     "VOLATILITY",
 ]
 
+BARRA_SHORT_NAMES = {
+    "DIVIDEND_YIELD": "DY",
+    "GROWTH": "GROW",
+    "LIQUIDITY": "LIQ",
+    "MOMENTUM": "MOM",
+    "QUALITY": "QUAL",
+    "SENTIMENT": "SENT",
+    "SIZE": "SIZE",
+    "VALUE": "VAL",
+    "VOLATILITY": "VOL",
+}
+
+INDEX_GROUP_IDS = ["000300.SH", "000905.SH", "000852.SH"]
+
 
 def _require_matplotlib():
     try:
@@ -34,6 +48,11 @@ def _require_matplotlib():
 def _portfolio_number(name: str) -> int | None:
     match = re.fullmatch(r"group_(\d+)", str(name))
     return int(match.group(1)) if match else None
+
+
+def _portfolio_display_name(name: str) -> str:
+    number = _portfolio_number(str(name))
+    return f"G{number}" if number is not None else str(name)
 
 
 def _date_index(frame: pd.DataFrame) -> pd.Index:
@@ -192,8 +211,10 @@ def plot_return_summary(
     factor_name: str | None = None,
     dpi: int | str | None = None,
     barra_exposure: pd.DataFrame | None = None,
+    index_group_returns: pd.DataFrame | None = None,
+    ic: pd.DataFrame | None = None,
 ):
-    """Plot group, excess, annual return, turnover, and optional Barra exposure summaries."""
+    """Plot group, excess, index, annual return, Barra, turnover, and IC decay summaries."""
 
     if returns is None or returns.empty:
         raise ValueError("returns is empty")
@@ -202,14 +223,16 @@ def plot_return_summary(
 
     plt = _require_matplotlib()
     has_barra = barra_exposure is not None and not barra_exposure.empty
+    has_index_groups = index_group_returns is not None and not index_group_returns.empty
+    has_ic = ic is not None and not ic.empty
     if figsize is None:
-        figsize = (18.5, 7.8) #if has_barra else (16.4, 7.8)
+        figsize = (19.0, 8.2)
     fig = plt.figure(figsize=figsize, constrained_layout=False)
     fig.subplots_adjust(
         left=0.048,
         right=0.992,
         top=0.945 if title else 0.978,
-        bottom=0.135 if has_barra else 0.105,
+        bottom=0.135 if (has_barra or has_index_groups or has_ic) else 0.105,
         hspace=0.40,
         wspace=0.18,
     )
@@ -218,29 +241,16 @@ def plot_return_summary(
     grid = fig.add_gridspec(3, 2, height_ratios=[1.25, 1.05, 0.95], width_ratios=[1.0, 1.6])
     ax_ret = fig.add_subplot(grid[0, 0])
     ax_excess = fig.add_subplot(grid[1, 0], sharex=ax_ret)
-    ax_turnover = fig.add_subplot(grid[2, 0], sharex=ax_ret)
-    if has_barra:
-        right_grid = grid[:, 1].subgridspec(
-            4,
-            2,
-            height_ratios=[0.78, 0.20, 0.78, 0.44],
-            hspace=0.20,
-            wspace=0.28,
-        )
-        annual_row = 0
-        barra_row = 2
-    else:
-        right_grid = grid[:, 1].subgridspec(
-            3,
-            2,
-            height_ratios=[0.78, 0.20, 1.00],
-            hspace=0.20,
-            wspace=0.28,
-        )
-        annual_row = 0
-        barra_row = None
-    ax_ann = fig.add_subplot(right_grid[annual_row, 0])
-    ax_excess_ann = fig.add_subplot(right_grid[annual_row, 1])
+    ax_index = fig.add_subplot(grid[2, 0], sharex=ax_ret)
+    right_grid = grid[:, 1].subgridspec(
+        3,
+        2,
+        height_ratios=[0.84, 0.84, 0.72],
+        hspace=0.34,
+        wspace=0.28,
+    )
+    ax_ann = fig.add_subplot(right_grid[0, 0])
+    ax_excess_ann = fig.add_subplot(right_grid[0, 1])
     ax_ls = ax_ret.twinx()
 
     group_names = _group_names(returns, groups)
@@ -286,31 +296,42 @@ def plot_return_summary(
     _plot_annual_bars(ax_ann, returns, group_names, return_col, "Annual return by group", color_map)
     _plot_annual_bars(ax_excess_ann, returns, group_names, "excess_return", "Annual excess return by group", color_map)
 
+    index_handles, index_labels = _plot_index_group_excess(
+        ax_index,
+        index_group_returns,
+        ic,
+    )
+    legend_handles.extend(index_handles)
+    legend_labels.extend(index_labels)
+
+    ax_barra_ts = fig.add_subplot(right_grid[1, 0])
+    ax_barra_mean = fig.add_subplot(right_grid[1, 1])
+    default_colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    barra_colors = _barra_color_map(default_colors)
+    barra_handles, barra_labels = _plot_barra_exposure_timeseries(
+        ax_barra_ts,
+        barra_exposure,
+        barra_colors,
+    )
+    legend_handles.extend(barra_handles)
+    legend_labels.extend(barra_labels)
+    _plot_barra_ic_mean_bars(ax_barra_mean, barra_exposure, barra_colors)
+
+    ax_turnover = fig.add_subplot(right_grid[2, 0])
+    ax_ic_decay = fig.add_subplot(right_grid[2, 1])
     turnover_handles, turnover_labels = _plot_turnover_lines(ax_turnover, returns, group_names)
     legend_handles.extend(turnover_handles)
     legend_labels.extend(turnover_labels)
-    if has_barra:
-        ax_barra_ts = fig.add_subplot(right_grid[barra_row, 0])
-        ax_barra_mean = fig.add_subplot(right_grid[barra_row, 1])
-        default_colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
-        barra_colors = _barra_color_map(default_colors)
-        barra_handles, barra_labels = _plot_barra_exposure_timeseries(
-            ax_barra_ts,
-            barra_exposure,
-            barra_colors,
-        )
-        legend_handles.extend(barra_handles)
-        legend_labels.extend(barra_labels)
-        _plot_barra_ic_mean_bars(ax_barra_mean, barra_exposure, barra_colors)
+    _plot_ic_decay_bars(ax_ic_decay, ic)
 
     fig.legend(
         legend_handles,
         legend_labels,
         loc="lower center",
         bbox_to_anchor=(0.5, 0.01),
-        ncol=6 if has_barra else 4,
+        ncol=7 if (has_barra or has_index_groups) else 4,
         frameon=False,
-        fontsize=8 if has_barra else 9,
+        fontsize=8 if (has_barra or has_index_groups) else 9,
     )
 
     if save:
@@ -343,7 +364,7 @@ def _plot_annual_bars(
     bars = ax.bar(x, report["annual_return(%)"], color=colors, width=0.72)
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.set_xticks(x)
-    ax.set_xticklabels(report["portfolio"], rotation=45, ha="right")
+    ax.set_xticklabels([_portfolio_display_name(name) for name in report["portfolio"]], rotation=0, ha="center")
     ax.set_title(title)
     _pad_single_axis(ax, report["annual_return(%)"].tolist(), pad_ratio=0.025)
     _annotate_bars(ax, bars, report["annual_return(%)"], suffix="%")
@@ -392,6 +413,115 @@ def _bar_name_order(names: Iterable[str]) -> list[str]:
     return known + extras
 
 
+def _barra_display_name(name: str) -> str:
+    return BARRA_SHORT_NAMES.get(str(name), str(name))
+
+
+def _rank_ic_sign(ic: pd.DataFrame | None) -> float:
+    if ic is None or ic.empty or "rank_ic" not in ic.columns:
+        return 1.0
+    frame = ic.copy()
+    if "horizon" in frame.columns:
+        horizon = pd.to_numeric(frame["horizon"], errors="coerce")
+        frame = frame[(horizon.isna()) | (horizon == 1)]
+    values = pd.to_numeric(frame["rank_ic"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    mean_value = values.dropna().mean()
+    return -1.0 if pd.notna(mean_value) and mean_value < 0 else 1.0
+
+
+def _plot_index_group_excess(
+    ax,
+    index_group_returns: pd.DataFrame | None,
+    ic: pd.DataFrame | None,
+) -> tuple[list[object], list[str]]:
+    required = {"index_id", "portfolio", "trade_date", "excess_return"}
+    if (
+        index_group_returns is None
+        or index_group_returns.empty
+        or not required.issubset(index_group_returns.columns)
+    ):
+        ax.text(0.5, 0.5, "No index group returns", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return [], []
+    selected = "group_1" if _rank_ic_sign(ic) < 0 else "group_5"
+    frame = index_group_returns[index_group_returns["portfolio"] == selected].copy()
+    if frame.empty:
+        ax.text(0.5, 0.5, "No index long group returns", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return [], []
+    frame["date"] = _barra_date_index(frame["trade_date"])
+    frame["excess_return"] = pd.to_numeric(frame["excess_return"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    colors = {
+        "000300.SH": "#1f77b4",
+        "000905.SH": "#ff7f0e",
+        "000852.SH": "#2ca02c",
+    }
+    handles: list[object] = []
+    labels: list[str] = []
+    values: list[float] = []
+    index_ids = [index_id for index_id in INDEX_GROUP_IDS if index_id in set(frame["index_id"].astype(str))]
+    index_ids.extend(sorted(set(frame["index_id"].astype(str)) - set(index_ids)))
+    for index_id in index_ids:
+        series = (
+            frame[frame["index_id"].astype(str) == index_id]
+            .dropna(subset=["date"])
+            .sort_values("date")
+            .set_index("date")["excess_return"]
+        )
+        curve = cumulative_curve(series.dropna())
+        if curve.empty:
+            continue
+        label = index_id.replace(".SH", "")
+        (line,) = ax.plot(curve.index, curve.values, color=colors.get(index_id), linewidth=1.1, label=f"{label} excess")
+        handles.append(line)
+        labels.append(f"{label} excess")
+        values.extend(curve.values.tolist())
+    if not values:
+        ax.text(0.5, 0.5, "No index long group returns", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return [], []
+    ax.axhline(0.0, color="#888888", linewidth=0.8, linestyle="--")
+    ax.set_title("Index long group cumulative excess")
+    _pad_single_axis(ax, values)
+    return handles, labels
+
+
+def _plot_ic_decay_bars(ax, ic: pd.DataFrame | None) -> None:
+    required = {"horizon", "ic", "rank_ic"}
+    if ic is None or ic.empty or not required.issubset(ic.columns):
+        ax.text(0.5, 0.5, "No IC decay data", transform=ax.transAxes, ha="center", va="center")
+        ax.set_axis_off()
+        return
+    frame = ic.copy()
+    frame["horizon"] = pd.to_numeric(frame["horizon"], errors="coerce").astype("Int64")
+    frame["ic"] = pd.to_numeric(frame["ic"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    frame["rank_ic"] = pd.to_numeric(frame["rank_ic"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    rows = []
+    for horizon in [1, 5, 20]:
+        subset = frame[frame["horizon"] == horizon]
+        rows.append(
+            {
+                "horizon": horizon,
+                "ic": subset["ic"].dropna().mean(),
+                "rank_ic": subset["rank_ic"].dropna().mean(),
+            }
+        )
+    summary = pd.DataFrame(rows)
+    x = np.arange(len(summary))
+    width = 0.36
+    bars_ic = ax.bar(x - width / 2, summary["ic"], width=width, color="#4c78a8", label="IC")
+    bars_rank = ax.bar(x + width / 2, summary["rank_ic"], width=width, color="#f58518", label="RankIC")
+    ax.axhline(0.0, color="#777777", linewidth=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(value) for value in summary["horizon"]])
+    ax.set_title("IC decay")
+    ax.legend(frameon=False, fontsize=8)
+    values = summary["ic"].tolist() + summary["rank_ic"].tolist()
+    _pad_single_axis(ax, values, pad_ratio=0.035)
+    _annotate_bars(ax, bars_ic, summary["ic"], suffix="", offset_ratio=0.012)
+    _annotate_bars(ax, bars_rank, summary["rank_ic"], suffix="", offset_ratio=0.012)
+
+
 def _barra_date_index(values: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(values, errors="coerce").astype("Int64")
     return pd.to_datetime(numeric.astype(str), format="%Y%m%d", errors="coerce")
@@ -437,10 +567,10 @@ def _plot_barra_exposure_timeseries(
             series.values,
             color=color_map.get(factor),
             alpha=0.95,
-            label=factor,
+            label=_barra_display_name(factor),
         )
         handles.append(line)
-        labels.append(factor)
+        labels.append(_barra_display_name(factor))
         values.extend(series.values.tolist())
     if not values:
         ax.text(0.5, 0.5, "No long group Barra exposure", transform=ax.transAxes, ha="center", va="center")
@@ -490,7 +620,7 @@ def _plot_barra_ic_mean_bars(
     bars = ax.bar(x, mean_frame["value"], color=colors, width=0.72)
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.set_xticks(x)
-    ax.set_xticklabels(mean_frame["barra_factor"], rotation=45, ha="right")
+    ax.set_xticklabels([_barra_display_name(name) for name in mean_frame["barra_factor"]], rotation=0, ha="center")
     ax.set_title("Mean factor-Barra Pearson IC")
     _pad_single_axis(ax, mean_frame["value"].tolist(), pad_ratio=0.025)
     _annotate_bars(ax, bars, mean_frame["value"], suffix="", offset_ratio=0.01)

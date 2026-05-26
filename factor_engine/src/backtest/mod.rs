@@ -18,6 +18,7 @@ use crate::backtest::data::{
     load_backtest_input_batch, prepare_backtest_data_plan, FactorFillState,
 };
 use crate::backtest::request::BacktestRunRequest;
+use crate::backtest::request::DEFAULT_BACKTEST_THREADS;
 use crate::backtest::schedule::rebalance_dates;
 use crate::backtest::storage::write_backtest_outputs;
 use crate::config::EngineConfig;
@@ -108,6 +109,7 @@ impl BacktestEngine {
             output_files.extend(write_backtest_outputs(
                 &output_dir,
                 &output.returns,
+                &output.index_group_returns,
                 &output.daily_ic,
                 &output.factor_stats,
                 &output.holdings,
@@ -152,15 +154,15 @@ fn date_batch_ranges(date_count: usize, date_batch_size: usize) -> Vec<std::ops:
 }
 
 fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>> {
-    match threads {
-        Some(0) => Err(err("--threads must be greater than 0")),
-        Some(threads) => Ok(Some(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()?,
-        )),
-        None => Ok(None),
+    let threads = threads.unwrap_or(DEFAULT_BACKTEST_THREADS);
+    if threads == 0 {
+        return Err(err("--threads must be greater than 0"));
     }
+    Ok(Some(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()?,
+    ))
 }
 
 fn default_output_dir(config: &EngineConfig, request: &BacktestRunRequest) -> PathBuf {

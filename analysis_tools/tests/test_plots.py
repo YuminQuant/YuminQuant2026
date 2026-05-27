@@ -113,7 +113,9 @@ def test_plot_return_summary_accepts_barra_exposure() -> None:
     assert "IC decay" in titles
     ic_decay_axis = next(axis for axis in fig.axes if axis.get_title() == "IC decay")
     ic_decay_ticks = [tick.get_text() for tick in ic_decay_axis.get_xticklabels()]
-    assert ic_decay_ticks[-2:] == ["~5D", "~20D"]
+    assert ic_decay_ticks[-2:] == ["5D", "20D"]
+    assert ic_decay_axis.get_legend() is None
+    assert len(ic_decay_axis.texts) == 6
     labels = [text.get_text() for axis in fig.axes for text in axis.texts]
     assert "0.12" in labels
     assert any(label.endswith("%") for label in labels)

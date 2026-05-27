@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use crate::backtest::data::{
     BacktestInput, BacktestPanel, BenchmarkKind, IndexGroupBatch, CNE6_PRIMARY_BARRA_COLUMNS,
 };
-use crate::backtest::ic::{daily_ic_observation_with_universe, IcObservation};
+use crate::backtest::ic::{
+    daily_ic_observation_with_universe, daily_pearson_ic_observation_with_universe, IcObservation,
+};
 use crate::backtest::metrics::{
     daily_factor_stats, BarraExposureRecord, FactorStatsDaily, HoldingWeight,
     IndexGroupReturnPoint, IndustryWeight, PerformancePoint,
@@ -276,20 +278,41 @@ fn update_factor_cross_section_state(
         let benchmark_return =
             benchmark_return(&input.benchmark.kind, *date, &label, trade_filter_mask);
         for ic_label in &input.ic_label_metadata {
+            let shift = ic_label.horizon.saturating_sub(1);
+            let Some(label_date_idx) = date_idx.checked_add(shift) else {
+                continue;
+            };
+            let Some(label_date) = input.panel.dates().get(label_date_idx).copied() else {
+                continue;
+            };
             let ic_values = input
                 .panel
-                .cross_section(&ic_label.label.output_column, date_idx)?;
+                .cross_section(&ic_label.label.output_column, label_date_idx)?;
             let settle_date = date_after(input.panel.dates(), *date, ic_label.label.lookahead);
-            state.daily_ic.push(daily_ic_observation_with_universe(
-                &factor.factor_id,
-                *date,
-                *date,
-                settle_date,
-                Some(ic_label.horizon),
-                &processed,
-                &ic_values,
-                eligible_mask_ref,
-            ));
+            let row = if ic_label.horizon == 1 {
+                daily_ic_observation_with_universe(
+                    &factor.factor_id,
+                    *date,
+                    label_date,
+                    settle_date,
+                    Some(ic_label.horizon),
+                    &processed,
+                    &ic_values,
+                    eligible_mask_ref,
+                )
+            } else {
+                daily_pearson_ic_observation_with_universe(
+                    &factor.factor_id,
+                    *date,
+                    label_date,
+                    settle_date,
+                    Some(ic_label.horizon),
+                    &processed,
+                    &ic_values,
+                    eligible_mask_ref,
+                )
+            };
+            state.daily_ic.push(row);
         }
 
         if rebalance_lookup.contains_key(date) {

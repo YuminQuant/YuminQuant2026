@@ -10,7 +10,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from yq_analysis.metrics import annual_return, cumulative_return, max_drawdown, sharpe
-from yq_analysis.report import make_backtest_report, make_return_report_by_year
+from yq_analysis.report import make_backtest_report, make_ic_decay_report, make_return_report_by_year
 
 
 def test_return_metrics_match_small_sample() -> None:
@@ -69,3 +69,19 @@ def test_backtest_report_accepts_current_schema() -> None:
     assert "turnover_mean(%)" in report["portfolio_total"].columns
     assert not report["ic"].empty
     assert "coverage_mean" in report["factor_stats"].columns
+
+
+def test_ic_decay_report_adds_approximate_multi_day_ic() -> None:
+    ic = pd.DataFrame(
+        {
+            "horizon": list(range(1, 21)),
+            "ic": [0.01] * 20,
+        }
+    )
+    report = make_ic_decay_report(ic)
+    decay = report[report["metric"] == "ic_mean"]
+    approx_5d = report.loc[report["metric"] == "approx_5d_ic", "value"].iloc[0]
+    approx_20d = report.loc[report["metric"] == "approx_20d_ic", "value"].iloc[0]
+    assert len(decay) == 20
+    assert math.isclose(approx_5d, 0.05 / math.sqrt(5))
+    assert math.isclose(approx_20d, 0.20 / math.sqrt(20))

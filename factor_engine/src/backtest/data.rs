@@ -178,6 +178,8 @@ pub struct IcLabelMetadataInfo {
     pub label: LabelMetadataInfo,
 }
 
+const IC_DECAY_MAX_HORIZON: usize = 20;
+
 #[derive(Clone, Debug)]
 pub struct BacktestPanel {
     dates: Vec<i32>,
@@ -1314,21 +1316,19 @@ fn select_backtest_labels(
     config: &EngineConfig,
     label_id: &str,
 ) -> Result<(LabelMetadataInfo, Vec<IcLabelMetadataInfo>)> {
-    let Some(base) = label_id.strip_suffix("_return_1d") else {
+    if !label_id.ends_with("_return_1d") {
         return Err(err(format!(
-            "--label must be a 1d return label ending with _return_1d for IC decay, got {label_id}"
+            "--label must be a 1d return label ending with _return_1d for shifted IC decay, got {label_id}"
         )));
-    };
+    }
     let storage = LabelStorage::new(config.label_root.clone());
     let metadata = storage.read_metadata()?;
     let main = label_from_metadata(&metadata, label_id)?;
     let mut ic_labels = Vec::new();
-    for horizon in [1usize, 5, 20] {
-        let id = format!("{base}_return_{horizon}d");
-        ic_labels.push(IcLabelMetadataInfo {
-            horizon,
-            label: label_from_metadata(&metadata, &id)?,
-        });
+    for horizon in 1..=IC_DECAY_MAX_HORIZON {
+        let mut label = main.clone();
+        label.lookahead += horizon - 1;
+        ic_labels.push(IcLabelMetadataInfo { horizon, label });
     }
     Ok((main, ic_labels))
 }

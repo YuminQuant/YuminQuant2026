@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from yq_analysis.metrics import cumulative_curve
-from yq_analysis.report import make_return_report
+from yq_analysis.report import make_ic_decay_report, make_return_report
 
 CNE6_BARRA_FACTORS = [
     "DIVIDEND_YIELD",
@@ -487,39 +487,36 @@ def _plot_index_group_excess(
 
 
 def _plot_ic_decay_bars(ax, ic: pd.DataFrame | None) -> None:
-    required = {"horizon", "ic", "rank_ic"}
-    if ic is None or ic.empty or not required.issubset(ic.columns):
+    summary = make_ic_decay_report(ic)
+    if summary.empty:
         ax.text(0.5, 0.5, "No IC decay data", transform=ax.transAxes, ha="center", va="center")
         ax.set_axis_off()
         return
-    frame = ic.copy()
-    frame["horizon"] = pd.to_numeric(frame["horizon"], errors="coerce").astype("Int64")
-    frame["ic"] = pd.to_numeric(frame["ic"], errors="coerce").replace([np.inf, -np.inf], np.nan)
-    frame["rank_ic"] = pd.to_numeric(frame["rank_ic"], errors="coerce").replace([np.inf, -np.inf], np.nan)
-    rows = []
-    for horizon in [1, 5, 20]:
-        subset = frame[frame["horizon"] == horizon]
-        rows.append(
-            {
-                "horizon": horizon,
-                "ic": subset["ic"].dropna().mean(),
-                "rank_ic": subset["rank_ic"].dropna().mean(),
-            }
-        )
-    summary = pd.DataFrame(rows)
-    x = np.arange(len(summary))
-    width = 0.36
-    bars_ic = ax.bar(x - width / 2, summary["ic"], width=width, color="#4c78a8", label="IC")
-    bars_rank = ax.bar(x + width / 2, summary["rank_ic"], width=width, color="#f58518", label="RankIC")
+    decay = summary[summary["metric"] == "ic_mean"].copy()
+    decay = decay.sort_values("horizon")
+    approx_rows = []
+    for metric, label in [("approx_5d_ic", "~5D"), ("approx_20d_ic", "~20D")]:
+        matched = summary[summary["metric"] == metric]
+        if not matched.empty:
+            approx_rows.append({"label": label, "value": matched["value"].iloc[0]})
+
+    decay_x = np.arange(len(decay))
+    approx_x = np.arange(len(decay), len(decay) + len(approx_rows))
+    bars_ic = ax.bar(decay_x, decay["value"], width=0.72, color="#4c78a8", label="Shift IC")
+    bars_approx = None
+    if approx_rows:
+        approx_values = [row["value"] for row in approx_rows]
+        bars_approx = ax.bar(approx_x, approx_values, width=0.72, color="#f58518", label="Approx IC")
     ax.axhline(0.0, color="#777777", linewidth=0.8)
-    ax.set_xticks(x)
-    ax.set_xticklabels([str(value) for value in summary["horizon"]])
+    ax.set_xticks(np.concatenate([decay_x, approx_x]))
+    ax.set_xticklabels([str(value) for value in decay["horizon"]] + [row["label"] for row in approx_rows], fontsize=7)
     ax.set_title("IC decay")
-    ax.legend(frameon=False, fontsize=8)
-    values = summary["ic"].tolist() + summary["rank_ic"].tolist()
+    values = decay["value"].tolist() + [row["value"] for row in approx_rows]
     _pad_single_axis(ax, values, pad_ratio=0.035)
-    _annotate_bars(ax, bars_ic, summary["ic"], suffix="", offset_ratio=0.012)
-    _annotate_bars(ax, bars_rank, summary["rank_ic"], suffix="", offset_ratio=0.012)
+    _annotate_bars(ax, bars_ic, decay["value"], suffix="", offset_ratio=0.012)
+    if bars_approx is not None:
+        ax.legend(frameon=False, fontsize=8)
+        _annotate_bars(ax, bars_approx, [row["value"] for row in approx_rows], suffix="", offset_ratio=0.012)
 
 
 def _barra_date_index(values: pd.Series) -> pd.Series:

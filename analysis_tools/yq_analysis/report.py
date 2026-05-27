@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from typing import Any
 
 import numpy as np
@@ -225,6 +226,42 @@ def make_ic_report(ic: pd.DataFrame | None) -> pd.DataFrame:
                 "abs_ir": _round_float(ic_abs_ir(values), 3),
             }
         )
+    return pd.DataFrame(rows)
+
+
+def make_ic_decay_report(ic: pd.DataFrame | None, max_horizon: int = 20) -> pd.DataFrame:
+    """Summarize shifted 1d-label Pearson IC decay and approximate multi-day IC."""
+
+    if ic is None or ic.empty or "horizon" not in ic.columns or "ic" not in ic.columns:
+        return pd.DataFrame()
+    frame = ic.copy()
+    frame["horizon"] = pd.to_numeric(frame["horizon"], errors="coerce").astype("Int64")
+    frame["ic"] = pd.to_numeric(frame["ic"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+
+    rows: list[dict[str, float | int | str]] = []
+    ic_means: dict[int, float] = {}
+    for horizon in range(1, max_horizon + 1):
+        mean_value = frame.loc[frame["horizon"] == horizon, "ic"].dropna().mean()
+        value = float(mean_value) if pd.notna(mean_value) else float("nan")
+        ic_means[horizon] = value
+        rows.append({"metric": "ic_mean", "horizon": horizon, "value": value})
+
+    for horizon in (5, 20):
+        if horizon <= max_horizon:
+            values = [ic_means[idx] for idx in range(1, horizon + 1)]
+            approx = (
+                sum(values) / math.sqrt(horizon)
+                if all(np.isfinite(value) for value in values)
+                else float("nan")
+            )
+            rows.append(
+                {
+                    "metric": f"approx_{horizon}d_ic",
+                    "horizon": horizon,
+                    "value": approx,
+                }
+            )
+
     return pd.DataFrame(rows)
 
 

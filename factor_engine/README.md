@@ -152,6 +152,8 @@ data/backtest/stock/daily/index_group_returns/{factor_id}.parquet
 
 `barra_exposure` and `index_group_returns` are default diagnostics. `index_group_returns` always targets `000300.SH`, `000905.SH`, and `000852.SH`; missing index members or benchmark data are represented as `NaN` rows instead of aborting the main backtest.
 
+IC decay uses the selected 1d label only. For each factor date, the engine computes Pearson IC against the same 1d future-return cross-section shifted by 0..19 trading days and writes `horizon=1..20`. RankIC is computed only for `horizon=1` to keep decay diagnostics lighter.
+
 ## Strategy Run / 事件驱动策略
 
 ```powershell

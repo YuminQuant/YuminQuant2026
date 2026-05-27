@@ -495,7 +495,7 @@ def _plot_ic_decay_bars(ax, ic: pd.DataFrame | None) -> None:
     decay = summary[summary["metric"] == "ic_mean"].copy()
     decay = decay.sort_values("horizon")
     approx_rows = []
-    for metric, label in [("approx_5d_ic", "~5D"), ("approx_20d_ic", "~20D")]:
+    for metric, label in [("approx_5d_ic", "5D"), ("approx_20d_ic", "20D")]:
         matched = summary[summary["metric"] == metric]
         if not matched.empty:
             approx_rows.append({"label": label, "value": matched["value"].iloc[0]})
@@ -513,9 +513,13 @@ def _plot_ic_decay_bars(ax, ic: pd.DataFrame | None) -> None:
     ax.set_title("IC decay")
     values = decay["value"].tolist() + [row["value"] for row in approx_rows]
     _pad_single_axis(ax, values, pad_ratio=0.035)
-    _annotate_bars(ax, bars_ic, decay["value"], suffix="", offset_ratio=0.012)
+    key_horizons = {1, 5, 10, 20}
+    decay_annotation_values = [
+        float(row.value) if int(row.horizon) in key_horizons else float("nan")
+        for row in decay.itertuples(index=False)
+    ]
+    _annotate_bars(ax, bars_ic, decay_annotation_values, suffix="", offset_ratio=0.012)
     if bars_approx is not None:
-        ax.legend(frameon=False, fontsize=8)
         _annotate_bars(ax, bars_approx, [row["value"] for row in approx_rows], suffix="", offset_ratio=0.012)
 
 

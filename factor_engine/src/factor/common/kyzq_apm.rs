@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
@@ -10,7 +10,9 @@ use crate::error::Result;
 use crate::factor::common::stock_daily_ops::{
     adjusted_20d_return, mask_bj, neutralize_size_sector,
 };
-use crate::factor::common::{clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec};
+use crate::factor::common::{
+    clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, RequestedRawIds,
+};
 use crate::factor::common::{DailyPanel, PanelColumn};
 use crate::operators::cs_regression_residual;
 
@@ -53,6 +55,13 @@ pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
     vec![raw_spec(APM_AM_RET_RAW_ID), raw_spec(APM_PM_RET_RAW_ID)]
 }
 
+pub fn raw_specs_for_kind(kind: KyzqApmKind) -> Vec<IntradayDailyRawSpec> {
+    raw_ids_for_kind(kind)
+        .iter()
+        .map(|raw_id| raw_spec(raw_id))
+        .collect()
+}
+
 pub fn factor_spec(def: KyzqApmFactorDef) -> FactorSpec {
     FactorSpec {
         id: def.id.to_string(),
@@ -84,20 +93,18 @@ pub fn minute_compute_many(
     context: &FactorContext,
     data: &DataPool,
 ) -> Result<Vec<IntradayDailyRawSeries>> {
-    let requested = raw_ids
-        .iter()
-        .map(String::as_str)
-        .filter(|raw_id| raw_ids_for_provider().contains(raw_id))
-        .collect::<BTreeSet<_>>();
+    let requested = RequestedRawIds::new(raw_ids, &raw_ids_for_provider());
     if requested.is_empty() {
         return Ok(Vec::new());
     }
+    let need_am = requested.contains(APM_AM_RET_RAW_ID);
+    let need_pm = requested.contains(APM_PM_RET_RAW_ID);
     let trade_date = *context
         .target_dates
         .first()
         .expect("raw materialization provides one or more target dates");
     let returns = match data.minute(DatasetId::StockMinute1m, trade_date) {
-        Some(table) => session_returns_from_table(table)?,
+        Some(table) => session_returns_from_table(table, need_am, need_pm)?,
         None => BTreeMap::new(),
     };
 
@@ -108,13 +115,13 @@ pub fn minute_compute_many(
             trade_date,
             ts_code,
         };
-        if requested.contains(APM_AM_RET_RAW_ID) {
+        if need_am {
             am_values.push(FactorValue {
                 key: key.clone(),
                 value: values.am,
             });
         }
-        if requested.contains(APM_PM_RET_RAW_ID) {
+        if need_pm {
             pm_values.push(FactorValue {
                 key,
                 value: values.pm,
@@ -123,13 +130,13 @@ pub fn minute_compute_many(
     }
 
     let mut output = Vec::new();
-    if requested.contains(APM_AM_RET_RAW_ID) {
+    if need_am {
         output.push(IntradayDailyRawSeries {
             spec: raw_spec(APM_AM_RET_RAW_ID),
             values: am_values,
         });
     }
-    if requested.contains(APM_PM_RET_RAW_ID) {
+    if need_pm {
         output.push(IntradayDailyRawSeries {
             spec: raw_spec(APM_PM_RET_RAW_ID),
             values: pm_values,
@@ -166,7 +173,11 @@ fn overnight_return_column(panel: &DailyPanel, data: &DataPool) -> Result<PanelC
     mask_bj(&overnight, panel)
 }
 
-fn session_returns_from_table(table: &Table) -> Result<BTreeMap<String, SessionReturns>> {
+fn session_returns_from_table(
+    table: &Table,
+    need_am: bool,
+    need_pm: bool,
+) -> Result<BTreeMap<String, SessionReturns>> {
     let ts_codes = table.required_utf8("ts_code")?;
     let trade_times = table.required_utf8("trade_time")?;
     let close = table.required_f64_cast("close")?;
@@ -188,8 +199,12 @@ fn session_returns_from_table(table: &Table) -> Result<BTreeMap<String, SessionR
         output.insert(
             ts_code,
             SessionReturns {
-                am: session_return(&indices, &trade_times, &close, "09:30:00", "11:30:00"),
-                pm: session_return(&indices, &trade_times, &close, "13:00:00", "15:00:00"),
+                am: need_am
+                    .then(|| session_return(&indices, &trade_times, &close, "09:30:00", "11:30:00"))
+                    .flatten(),
+                pm: need_pm
+                    .then(|| session_return(&indices, &trade_times, &close, "13:00:00", "15:00:00"))
+                    .flatten(),
             },
         );
     }
@@ -433,8 +448,9 @@ fn tags(kind: KyzqApmKind) -> Vec<String> {
         "residual",
         "ret20",
     ];
-    if matches!(kind, KyzqApmKind::ApmNew) {
-        tags.push("overnight");
+    match kind {
+        KyzqApmKind::Apm => tags.push("deprecated"),
+        KyzqApmKind::ApmNew => tags.push("overnight"),
     }
     tags.into_iter().map(str::to_string).collect()
 }
@@ -544,13 +560,52 @@ mod tests {
         ]))
         .expect("table");
 
-        let returns = session_returns_from_table(&table).expect("returns");
+        let returns = session_returns_from_table(&table, true, true).expect("returns");
 
         assert_eq!(returns.len(), 1);
         let values = returns.get("000001.SZ").expect("sz");
         assert_close(values.am, 0.1);
         assert_close(values.pm, 0.1);
         assert!(!returns.contains_key("920001.BJ"));
+    }
+
+    #[test]
+    fn kyzq_apm_session_returns_only_compute_requested_sessions() {
+        let table = Table::new(BTreeMap::from([
+            (
+                "trade_time".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("09:30:00".to_string()),
+                    Some("11:30:00".to_string()),
+                    Some("13:00:00".to_string()),
+                    Some("15:00:00".to_string()),
+                ]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000001.SZ".to_string()),
+                    Some("000001.SZ".to_string()),
+                    Some("000001.SZ".to_string()),
+                ]),
+            ),
+            (
+                "close".to_string(),
+                ColumnData::F64(vec![Some(10.0), Some(11.0), Some(20.0), Some(22.0)]),
+            ),
+        ]))
+        .expect("table");
+
+        let pm_only = session_returns_from_table(&table, false, true).expect("returns");
+        let values = pm_only.get("000001.SZ").expect("sz");
+        assert_eq!(values.am, None);
+        assert_close(values.pm, 0.1);
+
+        let am_only = session_returns_from_table(&table, true, false).expect("returns");
+        let values = am_only.get("000001.SZ").expect("sz");
+        assert_close(values.am, 0.1);
+        assert_eq!(values.pm, None);
     }
 
     #[test]

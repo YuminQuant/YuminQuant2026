@@ -12,7 +12,7 @@ data/factors/_cache/intraday_daily/chn_stock/{year}/{trade_date}.parquet
 data/derived/stock/bar/{bar_size}m/{year}/{trade_date}.parquet
 data/barra/{asset}/daily/CNE6/{year}/{trade_date}.parquet
 data/label/{asset}/{frequency}/{year}/{trade_date}.parquet
-data/backtest/stock/daily/{returns,ic,factor_stats,holdings,industry_weights}/
+data/backtest/stock/daily/{returns,ic,factor_stats,holdings,industry_weights,barra_exposure,index_group_returns}/
 data/strategy/{asset_class}/{strategy_id}/holdings.parquet
 ```
 
@@ -142,11 +142,15 @@ data/backtest/stock/daily/ic/{factor_id}.parquet
 data/backtest/stock/daily/factor_stats/{factor_id}.parquet
 data/backtest/stock/daily/holdings/{factor_id}.parquet
 data/backtest/stock/daily/industry_weights/{factor_id}.parquet
+data/backtest/stock/daily/barra_exposure/{factor_id}.parquet
+data/backtest/stock/daily/index_group_returns/{factor_id}.parquet
 ```
 
 `holdings` 和 `industry_weights` 只在 `--detail holdings|industry_weights|all` 时写出。多头端点由 `sign(mean(RankIC))` 决定：非负取 `group_N`，负数取 `group_1`。
 
 `holdings` and `industry_weights` are written only when detail output is requested. The long endpoint is selected by `sign(mean(RankIC))`.
+
+`barra_exposure` and `index_group_returns` are default diagnostics. `index_group_returns` always targets `000300.SH`, `000905.SH`, and `000852.SH`; missing index members or benchmark data are represented as `NaN` rows instead of aborting the main backtest.
 
 ## Strategy Run / 事件驱动策略
 
@@ -186,6 +190,24 @@ Minute-to-daily factors have two layers:
 2. `compute()` 读取日频 raw，再做 `ts_mean`、`cs_zscore`、neutralization 等后处理。
 
 Use `--refresh-minute-cache` when raw formulas change.
+
+### Deprecated Factors And Intraday Raw / deprecated 因子与分钟 raw
+
+中文规则：
+
+- `deprecated` 因子不会进入 `--all-factors`、`--tags` 等批量选择，也不会贡献新的 raw requirements。
+- 如果 deprecated 因子独占某个 raw id，该 raw 不应被计算、不应写入 `_cache/intraday_daily`，也不应参与最终 `compute()`。
+- 如果 active 因子仍依赖同一个 raw id，则该 raw 继续正常计算；deprecated 只影响因子选择，不会阻断 active 因子的共享依赖。
+- 多 raw provider 必须按本次 `raw_ids` 请求集合计算。允许保留必要共享前置状态，例如分钟收益、5min bar、状态矩阵；但不能顺手计算未请求的 sibling raw 指标分支。
+- 开发多 raw provider 时优先使用 `RequestedRawIds`，在具体指标分支前判断 `requested.contains(raw_id)` 或 `requested.contains_any([...])`。
+
+English rules:
+
+- Deprecated factors are excluded from broad selection such as `--all-factors` and `--tags`, and therefore should not add new raw requirements.
+- A raw id used only by deprecated factors should not be computed, written to `_cache/intraday_daily`, or consumed by final `compute()`.
+- If an active factor still depends on the same raw id, that raw remains active; deprecation only removes retired factor selection.
+- Multi-raw providers must be driven by the current requested `raw_ids`. Shared setup such as minute returns, 5-minute bars, or state matrices is allowed, but unrequested sibling metric branches must not be computed opportunistically.
+- Prefer `RequestedRawIds` in new multi-raw providers and guard concrete metric branches with `requested.contains(raw_id)` or `requested.contains_any([...])`.
 
 ## 开发入口 / Development Guides
 

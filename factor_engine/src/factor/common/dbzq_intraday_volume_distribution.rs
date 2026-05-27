@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
@@ -8,7 +8,9 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::stock_daily_ops::neutralize_size_sector;
-use crate::factor::common::{clean_intraday_value, quantile_linear, stock_minute_raw_spec};
+use crate::factor::common::{
+    clean_intraday_value, quantile_linear, stock_minute_raw_spec, RequestedRawIds,
+};
 use crate::factor::common::{DailyPanel, PanelColumn};
 use crate::operators::{cs_zscore, ts_mean};
 
@@ -141,18 +143,17 @@ pub fn minute_compute_many(
     context: &FactorContext,
     data: &DataPool,
 ) -> Result<Vec<IntradayDailyRawSeries>> {
-    let requested = raw_ids
-        .iter()
-        .map(String::as_str)
-        .filter(|raw_id| all_raw_ids().contains(raw_id))
-        .collect::<BTreeSet<_>>();
+    let all_raw_ids = all_raw_ids();
+    let requested = RequestedRawIds::new(raw_ids, &all_raw_ids);
     if requested.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut values = all_raw_ids()
+    let mut values = all_raw_ids
         .iter()
-        .map(|raw_id| (*raw_id, Vec::<FactorValue>::new()))
+        .copied()
+        .filter(|raw_id| requested.contains(raw_id))
+        .map(|raw_id| (raw_id, Vec::<FactorValue>::new()))
         .collect::<BTreeMap<_, _>>();
 
     for trade_date in &context.target_dates {
@@ -180,7 +181,7 @@ pub fn minute_compute_many(
             indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
             let bars =
                 five_minute_bars_from_indices(&indices, &trade_times, &open, &close, &volume);
-            let stats = daily_stats(&bars);
+            let stats = daily_stats(&bars, &requested);
             let key = FactorRowKey::Daily {
                 trade_date: *trade_date,
                 ts_code,
@@ -217,7 +218,7 @@ pub fn minute_compute_many(
     }
 
     let mut output = Vec::new();
-    for raw_id in all_raw_ids() {
+    for raw_id in all_raw_ids {
         if !requested.contains(raw_id) {
             continue;
         }
@@ -387,7 +388,7 @@ fn dependencies() -> Vec<DataRequest> {
 
 fn push_requested(
     values: &mut BTreeMap<&'static str, Vec<FactorValue>>,
-    requested: &BTreeSet<&str>,
+    requested: &RequestedRawIds<'_>,
     raw_id: &'static str,
     key: &FactorRowKey,
     value: Option<f64>,
@@ -429,9 +430,19 @@ fn five_minute_bars_from_indices(
         .collect()
 }
 
-fn daily_stats(bars: &[FiveMinuteBar]) -> DailyStats {
-    let (v_p_skewness, v_p_reversal) = price_distribution_stats(bars);
-    let (sig_up_p_v_ratio, sig_up_p_v_intraday_std) = significant_up_stats(bars);
+fn daily_stats(bars: &[FiveMinuteBar], requested: &RequestedRawIds<'_>) -> DailyStats {
+    let (v_p_skewness, v_p_reversal) =
+        if requested.contains_any(&[V_P_SKEWNESS_RAW_ID, V_P_REVERSAL_RAW_ID]) {
+            price_distribution_stats(bars)
+        } else {
+            (None, None)
+        };
+    let (sig_up_p_v_ratio, sig_up_p_v_intraday_std) =
+        if requested.contains_any(&[SIG_UP_P_V_RATIO_RAW_ID, SIG_UP_P_V_INTRADAY_STD_RAW_ID]) {
+            significant_up_stats(bars)
+        } else {
+            (None, None)
+        };
     DailyStats {
         v_p_skewness,
         v_p_reversal,

@@ -59,11 +59,11 @@ def _sample_index_group_returns() -> pd.DataFrame:
 def _sample_ic() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "factor_id": ["sample"] * 6,
-            "factor_date": [20250102, 20250103] * 3,
-            "horizon": [1, 1, 5, 5, 20, 20],
-            "ic": [0.01, 0.03, 0.02, 0.04, -0.01, 0.01],
-            "rank_ic": [0.02, 0.04, 0.01, 0.03, -0.02, 0.0],
+            "factor_id": ["sample"] * 20,
+            "factor_date": [20250102] * 20,
+            "horizon": list(range(1, 21)),
+            "ic": [0.01] * 20,
+            "rank_ic": [0.02] * 20,
         }
     )
 
@@ -111,6 +111,9 @@ def test_plot_return_summary_accepts_barra_exposure() -> None:
     assert "Mean factor-Barra Pearson IC" in titles
     assert "Index long group cumulative excess" in titles
     assert "IC decay" in titles
+    ic_decay_axis = next(axis for axis in fig.axes if axis.get_title() == "IC decay")
+    ic_decay_ticks = [tick.get_text() for tick in ic_decay_axis.get_xticklabels()]
+    assert ic_decay_ticks[-2:] == ["~5D", "~20D"]
     labels = [text.get_text() for axis in fig.axes for text in axis.texts]
     assert "0.12" in labels
     assert any(label.endswith("%") for label in labels)

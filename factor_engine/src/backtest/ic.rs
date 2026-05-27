@@ -30,6 +30,11 @@ pub fn compute_ic(
     (pearson, rank, pair_count)
 }
 
+pub fn compute_pearson_ic(factor: &[Option<f64>], label: &[Option<f64>]) -> (Option<f64>, usize) {
+    let pair_count = finite_pair_count(factor, label);
+    (pearson_corr(factor, label), pair_count)
+}
+
 pub fn daily_ic_observation(
     factor_id: &str,
     factor_date: i32,
@@ -78,6 +83,33 @@ pub fn daily_ic_observation_with_universe(
     }
 }
 
+pub fn daily_pearson_ic_observation_with_universe(
+    factor_id: &str,
+    factor_date: i32,
+    label_date: i32,
+    settle_date: Option<i32>,
+    horizon: Option<usize>,
+    factor: &[Option<f64>],
+    label: &[Option<f64>],
+    universe: Option<&[bool]>,
+) -> IcObservation {
+    let stats = coverage_stats_with_universe(factor, universe);
+    let (factor, label) = apply_universe(factor, label, universe);
+    let (ic, pair_count) = compute_pearson_ic(&factor, &label);
+    IcObservation {
+        factor_id: factor_id.to_string(),
+        factor_date,
+        label_date,
+        settle_date,
+        horizon,
+        ic,
+        rank_ic: None,
+        pair_count,
+        coverage: stats.coverage,
+        inf_rate: stats.inf_rate,
+    }
+}
+
 fn apply_universe(
     factor: &[Option<f64>],
     label: &[Option<f64>],
@@ -111,6 +143,13 @@ fn apply_universe(
         })
         .collect();
     (factor, label)
+}
+
+fn finite_pair_count(x: &[Option<f64>], y: &[Option<f64>]) -> usize {
+    x.iter()
+        .zip(y)
+        .filter(|(x, y)| x.is_some_and(f64::is_finite) && y.is_some_and(f64::is_finite))
+        .count()
 }
 
 fn pearson_corr(x: &[Option<f64>], y: &[Option<f64>]) -> Option<f64> {
@@ -150,7 +189,10 @@ fn pearson_corr(x: &[Option<f64>], y: &[Option<f64>]) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_ic, daily_ic_observation_with_universe};
+    use super::{
+        compute_ic, compute_pearson_ic, daily_ic_observation_with_universe,
+        daily_pearson_ic_observation_with_universe,
+    };
 
     #[test]
     fn rank_ic_can_use_infinite_factor_after_ranking() {
@@ -181,5 +223,28 @@ mod tests {
 
         assert_eq!(row.pair_count, 2);
         assert!(row.ic.unwrap() > 0.99);
+    }
+
+    #[test]
+    fn pearson_only_ic_observation_does_not_compute_rank_ic() {
+        let factor = vec![Some(1.0), Some(2.0), Some(3.0)];
+        let label = vec![Some(1.0), Some(2.0), Some(3.0)];
+
+        let (ic, pair_count) = compute_pearson_ic(&factor, &label);
+        assert!(ic.unwrap() > 0.99);
+        assert_eq!(pair_count, 3);
+
+        let row = daily_pearson_ic_observation_with_universe(
+            "x",
+            20240101,
+            20240102,
+            None,
+            Some(2),
+            &factor,
+            &label,
+            None,
+        );
+        assert!(row.ic.unwrap() > 0.99);
+        assert_eq!(row.rank_ic, None);
     }
 }

@@ -321,6 +321,39 @@ fn push_requested(
 }
 ```
 
+### 4.5 Requested raw and deprecated factors / requested raw 与 deprecated 因子
+
+中文规则：
+
+- 调度层只会把 active 因子的 raw requirements 传给 provider；`deprecated` 因子不会通过 `--all-factors` 或 `--tags` 进入 selected specs。
+- provider 收到的 `raw_ids` 就是本次真正需要的 raw 集合。多 raw provider 必须按这个集合计算，而不是把 family 中所有 sibling raw 都顺手算一遍。
+- 允许共享必要前置状态，例如同一天分钟收益、5min bar、20 日状态矩阵；但具体 raw 指标分支必须由 `requested.contains(raw_id)` 或 `requested.contains_any([...])` 控制。
+- deprecated 因子独有 raw 不应被计算、不应写入 `_cache/intraday_daily`，也不应参与最终 `compute()`；如果 active 因子复用同一个 raw id，则该 raw 仍然正常计算。
+- 新的多 raw provider 优先使用 `RequestedRawIds`，避免各 provider 自己重复手写 requested set 过滤逻辑。
+
+English rules:
+
+- The scheduler passes only active factor raw requirements into a provider. Deprecated factors are excluded from broad selections such as `--all-factors` and `--tags`.
+- The `raw_ids` argument is the exact raw set requested for this materialization. Multi-raw providers must compute from this set, not from every sibling raw in the family.
+- Shared setup is allowed, for example minute returns, 5-minute bars, or a 20-day state matrix. Concrete metric branches must still be guarded by `requested.contains(raw_id)` or `requested.contains_any([...])`.
+- Raw columns used only by deprecated factors should not be computed, written to `_cache/intraday_daily`, or consumed by final `compute()`. If an active factor reuses the same raw id, that raw remains active.
+- Prefer `RequestedRawIds` for new multi-raw providers so requested filtering has one consistent shape.
+
+Typical pattern:
+
+```rust
+let known = all_raw_ids();
+let requested = RequestedRawIds::new(raw_ids, &known);
+if requested.is_empty() {
+    return Ok(Vec::new());
+}
+
+let need_tail = requested.contains_any(&[VAR95_RAW_ID, CVAR95_RAW_ID]);
+if need_tail {
+    // compute only the requested tail metrics
+}
+```
+
 这类因子运行时可以一次请求整组因子：
 
 You can run the whole sibling family in one batch:
@@ -329,7 +362,7 @@ You can run the whole sibling family in one batch:
 cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors negv_mean,negv_max,negvwgt_mean,negvwgt_max,flash_crash_prob_v --profile --refresh-minute-cache
 ```
 
-### 4.5 正式 compute 消费 raw / Daily Compute Consumes Raw
+### 4.6 正式 compute 消费 raw / Daily Compute Consumes Raw
 
 正式因子不再读取分钟文件，而是读取日频 raw panel 做滚动、截面处理和中性化：
 
@@ -365,7 +398,7 @@ fn compute_flash_crash_prob_v(data: &DataPool) -> Result<PanelColumn> {
 
 Production code should handle `None`, non-finite values, and zero denominators carefully; the snippet above focuses on data flow.
 
-### 4.6 开发检查清单 / Minute Factor Checklist
+### 4.7 开发检查清单 / Minute Factor Checklist
 
 - 只需要当天分钟数据的 raw 使用 `window_days = 1`。
 - 同一批 raw 共享分钟扫描时，实现 `minute_compute_many()` 和统一 provider key。
@@ -375,6 +408,7 @@ Production code should handle `None`, non-finite values, and zero denominators c
 
 - Use `window_days = 1` for same-day minute raw.
 - Use `minute_compute_many()` and a shared provider key when sibling raw columns share one scan.
+- Guard each concrete sibling raw metric with `RequestedRawIds`; deprecated-only raw should not be computed.
 - Prefer additive daily raw for cross-day formulas; use stateful providers only when additive raw is not suitable.
 - Rerun with `--refresh-minute-cache` after raw formula, raw id, or raw version changes.
 - If historical raw names no longer match exact semantics, document the semantic change in tests or comments.

@@ -7,6 +7,39 @@ use crate::core::{
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
 
+#[derive(Clone, Debug)]
+pub struct RequestedRawIds<'a> {
+    raw_ids: BTreeSet<&'a str>,
+}
+
+impl<'a> RequestedRawIds<'a> {
+    pub fn new(raw_ids: &'a [String], known_raw_ids: &[&str]) -> Self {
+        let known = known_raw_ids.iter().copied().collect::<BTreeSet<_>>();
+        let raw_ids = raw_ids
+            .iter()
+            .map(String::as_str)
+            .filter(|raw_id| known.contains(raw_id))
+            .collect::<BTreeSet<_>>();
+        Self { raw_ids }
+    }
+
+    pub fn contains(&self, raw_id: &str) -> bool {
+        self.raw_ids.contains(raw_id)
+    }
+
+    pub fn contains_any(&self, raw_ids: &[&str]) -> bool {
+        raw_ids.iter().any(|raw_id| self.contains(raw_id))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.raw_ids.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &'a str> + '_ {
+        self.raw_ids.iter().copied()
+    }
+}
+
 pub fn stock_minute_raw_spec(
     raw_id: &str,
     version: &str,

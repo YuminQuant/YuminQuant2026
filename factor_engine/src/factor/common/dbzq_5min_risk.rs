@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
@@ -15,7 +15,9 @@ use crate::factor::common::stock_daily_raw_ids::{
     ID_VAR95_5MIN_RAW_ID, ID_VAR95_RT_5MIN_RAW_ID, RV_5MIN_RAW_ID, VAR90_5MIN_RAW_ID,
     VAR90_RT_5MIN_RAW_ID, VAR95_5MIN_RAW_ID, VAR95_RT_5MIN_RAW_ID,
 };
-use crate::factor::common::{clean_intraday_value, quantile_linear, stock_minute_raw_spec};
+use crate::factor::common::{
+    clean_intraday_value, quantile_linear, stock_minute_raw_spec, RequestedRawIds,
+};
 use crate::operators::{cs_zscore, ts_mean};
 
 pub const RAW_VERSION: &str = "0.1.0";
@@ -85,6 +87,48 @@ struct DailyRiskStats {
     var95_rt: Option<f64>,
     cvar90_rt: Option<f64>,
     cvar95_rt: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RiskStatsRequest {
+    rv: bool,
+    var90: bool,
+    var95: bool,
+    cvar90: bool,
+    cvar95: bool,
+    var90_rt: bool,
+    var95_rt: bool,
+    cvar90_rt: bool,
+    cvar95_rt: bool,
+}
+
+impl RiskStatsRequest {
+    fn from_requested(requested: &RequestedRawIds<'_>, family: DbzqRawFamily) -> Self {
+        match family {
+            DbzqRawFamily::Ordinary => Self {
+                rv: requested.contains(RV_5MIN_RAW_ID),
+                var90: requested.contains(VAR90_5MIN_RAW_ID),
+                var95: requested.contains(VAR95_5MIN_RAW_ID),
+                cvar90: requested.contains(CVAR90_5MIN_RAW_ID),
+                cvar95: requested.contains(CVAR95_5MIN_RAW_ID),
+                var90_rt: requested.contains(VAR90_RT_5MIN_RAW_ID),
+                var95_rt: requested.contains(VAR95_RT_5MIN_RAW_ID),
+                cvar90_rt: requested.contains(CVAR90_RT_5MIN_RAW_ID),
+                cvar95_rt: requested.contains(CVAR95_RT_5MIN_RAW_ID),
+            },
+            DbzqRawFamily::Idiosyncratic => Self {
+                rv: requested.contains(ID_RV_5MIN_RAW_ID),
+                var90: requested.contains(ID_VAR90_5MIN_RAW_ID),
+                var95: requested.contains(ID_VAR95_5MIN_RAW_ID),
+                cvar90: requested.contains(ID_CVAR90_5MIN_RAW_ID),
+                cvar95: requested.contains(ID_CVAR95_5MIN_RAW_ID),
+                var90_rt: requested.contains(ID_VAR90_RT_5MIN_RAW_ID),
+                var95_rt: requested.contains(ID_VAR95_RT_5MIN_RAW_ID),
+                cvar90_rt: requested.contains(ID_CVAR90_RT_5MIN_RAW_ID),
+                cvar95_rt: requested.contains(ID_CVAR95_RT_5MIN_RAW_ID),
+            },
+        }
+    }
 }
 
 pub fn all_raw_ids() -> [&'static str; 18] {
@@ -260,18 +304,17 @@ pub fn minute_compute_many_for(
     family: DbzqRawFamily,
 ) -> Result<Vec<IntradayDailyRawSeries>> {
     let family_raw_ids = raw_ids_for_family(family);
-    let requested = raw_ids
-        .iter()
-        .map(String::as_str)
-        .filter(|raw_id| family_raw_ids.contains(raw_id))
-        .collect::<BTreeSet<_>>();
+    let requested = RequestedRawIds::new(raw_ids, &family_raw_ids);
     if requested.is_empty() {
         return Ok(Vec::new());
     }
+    let request = RiskStatsRequest::from_requested(&requested, family);
 
     let mut values = family_raw_ids
         .iter()
-        .map(|raw_id| (*raw_id, Vec::<FactorValue>::new()))
+        .copied()
+        .filter(|raw_id| requested.contains(raw_id))
+        .map(|raw_id| (raw_id, Vec::<FactorValue>::new()))
         .collect::<BTreeMap<_, _>>();
 
     for trade_date in &context.target_dates {
@@ -311,7 +354,7 @@ pub fn minute_compute_many_for(
 
             match family {
                 DbzqRawFamily::Ordinary => {
-                    let ordinary = daily_risk_stats(&instrument.returns);
+                    let ordinary = daily_risk_stats(&instrument.returns, request);
                     push_ordinary_stats(&mut values, &requested, &key, ordinary);
                 }
                 DbzqRawFamily::Idiosyncratic => {
@@ -319,7 +362,7 @@ pub fn minute_compute_many_for(
                         continue;
                     };
                     let residuals = capm_residuals(&instrument.returns, market_returns);
-                    let idiosyncratic = daily_risk_stats(&residuals);
+                    let idiosyncratic = daily_risk_stats(&residuals, request);
                     push_idiosyncratic_stats(&mut values, &requested, &key, idiosyncratic);
                 }
             }
@@ -376,7 +419,7 @@ fn dependencies() -> Vec<DataRequest> {
 
 fn push_requested(
     values: &mut BTreeMap<&'static str, Vec<FactorValue>>,
-    requested: &BTreeSet<&str>,
+    requested: &RequestedRawIds<'_>,
     raw_id: &'static str,
     key: &FactorRowKey,
     value: Option<f64>,
@@ -392,7 +435,7 @@ fn push_requested(
 
 fn push_ordinary_stats(
     values: &mut BTreeMap<&'static str, Vec<FactorValue>>,
-    requested: &BTreeSet<&str>,
+    requested: &RequestedRawIds<'_>,
     key: &FactorRowKey,
     stats: DailyRiskStats,
 ) {
@@ -421,7 +464,7 @@ fn push_ordinary_stats(
 
 fn push_idiosyncratic_stats(
     values: &mut BTreeMap<&'static str, Vec<FactorValue>>,
-    requested: &BTreeSet<&str>,
+    requested: &RequestedRawIds<'_>,
     key: &FactorRowKey,
     stats: DailyRiskStats,
 ) {
@@ -616,7 +659,7 @@ fn capm_residuals(stock: &[Option<f64>], market: &[Option<f64>]) -> Vec<Option<f
         .collect()
 }
 
-fn daily_risk_stats(values: &[Option<f64>]) -> DailyRiskStats {
+fn daily_risk_stats(values: &[Option<f64>], request: RiskStatsRequest) -> DailyRiskStats {
     let valid = values
         .iter()
         .filter_map(|value| value.filter(|value| value.is_finite()))
@@ -624,15 +667,23 @@ fn daily_risk_stats(values: &[Option<f64>]) -> DailyRiskStats {
     if valid.is_empty() {
         return DailyRiskStats::default();
     }
-    let rv = Some(valid.iter().map(|value| value * value).sum::<f64>());
-    let var90 = left_var(&valid, 0.10);
-    let var95 = left_var(&valid, 0.05);
-    let cvar90 = left_cvar(&valid, 0.10);
-    let cvar95 = left_cvar(&valid, 0.05);
-    let var90_rt = right_var(&valid, 0.10);
-    let var95_rt = right_var(&valid, 0.05);
-    let cvar90_rt = right_cvar(&valid, 0.10);
-    let cvar95_rt = right_cvar(&valid, 0.05);
+    let rv = request
+        .rv
+        .then(|| valid.iter().map(|value| value * value).sum::<f64>());
+    let var90 = request.var90.then(|| left_var(&valid, 0.10)).flatten();
+    let var95 = request.var95.then(|| left_var(&valid, 0.05)).flatten();
+    let cvar90 = request.cvar90.then(|| left_cvar(&valid, 0.10)).flatten();
+    let cvar95 = request.cvar95.then(|| left_cvar(&valid, 0.05)).flatten();
+    let var90_rt = request.var90_rt.then(|| right_var(&valid, 0.10)).flatten();
+    let var95_rt = request.var95_rt.then(|| right_var(&valid, 0.05)).flatten();
+    let cvar90_rt = request
+        .cvar90_rt
+        .then(|| right_cvar(&valid, 0.10))
+        .flatten();
+    let cvar95_rt = request
+        .cvar95_rt
+        .then(|| right_cvar(&valid, 0.05))
+        .flatten();
     DailyRiskStats {
         rv,
         var90,
@@ -818,6 +869,58 @@ mod tests {
         assert_close(right_var(&values, 0.25), Some(3.0));
         assert_close(left_cvar(&values, 0.25), Some(3.0));
         assert_close(right_cvar(&values, 0.25), Some(4.0));
+    }
+
+    #[test]
+    fn dbzq_daily_risk_stats_only_computes_requested_95_tail() {
+        let values = vec![Some(-4.0), Some(-2.0), Some(1.0), Some(3.0), Some(5.0)];
+        let request = RiskStatsRequest {
+            var95: true,
+            ..RiskStatsRequest::default()
+        };
+
+        let stats = daily_risk_stats(&values, request);
+
+        assert!(stats.var95.is_some());
+        assert_eq!(stats.rv, None);
+        assert_eq!(stats.var90, None);
+        assert_eq!(stats.cvar90, None);
+        assert_eq!(stats.cvar95, None);
+        assert_eq!(stats.var90_rt, None);
+        assert_eq!(stats.var95_rt, None);
+    }
+
+    #[test]
+    fn dbzq_daily_risk_stats_rv_only_skips_tail_metrics() {
+        let values = vec![Some(-4.0), Some(-2.0), Some(1.0), Some(3.0), Some(5.0)];
+        let request = RiskStatsRequest {
+            rv: true,
+            ..RiskStatsRequest::default()
+        };
+
+        let stats = daily_risk_stats(&values, request);
+
+        assert_close(stats.rv, Some(55.0));
+        assert_eq!(stats.var90, None);
+        assert_eq!(stats.var95, None);
+        assert_eq!(stats.cvar90, None);
+        assert_eq!(stats.cvar95, None);
+        assert_eq!(stats.var90_rt, None);
+        assert_eq!(stats.var95_rt, None);
+        assert_eq!(stats.cvar90_rt, None);
+        assert_eq!(stats.cvar95_rt, None);
+    }
+
+    #[test]
+    fn dbzq_request_mask_maps_only_requested_family_raw_ids() {
+        let raw_ids = vec![VAR95_5MIN_RAW_ID.to_string()];
+        let requested = RequestedRawIds::new(&raw_ids, &ordinary_raw_ids());
+        let mask = RiskStatsRequest::from_requested(&requested, DbzqRawFamily::Ordinary);
+
+        assert!(mask.var95);
+        assert!(!mask.var90);
+        assert!(!mask.cvar90);
+        assert!(!mask.rv);
     }
 
     #[test]

@@ -12,8 +12,8 @@ use crate::factor::common::stock_daily_ops::neutralize_size_sector;
 use crate::factor::common::{clean_intraday_value, stock_minute_raw_spec};
 use crate::factor::IntradayRawMaterializeMode;
 
-pub const VERSION: &str = "0.1.0";
-pub const RAW_VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.2.0";
+pub const RAW_VERSION: &str = "0.2.0";
 pub const PROVIDER_KEY: &str = "kyzq_peak_valley_provider";
 
 const WINDOW_DAYS: usize = 20;
@@ -503,7 +503,8 @@ fn compute_window_metrics(
             mean_daily_state_percentile(days, &states.volume_valley);
     }
     if requested.contains(&PeakValleyMetric::VolumePeakIntervalKurtosis) {
-        values.volume_peak_interval_kurtosis = kurtosis(&flag_intervals(&states.volume_peak), 4);
+        values.volume_peak_interval_kurtosis =
+            kurtosis(&daily_flag_intervals(&states.volume_peak), 4);
     }
     if requested.contains(&PeakValleyMetric::VolumeValleyRidgeVwapRatio) {
         values.volume_valley_ridge_vwap_ratio =
@@ -527,7 +528,8 @@ fn compute_window_metrics(
             mean_daily_state_percentile(days, &states.price_valley);
     }
     if requested.contains(&PeakValleyMetric::PriceRidgeIntervalSkewness) {
-        values.price_ridge_interval_skewness = skewness(&flag_intervals(&states.price_ridge), 3);
+        values.price_ridge_interval_skewness =
+            skewness(&daily_flag_intervals(&states.price_ridge), 3);
     }
     if requested.contains(&PeakValleyMetric::PriceJumpAmountCorr) {
         values.price_jump_amount_corr = price_jump_amount_corr(days, &states.price_jump);
@@ -552,15 +554,15 @@ fn classify_states(days: &[&StrictStockDay]) -> MatrixStates {
             .iter()
             .map(|day| amplitude(day.points[minute_idx]))
             .collect::<Vec<_>>();
-        let (volume_mean, volume_std) = mean_std(&volume_values);
-        let (amplitude_mean, amplitude_std) = mean_std(&amplitude_values);
+        let (_, volume_std) = mean_std(&volume_values);
+        let (_, amplitude_std) = mean_std(&amplitude_values);
         for day_idx in 0..WINDOW_DAYS {
             let volume = volume_values[day_idx];
-            volume_erupt[day_idx][minute_idx] = volume > volume_mean + volume_std;
-            volume_mild[day_idx][minute_idx] = volume < volume_mean - volume_std;
+            volume_erupt[day_idx][minute_idx] = volume > volume_std;
+            volume_mild[day_idx][minute_idx] = volume < volume_std;
             let amp = amplitude_values[day_idx];
-            price_jump[day_idx][minute_idx] = amp > amplitude_mean + amplitude_std;
-            price_non_jump[day_idx][minute_idx] = amp < amplitude_mean - amplitude_std;
+            price_jump[day_idx][minute_idx] = amp > amplitude_std;
+            price_non_jump[day_idx][minute_idx] = amp < amplitude_std;
             states.volume_valley[day_idx][minute_idx] = volume_mild[day_idx][minute_idx];
             states.price_jump[day_idx][minute_idx] = price_jump[day_idx][minute_idx];
             states.price_valley[day_idx][minute_idx] = price_non_jump[day_idx][minute_idx];
@@ -570,8 +572,12 @@ fn classify_states(days: &[&StrictStockDay]) -> MatrixStates {
     for day_idx in 0..WINDOW_DAYS {
         for minute_idx in 0..MINUTES_PER_DAY {
             if volume_erupt[day_idx][minute_idx] {
-                let left = (minute_idx > 0).then_some(minute_idx - 1);
-                let right = (minute_idx + 1 < MINUTES_PER_DAY).then_some(minute_idx + 1);
+                let left = minute_idx.checked_sub(1);
+                let right = if minute_idx + 1 < MINUTES_PER_DAY {
+                    Some(minute_idx + 1)
+                } else {
+                    None
+                };
                 let neighbors = [left, right].into_iter().flatten().collect::<Vec<_>>();
                 states.volume_peak[day_idx][minute_idx] =
                     !neighbors.is_empty() && neighbors.iter().all(|idx| volume_mild[day_idx][*idx]);
@@ -833,19 +839,22 @@ fn daily_price_bounds(day: &StrictStockDay) -> (f64, f64) {
     (low.min(day.pre_close), high.max(day.pre_close))
 }
 
-fn flag_intervals(flags: &[[bool; MINUTES_PER_DAY]; WINDOW_DAYS]) -> Vec<f64> {
-    let mut positions = Vec::new();
-    for (day_idx, day_flags) in flags.iter().enumerate() {
+fn daily_flag_intervals(flags: &[[bool; MINUTES_PER_DAY]; WINDOW_DAYS]) -> Vec<f64> {
+    let mut intervals = Vec::new();
+    for day_flags in flags {
+        let mut positions = Vec::new();
         for (minute_idx, flag) in day_flags.iter().enumerate() {
             if *flag {
-                positions.push((day_idx * MINUTES_PER_DAY + minute_idx) as f64);
+                positions.push(minute_idx as f64);
             }
         }
+        intervals.extend(
+            positions
+                .windows(2)
+                .filter_map(|pair| finite_option(Some(pair[1] - pair[0]))),
+        );
     }
-    positions
-        .windows(2)
-        .filter_map(|pair| finite_option(Some(pair[1] - pair[0])))
-        .collect()
+    intervals
 }
 
 fn same_time_count_corr(
@@ -1088,6 +1097,19 @@ mod tests {
         StrictStockDay { points, pre_close }
     }
 
+    fn strict_day_with_base(
+        pre_close: f64,
+        base_vol: f64,
+        vol_overrides: &[(usize, f64)],
+    ) -> StrictStockDay {
+        let mut points = [point(10.0, base_vol, base_vol * 10.0); MINUTES_PER_DAY];
+        for (idx, value) in vol_overrides {
+            points[*idx].vol = *value;
+            points[*idx].amount = *value * 10.0;
+        }
+        StrictStockDay { points, pre_close }
+    }
+
     #[test]
     fn kyzq_peak_valley_minute_index_uses_regular_session() {
         assert_eq!(minute_index("09:31:00"), Some(0));
@@ -1114,15 +1136,32 @@ mod tests {
     #[test]
     fn kyzq_peak_valley_volume_peak_requires_eruption_with_mild_neighbors() {
         let mut owned = (0..19)
-            .map(|_| strict_day(9.9, &[(0, 100.0), (1, 10.0), (2, 100.0)]))
+            .map(|_| {
+                strict_day_with_base(
+                    9.9,
+                    0.0,
+                    &[(98, 100.0), (99, 100.0), (101, 100.0), (102, 100.0)],
+                )
+            })
             .collect::<Vec<_>>();
-        owned.push(strict_day(9.9, &[(0, 0.0), (1, 100.0), (2, 0.0)]));
+        owned.push(strict_day_with_base(9.9, 0.0, &[(100, 100.0)]));
         let days = owned.iter().collect::<Vec<_>>();
         let requested = BTreeSet::from([PeakValleyMetric::VolumePeakMinuteCount]);
 
         let values = compute_window_metrics(&days, &requested);
 
         assert_close(values.volume_peak_minute_count, 1.0);
+    }
+
+    #[test]
+    fn kyzq_peak_valley_intervals_do_not_cross_days() {
+        let mut flags = [[false; MINUTES_PER_DAY]; WINDOW_DAYS];
+        flags[0][10] = true;
+        flags[0][15] = true;
+        flags[1][239] = true;
+        flags[2][0] = true;
+
+        assert_eq!(daily_flag_intervals(&flags), vec![5.0]);
     }
 
     #[test]

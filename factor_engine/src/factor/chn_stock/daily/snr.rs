@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
@@ -13,7 +13,7 @@ use crate::factor::Factor;
 use crate::operators::{cs_minmax_scale, ts_ewm};
 
 const VERSION: &str = "0.1.0";
-const RAW_VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.2.0";
 const PROVIDER_KEY: &str = "hazq_snr_provider";
 const RAW_ID: &str = "daily_hazq_snr_raw";
 
@@ -38,7 +38,7 @@ impl Factor for StockDailySnr {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "HAZQ single-day 1-minute close-price EMD signal-to-noise ratio factor. Layer-2 and layer-3 EMD SNR are combined by cross-sectional minmax-scaled intraday return volatility, then 15-day EMA smoothed and neutralized by Barra SIZE and SW sector.".to_string(),
+            description: "HAZQ single-day 1-minute close-price EMD signal-to-noise ratio factor. Layer-2 and layer-3 EMD SNR are combined by cross-sectional minmax-scaled intraday close-price volatility, then 15-day EMA smoothed and neutralized by Barra SIZE and SW sector.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
                 DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
@@ -67,13 +67,12 @@ impl Factor for StockDailySnr {
         let requested = raw_ids
             .iter()
             .map(String::as_str)
-            .filter(|raw_id| *raw_id == RAW_ID)
-            .collect::<BTreeSet<_>>();
-        if requested.is_empty() {
+            .any(|raw_id| raw_id == RAW_ID);
+        if !requested {
             return Ok(Vec::new());
         }
 
-        let mut output_values = Vec::new();
+        let mut values = Vec::<FactorValue>::new();
         for trade_date in &context.target_dates {
             let Some(table) = data.minute(DatasetId::StockMinute1m, *trade_date) else {
                 continue;
@@ -93,39 +92,45 @@ impl Factor for StockDailySnr {
                 grouped.entry(ts_code).or_default().push(idx);
             }
 
-            let mut rows = Vec::<(String, Option<SnrComponents>)>::new();
+            let mut rows = Vec::<(String, StockSnrValues)>::new();
             for (ts_code, mut indices) in grouped {
                 indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
                 let close_day = close_day_from_indices(&indices, &trade_times, &close);
-                rows.push((ts_code, snr_components(&close_day)));
+                rows.push((ts_code, stock_snr_values(&close_day)));
             }
 
             let volatilities = rows
                 .iter()
-                .map(|(_, components)| components.map(|value| value.intraday_volatility))
+                .map(|(_, values)| values.intraday_volatility)
                 .collect::<Vec<_>>();
             let vol_minmax = cs_minmax_scale(&volatilities);
 
-            for ((ts_code, components), vol_scale) in rows.into_iter().zip(vol_minmax.into_iter()) {
-                let value = match (components, clean_intraday_value(vol_scale)) {
-                    (Some(components), Some(weight)) => Some(
-                        weight * components.layer3_snr + (1.0 - weight) * components.layer2_snr,
-                    ),
+            for ((ts_code, stock_values), vol_scale) in rows.into_iter().zip(vol_minmax.into_iter())
+            {
+                let key = FactorRowKey::Daily {
+                    trade_date: *trade_date,
+                    ts_code,
+                };
+                let composite = match (
+                    stock_values.layer2_snr,
+                    stock_values.layer3_snr,
+                    clean_intraday_value(vol_scale),
+                ) {
+                    (Some(layer2), Some(layer3), Some(weight)) => {
+                        Some(weight * layer3 + (1.0 - weight) * layer2)
+                    }
                     _ => None,
                 };
-                output_values.push(FactorValue {
-                    key: FactorRowKey::Daily {
-                        trade_date: *trade_date,
-                        ts_code,
-                    },
-                    value,
+                values.push(FactorValue {
+                    key,
+                    value: composite,
                 });
             }
         }
 
         Ok(vec![IntradayDailyRawSeries {
             spec: raw_spec(),
-            values: output_values,
+            values,
         }])
     }
 
@@ -140,24 +145,22 @@ impl Factor for StockDailySnr {
 
 #[derive(Clone, Debug)]
 struct CloseDay {
-    anchor_close: Option<f64>,
     close: [Option<f64>; MINUTES_PER_DAY],
 }
 
 impl Default for CloseDay {
     fn default() -> Self {
         Self {
-            anchor_close: None,
             close: [None; MINUTES_PER_DAY],
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SnrComponents {
-    layer2_snr: f64,
-    layer3_snr: f64,
-    intraday_volatility: f64,
+struct StockSnrValues {
+    layer2_snr: Option<f64>,
+    layer3_snr: Option<f64>,
+    intraday_volatility: Option<f64>,
 }
 
 fn raw_spec() -> IntradayDailyRawSpec {
@@ -196,7 +199,6 @@ fn close_day_from_indices(
             continue;
         };
         if is_anchor_minute(trade_time) {
-            day.anchor_close = value;
             continue;
         }
         if let Some(minute_idx) = minute_index(trade_time) {
@@ -206,41 +208,65 @@ fn close_day_from_indices(
     day
 }
 
-fn snr_components(day: &CloseDay) -> Option<SnrComponents> {
+fn stock_snr_values(day: &CloseDay) -> StockSnrValues {
     let mut prices = Vec::with_capacity(MINUTES_PER_DAY);
     for value in day.close {
-        prices.push(value?);
+        let Some(value) = value else {
+            return StockSnrValues {
+                layer2_snr: None,
+                layer3_snr: None,
+                intraday_volatility: None,
+            };
+        };
+        prices.push(value);
     }
-    let returns = minute_returns(day.anchor_close, &prices);
-    let intraday_volatility = sample_std(&returns)?;
-    Some(SnrComponents {
-        layer2_snr: snr_for_layers(&prices, 2),
-        layer3_snr: snr_for_layers(&prices, 3),
+    let (layer2_snr, layer3_snr) = snr_layer_values(&prices, true, true);
+    let intraday_volatility = sample_std(&prices);
+    StockSnrValues {
+        layer2_snr,
+        layer3_snr,
         intraday_volatility,
-    })
-}
-
-fn minute_returns(anchor_close: Option<f64>, prices: &[f64]) -> Vec<f64> {
-    let mut output = Vec::with_capacity(prices.len());
-    let mut previous = anchor_close;
-    for price in prices {
-        if let Some(prev) = previous {
-            if prev.abs() > EPS {
-                let value = price / prev - 1.0;
-                if value.is_finite() {
-                    output.push(value);
-                }
-            }
-        }
-        previous = Some(*price);
     }
-    output
 }
 
-fn snr_for_layers(prices: &[f64], layers: usize) -> f64 {
-    let Some(signal) = emd_signal(prices, layers) else {
-        return 0.0;
-    };
+fn snr_layer_values(
+    prices: &[f64],
+    need_layer2: bool,
+    need_layer3: bool,
+) -> (Option<f64>, Option<f64>) {
+    if !need_layer2 && !need_layer3 {
+        return (None, None);
+    }
+    if prices.len() < 3 || is_constant(prices) {
+        return (need_layer2.then_some(0.0), need_layer3.then_some(0.0));
+    }
+
+    let max_layer = if need_layer3 { 3 } else { 2 };
+    let mut residual = prices.to_vec();
+    let mut layer2_snr = None;
+    let mut layer3_snr = None;
+    for layer in 1..=max_layer {
+        let Some(next) = emd_trend_once(&residual) else {
+            if layer <= 2 && need_layer2 {
+                layer2_snr = Some(0.0);
+            }
+            if need_layer3 {
+                layer3_snr = Some(0.0);
+            }
+            return (layer2_snr, layer3_snr);
+        };
+        residual = next;
+        if layer == 2 && need_layer2 {
+            layer2_snr = Some(snr_from_signal(prices, &residual));
+        }
+        if layer == 3 && need_layer3 {
+            layer3_snr = Some(snr_from_signal(prices, &residual));
+        }
+    }
+    (layer2_snr, layer3_snr)
+}
+
+fn snr_from_signal(prices: &[f64], signal: &[f64]) -> f64 {
     let noise = prices
         .iter()
         .zip(signal.iter())
@@ -254,17 +280,6 @@ fn snr_for_layers(prices: &[f64], layers: usize) -> f64 {
     }
     let value = (signal_std / noise_std).ln();
     value.is_finite().then_some(value).unwrap_or(0.0)
-}
-
-fn emd_signal(prices: &[f64], layers: usize) -> Option<Vec<f64>> {
-    if prices.len() < 3 || is_constant(prices) {
-        return None;
-    }
-    let mut residual = prices.to_vec();
-    for _ in 0..layers {
-        residual = emd_trend_once(&residual)?;
-    }
-    Some(residual)
 }
 
 fn emd_trend_once(values: &[f64]) -> Option<Vec<f64>> {
@@ -499,17 +514,26 @@ mod tests {
 
     #[test]
     fn hazq_snr_flat_or_extrema_poor_series_returns_zero() {
-        assert_close(snr_for_layers(&vec![10.0; MINUTES_PER_DAY], 2), 0.0);
+        assert_eq!(
+            snr_layer_values(&vec![10.0; MINUTES_PER_DAY], true, true),
+            (Some(0.0), Some(0.0))
+        );
         let monotonic = (0..MINUTES_PER_DAY)
             .map(|idx| idx as f64 + 1.0)
             .collect::<Vec<_>>();
-        assert_close(snr_for_layers(&monotonic, 2), 0.0);
+        assert_eq!(
+            snr_layer_values(&monotonic, true, true),
+            (Some(0.0), Some(0.0))
+        );
     }
 
     #[test]
     fn hazq_snr_requires_complete_regular_session_prices() {
         let day = CloseDay::default();
-        assert!(snr_components(&day).is_none());
+        let values = stock_snr_values(&day);
+        assert_eq!(values.layer2_snr, None);
+        assert_eq!(values.layer3_snr, None);
+        assert_eq!(values.intraday_volatility, None);
     }
 
     #[test]

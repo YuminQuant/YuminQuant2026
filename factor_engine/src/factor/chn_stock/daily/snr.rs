@@ -181,6 +181,7 @@ fn tags() -> Vec<String> {
         "size",
         "sector",
         "daily",
+        "deprecated",
     ]
     .iter()
     .map(|value| value.to_string())

@@ -12,8 +12,8 @@ use crate::factor::common::stock_daily_ops::neutralize_size_sector;
 use crate::factor::common::{clean_intraday_value, stock_minute_raw_spec};
 use crate::factor::IntradayRawMaterializeMode;
 
-pub const VERSION: &str = "0.2.0";
-pub const RAW_VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.3.0";
+pub const RAW_VERSION: &str = "0.3.0";
 pub const PROVIDER_KEY: &str = "kyzq_peak_valley_provider";
 
 const WINDOW_DAYS: usize = 20;
@@ -554,15 +554,17 @@ fn classify_states(days: &[&StrictStockDay]) -> MatrixStates {
             .iter()
             .map(|day| amplitude(day.points[minute_idx]))
             .collect::<Vec<_>>();
-        let (_, volume_std) = mean_std(&volume_values);
-        let (_, amplitude_std) = mean_std(&amplitude_values);
+        let (volume_mean, volume_std) = mean_std(&volume_values);
+        let (amplitude_mean, amplitude_std) = mean_std(&amplitude_values);
+        let volume_threshold = volume_mean + volume_std;
+        let amplitude_threshold = amplitude_mean + amplitude_std;
         for day_idx in 0..WINDOW_DAYS {
             let volume = volume_values[day_idx];
-            volume_erupt[day_idx][minute_idx] = volume > volume_std;
-            volume_mild[day_idx][minute_idx] = volume < volume_std;
+            volume_erupt[day_idx][minute_idx] = volume > volume_threshold;
+            volume_mild[day_idx][minute_idx] = volume < volume_threshold;
             let amp = amplitude_values[day_idx];
-            price_jump[day_idx][minute_idx] = amp > amplitude_std;
-            price_non_jump[day_idx][minute_idx] = amp < amplitude_std;
+            price_jump[day_idx][minute_idx] = amp > amplitude_threshold;
+            price_non_jump[day_idx][minute_idx] = amp < amplitude_threshold;
             states.volume_valley[day_idx][minute_idx] = volume_mild[day_idx][minute_idx];
             states.price_jump[day_idx][minute_idx] = price_jump[day_idx][minute_idx];
             states.price_valley[day_idx][minute_idx] = price_non_jump[day_idx][minute_idx];
@@ -1151,6 +1153,18 @@ mod tests {
         let values = compute_window_metrics(&days, &requested);
 
         assert_close(values.volume_peak_minute_count, 1.0);
+    }
+
+    #[test]
+    fn kyzq_peak_valley_volume_mild_uses_mean_plus_std_threshold() {
+        let mut owned = (0..19)
+            .map(|_| strict_day_with_base(9.9, 0.0, &[(0, 10.0)]))
+            .collect::<Vec<_>>();
+        owned.push(strict_day_with_base(9.9, 0.0, &[(0, 5.0)]));
+        let days = owned.iter().collect::<Vec<_>>();
+        let states = classify_states(&days);
+
+        assert!(states.volume_valley[WINDOW_DAYS - 1][0]);
     }
 
     #[test]

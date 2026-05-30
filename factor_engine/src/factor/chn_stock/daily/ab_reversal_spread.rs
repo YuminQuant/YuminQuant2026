@@ -70,6 +70,7 @@ impl Factor for StockDailyAbReversalSpread {
 fn tags() -> Vec<String> {
     [
         "ZSZQ",
+        "deprecated",
         "reversal",
         "overnight",
         "intraday",

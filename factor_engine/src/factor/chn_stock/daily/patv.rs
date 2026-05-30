@@ -144,6 +144,7 @@ fn raw_spec() -> IntradayDailyRawSpec {
 
 fn tags() -> Vec<String> {
     [
+        "ZSZQ",
         "PATV",
         "volume",
         "intraday",

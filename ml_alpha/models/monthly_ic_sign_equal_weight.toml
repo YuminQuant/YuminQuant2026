@@ -46,6 +46,6 @@ class = "yq_ml_alpha.models.ic_sign_model.ICSignEqualWeightAlphaModel"
 artifact_dir = "data/model_workspace/monthly_ic_sign_equal_weight/artifacts"
 
 [model.params]
-ic_root = "data/backtest/stock/daily/ic"
+backtest_root = "data/backtest/stock/daily"
 ic_metric = "rank_ic"
 

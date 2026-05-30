@@ -24,67 +24,59 @@ pub fn write_backtest_outputs(
     remove_legacy_outputs(output_dir)?;
     let mut written = Vec::new();
 
-    let returns_dir = output_dir.join("returns");
-    std::fs::create_dir_all(&returns_dir)?;
     for (factor_id, rows) in group_returns_by_factor(returns) {
-        let path = returns_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+        let path = factor_metric_path(output_dir, &factor_id, "returns.parquet")?;
         write_parquet(&path, &returns_table(&rows)?)?;
         written.push(path);
     }
 
-    let index_returns_dir = output_dir.join("index_group_returns");
-    std::fs::create_dir_all(&index_returns_dir)?;
     for (factor_id, rows) in group_index_group_returns_by_factor(index_group_returns) {
-        let path = index_returns_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+        let path = factor_metric_path(output_dir, &factor_id, "index_group_returns.parquet")?;
         write_parquet(&path, &index_group_returns_table(&rows)?)?;
         written.push(path);
     }
 
-    let ic_dir = output_dir.join("ic");
-    std::fs::create_dir_all(&ic_dir)?;
     for (factor_id, rows) in group_ic_by_factor(daily_ic) {
-        let path = ic_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+        let path = factor_metric_path(output_dir, &factor_id, "ic.parquet")?;
         write_parquet(&path, &ic_observation_table(&rows)?)?;
         written.push(path);
     }
 
-    let factor_stats_dir = output_dir.join("factor_stats");
-    std::fs::create_dir_all(&factor_stats_dir)?;
     for (factor_id, rows) in group_factor_stats_by_factor(factor_stats) {
-        let path = factor_stats_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+        let path = factor_metric_path(output_dir, &factor_id, "factor_stats.parquet")?;
         write_parquet(&path, &factor_stats_table(&rows)?)?;
         written.push(path);
     }
 
     if !holdings.is_empty() {
-        let holdings_dir = output_dir.join("holdings");
-        std::fs::create_dir_all(&holdings_dir)?;
         for (factor_id, rows) in group_holdings_by_factor(holdings) {
-            let path = holdings_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+            let path = factor_metric_path(output_dir, &factor_id, "holdings.parquet")?;
             write_parquet(&path, &holdings_table(&rows)?)?;
             written.push(path);
         }
     }
 
     if !industry_weights.is_empty() {
-        let industry_dir = output_dir.join("industry_weights");
-        std::fs::create_dir_all(&industry_dir)?;
         for (factor_id, rows) in group_industry_weights_by_factor(industry_weights) {
-            let path = industry_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+            let path = factor_metric_path(output_dir, &factor_id, "industry_weights.parquet")?;
             write_parquet(&path, &industry_weights_table(&rows)?)?;
             written.push(path);
         }
     }
     if !barra_exposure.is_empty() {
-        let exposure_dir = output_dir.join("barra_exposure");
-        std::fs::create_dir_all(&exposure_dir)?;
         for (factor_id, rows) in group_barra_exposure_by_factor(barra_exposure) {
-            let path = exposure_dir.join(format!("{}.parquet", safe_file_stem(&factor_id)));
+            let path = factor_metric_path(output_dir, &factor_id, "barra_exposure.parquet")?;
             write_parquet(&path, &barra_exposure_table(&rows)?)?;
             written.push(path);
         }
     }
     Ok(written)
+}
+
+fn factor_metric_path(output_dir: &Path, factor_id: &str, metric_file: &str) -> Result<PathBuf> {
+    let factor_dir = output_dir.join(safe_file_stem(factor_id));
+    std::fs::create_dir_all(&factor_dir)?;
+    Ok(factor_dir.join(metric_file))
 }
 
 fn remove_legacy_outputs(output_dir: &Path) -> Result<()> {
@@ -479,4 +471,116 @@ where
     I: Iterator<Item = Option<f64>>,
 {
     ColumnData::F64(values.collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backtest::ic::IcObservation;
+    use crate::backtest::metrics::{
+        BarraExposureRecord, FactorStatsDaily, IndexGroupReturnPoint, PerformancePoint,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn write_backtest_outputs_uses_factor_first_layout() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let output_dir = std::env::temp_dir().join(format!(
+            "yq_factor_engine_storage_layout_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+
+        let returns = vec![PerformancePoint {
+            factor_id: "factor:a".to_string(),
+            factor_date: 20240102,
+            trade_date: Some(20240103),
+            settle_date: Some(20240104),
+            portfolio: "group_1".to_string(),
+            return_value: Some(0.01),
+            benchmark_return: Some(0.0),
+            excess_return: Some(0.01),
+            turnover: Some(0.5),
+        }];
+        let index_returns = vec![IndexGroupReturnPoint {
+            factor_id: "factor:a".to_string(),
+            index_id: "000300.SH".to_string(),
+            factor_date: 20240102,
+            trade_date: Some(20240103),
+            settle_date: Some(20240104),
+            portfolio: "group_1".to_string(),
+            return_value: Some(0.01),
+            benchmark_return: Some(0.0),
+            excess_return: Some(0.01),
+            turnover: Some(0.5),
+            member_count: 10,
+            benchmark_count: 100,
+        }];
+        let daily_ic = vec![IcObservation {
+            factor_id: "factor:a".to_string(),
+            factor_date: 20240102,
+            label_date: 20240103,
+            settle_date: Some(20240104),
+            horizon: Some(1),
+            ic: Some(0.1),
+            rank_ic: Some(0.2),
+            pair_count: 10,
+            coverage: 1.0,
+            inf_rate: 0.0,
+        }];
+        let factor_stats = vec![FactorStatsDaily {
+            factor_id: "factor:a".to_string(),
+            trade_date: 20240102,
+            observations: 10,
+            mean: Some(0.0),
+            std: Some(1.0),
+            min: Some(-1.0),
+            p25: Some(-0.5),
+            median: Some(0.0),
+            p75: Some(0.5),
+            max: Some(1.0),
+            coverage: 1.0,
+            inf_rate: 0.0,
+        }];
+        let barra = vec![BarraExposureRecord {
+            factor_id: "factor:a".to_string(),
+            trade_date: Some(20240102),
+            metric: "barra_ic_mean".to_string(),
+            barra_factor: "SIZE".to_string(),
+            selected_group: None,
+            rank_ic_sign: None,
+            value: Some(0.1),
+            pair_count: Some(10),
+        }];
+
+        let written = write_backtest_outputs(
+            &output_dir,
+            &returns,
+            &index_returns,
+            &daily_ic,
+            &factor_stats,
+            &[],
+            &[],
+            &barra,
+        )
+        .unwrap();
+
+        let factor_dir = output_dir.join("factor_a");
+        assert!(factor_dir.join("returns.parquet").exists());
+        assert!(factor_dir.join("index_group_returns.parquet").exists());
+        assert!(factor_dir.join("ic.parquet").exists());
+        assert!(factor_dir.join("factor_stats.parquet").exists());
+        assert!(factor_dir.join("barra_exposure.parquet").exists());
+        assert_eq!(written.len(), 5);
+        assert!(!output_dir.join("returns").exists());
+        assert!(!output_dir.join("ic").exists());
+        assert!(!output_dir.join("factor_stats").exists());
+        assert!(!output_dir.join("index_group_returns").exists());
+        assert!(!output_dir.join("barra_exposure").exists());
+
+        let _ = std::fs::remove_dir_all(output_dir);
+    }
 }

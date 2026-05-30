@@ -2225,19 +2225,28 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
 
     def test_ic_sign_equal_weight_uses_rankic_signs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ic_root = Path(tmp) / "ic"
-            ic_root.mkdir()
-            pd.DataFrame({"rank_ic": [0.1, 0.2, np.nan]}).to_parquet(ic_root / "pos.parquet", index=False)
-            pd.DataFrame({"rank_ic": [-0.1, -0.3]}).to_parquet(ic_root / "neg.parquet", index=False)
-            pd.DataFrame({"rank_ic": [np.nan, np.nan]}).to_parquet(ic_root / "nan.parquet", index=False)
-            pd.DataFrame({"rank_ic": [0.1, -0.1]}).to_parquet(ic_root / "zero.parquet", index=False)
+            backtest_root = Path(tmp) / "backtest"
+            for factor in ("pos", "neg", "nan", "zero"):
+                (backtest_root / factor).mkdir(parents=True)
+            pd.DataFrame({"rank_ic": [0.1, 0.2, np.nan]}).to_parquet(
+                backtest_root / "pos" / "ic.parquet", index=False
+            )
+            pd.DataFrame({"rank_ic": [-0.1, -0.3]}).to_parquet(
+                backtest_root / "neg" / "ic.parquet", index=False
+            )
+            pd.DataFrame({"rank_ic": [np.nan, np.nan]}).to_parquet(
+                backtest_root / "nan" / "ic.parquet", index=False
+            )
+            pd.DataFrame({"rank_ic": [0.1, -0.1]}).to_parquet(
+                backtest_root / "zero" / "ic.parquet", index=False
+            )
             context = ModelContext(
                 run_id="r",
                 alpha_id="a",
                 feature_columns=["pos", "neg", "missing", "nan", "zero"],
                 label_column="y",
                 artifact_dir=Path("tmp"),
-                model_params={"ic_root": str(ic_root), "ic_metric": "rank_ic"},
+                model_params={"backtest_root": str(backtest_root), "ic_metric": "rank_ic"},
                 model_search={},
             )
             model = ICSignEqualWeightAlphaModel()
@@ -2266,20 +2275,33 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
 
     def test_ic_sign_equal_weight_errors_when_no_valid_ic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ic_root = Path(tmp) / "ic"
-            ic_root.mkdir()
-            pd.DataFrame({"rank_ic": [np.nan]}).to_parquet(ic_root / "a.parquet", index=False)
+            backtest_root = Path(tmp) / "backtest"
+            (backtest_root / "a").mkdir(parents=True)
+            pd.DataFrame({"rank_ic": [np.nan]}).to_parquet(backtest_root / "a" / "ic.parquet", index=False)
             context = ModelContext(
                 run_id="r",
                 alpha_id="a",
                 feature_columns=["a", "b"],
                 label_column="y",
                 artifact_dir=Path("tmp"),
-                model_params={"ic_root": str(ic_root), "ic_metric": "rank_ic"},
+                model_params={"backtest_root": str(backtest_root), "ic_metric": "rank_ic"},
                 model_search={},
             )
             with self.assertRaisesRegex(ValueError, "no valid IC signs"):
                 ICSignEqualWeightAlphaModel().fit(pd.DataFrame(), pd.DataFrame(), context)
+
+    def test_ic_sign_equal_weight_rejects_legacy_ic_root(self) -> None:
+        context = ModelContext(
+            run_id="r",
+            alpha_id="a",
+            feature_columns=["a"],
+            label_column="y",
+            artifact_dir=Path("tmp"),
+            model_params={"ic_root": "data/backtest/stock/daily/ic"},
+            model_search={},
+        )
+        with self.assertRaisesRegex(ValueError, "ic_root is removed"):
+            ICSignEqualWeightAlphaModel().fit(pd.DataFrame(), pd.DataFrame(), context)
 
     def test_torch_mlp_smoke_when_installed(self) -> None:
         try:

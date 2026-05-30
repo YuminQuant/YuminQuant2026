@@ -12,7 +12,7 @@ data/factors/_cache/intraday_daily/chn_stock/{year}/{trade_date}.parquet
 data/derived/stock/bar/{bar_size}m/{year}/{trade_date}.parquet
 data/barra/{asset}/daily/CNE6/{year}/{trade_date}.parquet
 data/label/{asset}/{frequency}/{year}/{trade_date}.parquet
-data/backtest/stock/daily/{returns,ic,factor_stats,holdings,industry_weights,barra_exposure,index_group_returns}/
+data/backtest/stock/daily/{factor_id}/{returns,ic,factor_stats,holdings,industry_weights,barra_exposure,index_group_returns}.parquet
 data/strategy/{asset_class}/{strategy_id}/holdings.parquet
 ```
 
@@ -137,13 +137,13 @@ Secondary or tertiary Barra columns such as `DTOP`, `BTOP`, and `Beta` are not i
 Backtest outputs:
 
 ```text
-data/backtest/stock/daily/returns/{factor_id}.parquet
-data/backtest/stock/daily/ic/{factor_id}.parquet
-data/backtest/stock/daily/factor_stats/{factor_id}.parquet
-data/backtest/stock/daily/holdings/{factor_id}.parquet
-data/backtest/stock/daily/industry_weights/{factor_id}.parquet
-data/backtest/stock/daily/barra_exposure/{factor_id}.parquet
-data/backtest/stock/daily/index_group_returns/{factor_id}.parquet
+data/backtest/stock/daily/{factor_id}/returns.parquet
+data/backtest/stock/daily/{factor_id}/ic.parquet
+data/backtest/stock/daily/{factor_id}/factor_stats.parquet
+data/backtest/stock/daily/{factor_id}/holdings.parquet
+data/backtest/stock/daily/{factor_id}/industry_weights.parquet
+data/backtest/stock/daily/{factor_id}/barra_exposure.parquet
+data/backtest/stock/daily/{factor_id}/index_group_returns.parquet
 ```
 
 `holdings` 和 `industry_weights` 只在 `--detail holdings|industry_weights|all` 时写出。多头端点由 `sign(mean(RankIC))` 决定：非负取 `group_N`，负数取 `group_1`。

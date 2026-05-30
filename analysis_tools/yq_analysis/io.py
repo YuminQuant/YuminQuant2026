@@ -19,12 +19,13 @@ def load_backtest_result(root: str | Path, factor_id: str) -> dict[str, pd.DataF
     """
 
     root = Path(root)
+    factor_root = root / factor_id
     return {
-        "returns": _read_optional(root / "returns" / f"{factor_id}.parquet"),
-        "ic": _read_optional(root / "ic" / f"{factor_id}.parquet"),
-        "factor_stats": _read_optional(root / "factor_stats" / f"{factor_id}.parquet"),
-        "barra_exposure": _read_optional(root / "barra_exposure" / f"{factor_id}.parquet"),
-        "index_group_returns": _read_optional(root / "index_group_returns" / f"{factor_id}.parquet"),
+        "returns": _read_optional(factor_root / "returns.parquet"),
+        "ic": _read_optional(factor_root / "ic.parquet"),
+        "factor_stats": _read_optional(factor_root / "factor_stats.parquet"),
+        "barra_exposure": _read_optional(factor_root / "barra_exposure.parquet"),
+        "index_group_returns": _read_optional(factor_root / "index_group_returns.parquet"),
     }
 
 

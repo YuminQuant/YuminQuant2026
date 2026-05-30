@@ -69,7 +69,7 @@ fig = plot_return_summary(
 新版绘图规则 / Updated plot rules:
 
 - 左侧三行依次为累计收益、累计超额收益、指数内 long 侧累计超额收益。
-- 指数内 long 侧来自 `index_group_returns/{factor_id}.parquet`，固定展示 `000300.SH`、`000905.SH`、`000852.SH`；long 侧按全样本 RankIC 均值方向选择 `group_5` 或 `group_1`。
+- 指数内 long 侧来自 `{factor_id}/index_group_returns.parquet`，固定展示 `000300.SH`、`000905.SH`、`000852.SH`；long 侧按全样本 RankIC 均值方向选择 `group_5` 或 `group_1`。
 - 右侧为三行嵌套两列：第一行为年化收益、年化超额收益；第二行为 Barra 暴露和 Barra IC mean；第三行为换手率和 IC 衰减。
 - IC 衰减图读取同一个 `ic` 表中的 `horizon=1..20`，每个 horizon 展示一根 Pearson `IC mean` 柱；RankIC decay 不再计算。最后两根柱追加近似 5d/20d IC：`sum(IC_1..IC_N) / sqrt(N)`，其中 `N=5/20`。
 - Barra 柱状图只在绘图层缩写长名称，例如 `DIVIDEND_YIELD -> DY`、`LIQUIDITY -> LIQ`、`MOMENTUM -> MOM`、`VOLATILITY -> VOL`。
@@ -78,7 +78,7 @@ fig = plot_return_summary(
 Updated plot layout:
 
 - Left column: cumulative return, cumulative excess return, and in-index long-side cumulative excess return.
-- In-index curves come from `index_group_returns/{factor_id}.parquet` and cover `000300.SH`, `000905.SH`, and `000852.SH`. The long side is selected by full-sample mean RankIC: `group_5` when non-negative, `group_1` when negative.
+- In-index curves come from `{factor_id}/index_group_returns.parquet` and cover `000300.SH`, `000905.SH`, and `000852.SH`. The long side is selected by full-sample mean RankIC: `group_5` when non-negative, `group_1` when negative.
 - Right column uses three rows with two subplots per row: annual return and annual excess return; Barra exposure and Barra IC mean; turnover and IC decay.
 - IC decay uses `horizon=1..20` rows from the same `ic` table and plots Pearson IC mean only; RankIC decay is no longer computed. The last two bars append approximate 5d/20d IC as `sum(IC_1..IC_N) / sqrt(N)` for `N=5/20`.
 - Long Barra names are abbreviated only at plot time, for example `DIVIDEND_YIELD -> DY`, `LIQUIDITY -> LIQ`, `MOMENTUM -> MOM`, and `VOLATILITY -> VOL`.
@@ -130,11 +130,11 @@ abs_ir
 `load_backtest_result(root, factor_id)` reads:
 
 ```text
-{root}/returns/{factor_id}.parquet
-{root}/ic/{factor_id}.parquet
-{root}/factor_stats/{factor_id}.parquet
-{root}/barra_exposure/{factor_id}.parquet
-{root}/index_group_returns/{factor_id}.parquet
+{root}/{factor_id}/returns.parquet
+{root}/{factor_id}/ic.parquet
+{root}/{factor_id}/factor_stats.parquet
+{root}/{factor_id}/barra_exposure.parquet
+{root}/{factor_id}/index_group_returns.parquet
 ```
 
 缺失文件返回 `None`，所以也可以只分析收益或只分析 IC。
@@ -143,15 +143,15 @@ Missing files return `None`, so returns-only or IC-only analysis is supported.
 
 新增 backtest 诊断 / New backtest diagnostics:
 
-- `ic/{factor_id}.parquet` 可能同时包含 `horizon=1..20`。这些 horizon 来自同一个 1d label 的横截面序列 shift，而不是不同收益期限 label。`plot_return_summary(..., ic=ic)` 会用这些 horizon 生成 Pearson IC 衰减图，并在最后追加近似 5d/20d IC 柱；`make_backtest_report(...)` 建议只传 `horizon == 1` 的主 IC，避免 observations 把 decay 行一起计入。
-- `index_group_returns/{factor_id}.parquet` 是指数内五分组逐日收益，包含实际收益、指数 benchmark 收益和超额收益。绘图层只取按 RankIC 方向选出的 long 侧，并展示其累计超额收益。
-- `barra_exposure/{factor_id}.parquet` 同时服务 Barra 暴露时间序列和 Barra IC mean 柱状图。
+- `{factor_id}/ic.parquet` 可能同时包含 `horizon=1..20`。这些 horizon 来自同一个 1d label 的横截面序列 shift，而不是不同收益期限 label。`plot_return_summary(..., ic=ic)` 会用这些 horizon 生成 Pearson IC 衰减图，并在最后追加近似 5d/20d IC 柱；`make_backtest_report(...)` 建议只传 `horizon == 1` 的主 IC，避免 observations 把 decay 行一起计入。
+- `{factor_id}/index_group_returns.parquet` 是指数内五分组逐日收益，包含实际收益、指数 benchmark 收益和超额收益。绘图层只取按 RankIC 方向选出的 long 侧，并展示其累计超额收益。
+- `{factor_id}/barra_exposure.parquet` 同时服务 Barra 暴露时间序列和 Barra IC mean 柱状图。
 
 New backtest diagnostics:
 
-- `ic/{factor_id}.parquet` may include `horizon=1..20`. These horizons are shifted cross-sections of the same 1d label, not different return-horizon labels. `plot_return_summary(..., ic=ic)` uses them for Pearson IC decay and appends approximate 5d/20d IC bars. For `make_backtest_report(...)`, pass only the main `horizon == 1` rows so the IC observation count is not inflated by decay rows.
-- `index_group_returns/{factor_id}.parquet` stores daily in-index five-group returns, benchmark returns, and excess returns. The plotting layer selects the long side from mean RankIC direction and plots cumulative excess return.
-- `barra_exposure/{factor_id}.parquet` feeds both the Barra exposure time series and the Barra IC mean bar chart.
+- `{factor_id}/ic.parquet` may include `horizon=1..20`. These horizons are shifted cross-sections of the same 1d label, not different return-horizon labels. `plot_return_summary(..., ic=ic)` uses them for Pearson IC decay and appends approximate 5d/20d IC bars. For `make_backtest_report(...)`, pass only the main `horizon == 1` rows so the IC observation count is not inflated by decay rows.
+- `{factor_id}/index_group_returns.parquet` stores daily in-index five-group returns, benchmark returns, and excess returns. The plotting layer selects the long side from mean RankIC direction and plots cumulative excess return.
+- `{factor_id}/barra_exposure.parquet` feeds both the Barra exposure time series and the Barra IC mean bar chart.
 
 Barra exposure rows use the `metric` column:
 

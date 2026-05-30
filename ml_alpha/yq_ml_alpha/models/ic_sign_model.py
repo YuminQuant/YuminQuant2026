@@ -21,19 +21,19 @@ class ICSignEqualWeightAlphaModel(AlphaModel):
 
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
         params = _params(context.model_params)
-        ic_root = _project_path(params["ic_root"])
+        backtest_root = _project_path(params["backtest_root"])
         metric = str(params["ic_metric"])
-        cache_key = (str(ic_root.resolve()), metric, tuple(context.feature_columns))
+        cache_key = (str(backtest_root.resolve()), metric, tuple(context.feature_columns))
         signs = _SIGN_CACHE.get(cache_key)
         if signs is None:
             signs = {}
             for feature in context.feature_columns:
-                sign = _feature_ic_sign(ic_root / f"{feature}.parquet", metric)
+                sign = _feature_ic_sign(backtest_root / feature / "ic.parquet", metric)
                 if sign is not None:
                     signs[feature] = sign
             _SIGN_CACHE[cache_key] = dict(signs)
         if not signs:
-            raise ValueError(f"no valid IC signs found under {ic_root} using metric={metric}")
+            raise ValueError(f"no valid IC signs found under {backtest_root} using metric={metric}")
         self.signs = dict(signs)
 
     def predict(self, data: pd.DataFrame, context: ModelContext) -> pd.Series:
@@ -50,7 +50,9 @@ class ICSignEqualWeightAlphaModel(AlphaModel):
 
 def _params(raw: dict[str, Any]) -> dict[str, Any]:
     params = dict(raw)
-    params["ic_root"] = params.get("ic_root", "data/backtest/stock/daily/ic")
+    if "ic_root" in params:
+        raise ValueError("ic_root is removed; use backtest_root pointing to data/backtest/stock/daily")
+    params["backtest_root"] = params.get("backtest_root", "data/backtest/stock/daily")
     params["ic_metric"] = str(params.get("ic_metric", "rank_ic"))
     return params
 

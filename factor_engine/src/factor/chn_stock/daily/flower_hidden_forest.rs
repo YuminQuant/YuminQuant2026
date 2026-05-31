@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rayon::prelude::*;
-
 use crate::core::{
     AssetClass, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue, Frequency,
     IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec, Lookback,
@@ -150,8 +148,6 @@ impl Factor for StockDailyFlowerHiddenForest {
 
             let rows = grouped
                 .into_iter()
-                .collect::<Vec<_>>()
-                .into_par_iter()
                 .map(|(ts_code, mut indices)| {
                     indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
                     let metrics = regression_metrics_from_rows(&indices, &close, &volume);
@@ -587,43 +583,27 @@ fn mean_abs_column_corr_complete(
     if valid_count < 2 {
         return vec![None; column_count];
     }
-    let chunk_starts = (0..valid_count)
-        .step_by(CORR_BLOCK_SIZE)
-        .collect::<Vec<_>>();
-    let partials = chunk_starts
-        .into_par_iter()
-        .map(|start| {
-            let end = (start + CORR_BLOCK_SIZE).min(valid_count);
-            let mut sums = vec![0.0; valid_count];
-            let mut counts = vec![0usize; valid_count];
-            for left_idx in start..end {
-                for right_idx in (left_idx + 1)..valid_count {
-                    let dot = normalized[left_idx]
-                        .iter()
-                        .zip(&normalized[right_idx])
-                        .map(|(left, right)| left * right)
-                        .sum::<f64>();
-                    let corr = dot / row_count as f64;
-                    if corr.is_nan() {
-                        continue;
-                    }
-                    let abs_corr = corr.abs();
-                    sums[left_idx] += abs_corr;
-                    sums[right_idx] += abs_corr;
-                    counts[left_idx] += 1;
-                    counts[right_idx] += 1;
-                }
-            }
-            (sums, counts)
-        })
-        .collect::<Vec<_>>();
-
     let mut sums = vec![0.0; valid_count];
     let mut counts = vec![0usize; valid_count];
-    for (partial_sums, partial_counts) in partials {
-        for idx in 0..valid_count {
-            sums[idx] += partial_sums[idx];
-            counts[idx] += partial_counts[idx];
+    for start in (0..valid_count).step_by(CORR_BLOCK_SIZE) {
+        let end = (start + CORR_BLOCK_SIZE).min(valid_count);
+        for left_idx in start..end {
+            for right_idx in (left_idx + 1)..valid_count {
+                let dot = normalized[left_idx]
+                    .iter()
+                    .zip(&normalized[right_idx])
+                    .map(|(left, right)| left * right)
+                    .sum::<f64>();
+                let corr = dot / row_count as f64;
+                if corr.is_nan() {
+                    continue;
+                }
+                let abs_corr = corr.abs();
+                sums[left_idx] += abs_corr;
+                sums[right_idx] += abs_corr;
+                counts[left_idx] += 1;
+                counts[right_idx] += 1;
+            }
         }
     }
 

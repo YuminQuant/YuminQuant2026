@@ -1,7 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
 
-use rayon::prelude::*;
-
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
     FactorValue, Frequency, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawRequest,
@@ -456,14 +454,14 @@ fn synergy_spread_from_matrix(
     }
     let signals = synergy_signals(matrix, daily_pre_close);
     let bits = signal_bitsets(&signals, time_count - DIFF_WINDOW, code_count);
+    let peers_by_code = top_synergy_peers_for_all(&bits, code_count);
     (0..code_count)
-        .into_par_iter()
         .map(|code_idx| {
             let self_return = clean(daily_returns[code_idx])?;
-            let peers = top_synergy_peers(&bits, code_idx, code_count);
             let peer_mean = mean(
-                peers
-                    .into_iter()
+                peers_by_code[code_idx]
+                    .iter()
+                    .copied()
                     .filter_map(|peer_idx| clean(daily_returns[peer_idx])),
             )?;
             Some(self_return - peer_mean)
@@ -595,14 +593,20 @@ fn signal_bitsets(
     SignalBitsets { word_count, bits }
 }
 
-fn top_synergy_peers(bits: &SignalBitsets, target_idx: usize, code_count: usize) -> Vec<usize> {
-    let mut counts = Vec::with_capacity(code_count.saturating_sub(1));
-    for peer_idx in 0..code_count {
-        if peer_idx == target_idx {
-            continue;
+fn top_synergy_peers_for_all(bits: &SignalBitsets, code_count: usize) -> Vec<Vec<usize>> {
+    let mut counts = vec![Vec::<(usize, u32)>::new(); code_count];
+    for left_idx in 0..code_count {
+        for right_idx in (left_idx + 1)..code_count {
+            let count = pair_synergy_count(bits, left_idx, right_idx);
+            counts[left_idx].push((right_idx, count));
+            counts[right_idx].push((left_idx, count));
         }
-        counts.push((peer_idx, pair_synergy_count(bits, target_idx, peer_idx)));
     }
+
+    counts.into_iter().map(top_synergy_peers).collect()
+}
+
+fn top_synergy_peers(mut counts: Vec<(usize, u32)>) -> Vec<usize> {
     if counts.is_empty() {
         return Vec::new();
     }
@@ -1033,7 +1037,9 @@ mod tests {
         let bits = signal_bitsets(&signals, 2, 3);
         assert_eq!(pair_synergy_count(&bits, 0, 1), 3);
         assert_eq!(pair_synergy_count(&bits, 0, 2), 3);
-        assert_eq!(top_synergy_peers(&bits, 0, 3), vec![1, 2]);
+        let peers = top_synergy_peers_for_all(&bits, 3);
+        assert_eq!(peers[0], vec![1, 2]);
+        assert_eq!(peers[1], vec![0, 2]);
     }
 
     #[test]

@@ -1,11 +1,20 @@
+from __future__ import annotations
+
 import argparse
+import os
 from pathlib import Path
 
-import pandas as pd
-from pandas.api.types import is_numeric_dtype
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 
 
 KEY_COLUMNS = {"trade_date", "ts_code", "trade_time"}
+KEY_COLUMN_TYPES = {
+    "trade_date": pa.int32(),
+    "ts_code": pa.string(),
+    "trade_time": pa.string(),
+}
 
 
 def parse_date(value: str, name: str) -> int:
@@ -26,25 +35,62 @@ def iter_date_parquet_files(root: Path, start_date: int | None, end_date: int | 
         yield path, trade_date
 
 
-def cast_file(path: Path, dry_run: bool) -> tuple[list[str], list[str]]:
-    df = pd.read_parquet(path)
-    value_columns = [column for column in df.columns if column not in KEY_COLUMNS]
-    invalid = [
-        column for column in value_columns if not is_numeric_dtype(df[column].dtype)
-    ]
-    if invalid:
-        columns = ", ".join(invalid)
-        raise ValueError(f"{path}: non-numeric value columns cannot be cast: {columns}")
+def column_needs_cast(source_type: pa.DataType, target_type: pa.DataType) -> bool:
+    return not source_type.equals(target_type)
 
-    changed = [
-        column
-        for column in value_columns
-        if str(df[column].dtype).lower() != "float32"
-    ]
+
+def cast_array(array: pa.ChunkedArray, target_type: pa.DataType, column: str) -> pa.ChunkedArray:
+    try:
+        return pc.cast(array, target_type, safe=False)
+    except pa.ArrowInvalid as exc:
+        raise ValueError(f"cannot cast column {column!r} to {target_type}: {exc}") from exc
+
+
+def cast_file(path: Path, dry_run: bool) -> tuple[list[str], list[str]]:
+    table = pq.read_table(path)
+    value_columns = [column for column in table.column_names if column not in KEY_COLUMNS]
+    changed: list[str] = []
+    arrays: list[pa.ChunkedArray] = []
+    fields: list[pa.Field] = []
+
+    for field in table.schema:
+        column = field.name
+        source_type = field.type
+        array = table[column]
+        target_type: pa.DataType | None = None
+
+        if column in KEY_COLUMN_TYPES:
+            target_type = KEY_COLUMN_TYPES[column]
+        elif column in value_columns:
+            if not (
+                pa.types.is_integer(source_type)
+                or pa.types.is_floating(source_type)
+                or pa.types.is_decimal(source_type)
+            ):
+                raise ValueError(
+                    f"{path}: non-numeric value column cannot be cast: {column}"
+                )
+            target_type = pa.float32()
+
+        if target_type is not None and column_needs_cast(source_type, target_type):
+            changed.append(column)
+            if not dry_run:
+                array = cast_array(array, target_type, column)
+                field = pa.field(column, target_type, nullable=field.nullable)
+
+        arrays.append(array)
+        fields.append(field)
+
     if not dry_run and changed:
-        for column in changed:
-            df[column] = df[column].astype("float32")
-        df.to_parquet(path, index=False)
+        output = pa.Table.from_arrays(arrays, schema=pa.schema(fields))
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp_cast_columns")
+        try:
+            pq.write_table(output, tmp, compression="snappy")
+            tmp.replace(path)
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
     return value_columns, changed
 
 
@@ -52,7 +98,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Cast formal output parquet value columns to float32. "
-            "Key columns trade_date/ts_code/trade_time are preserved."
+            "Key columns are normalized to Rust-compatible Arrow types: "
+            "trade_date=int32 and ts_code/trade_time=utf8."
         )
     )
     parser.add_argument(
@@ -107,7 +154,7 @@ def main() -> int:
     print(f"files_scanned: {scanned}")
     print(f"files_touched: {touched}")
     print(f"value_columns_seen: {value_column_count}")
-    print(f"value_columns_cast: {changed_column_count}")
+    print(f"columns_cast: {changed_column_count}")
     return 0
 
 

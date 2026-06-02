@@ -2,7 +2,15 @@
 
 YuminQuant 是一个本地 parquet 数据湖、Rust 因子/回测/策略引擎，以及 Python ML alpha 和分析工具的组合项目。数据默认存放在本机 `data/` 下，不进入 Git。
 
+<p align="center">
+  <img src="docs/logo_v1.png" alt="YuminQuant logo" width="360">
+</p>
+
 YuminQuant is a local parquet-based quantitative research workspace. It combines Python data downloaders, a Rust factor/backtest/strategy engine, Python ML alpha tooling, and Python analysis helpers. The local `data/` directory is generated data and is intentionally not tracked by Git.
+
+## License
+
+YuminQuant is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
 
 ## 模块总览 / Module Map
 

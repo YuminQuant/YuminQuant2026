@@ -20,7 +20,7 @@ lot_size = 100
 model_root = "data/models"
 
 [strategy]
-signal_id = "ml_alpha_xgb"
+signal_id = "mdl_000006"
 signal_root = "data/models"
 rebalance_days = 5
 top_n = 20

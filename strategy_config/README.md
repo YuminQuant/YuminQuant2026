@@ -7,7 +7,6 @@
 ```text
 strategy_config/
   stock/
-    ml_xgb_top20.toml
     strategy_001.toml
   future/
     ag_sma_20.toml
@@ -17,7 +16,7 @@ strategy_config/
 ## 运行 / Run
 
 ```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\stock\ml_xgb_top20.toml
+cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\stock\strategy_001.toml
 cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\future\ag_sma_20.toml
 cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\future\ag_sma_20.toml --detail true
 ```
@@ -30,8 +29,8 @@ CLI `--detail true|false` overrides `[output].detail`.
 
 ```toml
 asset_class = "stock"                  # stock | future | multi_asset
-strategy_id = "ml_xgb_top20"            # output folder name
-strategy_class = "stock::top_signal_equal_weight"
+strategy_id = "strategy_001"            # output folder name
+strategy_class = "stock::strategy_001"
 
 start_date = 20260105
 end_date = 20260424
@@ -59,8 +58,8 @@ lot_size = 100
 
 ```toml
 asset_class = "stock"
-strategy_id = "ml_xgb_top20"
-strategy_class = "stock::top_signal_equal_weight"
+strategy_id = "strategy_001"
+strategy_class = "stock::strategy_001"
 
 start_date = 20140401
 end_date = 20260424
@@ -81,7 +80,7 @@ lot_size = 100
 model_root = "data/models"
 
 [strategy]
-signal_id = "ml_alpha_xgb"
+signal_id = "mdl_000006"
 signal_root = "data/models"
 rebalance_days = 5
 top_n = 20

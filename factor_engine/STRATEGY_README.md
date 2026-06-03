@@ -7,7 +7,7 @@ The strategy module is for concrete trading simulations. It differs from `backte
 ## 快速运行 / Quick Runs
 
 ```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\stock\ml_xgb_top20.toml
+cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\stock\strategy_001.toml
 cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\future\ag_sma_20.toml
 cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\future\ag_sma_20.toml --detail true
 ```
@@ -75,12 +75,12 @@ Positive `order_quantity` buys or goes long; negative values sell or go short. S
 配置 / Config:
 
 ```text
-strategy_config/stock/ml_xgb_top20.toml
+strategy_config/stock/strategy_001.toml
 ```
 
 逻辑 / Logic:
 
-- 读取 `data/models/{year}/{date}.parquet` 中的 `signal_id`，例如 `ml_alpha_xgb`。
+- 读取 `data/models/{year}/{date}.parquet` 中的 `signal_id`，例如 `mdl_000006`。
 - 每 `rebalance_days` 个交易日调仓一次。
 - 剔除 `.BJ`，选择因子值最高的 `top_n` 只股票。
 - 按账户权益等权目标市值下单。
@@ -90,7 +90,7 @@ It reads a signal column, rebalances every `rebalance_days`, selects top `top_n`
 Run:
 
 ```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\stock\ml_xgb_top20.toml
+cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\stock\strategy_001.toml
 ```
 
 ### 期货 SMA

@@ -154,6 +154,21 @@ data/backtest/stock/daily/{factor_id}/index_group_returns.parquet
 
 IC decay uses the selected 1d label only. For each factor date, the engine computes Pearson IC against the same 1d future-return cross-section shifted by 0..19 trading days and writes `horizon=1..20`. RankIC is computed only for `horizon=1` to keep decay diagnostics lighter.
 
+### External Parquet Schema Repair
+
+If an external `--factor-root` fails in backtest with Arrow schema errors such
+as `LargeUtf8`, `trade_date is i64`, or non-`float32` value columns, normalize
+the files in place with:
+
+```powershell
+python scripts\cast_output_value_columns.py --root C:\Users\Devin\Desktop\Pred --start-date 20110101 --end-date 20260424 --dry-run
+python scripts\cast_output_value_columns.py --root C:\Users\Devin\Desktop\Pred --start-date 20110101 --end-date 20260424
+```
+
+The script scans parquet files by date, casts key columns to Rust-compatible
+types (`trade_date=int32`, `ts_code/trade_time=utf8`), casts numeric output
+columns to `float32`, and atomically replaces only files that need changes.
+
 ## Strategy Run / 事件驱动策略
 
 ```powershell

@@ -23,7 +23,7 @@ env/
 
 # Notebooks and scratch files
 .ipynb_checkpoints/
-test.ipynb
+*.ipynb
 
 # Editor / OS files
 .vscode/

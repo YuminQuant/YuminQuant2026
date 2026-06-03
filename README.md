@@ -135,6 +135,19 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset
 --date-batch-size 120
 ```
 
+External factor parquet schema repair:
+
+Use this when an external factor/model root fails in Rust backtest with Arrow
+schema errors such as `LargeUtf8`, `trade_date is i64`, or value columns stored
+as `float64`. The script rewrites only files whose schema needs casting. It
+normalizes key columns to Rust-compatible Arrow types and casts numeric output
+columns to `float32`.
+
+```powershell
+python scripts\cast_output_value_columns.py --root C:\Users\Devin\Desktop\Pred --start-date 20110101 --end-date 20260424 --dry-run
+python scripts\cast_output_value_columns.py --root C:\Users\Devin\Desktop\Pred --start-date 20110101 --end-date 20260424
+```
+
 ### ML Alpha
 
 不需要安装包时，进入 `ml_alpha` 目录运行：

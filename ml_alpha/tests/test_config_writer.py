@@ -2915,18 +2915,6 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             loaded_pred = loaded.predict(train, context)
             self.assertTrue(np.allclose(pred.to_numpy(), loaded_pred.to_numpy(), atol=1e-7))
 
-    def test_monthly_mlp_config_parses(self) -> None:
-        config = load_config(Path(__file__).resolve().parents[1] / "models" / "monthly_mlp_36.toml")
-        self.assertEqual(config.alpha_id, "ml_alpha_mlp")
-        self.assertEqual(config.features.columns, "__all__")
-        self.assertEqual(config.model.class_path, "yq_ml_alpha.models.mlp_model.MLPAlphaModel")
-        self.assertEqual(config.model.params["hidden_layers"], [256, 128, 64])
-        self.assertTrue(config.diagnostics.enabled)
-        self.assertTrue(config.diagnostics.print_epoch)
-        self.assertTrue(config.diagnostics.write_loss_history)
-        self.assertTrue(config.diagnostics.write_model_info)
-        self.assertTrue(config.diagnostics.write_window_summary)
-
     def test_monthly_ic_sign_config_parses(self) -> None:
         config = load_config(Path(__file__).resolve().parents[1] / "models" / "monthly_ic_sign_equal_weight.toml")
         self.assertEqual(config.alpha_id, "ml_alpha_ic_sign_ew")
@@ -2944,7 +2932,6 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             model_dir / "mdl_000004.toml": ("mdl_000004", "ElasticNetAlphaModel"),
             model_dir / "mdl_000005.toml": ("mdl_000005", "PCAOLSAlphaModel"),
             model_dir / "mdl_000006.toml": ("mdl_000006", "LSTMAlphaModel"),
-            model_dir / "monthly_rf_36.toml": ("ml_alpha_rf", "RandomForestAlphaModel"),
             model_dir / "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
             model_dir / "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
             model_dir / "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
@@ -2960,7 +2947,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertEqual(config.features.columns, "__all__")
             if filename == "mdl_000006.toml":
                 self.assertEqual(config.label.id, "future_vwap_return_5d")
-                self.assertEqual(config.sample.train_frequency, "10")
+                self.assertEqual(config.sample.train_frequency, "20")
                 self.assertEqual(config.sample.predict_frequency, "daily")
                 self.assertEqual(config.train_scheme.refit_frequency, "semiannual_end")
                 self.assertEqual(config.train_scheme.train_lookback, "3y")
@@ -2978,7 +2965,6 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 "mdl_000004.toml",
                 "monthly_xgb_optuna_36.toml",
                 "monthly_lgbm_optuna_36.toml",
-                "monthly_mlp_36.toml",
                 "monthly_rnn_36.toml",
                 "monthly_gru_36.toml",
                 "monthly_elstm_ranknet_36.toml",

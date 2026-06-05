@@ -227,7 +227,7 @@ pub fn intraday_raw_auxiliary_requirements(
     }
     vec![IntradayDailyRawAuxiliaryRequest::new(
         DataRequest::new(DatasetId::StockMinute1m, &["open", "close"]),
-        RAW_WINDOW_DAYS.saturating_sub(1),
+        0,
     )]
 }
 

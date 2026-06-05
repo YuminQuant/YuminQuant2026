@@ -55,7 +55,8 @@ pub use intraday_daily::{
 };
 pub use intraday_raw::{
     clean as clean_intraday_value, intraday_daily_raw_series_to_table, mean as intraday_mean,
-    pct_change_at, quantile_linear, stock_minute_raw_spec, RequestedRawIds,
+    pct_change_at, quantile_linear, stock_derived_bar_raw_spec, stock_minute_raw_spec,
+    RequestedRawIds,
 };
 pub use minute::{compute_minute_by_instrument, MinuteSeries};
 pub use panel::{DailyPanel, PanelColumn};

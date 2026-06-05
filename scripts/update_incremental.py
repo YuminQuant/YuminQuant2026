@@ -1,5 +1,6 @@
 import argparse
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 
@@ -280,6 +281,45 @@ def update_stock_minute(args, logger):
     )
 
 
+def update_stock_derived_bar(args, logger):
+    start_date = args.start_date or DEFAULT_START_DATES["stock"]
+    end_date = args.end_date or bj_today()
+    sizes = [
+        int(value)
+        for value in args.derived_bar_sizes.split(",")
+        if value.strip()
+    ]
+    manifest = os.path.join(project_root, "factor_engine", "Cargo.toml")
+    for bar_size in sizes:
+        run_task(
+            logger,
+            f"stock_derived_bar_{bar_size}m",
+            lambda bar_size=bar_size: subprocess.run(
+                [
+                    "cargo",
+                    "run",
+                    "--release",
+                    "--manifest-path",
+                    manifest,
+                    "--",
+                    "derive-bar",
+                    "--asset",
+                    "stock",
+                    "--source",
+                    "minute",
+                    "--bar-size",
+                    str(bar_size),
+                    "--start-date",
+                    start_date,
+                    "--end-date",
+                    end_date,
+                ],
+                cwd=project_root,
+                check=True,
+            ),
+        )
+
+
 def update_stock_financial(args, logger):
     start_date = args.start_date or bj_today()
     end_date = args.end_date or bj_today()
@@ -391,6 +431,7 @@ GROUPS = {
     "stock_daily": update_stock_daily,
     "stock_trade_filter": update_stock_trade_filter,
     "stock_minute": update_stock_minute,
+    "stock_derived_bar": update_stock_derived_bar,
     "stock_financial": update_stock_financial,
     "stock_dividend": update_stock_dividend,
     "stock_alt": update_stock_alt,
@@ -406,6 +447,7 @@ DEFAULT_GROUPS = [
     "stock_static",
     "stock_daily",
     "stock_minute",
+    "stock_derived_bar",
     "future_static",
     "future_daily",
     "future_minute",
@@ -447,6 +489,11 @@ def parse_args():
         "--rebuild",
         action="store_true",
         help="Rebuild supported groups from scratch for the requested date range, e.g. stock_dividend.",
+    )
+    parser.add_argument(
+        "--derived-bar-sizes",
+        default="5,15",
+        help="Comma-separated stock derived minute bar sizes for --groups stock_derived_bar; default: 5,15.",
     )
     return parser.parse_args()
 

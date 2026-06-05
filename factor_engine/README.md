@@ -48,7 +48,10 @@ Important flags:
 --refresh-minute-cache
 ```
 
-## Derived Data / Derived Bars
+## 派生数据 / Derived Data
+
+`derive-bar` 会基于原始 1min 数据生成可复用的股票分钟派生 bar。该命令会并行处理多个交易日；
+`--date-batch-size N` 用于控制并发日期数量，默认值为 `20`。
 
 `derive-bar` builds reusable stock minute bars from raw 1m data. It processes
 multiple trading days in parallel; `--date-batch-size N` controls concurrent
@@ -59,9 +62,46 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-bar --ass
 cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 120 --start-date 20260424 --end-date 20260424 --date-batch-size 20
 ```
 
+股票分钟 `bar_size` 必须是 240 的因子，且满足 `1 < bar_size <= 120`；其中
+`120` 表示上午一根 bar、下午一根 bar。输出路径为
+`data/derived/stock/bar/{bar_size}m/{year}/{trade_date}.parquet`。
+
 Allowed stock minute `bar_size` values are divisors of 240 with
 `1 < bar_size <= 120`; `120` means one morning bar and one afternoon bar.
 Output is written to `data/derived/stock/bar/{bar_size}m/{year}/{trade_date}.parquet`.
+
+Rust 因子 raw provider 可以通过通用 `stock.derived.bar` 数据源和 `bar_size`
+请求派生 bar。已迁移的 5m provider 会优先读取 `data/derived/stock/bar/5m`；
+如果派生文件缺失、必要列缺失或结构不兼容，则输出 warning 并回退到原始 1min 数据。
+fallback 以交易日为粒度，因此同一个交易日不会混合使用派生 bar 和原始分钟数据。
+
+Rust factor raw providers can request derived bars through the generic
+`stock.derived.bar` data source with a `bar_size`. Migrated 5m providers prefer
+`data/derived/stock/bar/5m` and fall back to raw 1m data with a warning when the
+derived file or required columns are unavailable. The fallback is date-level, so
+a single trading day is not mixed between derived and raw minute sources.
+
+当前已迁移到派生 bar 的 provider 只包含标准、非重叠 5m 家族：`patv`、DBZQ
+`volume_price_distribution` / `significant_up_volume_return_distribution`、GFZQ
+`str_5min_ma*`，以及 `umr_minute_volatility` / `umr_minute_skewness`。需要
+`09:30` 锚点、交错子网格、rolling 5m、3m bar 或完整 1min 矩阵的因子仍然保留在原始
+1min 数据路径上。
+
+Current derived-bar migrated providers are the standard non-overlapping 5m
+families: `patv`, DBZQ `volume_price_distribution` /
+`significant_up_volume_return_distribution`, GFZQ `str_5min_ma*`, and
+`umr_minute_volatility` / `umr_minute_skewness`. Anchored, staggered, rolling, 3m,
+or full 1m-matrix factors intentionally remain on raw 1m data.
+
+增量更新 workflow 会在 `stock_minute` 后接入 `stock_derived_bar`，默认生成 5m/15m bar：
+
+The incremental workflow includes `stock_derived_bar` after `stock_minute` and
+builds 5m/15m bars by default:
+
+```powershell
+python scripts\update_incremental.py --groups stock_minute stock_derived_bar --start-date 20260424 --end-date 20260424
+python scripts\update_incremental.py --groups stock_derived_bar --derived-bar-sizes 5,15 --start-date 20260424 --end-date 20260424
+```
 
 ## Barra 与 Label / Barra And Labels
 

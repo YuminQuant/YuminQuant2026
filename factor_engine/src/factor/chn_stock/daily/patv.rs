@@ -1,18 +1,19 @@
 use std::collections::BTreeMap;
 
 use crate::core::{
-    AssetClass, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue, Frequency,
-    IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec, Lookback,
+    AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+    FactorValue, Frequency, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawRequest,
+    IntradayDailyRawSeries, IntradayDailyRawSpec, Lookback,
 };
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::stock_daily_ops::is_bj_stock;
-use crate::factor::common::{clean_intraday_value, stock_minute_raw_spec};
+use crate::factor::common::{clean_intraday_value, stock_derived_bar_raw_spec};
 use crate::factor::Factor;
 use crate::operators::{cs_pctrank, ts_ewm};
 
 const VERSION: &str = "0.1.0";
-const RAW_VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.2.0";
 const RAW_ID: &str = "daily_patv_raw";
 const PROVIDER_KEY: &str = "patv_provider";
 
@@ -56,6 +57,20 @@ impl Factor for StockDailyPatv {
         PROVIDER_KEY.to_string()
     }
 
+    fn intraday_raw_auxiliary_requirements(
+        &self,
+        raw_ids: &[String],
+    ) -> Vec<IntradayDailyRawAuxiliaryRequest> {
+        if raw_ids.iter().any(|raw_id| raw_id == RAW_ID) {
+            vec![IntradayDailyRawAuxiliaryRequest::new(
+                DataRequest::new(DatasetId::StockMinute1m, &["vol"]),
+                0,
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn minute_compute_many(
         &self,
         raw_ids: &[String],
@@ -68,33 +83,25 @@ impl Factor for StockDailyPatv {
 
         let mut values = Vec::<FactorValue>::new();
         for trade_date in &context.target_dates {
-            let Some(table) = data.minute(crate::core::DatasetId::StockMinute1m, *trade_date)
-            else {
-                continue;
-            };
-            let ts_codes = table.required_utf8("ts_code")?;
-            let trade_times = table.required_utf8("trade_time")?;
-            let volume = table.required_f64_cast("vol")?;
-
-            let mut stock_days = BTreeMap::<String, MinuteStockDay>::new();
-            for idx in 0..table.len {
-                let Some(ts_code) = ts_codes[idx].clone() else {
-                    continue;
-                };
-                if is_bj_stock(&ts_code) {
-                    continue;
+            let daily_values = match data.derived_bar(FIVE_MINUTE_BAR_SIZE, *trade_date) {
+                Some(table) => match daily_raw_values_from_derived_bar(table) {
+                    Ok(Some(values)) => values,
+                    Ok(None) | Err(_) => {
+                        eprintln!(
+                            "warning: patv falling back to 1m minute data for {trade_date}; derived 5m bar is incomplete or incompatible"
+                        );
+                        daily_raw_values_from_minute(data, *trade_date)?
+                    }
+                },
+                None => {
+                    eprintln!(
+                        "warning: patv falling back to 1m minute data for {trade_date}; derived 5m bar is missing"
+                    );
+                    daily_raw_values_from_minute(data, *trade_date)?
                 }
-                let Some(trade_time) = trade_times[idx].as_deref() else {
-                    continue;
-                };
-                let Some(minute_idx) = minute_index(trade_time) else {
-                    continue;
-                };
-                stock_days.entry(ts_code).or_default().volume[minute_idx] =
-                    clean_intraday_value(volume[idx]).filter(|value| *value >= 0.0);
-            }
+            };
 
-            for (ts_code, value) in daily_raw_values(&stock_days) {
+            for (ts_code, value) in daily_values {
                 values.push(FactorValue {
                     key: FactorRowKey::Daily {
                         trade_date: *trade_date,
@@ -139,7 +146,7 @@ struct ComputedStockDay {
 }
 
 fn raw_spec() -> IntradayDailyRawSpec {
-    stock_minute_raw_spec(RAW_ID, RAW_VERSION, &["vol"], 1)
+    stock_derived_bar_raw_spec(RAW_ID, RAW_VERSION, FIVE_MINUTE_BAR_SIZE, &["volume"], 1)
 }
 
 fn tags() -> Vec<String> {
@@ -169,11 +176,111 @@ fn daily_raw_values(stock_days: &BTreeMap<String, MinuteStockDay>) -> Vec<(Strin
         .collect()
 }
 
+fn daily_raw_values_from_minute(
+    data: &DataPool,
+    trade_date: i32,
+) -> Result<Vec<(String, Option<f64>)>> {
+    let Some(table) = data.minute(DatasetId::StockMinute1m, trade_date) else {
+        return Ok(Vec::new());
+    };
+    let ts_codes = table.required_utf8("ts_code")?;
+    let trade_times = table.required_utf8("trade_time")?;
+    let volume = table.required_f64_cast("vol")?;
+
+    let mut stock_days = BTreeMap::<String, MinuteStockDay>::new();
+    for idx in 0..table.len {
+        let Some(ts_code) = ts_codes[idx].clone() else {
+            continue;
+        };
+        if is_bj_stock(&ts_code) {
+            continue;
+        }
+        let Some(trade_time) = trade_times[idx].as_deref() else {
+            continue;
+        };
+        let Some(minute_idx) = minute_index(trade_time) else {
+            continue;
+        };
+        stock_days.entry(ts_code).or_default().volume[minute_idx] =
+            clean_intraday_value(volume[idx]).filter(|value| *value >= 0.0);
+    }
+    Ok(daily_raw_values(&stock_days))
+}
+
+fn daily_raw_values_from_derived_bar(
+    table: &crate::data::Table,
+) -> Result<Option<Vec<(String, Option<f64>)>>> {
+    if !["ts_code", "bar_index", "minute_count", "volume"]
+        .iter()
+        .all(|column| table.columns.contains_key(*column))
+    {
+        return Ok(None);
+    }
+    let ts_codes = table.required_utf8("ts_code")?;
+    let bar_indices = table.required_i32("bar_index")?;
+    let minute_counts = table.required_i32("minute_count")?;
+    let volume = table.required_f64_cast("volume")?;
+    let mut by_stock = BTreeMap::<String, [Option<f64>; FIVE_MINUTE_BARS]>::new();
+    for idx in 0..table.len {
+        let Some(ts_code) = ts_codes[idx].clone() else {
+            continue;
+        };
+        if is_bj_stock(&ts_code) {
+            continue;
+        }
+        let Some(bar_index) = bar_indices[idx].and_then(|value| usize::try_from(value).ok()) else {
+            continue;
+        };
+        if bar_index >= FIVE_MINUTE_BARS || minute_counts[idx] != Some(FIVE_MINUTE_BAR_SIZE as i32)
+        {
+            continue;
+        }
+        by_stock.entry(ts_code).or_insert([None; FIVE_MINUTE_BARS])[bar_index] =
+            clean_intraday_value(volume[idx]).filter(|value| *value >= 0.0);
+    }
+    let computed = computed_stock_days_from_volumes(&by_stock);
+    let ranks = slot_volume_share_ranks(&computed);
+    Ok(Some(
+        computed
+            .into_iter()
+            .zip(ranks)
+            .map(|(day, ranks)| (day.ts_code, patv_raw(&ranks)))
+            .collect(),
+    ))
+}
+
 fn computed_stock_days(stock_days: &BTreeMap<String, MinuteStockDay>) -> Vec<ComputedStockDay> {
     stock_days
         .iter()
         .map(|(ts_code, day)| {
             let volumes = five_minute_volumes(day);
+            let total_volume = volumes
+                .iter()
+                .filter_map(|value| clean_intraday_value(*value))
+                .sum::<f64>();
+            let mut volume_share = [None; FIVE_MINUTE_BARS];
+            if volumes.iter().all(Option::is_some) && total_volume > EPS {
+                for idx in 0..FIVE_MINUTE_BARS {
+                    volume_share[idx] = clean_intraday_value(volumes[idx]).and_then(|value| {
+                        let share = value / total_volume;
+                        share.is_finite().then_some(share)
+                    });
+                }
+            }
+            ComputedStockDay {
+                ts_code: ts_code.clone(),
+                volume_share,
+            }
+        })
+        .collect()
+}
+
+fn computed_stock_days_from_volumes(
+    stock_days: &BTreeMap<String, [Option<f64>; FIVE_MINUTE_BARS]>,
+) -> Vec<ComputedStockDay> {
+    stock_days
+        .iter()
+        .map(|(ts_code, volumes)| {
             let total_volume = volumes
                 .iter()
                 .filter_map(|value| clean_intraday_value(*value))
@@ -386,5 +493,20 @@ mod tests {
         assert_eq!(spec.id, "patv");
         assert!(spec.tags.iter().any(|tag| tag == "PATV"));
         assert_eq!(spec.lookback.trading_days, EMA_SPAN - 1);
+    }
+
+    #[test]
+    fn patv_raw_spec_prefers_derived_bar_5m_with_minute_fallback() {
+        let raw = raw_spec();
+        assert_eq!(raw.source_dataset, DatasetId::StockDerivedBar);
+        assert_eq!(raw.source_bar_size, Some(FIVE_MINUTE_BAR_SIZE));
+        assert_eq!(raw.columns, vec!["volume"]);
+
+        let factor = StockDailyPatv;
+        let aux = factor.intraday_raw_auxiliary_requirements(&[RAW_ID.to_string()]);
+        assert_eq!(aux.len(), 1);
+        assert_eq!(aux[0].request.dataset, DatasetId::StockMinute1m);
+        assert_eq!(aux[0].request.bar_size, None);
+        assert_eq!(aux[0].request.columns, vec!["vol"]);
     }
 }

@@ -2,21 +2,21 @@ use std::collections::BTreeMap;
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
-    FactorValue, Frequency, IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec,
-    Lookback,
+    FactorValue, Frequency, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawRequest,
+    IntradayDailyRawSeries, IntradayDailyRawSpec, Lookback,
 };
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::stock_daily_ops::neutralize_size_sector;
 use crate::factor::common::{
-    clean_intraday_value, quantile_linear, stock_minute_raw_spec, RequestedRawIds,
+    clean_intraday_value, quantile_linear, stock_derived_bar_raw_spec, RequestedRawIds,
 };
 use crate::factor::common::{DailyPanel, PanelColumn};
 use crate::operators::{cs_zscore, ts_mean};
 
 pub const PROVIDER_KEY: &str = "dbzq_intraday_volume_distribution_provider";
-pub const RAW_VERSION: &str = "0.1.1";
-pub const VERSION: &str = "0.1.2";
+pub const RAW_VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.1.3";
 
 pub const V_P_SKEWNESS_RAW_ID: &str = "daily_dbzq_v_p_skewness";
 pub const V_P_REVERSAL_RAW_ID: &str = "daily_dbzq_v_p_reversal";
@@ -27,6 +27,7 @@ const RAW_WINDOW_DAYS: usize = 1;
 const ROLLING_WINDOW: usize = 20;
 const MIN_PERIODS: usize = 1;
 const FIVE_MINUTE_BARS: usize = 48;
+const FIVE_MINUTE_BAR_SIZE: usize = 5;
 const MIN_PRICE_BARS: usize = 10;
 const PRICE_BIN_COUNT: usize = 10;
 const EPS: f64 = f64::EPSILON;
@@ -90,12 +91,26 @@ pub fn raw_ids_for_kind(kind: DbzqIntradayVolumeDistributionKind) -> &'static [&
 }
 
 pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
-    stock_minute_raw_spec(
+    stock_derived_bar_raw_spec(
         raw_id,
         RAW_VERSION,
-        &["open", "close", "vol"],
+        FIVE_MINUTE_BAR_SIZE,
+        &["open", "close", "volume"],
         RAW_WINDOW_DAYS,
     )
+}
+
+pub fn intraday_raw_auxiliary_requirements(
+    raw_ids: &[String],
+) -> Vec<IntradayDailyRawAuxiliaryRequest> {
+    let requested = RequestedRawIds::new(raw_ids, &all_raw_ids());
+    if requested.is_empty() {
+        return Vec::new();
+    }
+    vec![IntradayDailyRawAuxiliaryRequest::new(
+        DataRequest::new(DatasetId::StockMinute1m, &["open", "close", "vol"]),
+        RAW_WINDOW_DAYS.saturating_sub(1),
+    )]
 }
 
 pub fn raw_specs_for_kind(kind: DbzqIntradayVolumeDistributionKind) -> Vec<IntradayDailyRawSpec> {
@@ -157,31 +172,25 @@ pub fn minute_compute_many(
         .collect::<BTreeMap<_, _>>();
 
     for trade_date in &context.target_dates {
-        let Some(table) = data.minute(DatasetId::StockMinute1m, *trade_date) else {
-            continue;
-        };
-        let ts_codes = table.required_utf8("ts_code")?;
-        let trade_times = table.required_utf8("trade_time")?;
-        let open = table.required_f64_cast("open")?;
-        let close = table.required_f64_cast("close")?;
-        let volume = table.required_f64_cast("vol")?;
-
-        let mut grouped = BTreeMap::<String, Vec<usize>>::new();
-        for idx in 0..table.len {
-            let Some(ts_code) = ts_codes[idx].clone() else {
-                continue;
-            };
-            if trade_times[idx].is_none() {
-                continue;
+        let stats_by_stock = match data.derived_bar(FIVE_MINUTE_BAR_SIZE, *trade_date) {
+            Some(table) => match stats_by_stock_from_derived_bar(table, &requested) {
+                Ok(Some(values)) => values,
+                Ok(None) | Err(_) => {
+                    eprintln!(
+                        "warning: dbzq intraday volume distribution falling back to 1m minute data for {trade_date}; derived 5m bar is incomplete or incompatible"
+                    );
+                    stats_by_stock_from_minute(data, *trade_date, &requested)?
+                }
+            },
+            None => {
+                eprintln!(
+                    "warning: dbzq intraday volume distribution falling back to 1m minute data for {trade_date}; derived 5m bar is missing"
+                );
+                stats_by_stock_from_minute(data, *trade_date, &requested)?
             }
-            grouped.entry(ts_code).or_default().push(idx);
-        }
+        };
 
-        for (ts_code, mut indices) in grouped {
-            indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
-            let bars =
-                five_minute_bars_from_indices(&indices, &trade_times, &open, &close, &volume);
-            let stats = daily_stats(&bars, &requested);
+        for (ts_code, stats) in stats_by_stock {
             let key = FactorRowKey::Daily {
                 trade_date: *trade_date,
                 ts_code,
@@ -369,11 +378,11 @@ fn tags(kind: DbzqIntradayVolumeDistributionKind) -> Vec<String> {
 fn description(def: DbzqIntradayVolumeDistributionFactorDef) -> String {
     match def.kind {
         DbzqIntradayVolumeDistributionKind::VolumePrice => format!(
-            "{} composites intraday 5-minute close volume-at-price skewness and POC reversal raws from 1-minute bars, then z-scores subfactors and neutralizes by Barra SIZE and SW sector; it does not depend on derived 5-minute parquet bars.",
+            "{} composites intraday 5-minute close volume-at-price skewness and POC reversal raws, preferring derived 5-minute bars with 1-minute fallback, then z-scores subfactors and neutralizes by Barra SIZE and SW sector.",
             def.name
         ),
         DbzqIntradayVolumeDistributionKind::SignificantUpVolumeReturn => format!(
-            "{} composites significant-up 5-minute return-volume raws from 1-minute bars, then z-scores subfactors and neutralizes by Barra SIZE and SW sector; it does not depend on derived 5-minute parquet bars.",
+            "{} composites significant-up 5-minute return-volume raws, preferring derived 5-minute bars with 1-minute fallback, then z-scores subfactors and neutralizes by Barra SIZE and SW sector.",
             def.name
         ),
     }
@@ -399,6 +408,102 @@ fn push_requested(
             value,
         });
     }
+}
+
+fn stats_by_stock_from_minute(
+    data: &DataPool,
+    trade_date: i32,
+    requested: &RequestedRawIds<'_>,
+) -> Result<BTreeMap<String, DailyStats>> {
+    let Some(table) = data.minute(DatasetId::StockMinute1m, trade_date) else {
+        return Ok(BTreeMap::new());
+    };
+    let ts_codes = table.required_utf8("ts_code")?;
+    let trade_times = table.required_utf8("trade_time")?;
+    let open = table.required_f64_cast("open")?;
+    let close = table.required_f64_cast("close")?;
+    let volume = table.required_f64_cast("vol")?;
+
+    let mut grouped = BTreeMap::<String, Vec<usize>>::new();
+    for idx in 0..table.len {
+        let Some(ts_code) = ts_codes[idx].clone() else {
+            continue;
+        };
+        if trade_times[idx].is_none() {
+            continue;
+        }
+        grouped.entry(ts_code).or_default().push(idx);
+    }
+
+    let mut output = BTreeMap::new();
+    for (ts_code, mut indices) in grouped {
+        indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
+        let bars = five_minute_bars_from_indices(&indices, &trade_times, &open, &close, &volume);
+        output.insert(ts_code, daily_stats(&bars, requested));
+    }
+    Ok(output)
+}
+
+fn stats_by_stock_from_derived_bar(
+    table: &crate::data::Table,
+    requested: &RequestedRawIds<'_>,
+) -> Result<Option<BTreeMap<String, DailyStats>>> {
+    if ![
+        "ts_code",
+        "bar_index",
+        "minute_count",
+        "open",
+        "close",
+        "volume",
+    ]
+    .iter()
+    .all(|column| table.columns.contains_key(*column))
+    {
+        return Ok(None);
+    }
+    let ts_codes = table.required_utf8("ts_code")?;
+    let bar_indices = table.required_i32("bar_index")?;
+    let minute_counts = table.required_i32("minute_count")?;
+    let open = table.required_f64_cast("open")?;
+    let close = table.required_f64_cast("close")?;
+    let volume = table.required_f64_cast("volume")?;
+
+    let mut by_stock = BTreeMap::<String, [Option<FiveMinuteBar>; FIVE_MINUTE_BARS]>::new();
+    for idx in 0..table.len {
+        let Some(ts_code) = ts_codes[idx].clone() else {
+            continue;
+        };
+        let Some(bar_index) = bar_indices[idx].and_then(|value| usize::try_from(value).ok()) else {
+            continue;
+        };
+        if bar_index >= FIVE_MINUTE_BARS || minute_counts[idx] != Some(FIVE_MINUTE_BAR_SIZE as i32)
+        {
+            continue;
+        }
+        let (Some(open), Some(close), Some(volume)) = (
+            clean_positive(open[idx]),
+            clean_positive(close[idx]),
+            clean_nonnegative(volume[idx]),
+        ) else {
+            continue;
+        };
+        by_stock.entry(ts_code).or_insert([None; FIVE_MINUTE_BARS])[bar_index] =
+            Some(FiveMinuteBar {
+                open,
+                close,
+                volume,
+            });
+    }
+
+    Ok(Some(
+        by_stock
+            .into_iter()
+            .map(|(ts_code, bars)| {
+                let bars = bars.into_iter().flatten().collect::<Vec<_>>();
+                (ts_code, daily_stats(&bars, requested))
+            })
+            .collect(),
+    ))
 }
 
 fn five_minute_bars_from_indices(
@@ -897,6 +1002,19 @@ mod tests {
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
         assert!(spec
             .description
-            .contains("does not depend on derived 5-minute parquet bars"));
+            .contains("preferring derived 5-minute bars with 1-minute fallback"));
+    }
+
+    #[test]
+    fn dbzq_volume_distribution_raw_spec_prefers_derived_bar_5m() {
+        let spec = raw_spec(V_P_SKEWNESS_RAW_ID);
+        assert_eq!(spec.source_dataset, DatasetId::StockDerivedBar);
+        assert_eq!(spec.source_bar_size, Some(FIVE_MINUTE_BAR_SIZE));
+        assert_eq!(spec.columns, vec!["open", "close", "volume"]);
+
+        let aux = intraday_raw_auxiliary_requirements(&[V_P_SKEWNESS_RAW_ID.to_string()]);
+        assert_eq!(aux.len(), 1);
+        assert_eq!(aux[0].request.dataset, DatasetId::StockMinute1m);
+        assert_eq!(aux[0].request.columns, vec!["open", "close", "vol"]);
     }
 }

@@ -51,6 +51,25 @@ pub fn stock_minute_raw_spec(
         version: version.to_string(),
         asset_class: AssetClass::Stock,
         source_dataset: DatasetId::StockMinute1m,
+        source_bar_size: None,
+        columns: columns.iter().map(|value| (*value).to_string()).collect(),
+        window_days,
+    }
+}
+
+pub fn stock_derived_bar_raw_spec(
+    raw_id: &str,
+    version: &str,
+    bar_size: usize,
+    columns: &[&str],
+    window_days: usize,
+) -> IntradayDailyRawSpec {
+    IntradayDailyRawSpec {
+        raw_id: raw_id.to_string(),
+        version: version.to_string(),
+        asset_class: AssetClass::Stock,
+        source_dataset: DatasetId::StockDerivedBar,
+        source_bar_size: Some(bar_size),
         columns: columns.iter().map(|value| (*value).to_string()).collect(),
         window_days,
     }

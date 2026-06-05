@@ -12,7 +12,7 @@ pub struct DataPool {
     daily_panels: HashMap<DatasetId, DailyPanel>,
     index_daily: HashMap<String, Table>,
     index_daily_panels: HashMap<String, DailyPanel>,
-    minute: HashMap<(DatasetId, i32), Table>,
+    minute: HashMap<(DatasetId, Option<usize>, i32), Table>,
     intraday_daily_raw: Option<Table>,
     intraday_daily_raw_panel: Option<DailyPanel>,
 }
@@ -33,11 +33,13 @@ impl DataPool {
         context: &FactorContext,
         disclosure_cache: &mut DisclosureTableCache,
     ) -> Result<Self> {
-        let mut grouped: HashMap<(DatasetId, Option<String>), (BTreeSet<String>, Option<usize>)> =
-            HashMap::new();
+        let mut grouped: HashMap<
+            (DatasetId, Option<String>, Option<usize>),
+            (BTreeSet<String>, Option<usize>),
+        > = HashMap::new();
         for request in requests {
             let entry = grouped
-                .entry((request.dataset, request.entity_id.clone()))
+                .entry((request.dataset, request.entity_id.clone(), request.bar_size))
                 .or_default();
             entry.0.extend(request.columns.iter().cloned());
             entry.1 = match (entry.1, request.financial_quarters) {
@@ -48,7 +50,7 @@ impl DataPool {
         }
 
         let mut pool = Self::default();
-        for ((dataset, entity_id), (columns, financial_quarters)) in grouped {
+        for ((dataset, entity_id, bar_size), (columns, financial_quarters)) in grouped {
             let columns = columns.into_iter().collect::<Vec<_>>();
             if dataset == DatasetId::IndexDaily {
                 let ts_code = entity_id.ok_or_else(|| {
@@ -141,9 +143,15 @@ impl DataPool {
                     } else {
                         &context.target_dates
                     };
-                    let tables = loader.load_minute_by_date(dataset, &columns, target_dates)?;
+                    let tables = if dataset == DatasetId::StockDerivedBar {
+                        let bar_size = bar_size
+                            .ok_or_else(|| err("stock.derived.bar request requires bar_size"))?;
+                        loader.load_stock_derived_bar_by_date(bar_size, &columns, target_dates)?
+                    } else {
+                        loader.load_minute_by_date(dataset, &columns, target_dates)?
+                    };
                     for (date, table) in tables {
-                        pool.minute.insert((dataset, date), table);
+                        pool.minute.insert((dataset, bar_size, date), table);
                     }
                 }
             }
@@ -170,7 +178,12 @@ impl DataPool {
     }
 
     pub fn minute(&self, dataset: DatasetId, trade_date: i32) -> Option<&Table> {
-        self.minute.get(&(dataset, trade_date))
+        self.minute.get(&(dataset, None, trade_date))
+    }
+
+    pub fn derived_bar(&self, bar_size: usize, trade_date: i32) -> Option<&Table> {
+        self.minute
+            .get(&(DatasetId::StockDerivedBar, Some(bar_size), trade_date))
     }
 
     pub fn extend(&mut self, other: Self) {
@@ -227,7 +240,10 @@ impl DataPool {
             daily_panels: HashMap::new(),
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),
-            minute,
+            minute: minute
+                .into_iter()
+                .map(|((dataset, date), table)| ((dataset, None, date), table))
+                .collect(),
             intraday_daily_raw: None,
             intraday_daily_raw_panel: None,
         }

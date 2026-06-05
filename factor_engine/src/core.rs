@@ -71,6 +71,7 @@ pub enum DatasetId {
     StockDividend,
     StockAnalystReport,
     StockMinute1m,
+    StockDerivedBar,
     StockSwClassification,
     StockCiClassification,
     StockBarraDaily,
@@ -93,6 +94,7 @@ impl DatasetId {
             | Self::StockDividend
             | Self::StockAnalystReport
             | Self::StockMinute1m
+            | Self::StockDerivedBar
             | Self::StockSwClassification
             | Self::StockCiClassification
             | Self::StockBarraDaily
@@ -118,7 +120,9 @@ impl DatasetId {
             | Self::StockBarraDaily
             | Self::IndexDaily
             | Self::FutureDaily => Frequency::Daily,
-            Self::StockMinute1m | Self::FutureMinute1m => Frequency::Minute1,
+            Self::StockMinute1m | Self::StockDerivedBar | Self::FutureMinute1m => {
+                Frequency::Minute1
+            }
         }
     }
 
@@ -135,6 +139,7 @@ impl DatasetId {
             Self::StockDividend => "stock.dividend",
             Self::StockAnalystReport => "stock.analyst_report",
             Self::StockMinute1m => "stock.minute.1m",
+            Self::StockDerivedBar => "stock.derived.bar",
             Self::StockSwClassification => "stock.sw_classification",
             Self::StockCiClassification => "stock.ci_classification",
             Self::StockBarraDaily => "stock.barra.daily",
@@ -149,6 +154,7 @@ impl DatasetId {
 pub struct DataRequest {
     pub dataset: DatasetId,
     pub entity_id: Option<String>,
+    pub bar_size: Option<usize>,
     pub columns: Vec<String>,
     pub financial_quarters: Option<usize>,
 }
@@ -158,6 +164,17 @@ impl DataRequest {
         Self {
             dataset,
             entity_id: None,
+            bar_size: None,
+            columns: columns.iter().map(|value| value.to_string()).collect(),
+            financial_quarters: None,
+        }
+    }
+
+    pub fn stock_derived_bar(bar_size: usize, columns: &[&str]) -> Self {
+        Self {
+            dataset: DatasetId::StockDerivedBar,
+            entity_id: None,
+            bar_size: Some(bar_size),
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
         }
@@ -167,6 +184,7 @@ impl DataRequest {
         Self {
             dataset: DatasetId::IndexDaily,
             entity_id: Some(ts_code.to_string()),
+            bar_size: None,
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
         }
@@ -176,6 +194,7 @@ impl DataRequest {
         Self {
             dataset,
             entity_id: None,
+            bar_size: None,
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: Some(quarters),
         }
@@ -203,6 +222,7 @@ pub struct IntradayDailyRawSpec {
     pub version: String,
     pub asset_class: AssetClass,
     pub source_dataset: DatasetId,
+    pub source_bar_size: Option<usize>,
     pub columns: Vec<String>,
     pub window_days: usize,
 }
@@ -226,6 +246,21 @@ impl IntradayDailyRawAuxiliaryRequest {
 pub struct IntradayDailyRawSeries {
     pub spec: IntradayDailyRawSpec,
     pub values: Vec<FactorValue>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stock_derived_bar_request_carries_bar_size() {
+        let request = DataRequest::stock_derived_bar(5, &["close", "volume"]);
+        assert_eq!(request.dataset, DatasetId::StockDerivedBar);
+        assert_eq!(request.bar_size, Some(5));
+        assert_eq!(request.columns, vec!["close", "volume"]);
+        assert_eq!(request.dataset.frequency(), Frequency::Minute1);
+        assert_eq!(request.dataset.asset_class(), AssetClass::Stock);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]

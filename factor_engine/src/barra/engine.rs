@@ -499,7 +499,7 @@ where
 {
     let mut grouped: HashMap<_, (BTreeSet<String>, Option<usize>)> = HashMap::new();
     for request in requests {
-        let key = (request.dataset, request.entity_id.clone());
+        let key = (request.dataset, request.entity_id.clone(), request.bar_size);
         let entry = grouped.entry(key).or_default();
         entry.0.extend(request.columns.into_iter());
         entry.1 = match (entry.1, request.financial_quarters) {
@@ -511,9 +511,10 @@ where
     let mut merged = grouped
         .into_iter()
         .map(
-            |((dataset, entity_id), (columns, financial_quarters))| DataRequest {
+            |((dataset, entity_id, bar_size), (columns, financial_quarters))| DataRequest {
                 dataset,
                 entity_id,
+                bar_size,
                 columns: columns.into_iter().collect(),
                 financial_quarters,
             },
@@ -523,6 +524,7 @@ where
         left.dataset
             .cmp(&right.dataset)
             .then_with(|| left.entity_id.cmp(&right.entity_id))
+            .then_with(|| left.bar_size.cmp(&right.bar_size))
     });
     merged
 }

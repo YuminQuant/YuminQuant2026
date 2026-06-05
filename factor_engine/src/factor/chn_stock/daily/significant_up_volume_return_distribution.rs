@@ -1,4 +1,6 @@
-use crate::core::{FactorContext, FactorSeries, FactorSpec, IntradayDailyRawSpec};
+use crate::core::{
+    FactorContext, FactorSeries, FactorSpec, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawSpec,
+};
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::dbzq_intraday_volume_distribution::{
@@ -30,6 +32,13 @@ impl Factor for StockDailySignificantUpVolumeReturnDistribution {
 
     fn intraday_raw_provider_key(&self, _raw_id: &str) -> String {
         dbzq_intraday_volume_distribution::PROVIDER_KEY.to_string()
+    }
+
+    fn intraday_raw_auxiliary_requirements(
+        &self,
+        raw_ids: &[String],
+    ) -> Vec<IntradayDailyRawAuxiliaryRequest> {
+        dbzq_intraday_volume_distribution::intraday_raw_auxiliary_requirements(raw_ids)
     }
 
     fn minute_compute_many(

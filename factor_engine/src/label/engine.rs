@@ -582,6 +582,7 @@ fn materialize_label_intraday_raw_table(
         let batch_requests = vec![DataRequest {
             dataset: source_dataset,
             entity_id: None,
+            bar_size: None,
             columns,
             financial_quarters: None,
         }];
@@ -773,7 +774,7 @@ where
 {
     let mut grouped: HashMap<_, BTreeSet<String>> = HashMap::new();
     for request in requests {
-        let key = (request.dataset, request.entity_id.clone());
+        let key = (request.dataset, request.entity_id.clone(), request.bar_size);
         grouped
             .entry(key)
             .or_default()
@@ -781,9 +782,10 @@ where
     }
     let mut merged = grouped
         .into_iter()
-        .map(|((dataset, entity_id), columns)| DataRequest {
+        .map(|((dataset, entity_id, bar_size), columns)| DataRequest {
             dataset,
             entity_id,
+            bar_size,
             columns: columns.into_iter().collect(),
             financial_quarters: None,
         })
@@ -792,6 +794,7 @@ where
         left.dataset
             .cmp(&right.dataset)
             .then_with(|| left.entity_id.cmp(&right.entity_id))
+            .then_with(|| left.bar_size.cmp(&right.bar_size))
     });
     merged
 }

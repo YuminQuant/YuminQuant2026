@@ -95,6 +95,7 @@ fn raw_spec() -> IntradayDailyRawSpec {
         version: RAW_VERSION.to_string(),
         asset_class: AssetClass::Stock,
         source_dataset: DatasetId::StockMinute1m,
+        source_bar_size: None,
         columns: vec!["amount".to_string(), "vol".to_string()],
         window_days: 1,
     }

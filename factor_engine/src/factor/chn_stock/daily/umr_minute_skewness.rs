@@ -2,20 +2,23 @@ use std::collections::BTreeMap;
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
-    FactorValue, Frequency, IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec,
-    Lookback,
+    FactorValue, Frequency, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawRequest,
+    IntradayDailyRawSeries, IntradayDailyRawSpec, Lookback,
 };
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::umr;
 use crate::factor::common::{
-    clean_intraday_value, intraday_time_in_range, stock_minute_raw_spec, DailyPanel, PanelColumn,
+    clean_intraday_value, intraday_time_in_range, stock_derived_bar_raw_spec, DailyPanel,
+    PanelColumn,
 };
 use crate::factor::Factor;
 
 const RAW_ID: &str = "daily_umr_minute_skewness";
-const RAW_VERSION: &str = "0.1.0";
+const RAW_VERSION: &str = "0.2.0";
 const VERSION: &str = "0.1.0";
+const FIVE_MINUTE_BAR_SIZE: usize = 5;
+const FIVE_MINUTE_BARS: usize = 48;
 
 pub struct StockDailyUmrMinuteSkewness;
 
@@ -24,7 +27,7 @@ pub fn create() -> Box<dyn Factor> {
 }
 
 fn raw_spec() -> IntradayDailyRawSpec {
-    stock_minute_raw_spec(RAW_ID, RAW_VERSION, &["close"], 1)
+    stock_derived_bar_raw_spec(RAW_ID, RAW_VERSION, FIVE_MINUTE_BAR_SIZE, &["close"], 1)
 }
 
 impl Factor for StockDailyUmrMinuteSkewness {
@@ -61,6 +64,20 @@ impl Factor for StockDailyUmrMinuteSkewness {
         vec![raw_spec()]
     }
 
+    fn intraday_raw_auxiliary_requirements(
+        &self,
+        raw_ids: &[String],
+    ) -> Vec<IntradayDailyRawAuxiliaryRequest> {
+        if raw_ids.iter().any(|raw_id| raw_id == RAW_ID) {
+            vec![IntradayDailyRawAuxiliaryRequest::new(
+                DataRequest::new(DatasetId::StockMinute1m, &["close"]),
+                0,
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn minute_compute(
         &self,
         raw_id: &str,
@@ -72,34 +89,30 @@ impl Factor for StockDailyUmrMinuteSkewness {
         }
         let mut values = Vec::new();
         for trade_date in &context.target_dates {
-            let Some(table) = data.minute(DatasetId::StockMinute1m, *trade_date) else {
-                continue;
-            };
-            let ts_codes = table.required_utf8("ts_code")?;
-            let trade_times = table.required_utf8("trade_time")?;
-            let close = table.required_f64_cast("close")?;
-
-            let mut grouped = BTreeMap::<String, Vec<usize>>::new();
-            for idx in 0..table.len {
-                let Some(ts_code) = ts_codes[idx].clone() else {
-                    continue;
-                };
-                let Some(trade_time) = trade_times[idx].as_deref() else {
-                    continue;
-                };
-                if intraday_time_in_range(trade_time, "09:31:00", "15:00:00") {
-                    grouped.entry(ts_code).or_default().push(idx);
+            let daily_values = match data.derived_bar(FIVE_MINUTE_BAR_SIZE, *trade_date) {
+                Some(table) => match raw_values_from_derived_bar(table) {
+                    Ok(Some(values)) => values,
+                    Ok(None) | Err(_) => {
+                        eprintln!(
+                            "warning: umr_minute_skewness falling back to 1m minute data for {trade_date}; derived 5m bar is incomplete or incompatible"
+                        );
+                        raw_values_from_minute(data, *trade_date)?
+                    }
+                },
+                None => {
+                    eprintln!(
+                        "warning: umr_minute_skewness falling back to 1m minute data for {trade_date}; derived 5m bar is missing"
+                    );
+                    raw_values_from_minute(data, *trade_date)?
                 }
-            }
-
-            for (ts_code, mut indices) in grouped {
-                indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
+            };
+            for (ts_code, value) in daily_values {
                 values.push(FactorValue {
                     key: FactorRowKey::Daily {
                         trade_date: *trade_date,
                         ts_code,
                     },
-                    value: five_minute_return_skew(&indices, &close),
+                    value,
                 });
             }
         }
@@ -148,6 +161,74 @@ fn excess_return_from_raw_panel(panel: &DailyPanel, data: &DataPool) -> Result<P
     stock_ret.zip_binary(&market_ret, umr::subtract)
 }
 
+fn raw_values_from_minute(data: &DataPool, trade_date: i32) -> Result<Vec<(String, Option<f64>)>> {
+    let Some(table) = data.minute(DatasetId::StockMinute1m, trade_date) else {
+        return Ok(Vec::new());
+    };
+    let ts_codes = table.required_utf8("ts_code")?;
+    let trade_times = table.required_utf8("trade_time")?;
+    let close = table.required_f64_cast("close")?;
+
+    let mut grouped = BTreeMap::<String, Vec<usize>>::new();
+    for idx in 0..table.len {
+        let Some(ts_code) = ts_codes[idx].clone() else {
+            continue;
+        };
+        let Some(trade_time) = trade_times[idx].as_deref() else {
+            continue;
+        };
+        if intraday_time_in_range(trade_time, "09:31:00", "15:00:00") {
+            grouped.entry(ts_code).or_default().push(idx);
+        }
+    }
+
+    let mut output = Vec::new();
+    for (ts_code, mut indices) in grouped {
+        indices.sort_by(|left, right| trade_times[*left].cmp(&trade_times[*right]));
+        output.push((ts_code, five_minute_return_skew(&indices, &close)));
+    }
+    Ok(output)
+}
+
+fn raw_values_from_derived_bar(
+    table: &crate::data::Table,
+) -> Result<Option<Vec<(String, Option<f64>)>>> {
+    if !["ts_code", "bar_index", "minute_count", "close"]
+        .iter()
+        .all(|column| table.columns.contains_key(*column))
+    {
+        return Ok(None);
+    }
+    let ts_codes = table.required_utf8("ts_code")?;
+    let bar_indices = table.required_i32("bar_index")?;
+    let minute_counts = table.required_i32("minute_count")?;
+    let close = table.required_f64_cast("close")?;
+    let mut grouped = BTreeMap::<String, [Option<f64>; FIVE_MINUTE_BARS]>::new();
+    for idx in 0..table.len {
+        let Some(ts_code) = ts_codes[idx].clone() else {
+            continue;
+        };
+        let Some(slot) = bar_indices[idx].and_then(|value| usize::try_from(value).ok()) else {
+            continue;
+        };
+        if slot >= FIVE_MINUTE_BARS || minute_counts[idx] != Some(FIVE_MINUTE_BAR_SIZE as i32) {
+            continue;
+        }
+        grouped.entry(ts_code).or_insert([None; FIVE_MINUTE_BARS])[slot] =
+            clean_intraday_value(close[idx]);
+    }
+    Ok(Some(
+        grouped
+            .into_iter()
+            .map(|(ts_code, closes)| {
+                let returns = five_minute_close_returns_from_bar_closes(&closes);
+                let value = (returns.len() >= 2).then(|| skew(&returns)).flatten();
+                (ts_code, value)
+            })
+            .collect(),
+    ))
+}
+
 fn five_minute_return_skew(indices: &[usize], close: &[Option<f64>]) -> Option<f64> {
     let returns = five_minute_close_returns(indices, close);
     if returns.len() < 2 {
@@ -161,6 +242,21 @@ fn five_minute_close_returns(indices: &[usize], close: &[Option<f64>]) -> Vec<f6
         .iter()
         .enumerate()
         .filter_map(|(pos, idx)| ((pos + 1) % 5 == 0).then(|| clean_intraday_value(close[*idx]))?)
+        .collect::<Vec<_>>();
+    let mut returns = Vec::new();
+    for pair in bar_closes.windows(2) {
+        let (prev, curr) = (pair[0], pair[1]);
+        if prev.abs() > f64::EPSILON {
+            returns.push(curr / prev - 1.0);
+        }
+    }
+    returns
+}
+
+fn five_minute_close_returns_from_bar_closes(closes: &[Option<f64>; FIVE_MINUTE_BARS]) -> Vec<f64> {
+    let bar_closes = closes
+        .iter()
+        .filter_map(|value| clean_intraday_value(*value))
         .collect::<Vec<_>>();
     let mut returns = Vec::new();
     for pair in bar_closes.windows(2) {
@@ -201,5 +297,19 @@ mod tests {
     #[test]
     fn skew_rejects_constant_returns() {
         assert_eq!(skew(&[1.0, 1.0, 1.0]), None);
+    }
+
+    #[test]
+    fn umr_minute_skewness_raw_spec_prefers_derived_bar_5m() {
+        let spec = raw_spec();
+        assert_eq!(spec.source_dataset, DatasetId::StockDerivedBar);
+        assert_eq!(spec.source_bar_size, Some(FIVE_MINUTE_BAR_SIZE));
+        assert_eq!(spec.columns, vec!["close"]);
+
+        let factor = StockDailyUmrMinuteSkewness;
+        let aux = factor.intraday_raw_auxiliary_requirements(&[RAW_ID.to_string()]);
+        assert_eq!(aux.len(), 1);
+        assert_eq!(aux[0].request.dataset, DatasetId::StockMinute1m);
+        assert_eq!(aux[0].request.columns, vec!["close"]);
     }
 }

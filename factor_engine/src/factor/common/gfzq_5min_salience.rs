@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
-    FactorValue, Frequency, IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec,
-    Lookback,
+    FactorValue, Frequency, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawRequest,
+    IntradayDailyRawSeries, IntradayDailyRawSpec, Lookback,
 };
 use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
@@ -12,16 +12,17 @@ use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector
 use crate::factor::common::stock_daily_raw_ids::{
     STR_5MIN_MA_ACTIVE_RAW_ID, STR_5MIN_MA_RAW_ID, STR_5MIN_MA_SIGMA_RAW_ID,
 };
-use crate::factor::common::{clean_intraday_value, stock_minute_raw_spec};
+use crate::factor::common::{clean_intraday_value, stock_derived_bar_raw_spec};
 use crate::factor::IntradayRawMaterializeMode;
 use crate::operators::cs_zscore;
 
 pub const VERSION: &str = "0.1.0";
-pub const RAW_VERSION: &str = "0.1.0";
+pub const RAW_VERSION: &str = "0.2.0";
 pub const PROVIDER_KEY: &str = "gfzq_5min_salience_provider";
 
 const RAW_WINDOW_DAYS: usize = 5;
 const FIVE_MINUTE_SLOTS: usize = 48;
+const FIVE_MINUTE_BAR_SIZE: usize = 5;
 const MORNING_START_MINUTE: i32 = 9 * 60 + 31;
 const MORNING_END_MINUTE: i32 = 11 * 60 + 30;
 const AFTERNOON_START_MINUTE: i32 = 13 * 60 + 1;
@@ -79,7 +80,13 @@ pub fn all_raw_ids() -> [&'static str; 3] {
 }
 
 pub fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
-    stock_minute_raw_spec(raw_id, RAW_VERSION, &["open", "close"], RAW_WINDOW_DAYS)
+    stock_derived_bar_raw_spec(
+        raw_id,
+        RAW_VERSION,
+        FIVE_MINUTE_BAR_SIZE,
+        &["open", "close"],
+        RAW_WINDOW_DAYS,
+    )
 }
 
 pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
@@ -160,6 +167,15 @@ macro_rules! define_gfzq_5min_salience_factor {
                 $crate::factor::common::gfzq_5min_salience::intraday_raw_materialize_mode()
             }
 
+            fn intraday_raw_auxiliary_requirements(
+                &self,
+                raw_ids: &[String],
+            ) -> Vec<$crate::core::IntradayDailyRawAuxiliaryRequest> {
+                $crate::factor::common::gfzq_5min_salience::intraday_raw_auxiliary_requirements(
+                    raw_ids,
+                )
+            }
+
             fn initial_intraday_raw_state(
                 &self,
                 _raw_ids: &[String],
@@ -198,6 +214,23 @@ pub fn initial_intraday_raw_state() -> Box<dyn Any + Send> {
     Box::new(Gfzq5minSalienceState::default())
 }
 
+pub fn intraday_raw_auxiliary_requirements(
+    raw_ids: &[String],
+) -> Vec<IntradayDailyRawAuxiliaryRequest> {
+    let requested = raw_ids
+        .iter()
+        .map(String::as_str)
+        .filter(|raw_id| all_raw_ids().contains(raw_id))
+        .collect::<BTreeSet<_>>();
+    if requested.is_empty() {
+        return Vec::new();
+    }
+    vec![IntradayDailyRawAuxiliaryRequest::new(
+        DataRequest::new(DatasetId::StockMinute1m, &["open", "close"]),
+        RAW_WINDOW_DAYS.saturating_sub(1),
+    )]
+}
+
 pub fn minute_compute_stateful_many(
     raw_ids: &[String],
     context: &FactorContext,
@@ -221,9 +254,28 @@ pub fn minute_compute_stateful_many(
         .first()
         .ok_or_else(|| err("GFZQ 5min salience raw requires one target date"))?;
 
-    let day_state = match data.minute(DatasetId::StockMinute1m, trade_date) {
-        Some(table) => day_state_from_table(table)?,
-        None => DayState::default(),
+    let day_state = match data.derived_bar(FIVE_MINUTE_BAR_SIZE, trade_date) {
+        Some(table) => match day_state_from_derived_bar(table) {
+            Ok(Some(day_state)) => day_state,
+            Ok(None) | Err(_) => {
+                eprintln!(
+                    "warning: gfzq 5min salience falling back to 1m minute data for {trade_date}; derived 5m bar is incomplete or incompatible"
+                );
+                match data.minute(DatasetId::StockMinute1m, trade_date) {
+                    Some(table) => day_state_from_table(table)?,
+                    None => DayState::default(),
+                }
+            }
+        },
+        None => {
+            eprintln!(
+                "warning: gfzq 5min salience falling back to 1m minute data for {trade_date}; derived 5m bar is missing"
+            );
+            match data.minute(DatasetId::StockMinute1m, trade_date) {
+                Some(table) => day_state_from_table(table)?,
+                None => DayState::default(),
+            }
+        }
     };
     let current_stocks = day_state.by_stock.keys().cloned().collect::<Vec<_>>();
     state.push_day(day_state);
@@ -277,6 +329,51 @@ impl Gfzq5minSalienceState {
 
 fn day_state_from_table(table: &Table) -> Result<DayState> {
     let returns_by_stock = five_minute_returns_by_stock(table)?;
+    day_state_from_returns(returns_by_stock)
+}
+
+fn day_state_from_derived_bar(table: &Table) -> Result<Option<DayState>> {
+    if !["ts_code", "bar_index", "minute_count", "open", "close"]
+        .iter()
+        .all(|column| table.columns.contains_key(*column))
+    {
+        return Ok(None);
+    }
+    let ts_codes = table.required_utf8("ts_code")?;
+    let bar_indices = table.required_i32("bar_index")?;
+    let minute_counts = table.required_i32("minute_count")?;
+    let open = table.required_f64_cast("open")?;
+    let close = table.required_f64_cast("close")?;
+    let mut returns_by_stock = BTreeMap::<String, [Option<f64>; FIVE_MINUTE_SLOTS]>::new();
+    for idx in 0..table.len {
+        let Some(ts_code) = ts_codes[idx].clone() else {
+            continue;
+        };
+        let Some(slot) = bar_indices[idx].and_then(|value| usize::try_from(value).ok()) else {
+            continue;
+        };
+        if slot >= FIVE_MINUTE_SLOTS || minute_counts[idx] != Some(FIVE_MINUTE_BAR_SIZE as i32) {
+            continue;
+        }
+        let (Some(open), Some(close)) = (
+            clean_intraday_value(open[idx]),
+            clean_intraday_value(close[idx]),
+        ) else {
+            continue;
+        };
+        if open.abs() <= EPS {
+            continue;
+        }
+        returns_by_stock
+            .entry(ts_code)
+            .or_insert([None; FIVE_MINUTE_SLOTS])[slot] = finite_value(close / open - 1.0);
+    }
+    day_state_from_returns(returns_by_stock).map(Some)
+}
+
+fn day_state_from_returns(
+    returns_by_stock: BTreeMap<String, [Option<f64>; FIVE_MINUTE_SLOTS]>,
+) -> Result<DayState> {
     let mut market_returns = [None; FIVE_MINUTE_SLOTS];
     for slot in 0..FIVE_MINUTE_SLOTS {
         let mut sum = 0.0;
@@ -571,6 +668,19 @@ mod tests {
         assert_eq!(five_minute_slot("11:30:00"), Some((23, 690)));
         assert_eq!(five_minute_slot("13:01:00"), Some((24, 781)));
         assert_eq!(five_minute_slot("15:00:00"), Some((47, 900)));
+    }
+
+    #[test]
+    fn gfzq_5min_salience_raw_spec_prefers_derived_bar_5m() {
+        let spec = raw_spec(STR_5MIN_MA_RAW_ID);
+        assert_eq!(spec.source_dataset, DatasetId::StockDerivedBar);
+        assert_eq!(spec.source_bar_size, Some(FIVE_MINUTE_BAR_SIZE));
+        assert_eq!(spec.columns, vec!["open", "close"]);
+
+        let aux = intraday_raw_auxiliary_requirements(&[STR_5MIN_MA_RAW_ID.to_string()]);
+        assert_eq!(aux.len(), 1);
+        assert_eq!(aux[0].request.dataset, DatasetId::StockMinute1m);
+        assert_eq!(aux[0].request.columns, vec!["open", "close"]);
     }
 
     #[test]

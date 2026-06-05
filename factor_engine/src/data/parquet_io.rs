@@ -122,6 +122,7 @@ fn ordered_column_names(table: &Table) -> Vec<String> {
         "factor_id",
         "version",
         "source_dataset",
+        "source_bar_size",
         "output_column",
         "name",
         "asset_class",

@@ -371,6 +371,30 @@ impl MarketDataLoader {
         Ok(tables)
     }
 
+    pub fn load_stock_derived_bar_by_date(
+        &self,
+        bar_size: usize,
+        requested_columns: &[String],
+        target_dates: &[i32],
+    ) -> Result<HashMap<i32, Table>> {
+        let columns =
+            with_required_columns(requested_columns, &["bar_index", "ts_code", "minute_count"]);
+        let mut tables = HashMap::new();
+        for trade_date in target_dates {
+            if let Some(file) = self.catalog.stock_derived_bar_file(bar_size, *trade_date) {
+                let mut table = read_parquet(&file, Some(&columns))?;
+                if !table.columns.contains_key("trade_date") {
+                    table.insert(
+                        "trade_date",
+                        crate::data::table::ColumnData::I32(vec![Some(*trade_date); table.len]),
+                    )?;
+                }
+                tables.insert(*trade_date, table);
+            }
+        }
+        Ok(tables)
+    }
+
     pub fn load_barra_daily(
         &self,
         asset_class: AssetClass,

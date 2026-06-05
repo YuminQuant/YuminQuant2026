@@ -85,6 +85,7 @@ struct RawMetadataRow {
     version: String,
     asset_class: String,
     source_dataset: String,
+    source_bar_size: Option<i32>,
     columns_json: String,
     window_days: i32,
     updated_at: String,
@@ -545,6 +546,7 @@ impl IntradayDailyRawStorage {
                 version: spec.version.clone(),
                 asset_class: spec.asset_class.as_str().to_string(),
                 source_dataset: spec.source_dataset.as_str().to_string(),
+                source_bar_size: spec.source_bar_size.map(|value| value as i32),
                 columns_json: string_list_json(&spec.columns),
                 window_days: spec.window_days as i32,
                 updated_at: updated_at.clone(),
@@ -570,6 +572,7 @@ impl IntradayDailyRawStorage {
                 && row.asset_class == spec.asset_class.as_str()
                 && row.version == spec.version
                 && row.source_dataset == spec.source_dataset.as_str()
+                && row.source_bar_size == spec.source_bar_size.map(|value| value as i32)
                 && row.window_days == spec.window_days as i32
                 && parse_string_list_json(&row.columns_json) == spec.columns
         }))
@@ -1128,6 +1131,11 @@ fn read_raw_metadata_records(path: &Path) -> Result<Vec<RawMetadataRow>> {
     let version = table.required_utf8("version")?;
     let asset_class = table.required_utf8("asset_class")?;
     let source_dataset = table.required_utf8("source_dataset")?;
+    let source_bar_size = if table.columns.contains_key("source_bar_size") {
+        table.required_i32("source_bar_size")?.clone()
+    } else {
+        vec![None; table.len]
+    };
     let columns_json = table.required_utf8("columns_json")?;
     let window_days = table.required_i32("window_days")?;
     let updated_at = table.required_utf8("updated_at")?;
@@ -1139,6 +1147,7 @@ fn read_raw_metadata_records(path: &Path) -> Result<Vec<RawMetadataRow>> {
             version: version[idx].clone().unwrap_or_default(),
             asset_class: asset_class[idx].clone().unwrap_or_default(),
             source_dataset: source_dataset[idx].clone().unwrap_or_default(),
+            source_bar_size: source_bar_size[idx],
             columns_json: columns_json[idx].clone().unwrap_or_default(),
             window_days: window_days[idx].unwrap_or_default(),
             updated_at: updated_at[idx].clone().unwrap_or_default(),
@@ -1172,6 +1181,10 @@ fn raw_metadata_rows_to_table(rows: Vec<RawMetadataRow>) -> Result<Table> {
                 .map(|row| Some(row.source_dataset.clone()))
                 .collect(),
         ),
+    )?;
+    table.insert(
+        "source_bar_size",
+        ColumnData::I32(rows.iter().map(|row| row.source_bar_size).collect()),
     )?;
     table.insert(
         "columns_json",
@@ -1313,6 +1326,7 @@ mod tests {
             version: version.to_string(),
             asset_class: AssetClass::Stock,
             source_dataset: DatasetId::StockMinute1m,
+            source_bar_size: None,
             columns: vec!["close".to_string(), "vol".to_string()],
             window_days: 1,
         }

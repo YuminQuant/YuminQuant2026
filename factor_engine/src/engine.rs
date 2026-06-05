@@ -263,6 +263,7 @@ impl Engine {
                 .chain(raw_source_specs_for_report.iter().map(|spec| DataRequest {
                     dataset: spec.source_dataset,
                     entity_id: None,
+                    bar_size: spec.source_bar_size,
                     columns: spec.columns.clone(),
                     financial_quarters: None,
                 }))
@@ -588,9 +589,11 @@ fn materialize_intraday_raw_table(
     let raw_id_set =
         expand_raw_ids_to_selected_provider_siblings(raw_ids, requirements, providers)?;
     let mut stateless_requirements_by_dataset =
-        BTreeMap::<DatasetId, Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new();
+        BTreeMap::<(DatasetId, Option<usize>), Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new(
+        );
     let mut stateful_requirements_by_dataset =
-        BTreeMap::<DatasetId, Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new();
+        BTreeMap::<(DatasetId, Option<usize>), Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new(
+        );
     for requirement in requirements
         .iter()
         .filter(|requirement| raw_id_set.contains(&requirement.spec.raw_id))
@@ -623,14 +626,17 @@ fn materialize_intraday_raw_table(
             IntradayRawMaterializeMode::Stateful => &mut stateful_requirements_by_dataset,
         };
         target_map
-            .entry(requirement.spec.source_dataset)
+            .entry((
+                requirement.spec.source_dataset,
+                requirement.spec.source_bar_size,
+            ))
             .or_default()
             .push((requirement, missing_dates));
     }
     let mut profiles = Vec::new();
     let mut materialized_specs = Vec::new();
 
-    for (source_dataset, plans) in stateless_requirements_by_dataset {
+    for ((source_dataset, source_bar_size), plans) in stateless_requirements_by_dataset {
         let max_window_days = plans
             .iter()
             .map(|(requirement, _)| requirement.spec.window_days)
@@ -676,6 +682,7 @@ fn materialize_intraday_raw_table(
             let batch_requests = vec![DataRequest {
                 dataset: source_dataset,
                 entity_id: None,
+                bar_size: source_bar_size,
                 columns: columns.clone(),
                 financial_quarters: None,
             }];
@@ -873,7 +880,7 @@ fn materialize_intraday_raw_table(
                 .map(|(requirement, _)| requirement.spec.clone()),
         );
     }
-    for (source_dataset, plans) in stateful_requirements_by_dataset {
+    for ((source_dataset, source_bar_size), plans) in stateful_requirements_by_dataset {
         let columns = plans
             .iter()
             .flat_map(|(requirement, _)| requirement.spec.columns.iter().cloned())
@@ -883,6 +890,7 @@ fn materialize_intraday_raw_table(
         let batch_requests = vec![DataRequest {
             dataset: source_dataset,
             entity_id: None,
+            bar_size: source_bar_size,
             columns,
             financial_quarters: None,
         }];
@@ -1325,7 +1333,7 @@ where
 
     let mut grouped: HashMap<_, (BTreeSet<String>, Option<usize>)> = HashMap::new();
     for request in requests {
-        let key = (request.dataset, request.entity_id.clone());
+        let key = (request.dataset, request.entity_id.clone(), request.bar_size);
         let entry = grouped.entry(key).or_default();
         entry.0.extend(request.columns.into_iter());
         entry.1 = match (entry.1, request.financial_quarters) {
@@ -1337,9 +1345,10 @@ where
     let mut merged = grouped
         .into_iter()
         .map(
-            |((dataset, entity_id), (columns, financial_quarters))| DataRequest {
+            |((dataset, entity_id, bar_size), (columns, financial_quarters))| DataRequest {
                 dataset,
                 entity_id,
+                bar_size,
                 columns: columns.into_iter().collect(),
                 financial_quarters,
             },
@@ -1349,6 +1358,7 @@ where
         left.dataset
             .cmp(&right.dataset)
             .then_with(|| left.entity_id.cmp(&right.entity_id))
+            .then_with(|| left.bar_size.cmp(&right.bar_size))
     });
     merged
 }
@@ -1578,6 +1588,22 @@ mod tests {
             split_dates_by_chunk(&[20260101, 20260102], 0),
             vec![vec![20260101], vec![20260102]]
         );
+    }
+
+    #[test]
+    fn merge_requests_keeps_derived_bar_sizes_separate() {
+        let merged = super::merge_requests(vec![
+            DataRequest::stock_derived_bar(5, &["close"]),
+            DataRequest::stock_derived_bar(15, &["close"]),
+            DataRequest::stock_derived_bar(5, &["volume"]),
+        ]);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].dataset, DatasetId::StockDerivedBar);
+        assert_eq!(merged[0].bar_size, Some(5));
+        assert_eq!(merged[0].columns, vec!["close", "volume"]);
+        assert_eq!(merged[1].bar_size, Some(15));
+        assert_eq!(merged[1].columns, vec!["close"]);
     }
 
     #[test]
@@ -1863,6 +1889,7 @@ mod tests {
             version: "0.1.0".to_string(),
             asset_class: AssetClass::Stock,
             source_dataset: DatasetId::StockMinute1m,
+            source_bar_size: None,
             columns: vec!["close".to_string()],
             window_days: 1,
         }

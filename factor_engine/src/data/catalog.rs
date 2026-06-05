@@ -218,6 +218,19 @@ impl DataCatalog {
         path.exists().then_some(path)
     }
 
+    pub fn stock_derived_bar_file(&self, bar_size: usize, trade_date: i32) -> Option<PathBuf> {
+        let year = trade_date / 10_000;
+        let path = self
+            .data_root
+            .join("derived")
+            .join("stock")
+            .join("bar")
+            .join(format!("{bar_size}m"))
+            .join(year.to_string())
+            .join(format!("{}.parquet", trade_date));
+        path.exists().then_some(path)
+    }
+
     pub fn stock_sw_classification_file(&self) -> Option<&Path> {
         self.stock_sw_classification_path.as_deref()
     }

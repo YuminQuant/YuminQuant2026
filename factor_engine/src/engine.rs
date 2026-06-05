@@ -1492,18 +1492,18 @@ fn execution_groups_for_specs(frequency: Frequency, specs: &[FactorSpec]) -> Vec
         });
     }
     groups.extend(
-        intraday_daily
-            .into_iter()
-            .map(|(lookback, factor_indices)| ExecutionGroup {
-                stage: ExecutionStage::IntradayDaily { lookback },
-                factor_indices,
-            }),
-    );
-    groups.extend(
         intraday_daily_postprocess
             .into_iter()
             .map(|(lookback, factor_indices)| ExecutionGroup {
                 stage: ExecutionStage::IntradayDailyPostprocess { lookback },
+                factor_indices,
+            }),
+    );
+    groups.extend(
+        intraday_daily
+            .into_iter()
+            .map(|(lookback, factor_indices)| ExecutionGroup {
+                stage: ExecutionStage::IntradayDaily { lookback },
                 factor_indices,
             }),
     );
@@ -1796,6 +1796,30 @@ mod tests {
             ExecutionStage::IntradayDailyPostprocess { lookback: 19 }
         );
         assert_eq!(groups[2].factor_indices, vec![2]);
+    }
+
+    #[test]
+    fn execution_groups_run_postprocess_before_direct_intraday() {
+        let specs = vec![
+            spec_with_dataset("daily_factor", DatasetId::StockDailyPv, 0),
+            spec_with_dataset("direct_intraday_factor", DatasetId::StockMinute1m, 0),
+            spec_with_raw("postprocess_intraday_factor", "intraday_raw", 0),
+        ];
+
+        let groups = execution_groups_for_specs(Frequency::Daily, &specs);
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].stage, ExecutionStage::DailyNoMinute);
+        assert_eq!(
+            groups[1].stage,
+            ExecutionStage::IntradayDailyPostprocess { lookback: 0 }
+        );
+        assert_eq!(groups[1].factor_indices, vec![2]);
+        assert_eq!(
+            groups[2].stage,
+            ExecutionStage::IntradayDaily { lookback: 0 }
+        );
+        assert_eq!(groups[2].factor_indices, vec![1]);
     }
 
     #[test]

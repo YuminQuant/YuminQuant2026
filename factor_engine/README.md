@@ -73,13 +73,16 @@ Output is written to `data/derived/stock/bar/{bar_size}m/{year}/{trade_date}.par
 Rust 因子 raw provider 可以通过通用 `stock.derived.bar` 数据源和 `bar_size`
 请求派生 bar。已迁移的 5m provider 会优先读取 `data/derived/stock/bar/5m`；
 如果派生文件缺失、必要列缺失或结构不兼容，则输出 warning 并回退到原始 1min 数据。
+1min fallback 采用懒加载：只有缺少或无法读取派生 5m bar 的交易日才会额外读取原始 1min。
 fallback 以交易日为粒度，因此同一个交易日不会混合使用派生 bar 和原始分钟数据。
 
 Rust factor raw providers can request derived bars through the generic
 `stock.derived.bar` data source with a `bar_size`. Migrated 5m providers prefer
 `data/derived/stock/bar/5m` and fall back to raw 1m data with a warning when the
-derived file or required columns are unavailable. The fallback is date-level, so
-a single trading day is not mixed between derived and raw minute sources.
+derived file or required columns are unavailable. The 1m fallback is lazy-loaded:
+raw 1m data is loaded only for trading dates whose derived 5m bar is missing or
+unreadable. The fallback is date-level, so a single trading day is not mixed
+between derived and raw minute sources.
 
 当前已迁移到派生 bar 的 provider 只包含标准、非重叠 5m 家族：`patv`、DBZQ
 `volume_price_distribution` / `significant_up_volume_return_distribution`、GFZQ

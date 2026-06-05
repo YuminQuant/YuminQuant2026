@@ -382,7 +382,15 @@ impl MarketDataLoader {
         let mut tables = HashMap::new();
         for trade_date in target_dates {
             if let Some(file) = self.catalog.stock_derived_bar_file(bar_size, *trade_date) {
-                let mut table = read_parquet(&file, Some(&columns))?;
+                let mut table = match read_parquet(&file, Some(&columns)) {
+                    Ok(table) => table,
+                    Err(error) => {
+                        eprintln!(
+                            "warning: failed to read stock derived {bar_size}m bar for {trade_date}: {error}; fallback data may be used"
+                        );
+                        continue;
+                    }
+                };
                 if !table.columns.contains_key("trade_date") {
                     table.insert(
                         "trade_date",

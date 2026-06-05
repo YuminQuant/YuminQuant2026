@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -636,7 +637,9 @@ fn materialize_intraday_raw_table(
     let mut profiles = Vec::new();
     let mut materialized_specs = Vec::new();
 
-    for ((source_dataset, source_bar_size), plans) in stateless_requirements_by_dataset {
+    for ((source_dataset, source_bar_size), plans) in
+        ordered_source_groups(stateless_requirements_by_dataset)
+    {
         let max_window_days = plans
             .iter()
             .map(|(requirement, _)| requirement.spec.window_days)
@@ -691,23 +694,31 @@ fn materialize_intraday_raw_table(
             let mut raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
             let auxiliary_requests =
                 auxiliary_requests_for_raw_batch(&plans, providers, &date_batch)?;
-            if !auxiliary_requests.is_empty() {
+            let auxiliary_target_dates =
+                auxiliary_target_dates(source_dataset, source_bar_size, &raw_pool, &date_batch);
+            if !auxiliary_requests.is_empty() && !auxiliary_target_dates.is_empty() {
                 let max_auxiliary_lookback = auxiliary_requests
                     .iter()
                     .map(|request| request.daily_lookback)
                     .max()
                     .unwrap_or(0);
+                let auxiliary_start_date = *auxiliary_target_dates
+                    .first()
+                    .expect("auxiliary target dates are not empty");
+                let auxiliary_end_date = *auxiliary_target_dates
+                    .last()
+                    .expect("auxiliary target dates are not empty");
                 let auxiliary_load_start_date =
-                    calendar.warmup_start(batch_start_date, max_auxiliary_lookback);
+                    calendar.warmup_start(auxiliary_start_date, max_auxiliary_lookback);
                 let auxiliary_context = FactorContext {
                     asset_class: request.asset_class,
                     frequency: Frequency::Daily,
-                    start_date: batch_start_date,
-                    end_date: batch_end_date,
+                    start_date: auxiliary_start_date,
+                    end_date: auxiliary_end_date,
                     load_start_date: auxiliary_load_start_date,
                     load_dates: calendar
-                        .open_dates_between(auxiliary_load_start_date, batch_end_date),
-                    target_dates: date_batch.clone(),
+                        .open_dates_between(auxiliary_load_start_date, auxiliary_end_date),
+                    target_dates: auxiliary_target_dates,
                 };
                 let auxiliary_pool = DataPool::load(
                     loader,
@@ -880,7 +891,9 @@ fn materialize_intraday_raw_table(
                 .map(|(requirement, _)| requirement.spec.clone()),
         );
     }
-    for ((source_dataset, source_bar_size), plans) in stateful_requirements_by_dataset {
+    for ((source_dataset, source_bar_size), plans) in
+        ordered_source_groups(stateful_requirements_by_dataset)
+    {
         let columns = plans
             .iter()
             .flat_map(|(requirement, _)| requirement.spec.columns.iter().cloned())
@@ -972,7 +985,13 @@ fn materialize_intraday_raw_table(
 
                 let load_started = Instant::now();
                 let mut raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
-                if !auxiliary_requirements.is_empty() {
+                let auxiliary_target_dates = auxiliary_target_dates(
+                    source_dataset,
+                    source_bar_size,
+                    &raw_pool,
+                    &[trade_date],
+                );
+                if !auxiliary_requirements.is_empty() && !auxiliary_target_dates.is_empty() {
                     let auxiliary_load_start_date =
                         calendar.warmup_start(trade_date, auxiliary_max_lookback);
                     let auxiliary_context = FactorContext {
@@ -983,7 +1002,7 @@ fn materialize_intraday_raw_table(
                         load_start_date: auxiliary_load_start_date,
                         load_dates: calendar
                             .open_dates_between(auxiliary_load_start_date, trade_date),
-                        target_dates: vec![trade_date],
+                        target_dates: auxiliary_target_dates,
                     };
                     let auxiliary_pool = DataPool::load(
                         loader,
@@ -1201,6 +1220,44 @@ fn auxiliary_requests_from_provider_groups(
         output.extend(factor.intraday_raw_auxiliary_requirements(&raw_ids));
     }
     Ok(output)
+}
+
+fn auxiliary_target_dates(
+    source_dataset: DatasetId,
+    source_bar_size: Option<usize>,
+    pool: &DataPool,
+    target_dates: &[i32],
+) -> Vec<i32> {
+    if source_dataset != DatasetId::StockDerivedBar {
+        return target_dates.to_vec();
+    }
+    let Some(bar_size) = source_bar_size else {
+        return target_dates.to_vec();
+    };
+    target_dates
+        .iter()
+        .copied()
+        .filter(|trade_date| pool.derived_bar(bar_size, *trade_date).is_none())
+        .collect()
+}
+
+fn ordered_source_groups<T>(
+    groups: BTreeMap<(DatasetId, Option<usize>), T>,
+) -> Vec<((DatasetId, Option<usize>), T)> {
+    let mut groups = groups.into_iter().collect::<Vec<_>>();
+    groups.sort_by_key(|((dataset, bar_size), _)| source_group_order_key(*dataset, *bar_size));
+    groups
+}
+
+fn source_group_order_key(
+    dataset: DatasetId,
+    bar_size: Option<usize>,
+) -> (u8, Reverse<usize>, DatasetId, Option<usize>) {
+    match dataset {
+        DatasetId::StockDerivedBar => (0, Reverse(bar_size.unwrap_or(0)), dataset, bar_size),
+        DatasetId::StockMinute1m | DatasetId::FutureMinute1m => (1, Reverse(0), dataset, bar_size),
+        _ => (2, Reverse(0), dataset, bar_size),
+    }
 }
 
 fn execution_stage_names(
@@ -1540,6 +1597,7 @@ mod tests {
         AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
         IntradayDailyRawSpec, Lookback,
     };
+    use crate::data::table::Table;
     use crate::data::DataPool;
     use crate::error::Result;
     use crate::factor::Factor;
@@ -1604,6 +1662,51 @@ mod tests {
         assert_eq!(merged[0].columns, vec!["close", "volume"]);
         assert_eq!(merged[1].bar_size, Some(15));
         assert_eq!(merged[1].columns, vec!["close"]);
+    }
+
+    #[test]
+    fn derived_bar_auxiliary_dates_are_lazy_missing_dates_only() {
+        let mut pool = DataPool::default();
+        pool.insert_minute_table_for_test(
+            DatasetId::StockDerivedBar,
+            Some(5),
+            20260424,
+            Table::empty(),
+        );
+
+        assert_eq!(
+            super::auxiliary_target_dates(
+                DatasetId::StockDerivedBar,
+                Some(5),
+                &pool,
+                &[20260424, 20260425]
+            ),
+            vec![20260425]
+        );
+        assert_eq!(
+            super::auxiliary_target_dates(
+                DatasetId::StockMinute1m,
+                None,
+                &pool,
+                &[20260424, 20260425]
+            ),
+            vec![20260424, 20260425]
+        );
+    }
+
+    #[test]
+    fn source_groups_order_derived_bars_before_raw_1m_by_descending_bar_size() {
+        let groups = BTreeMap::from([
+            ((DatasetId::StockMinute1m, None), "1m"),
+            ((DatasetId::StockDerivedBar, Some(5)), "5m"),
+            ((DatasetId::StockDerivedBar, Some(15)), "15m"),
+        ]);
+        let ordered = super::ordered_source_groups(groups)
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ordered, vec!["15m", "5m", "1m"]);
     }
 
     #[test]

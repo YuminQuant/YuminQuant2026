@@ -186,6 +186,17 @@ impl DataPool {
             .get(&(DatasetId::StockDerivedBar, Some(bar_size), trade_date))
     }
 
+    #[cfg(test)]
+    pub(crate) fn insert_minute_table_for_test(
+        &mut self,
+        dataset: DatasetId,
+        bar_size: Option<usize>,
+        trade_date: i32,
+        table: Table,
+    ) {
+        self.minute.insert((dataset, bar_size, trade_date), table);
+    }
+
     pub fn extend(&mut self, other: Self) {
         self.daily.extend(other.daily);
         self.daily_panels.extend(other.daily_panels);

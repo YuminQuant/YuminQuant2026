@@ -105,6 +105,105 @@ quarter count and date batch, then reuses yearly tables through
 
 loader 会根据请求的季度数和 date batch 推导保守的公告年份窗口，并通过 `DisclosureTableCache` 复用年度表。
 
+## Stock-Level Event Cache / 股票级事件驱动缓存
+
+Financial statement values are sparse. New financial factors should split the
+pipeline into slow stock-level statement snapshots and daily fast
+cross-sectional work.
+
+财报数据是低频稀疏数据。新的财务因子应把流程拆成“股票级财报慢指标 snapshot”和“每日快变量/截面处理”两层。
+
+Use `FinancialStockSnapshotCache<T>` when all of the following are true:
+
+满足以下条件时，应使用 `FinancialStockSnapshotCache<T>`：
+
+- The value is a stock-level financial statement formula. / 该值是股票级财报公式。
+- The formula only changes when visible `ann_date/f_ann_date` records change. / 公式只会在 PIT 可见财报记录变化时变化。
+- The result can be reused across target dates until the marker changes. / marker 不变时可跨目标日复用结果。
+
+Do **not** cache daily fast variables:
+
+不要缓存每日快变量：
+
+- market value, price, return, turnover, present universe / 市值、价格、收益、换手率、在市状态；
+- percentile rank, zscore, regression, neutralization / 分位数、标准化、回归、中性化；
+- peer/network reductions such as F-Link weighted returns / F-Link、peer 加权收益等截面网络降维；
+- rolling calendar values unless the calendar boundary is added to the marker. / 如果 rolling calendar 边界会改变结果，必须把边界加入 marker，否则不要缓存。
+
+Recommended pattern / 推荐写法：
+
+```rust
+#[derive(Clone, Copy, Debug)]
+struct SlowSnapshot {
+    revenue_ttm: Option<f64>,
+    equity_latest: Option<f64>,
+}
+
+fn slow_marker(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<FinancialEventMarker> {
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_latest_ttm(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+    );
+    builder.include_latest_annual(
+        FinancialStatementDataset::BalanceSheet,
+        balance,
+        ts_code,
+        trade_date,
+    );
+    builder.build()
+}
+
+fn slow_snapshot(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<SlowSnapshot> {
+    Some(SlowSnapshot {
+        revenue_ttm: income.ttm_sum(ts_code, trade_date, "revenue"),
+        equity_latest: balance.latest_annual_value(
+            ts_code,
+            trade_date,
+            "total_hldr_eqy_exc_min_int",
+        ),
+    })
+}
+
+let raw = cached_financial_stock_panel(
+    panel,
+    |trade_date, ts_code| slow_marker(ts_code, trade_date, &income, &balance),
+    |trade_date, ts_code| slow_snapshot(ts_code, trade_date, &income, &balance),
+    |snapshot, _trade_date, _ts_code, offset| {
+        let mv = total_mv.values()[offset]?;
+        snapshot.revenue_ttm.and_then(|revenue| safe_div(revenue, mv))
+    },
+)?;
+```
+
+Marker rules / marker 规则：
+
+- Use record fingerprints, not values: `dataset + end_date + disclosure_date + report_type + update_flag`. / marker 使用记录指纹，而不是财务数值本身。
+- Include every statement chain that can affect the snapshot: latest quarter, YoY quarter, previous quarter, TTM chain, annual chain, etc. / 任何会影响 snapshot 的记录链都必须加入 marker。
+- If a formula depends on non-statement events, add a synthetic marker. `DP_LTM` is the main example because the 12-month implemented dividend window can change independently of statements. / 如果公式依赖非财报事件，需要加入 synthetic marker；典型例子是 `DP_LTM` 的 12 个月已实施分红窗口。
+- When a stock is not present in `DailyPanel.present` or is excluded by the factor universe, clear or skip the cache entry rather than carrying the previous snapshot forward. / 股票不在市或被因子股票池剔除时，应清空或跳过缓存，不能沿用旧 snapshot。
+- If marker is missing, do not reuse an old snapshot. / marker 缺失时不能复用旧 snapshot。
+
+Multi-output providers should compute shared slow snapshots once, then write all
+requested outputs from the same snapshot. For example, `f_momentum_80pec` and
+`link_new` share the 10-dimensional financial vector; Barra `growth`,
+`quality`, and `value` cache their statement-driven subcomponents but still run
+standardization and neutralization every day.
+
+多输出 provider 应一次性构造共享慢指标 snapshot，再根据 `requested_ids` 输出需要的因子。例如 `f_momentum_80pec` 和 `link_new` 共用 10 维财务向量；Barra `growth`、`quality`、`value` 会缓存财报驱动的子指标，但标准化和中性化仍然每天执行。
+
 ## Missing Values / 缺失值处理
 
 Financial similarity factors use per-metric percentile ranks. For listed

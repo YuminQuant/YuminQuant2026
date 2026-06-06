@@ -242,6 +242,26 @@ Strategy development guide: [STRATEGY_README.md](STRATEGY_README.md)
 
 Ordinary factor runs execute by `date_batch x factor_batch`. Each batch merges dependencies, loads needed dates and columns, builds `DataPool`, computes in parallel, writes output, then releases memory.
 
+### Multi-output Factor Providers / 多输出因子 Provider
+
+中文规则：
+
+- 普通旧因子只需要实现 `spec()` 和 `compute()`；`provided_specs()`、`compute_provider_key()`、`compute_many()` 都有默认实现，因此旧代码无需改动。
+- 默认 `provided_specs()` 返回单个 `spec()`；默认 `compute_provider_key()` 返回该因子的 registry key；默认 `compute_many()` 只在本因子被请求时调用原来的 `compute()`。
+- 如果多个正式因子共享昂贵的前置计算，例如同一组财务向量、同一个截面相似度矩阵或同一套 peer 网络，应让这些 wrapper 返回相同的 `compute_provider_key()`，并由 provider 覆盖 `compute_many(requested_ids, context, data)` 一次性返回多个 `FactorSeries`。
+- 引擎会在同一个 factor batch 内按 `compute_provider_key()` 分组，每个 provider 只调用一次 `compute_many()`；随后校验返回结果必须覆盖所有 requested factor id、不得返回未请求或重复因子，并按原请求顺序写出。
+- `compute_many()` 必须 requested-aware：只计算本次 `requested_ids` 需要的独有分支。共享前置状态可以保留，但不能顺手计算未请求 sibling factor 的昂贵指标分支。
+- `deprecated` 因子不会进入 selected factors，因此也不会进入 provider 的 `requested_ids`；除非 active 因子仍共享同一正式输出或同一必要前置计算，否则 deprecated 独有分支不应被计算。
+
+English rules:
+
+- Legacy single-output factors only need `spec()` and `compute()`. `provided_specs()`, `compute_provider_key()`, and `compute_many()` have backward-compatible defaults, so existing factors do not need changes.
+- By default, `provided_specs()` returns one `spec()`, `compute_provider_key()` returns the factor registry key, and `compute_many()` delegates to the original `compute()` only when the factor id is requested.
+- When multiple formal factors share expensive setup, such as financial vectors, cross-sectional similarity matrices, or peer networks, their thin wrappers should return the same `compute_provider_key()` and override `compute_many(requested_ids, context, data)` to return all requested `FactorSeries` in one provider call.
+- The engine groups selected factors in the same factor batch by `compute_provider_key()`, calls each provider once, validates that all requested ids are returned with no extra or duplicate factors, and then restores the original request order before writing.
+- `compute_many()` must be requested-aware: compute only branches needed by the current `requested_ids`. Shared setup is allowed, but expensive sibling-factor metric branches must not be computed opportunistically.
+- Deprecated factors do not enter selected factors and therefore do not enter provider `requested_ids`; deprecated-only branches should not run unless an active factor still shares the same required output or setup.
+
 分钟日频因子分两层：
 
 Minute-to-daily factors have two layers:

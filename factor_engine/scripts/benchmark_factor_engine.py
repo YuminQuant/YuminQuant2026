@@ -20,7 +20,7 @@ SCENARIOS = [
         "frequency": "daily",
         "start": "20260105",
         "end": "20260130",
-        "factors": "pe_zscore_60d,roe_8q",
+        "factors": "pe_zscore_60d,f_momentum_80pec",
     },
     {
         "name": "future_daily_all",

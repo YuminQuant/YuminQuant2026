@@ -157,6 +157,36 @@ impl PitFinancialData {
         None
     }
 
+    pub fn latest_quarter_end_date(&self, ts_code: &str, trade_date: i32) -> Option<i32> {
+        let by_end_date = self.by_ts_code.get(ts_code)?;
+        for (&end_date, _) in by_end_date.iter().rev() {
+            if self
+                .record_for_end_date(ts_code, trade_date, end_date)
+                .is_some()
+            {
+                return Some(end_date);
+            }
+        }
+        None
+    }
+
+    pub fn ttm_sum_for_end_date(
+        &self,
+        ts_code: &str,
+        trade_date: i32,
+        end_date: i32,
+        column: &str,
+    ) -> Option<f64> {
+        let mut current = end_date;
+        let mut sum = 0.0;
+        for _ in 0..4 {
+            let record = self.record_for_end_date(ts_code, trade_date, current)?;
+            sum += record.column(column)?;
+            current = previous_quarter_end_date(current)?;
+        }
+        Some(sum)
+    }
+
     pub fn quarters<'a>(
         &'a self,
         panel: &'a DailyPanel,
@@ -383,7 +413,7 @@ fn required_anchor_end_date(trade_date: i32) -> i32 {
     }
 }
 
-fn previous_quarter_end_date(end_date: i32) -> Option<i32> {
+pub fn previous_quarter_end_date(end_date: i32) -> Option<i32> {
     let year = end_date / 10_000;
     match end_date % 10_000 {
         331 => Some((year - 1) * 10_000 + 1231),

@@ -21,6 +21,14 @@ pub enum IntradayRawMaterializeMode {
 pub trait Factor: Send + Sync {
     fn spec(&self) -> FactorSpec;
 
+    fn provided_specs(&self) -> Vec<FactorSpec> {
+        vec![self.spec()]
+    }
+
+    fn compute_provider_key(&self) -> String {
+        self.spec().registry_key()
+    }
+
     fn requirements(&self) -> Vec<DataRequest> {
         self.spec().dependencies
     }
@@ -83,4 +91,18 @@ pub trait Factor: Send + Sync {
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries>;
+
+    fn compute_many(
+        &self,
+        requested_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+    ) -> Result<Vec<FactorSeries>> {
+        let spec = self.spec();
+        if requested_ids.iter().any(|id| id == &spec.id) {
+            Ok(vec![self.compute(context, data)?])
+        } else {
+            Ok(Vec::new())
+        }
+    }
 }

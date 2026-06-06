@@ -1568,29 +1568,91 @@ fn compute_factor_batch(
     pool: &DataPool,
     thread_pool: Option<&rayon::ThreadPool>,
 ) -> Result<Vec<FactorSeries>> {
+    let mut requested_order = BTreeMap::new();
+    let mut groups = BTreeMap::<String, ComputeProviderGroup>::new();
+    for (idx, factor) in factors.iter().enumerate() {
+        let spec = factor.spec();
+        requested_order.insert(spec.id.clone(), idx);
+        let key = factor.compute_provider_key();
+        let group = groups.entry(key).or_insert_with(|| ComputeProviderGroup {
+            factor: *factor,
+            requested_ids: Vec::new(),
+        });
+        if !group.requested_ids.iter().any(|id| id == &spec.id) {
+            group.requested_ids.push(spec.id);
+        }
+    }
+
+    let compute_groups = groups.values().collect::<Vec<_>>();
     let compute = || {
-        factors
+        compute_groups
             .par_iter()
-            .map(|factor| factor.compute(context, pool))
+            .map(|group| {
+                group
+                    .factor
+                    .compute_many(&group.requested_ids, context, pool)
+            })
             .collect::<Vec<_>>()
     };
     let results = match thread_pool {
         Some(thread_pool) => thread_pool.install(compute),
         None => compute(),
     };
-    results.into_iter().collect()
+    let mut output = Vec::new();
+    for result in results {
+        output.extend(result?);
+    }
+    let mut returned = BTreeSet::new();
+    for series in &output {
+        if !requested_order.contains_key(&series.spec.id) {
+            return Err(err(format!(
+                "compute provider returned unrequested factor {}",
+                series.spec.id
+            )));
+        }
+        if !returned.insert(series.spec.id.clone()) {
+            return Err(err(format!(
+                "compute provider returned duplicate factor {}",
+                series.spec.id
+            )));
+        }
+    }
+    let missing = requested_order
+        .keys()
+        .filter(|id| !returned.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(err(format!(
+            "compute provider did not return requested factor(s): {}",
+            missing.join(",")
+        )));
+    }
+    output.sort_by_key(|series| {
+        requested_order
+            .get(&series.spec.id)
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+    Ok(output)
 }
 
 pub fn available_specs() -> Vec<FactorSpec> {
     all_factors()
         .into_iter()
-        .map(|factor| factor.spec())
+        .flat_map(|factor| factor.provided_specs())
         .collect()
+}
+
+struct ComputeProviderGroup<'a> {
+    factor: &'a dyn Factor,
+    requested_ids: Vec<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use crate::core::{
@@ -1864,6 +1926,36 @@ mod tests {
     }
 
     #[test]
+    fn compute_factor_batch_calls_shared_provider_once() {
+        let shared_counter = Arc::new(AtomicUsize::new(0));
+        let solo_counter = Arc::new(AtomicUsize::new(0));
+        let left = MultiOutputFactor::new("shared_left", "shared_provider", &shared_counter);
+        let right = MultiOutputFactor::new("shared_right", "shared_provider", &shared_counter);
+        let solo = MultiOutputFactor::new("solo", "solo_provider", &solo_counter);
+        let factors: Vec<&dyn Factor> = vec![&left, &right, &solo];
+        let context = FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20260105,
+            end_date: 20260105,
+            load_start_date: 20260105,
+            load_dates: vec![20260105],
+            target_dates: vec![20260105],
+        };
+
+        let results =
+            super::compute_factor_batch(&factors, &context, &DataPool::default(), None).unwrap();
+        let ids = results
+            .iter()
+            .map(|series| series.spec.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["shared_left", "shared_right", "solo"]);
+        assert_eq!(shared_counter.load(Ordering::SeqCst), 1);
+        assert_eq!(solo_counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn selection_matches_short_id_and_legacy_alias_inside_asset_frequency() {
         let request = RunRequest {
             asset_class: AssetClass::Stock,
@@ -1992,6 +2084,56 @@ mod tests {
 
         fn compute(&self, _context: &FactorContext, _data: &DataPool) -> Result<FactorSeries> {
             unimplemented!("dummy factor is only used as a raw provider handle in engine tests")
+        }
+    }
+
+    struct MultiOutputFactor {
+        id: String,
+        provider_key: String,
+        counter: Arc<AtomicUsize>,
+    }
+
+    impl MultiOutputFactor {
+        fn new(id: &str, provider_key: &str, counter: &Arc<AtomicUsize>) -> Self {
+            Self {
+                id: id.to_string(),
+                provider_key: provider_key.to_string(),
+                counter: Arc::clone(counter),
+            }
+        }
+    }
+
+    impl Factor for MultiOutputFactor {
+        fn spec(&self) -> FactorSpec {
+            spec_with_dataset(&self.id, DatasetId::StockDailyPv, 0)
+        }
+
+        fn compute_provider_key(&self) -> String {
+            self.provider_key.clone()
+        }
+
+        fn compute(&self, _context: &FactorContext, _data: &DataPool) -> Result<FactorSeries> {
+            self.counter.fetch_add(1, Ordering::SeqCst);
+            Ok(FactorSeries {
+                spec: self.spec(),
+                values: Vec::new(),
+            })
+        }
+
+        fn compute_many(
+            &self,
+            requested_ids: &[String],
+            _context: &FactorContext,
+            _data: &DataPool,
+        ) -> Result<Vec<FactorSeries>> {
+            self.counter.fetch_add(1, Ordering::SeqCst);
+            Ok(requested_ids
+                .iter()
+                .map(|id| FactorSeries {
+                    spec: spec_with_dataset(id, DatasetId::StockDailyPv, 0),
+                    values: Vec::new(),
+                })
+                .collect())
         }
     }
 

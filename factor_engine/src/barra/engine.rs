@@ -12,7 +12,10 @@ use crate::config::EngineConfig;
 use crate::core::{
     barra_registry_key, AssetClass, BarraSeries, BarraSpec, DataRequest, FactorContext, Frequency,
 };
-use crate::data::{DataCatalog, DataPool, DisclosureTableCache, MarketDataLoader};
+use crate::data::{
+    financial_disclosure_years_for_range, DataCatalog, DataPool, DisclosureTableCache,
+    MarketDataLoader,
+};
 use crate::engine::{BatchProfile, FactorProfile};
 use crate::error::{err, Result};
 use crate::progress::ProgressBar;
@@ -387,6 +390,11 @@ impl BarraEngine {
                     batch_specs.len()
                 ));
             }
+            let keep_years =
+                financial_years_for_requests(&loaded_requests, batch_start_date, batch_end_date);
+            if !keep_years.is_empty() {
+                disclosure_cache.retain_financial_years(&keep_years);
+            }
         }
         progress.finish();
 
@@ -527,6 +535,30 @@ where
             .then_with(|| left.bar_size.cmp(&right.bar_size))
     });
     merged
+}
+
+fn financial_years_for_requests(
+    requests: &[DataRequest],
+    start_date: i32,
+    end_date: i32,
+) -> BTreeSet<i32> {
+    let mut years = BTreeSet::new();
+    for request in requests {
+        if !matches!(
+            request.dataset,
+            crate::core::DatasetId::StockIncome
+                | crate::core::DatasetId::StockBalanceSheet
+                | crate::core::DatasetId::StockCashFlow
+        ) {
+            continue;
+        }
+        years.extend(financial_disclosure_years_for_range(
+            start_date,
+            end_date,
+            request.financial_quarters.unwrap_or(0),
+        ));
+    }
+    years
 }
 
 fn validate_date_value(date: i32, name: &str) -> Result<()> {

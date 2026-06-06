@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::barra::common::{
     add_months, average_columns, clean, fy_quarter, panel_from_target_stock_map, safe_div,
     slope_over_time, sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
-    zscore_panel_weighted_filled_zero, StatementData,
+    zscore_panel_weighted_filled_zero,
 };
 use crate::barra::BarraExposure;
 use crate::core::{
@@ -11,6 +11,7 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
+use crate::factor::common::{PitFinancialData, ReportTypePreference};
 
 pub struct StockDailyBarraCne6Growth;
 
@@ -41,15 +42,15 @@ impl BarraExposure for StockDailyBarraCne6Growth {
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let income = StatementData::from_table(
+        let income = PitFinancialData::from_table(
             data.daily(DatasetId::StockIncome)?,
             &["basic_eps", "revenue"],
-            &[1, 4],
+            ReportTypePreference::consolidated(),
         )?;
-        let balance = StatementData::from_table(
+        let balance = PitFinancialData::from_table(
             data.daily(DatasetId::StockBalanceSheet)?,
             &["total_share"],
-            &[1, 4],
+            ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
         let analyst_by_stock = index_analyst_records(&analyst_records);

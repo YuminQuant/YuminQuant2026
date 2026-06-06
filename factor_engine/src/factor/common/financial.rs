@@ -44,6 +44,10 @@ impl ReportTypePreference {
         Self::new(&[1, 4])
     }
 
+    pub fn consolidated() -> Self {
+        Self::new(&[1, 4])
+    }
+
     fn contains(&self, report_type: i64) -> bool {
         self.order.contains(&report_type)
     }
@@ -185,6 +189,80 @@ impl PitFinancialData {
             current = previous_quarter_end_date(current)?;
         }
         Some(sum)
+    }
+
+    pub fn ttm_sum(&self, ts_code: &str, trade_date: i32, column: &str) -> Option<f64> {
+        let by_end_date = self.by_ts_code.get(ts_code)?;
+        for (&anchor, _) in by_end_date.iter().rev() {
+            if let Some(value) = self.ttm_sum_for_end_date(ts_code, trade_date, anchor, column) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    pub fn latest_annual_end_date(&self, ts_code: &str, trade_date: i32) -> Option<i32> {
+        let by_end_date = self.by_ts_code.get(ts_code)?;
+        for (&end_date, _) in by_end_date.iter().rev() {
+            if end_date % 10_000 == 12_31
+                && self
+                    .record_for_end_date(ts_code, trade_date, end_date)
+                    .is_some()
+            {
+                return Some(end_date);
+            }
+        }
+        None
+    }
+
+    pub fn latest_annual_value(&self, ts_code: &str, trade_date: i32, column: &str) -> Option<f64> {
+        let end_date = self.latest_annual_end_date(ts_code, trade_date)?;
+        self.annual_value_for_end_date(ts_code, trade_date, end_date, column)
+    }
+
+    pub fn annual_value_for_end_date(
+        &self,
+        ts_code: &str,
+        trade_date: i32,
+        end_date: i32,
+        column: &str,
+    ) -> Option<f64> {
+        self.record_for_end_date(ts_code, trade_date, end_date)?
+            .column(column)
+    }
+
+    pub fn annual_values(
+        &self,
+        ts_code: &str,
+        trade_date: i32,
+        column: &str,
+        count: usize,
+    ) -> Option<Vec<f64>> {
+        let by_end_date = self.by_ts_code.get(ts_code)?;
+        for (&anchor, _) in by_end_date.iter().rev() {
+            if anchor % 10_000 != 12_31 {
+                continue;
+            }
+            let mut year = anchor / 10_000;
+            let mut values = Vec::with_capacity(count);
+            let mut valid = true;
+            for _ in 0..count {
+                let end_date = year * 10_000 + 12_31;
+                let Some(value) =
+                    self.annual_value_for_end_date(ts_code, trade_date, end_date, column)
+                else {
+                    valid = false;
+                    break;
+                };
+                values.push(value);
+                year -= 1;
+            }
+            if valid {
+                values.reverse();
+                return Some(values);
+            }
+        }
+        None
     }
 
     pub fn quarters<'a>(
@@ -582,6 +660,40 @@ mod tests {
                 .and_then(|record| record.column("value")),
             Some(12.0)
         );
+    }
+
+    #[test]
+    fn pit_financial_data_exposes_annual_and_ttm_helpers() {
+        let table = financial_table(&[
+            (20211231, 20220430, 1, 0, 10.0),
+            (20221231, 20230430, 1, 0, 20.0),
+            (20230331, 20230430, 1, 0, 1.0),
+            (20230630, 20230831, 1, 0, 2.0),
+            (20230930, 20231031, 1, 0, 3.0),
+            (20231231, 20240430, 1, 0, 4.0),
+            (20241231, 20250430, 1, 0, 40.0),
+        ]);
+        let data =
+            PitFinancialData::from_table(&table, &["value"], ReportTypePreference::consolidated())
+                .expect("pit data");
+
+        assert_eq!(
+            data.latest_annual_end_date("000001.SZ", 20240501),
+            Some(20231231)
+        );
+        assert_eq!(
+            data.latest_annual_value("000001.SZ", 20240501, "value"),
+            Some(4.0)
+        );
+        assert_eq!(
+            data.annual_value_for_end_date("000001.SZ", 20240501, 20221231, "value"),
+            Some(20.0)
+        );
+        assert_eq!(
+            data.annual_values("000001.SZ", 20250501, "value", 3),
+            Some(vec![20.0, 4.0, 40.0])
+        );
+        assert_eq!(data.ttm_sum("000001.SZ", 20240501, "value"), Some(10.0));
     }
 
     #[test]

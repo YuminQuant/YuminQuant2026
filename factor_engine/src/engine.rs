@@ -12,7 +12,10 @@ use crate::core::{
     FactorSpec, Frequency, IntradayDailyRawAuxiliaryRequest, IntradayDailyRawRequest,
     IntradayDailyRawSpec,
 };
-use crate::data::{DataCatalog, DataPool, DisclosureTableCache, MarketDataLoader};
+use crate::data::{
+    financial_disclosure_years_for_range, DataCatalog, DataPool, DisclosureTableCache,
+    MarketDataLoader,
+};
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
 use crate::factor::{Factor, IntradayRawMaterializeMode};
@@ -319,6 +322,11 @@ impl Engine {
                 .iter()
                 .map(|idx| specs[*idx].clone())
                 .collect::<Vec<_>>();
+            let group_requests = merge_requests(
+                group_specs
+                    .iter()
+                    .flat_map(|spec| spec.dependencies.clone()),
+            );
             let group_max_lookback = group_specs
                 .iter()
                 .map(|spec| spec.lookback.trading_days)
@@ -436,6 +444,11 @@ impl Engine {
                         batch_end_date,
                         batch_specs.len()
                     ));
+                }
+                let keep_years =
+                    financial_years_for_requests(&group_requests, batch_start_date, batch_end_date);
+                if !keep_years.is_empty() {
+                    disclosure_cache.retain_financial_years(&keep_years);
                 }
             }
         }
@@ -1418,6 +1431,28 @@ where
             .then_with(|| left.bar_size.cmp(&right.bar_size))
     });
     merged
+}
+
+fn financial_years_for_requests(
+    requests: &[DataRequest],
+    start_date: i32,
+    end_date: i32,
+) -> BTreeSet<i32> {
+    let mut years = BTreeSet::new();
+    for request in requests {
+        if !matches!(
+            request.dataset,
+            DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow
+        ) {
+            continue;
+        }
+        years.extend(financial_disclosure_years_for_range(
+            start_date,
+            end_date,
+            request.financial_quarters.unwrap_or(0),
+        ));
+    }
+    years
 }
 
 fn validate_date_value(date: i32, name: &str) -> Result<()> {

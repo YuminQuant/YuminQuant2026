@@ -244,7 +244,54 @@ Ordinary factor runs execute by `date_batch x factor_batch`. Each batch merges d
 
 ### Multi-output Factor Providers / 多输出因子 Provider
 
-中文规则：
+适用场景：
+
+- 多个正式因子共享同一套昂贵前置计算，例如财务向量、截面相似度矩阵、peer network、同一套复杂截面状态。
+- 不适用于普通单因子；普通因子继续只写 `spec()` 和 `compute()`。
+
+后续开发流程：
+
+1. 在 `factor/common/` 下写一个共享 provider 模块，例如 `financial_similarity.rs`。
+2. 共享 provider 模块负责：
+   - 定义所有正式输出 id 常量。
+   - 提供 `spec(kind)` 或类似 helper 生成各正式因子的 `FactorSpec`。
+   - 提供 `compute_requested(requested_ids, context, data)`，一次性构造共享前置状态，并只计算本次请求的输出分支。
+3. 在 `factor/chn_stock/daily/` 下为每个正式输出保留一个很薄的 wrapper 文件，例如：
+   - `f_momentum_80pec.rs`
+   - `link_new.rs`
+4. 每个 wrapper 的 `spec()` 返回自己的正式因子 metadata。
+5. 同一组 wrapper 的 `compute_provider_key()` 必须返回同一个稳定 key，例如：
+   `stock|daily|financial_similarity`。
+6. 每个 wrapper 的 `compute_many(requested_ids, context, data)` 转发到共享 provider 的 `compute_requested(...)`。
+7. 每个 wrapper 的 `compute()` 只作为单因子兼容入口，通常用单个自身 id 调用 `compute_requested(...)`，并取回对应 `FactorSeries`。
+8. 在共享 provider 内部必须做 requested-aware 分支：
+   - 共享前置计算可以统一做。
+   - 只请求 `link_new` 时，不应计算 `f_momentum_80pec` 独有的 top-peer Ret20 分支。
+   - 只请求某个输出时，不应返回未请求 sibling factor。
+9. 如果某个 sibling factor 后续被 `deprecated`，它不会进入 `requested_ids`；provider 独有分支也不应运行，除非 active factor 仍需要同一共享前置状态。
+
+Development workflow:
+
+1. Add a shared provider module under `factor/common/`, for example `financial_similarity.rs`.
+2. The shared provider should:
+   - Define all formal output id constants.
+   - Provide `spec(kind)` or an equivalent helper for each formal `FactorSpec`.
+   - Provide `compute_requested(requested_ids, context, data)`, which builds shared setup once and computes only requested output branches.
+3. Keep one thin wrapper file per formal output under `factor/chn_stock/daily/`, for example:
+   - `f_momentum_80pec.rs`
+   - `link_new.rs`
+4. Each wrapper's `spec()` returns its own formal factor metadata.
+5. Wrappers in the same provider group must return the same stable `compute_provider_key()`, for example:
+   `stock|daily|financial_similarity`.
+6. Each wrapper's `compute_many(requested_ids, context, data)` delegates to the shared provider.
+7. Each wrapper's `compute()` remains the single-factor compatibility entry point; it usually calls `compute_requested(...)` with only its own id and returns the matching `FactorSeries`.
+8. The shared provider must be requested-aware:
+   - Shared setup may be computed once.
+   - If only `link_new` is requested, do not compute the top-peer Ret20 branch unique to `f_momentum_80pec`.
+   - Do not return unrequested sibling factors.
+9. If a sibling factor is later marked `deprecated`, it will not enter `requested_ids`; deprecated-only branches should not run unless an active factor still needs the shared setup.
+
+Engine 兼容性：
 
 - 普通旧因子只需要实现 `spec()` 和 `compute()`；`provided_specs()`、`compute_provider_key()`、`compute_many()` 都有默认实现，因此旧代码无需改动。
 - 默认 `provided_specs()` 返回单个 `spec()`；默认 `compute_provider_key()` 返回该因子的 registry key；默认 `compute_many()` 只在本因子被请求时调用原来的 `compute()`。
@@ -253,7 +300,7 @@ Ordinary factor runs execute by `date_batch x factor_batch`. Each batch merges d
 - `compute_many()` 必须 requested-aware：只计算本次 `requested_ids` 需要的独有分支。共享前置状态可以保留，但不能顺手计算未请求 sibling factor 的昂贵指标分支。
 - `deprecated` 因子不会进入 selected factors，因此也不会进入 provider 的 `requested_ids`；除非 active 因子仍共享同一正式输出或同一必要前置计算，否则 deprecated 独有分支不应被计算。
 
-English rules:
+Engine compatibility:
 
 - Legacy single-output factors only need `spec()` and `compute()`. `provided_specs()`, `compute_provider_key()`, and `compute_many()` have backward-compatible defaults, so existing factors do not need changes.
 - By default, `provided_specs()` returns one `spec()`, `compute_provider_key()` returns the factor registry key, and `compute_many()` delegates to the original `compute()` only when the factor id is requested.

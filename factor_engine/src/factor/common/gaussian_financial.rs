@@ -136,7 +136,7 @@ pub fn spec(kind: GaussianFinancialOutput) -> FactorSpec {
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
-        tags: tags(),
+        tags: tags(kind),
         description: format!(
             "DFZQ/DBZQ financial Gaussian-rank reconstruction factor {}. It Gaussian-rank transforms the financial variables cross-sectionally, takes OLS residuals, applies the requested neutralization rule, and excludes BJ stocks.",
             kind.id()
@@ -261,8 +261,8 @@ pub fn compute_requested(
     Ok(output)
 }
 
-fn tags() -> Vec<String> {
-    [
+fn tags(kind: GaussianFinancialOutput) -> Vec<String> {
+    let mut tags = [
         "DFZQ",
         "DBZQ",
         "financial",
@@ -278,7 +278,17 @@ fn tags() -> Vec<String> {
     ]
     .iter()
     .map(|value| value.to_string())
-    .collect()
+    .collect::<Vec<_>>();
+    if kind.is_deprecated() {
+        tags.push("deprecated".to_string());
+    }
+    tags
+}
+
+impl GaussianFinancialOutput {
+    fn is_deprecated(self) -> bool {
+        matches!(self, Self::CfpSq | Self::DeltaRoe | Self::ProfitYoySq)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]

@@ -200,6 +200,7 @@ data/strategy/future/ag_sma_20/holdings.parquet
 ## 开发教程入口 / Development Guides
 
 - 因子开发 / Factor development: [factor_engine/FACTOR_DEVELOPMENT_README.md](factor_engine/FACTOR_DEVELOPMENT_README.md)
+- 财务因子开发 / Financial factor development: [factor_engine/FINANCIAL_FACTOR_DEVELOPMENT_README.md](factor_engine/FINANCIAL_FACTOR_DEVELOPMENT_README.md)
 - Factor engine CLI: [factor_engine/README.md](factor_engine/README.md)
 - Strategy development: [factor_engine/STRATEGY_README.md](factor_engine/STRATEGY_README.md)
 - Strategy config: [strategy_config/README.md](strategy_config/README.md)

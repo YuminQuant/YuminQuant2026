@@ -11,7 +11,10 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
-use crate::factor::common::{PitFinancialData, ReportTypePreference};
+use crate::factor::common::{
+    cached_financial_stock_panel, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialStatementDataset, PanelColumn, PitFinancialData, ReportTypePreference,
+};
 
 pub struct StockDailyBarraCne6Quality;
 
@@ -109,48 +112,40 @@ impl BarraExposure for StockDailyBarraCne6Quality {
         let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
         let analyst_by_stock = index_analyst_records(&analyst_records);
 
-        let market_leverage_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let offset = panel_offset(panel, trade_date, ts_code)?;
-            let me = clean(total_mv.values()[offset])?;
-            let ld = balance
-                .latest_annual_value(ts_code, trade_date, "total_ncl")
-                .unwrap_or(0.0);
-            safe_div(me + ld, me)
-        })?;
+        let (market_leverage_raw, book_leverage_raw, debt_to_asset_raw) =
+            leverage_raw_columns(panel, &balance, &total_mv)?;
         let market_leverage =
             standardize_panel_industry_filled_weighted(&market_leverage_raw, &weights, data)?;
-
-        let book_leverage_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let offset = panel_offset(panel, trade_date, ts_code)?;
-            let me = clean(total_mv.values()[offset])?;
-            let be =
-                balance.latest_annual_value(ts_code, trade_date, "total_hldr_eqy_exc_min_int")?;
-            let ld = balance
-                .latest_annual_value(ts_code, trade_date, "total_ncl")
-                .unwrap_or(0.0);
-            safe_div(be + ld, me)
-        })?;
         let book_leverage =
             standardize_panel_industry_filled_weighted(&book_leverage_raw, &weights, data)?;
-
-        let debt_to_asset_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let tl = balance.latest_annual_value(ts_code, trade_date, "total_liab")?;
-            let ta = balance.latest_annual_value(ts_code, trade_date, "total_assets")?;
-            safe_div(tl, ta)
-        })?;
         let debt_to_asset =
             standardize_panel_industry_filled_weighted(&debt_to_asset_raw, &weights, data)?;
         let leverage_raw =
             average_columns(panel, &[&market_leverage, &book_leverage, &debt_to_asset])?;
         let leverage = zscore_panel_weighted_filled_zero(&leverage_raw, &weights)?;
 
-        let variation_sales_raw = annual_cv(panel, &income_annual, "revenue")?;
+        let variation_sales_raw = annual_cv(
+            panel,
+            &income_annual,
+            FinancialStatementDataset::Income,
+            "revenue",
+        )?;
         let variation_sales =
             standardize_panel_industry_filled_weighted(&variation_sales_raw, &weights, data)?;
-        let variation_earnings_raw = annual_cv(panel, &income_annual, "n_income_attr_p")?;
+        let variation_earnings_raw = annual_cv(
+            panel,
+            &income_annual,
+            FinancialStatementDataset::Income,
+            "n_income_attr_p",
+        )?;
         let variation_earnings =
             standardize_panel_industry_filled_weighted(&variation_earnings_raw, &weights, data)?;
-        let variation_cash_flows_raw = annual_cv(panel, &cashflow_annual, "n_incr_cash_cash_equ")?;
+        let variation_cash_flows_raw = annual_cv(
+            panel,
+            &cashflow_annual,
+            FinancialStatementDataset::CashFlow,
+            "n_incr_cash_cash_equ",
+        )?;
         let variation_cash_flows =
             standardize_panel_industry_filled_weighted(&variation_cash_flows_raw, &weights, data)?;
         let analyst_forecast_std_raw = analyst_eps_std_column(panel, &close, &analyst_by_stock)?;
@@ -168,83 +163,27 @@ impl BarraExposure for StockDailyBarraCne6Quality {
         let earnings_variability =
             zscore_panel_weighted_filled_zero(&earnings_variability, &weights)?;
 
-        let accruals_bs_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let end_date = balance.latest_annual_end_date(ts_code, trade_date)?;
-            let prev_end = (end_date / 10_000 - 1) * 10_000 + 12_31;
-            let current_noa = noa(&balance, ts_code, trade_date, end_date)?;
-            let prev_noa = noa(&balance, ts_code, trade_date, prev_end)?;
-            let da = annual_da(&cashflow_annual, ts_code, trade_date, end_date).unwrap_or(0.0);
-            let ta =
-                balance.annual_value_for_end_date(ts_code, trade_date, end_date, "total_assets")?;
-            safe_div(-(current_noa - prev_noa - da), ta)
-        })?;
+        let (accruals_bs_raw, accruals_cf_raw) =
+            earnings_quality_raw_columns(panel, &balance, &income_annual, &cashflow_annual)?;
         let accruals_bs =
             standardize_panel_industry_filled_weighted(&accruals_bs_raw, &weights, data)?;
-        let accruals_cf_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let end_date = balance.latest_annual_end_date(ts_code, trade_date)?;
-            let ni = cashflow_annual
-                .annual_value_for_end_date(ts_code, trade_date, end_date, "net_profit")
-                .or_else(|| {
-                    income_annual.annual_value_for_end_date(
-                        ts_code,
-                        trade_date,
-                        end_date,
-                        "n_income_attr_p",
-                    )
-                })?;
-            let cfo = cashflow_annual.annual_value_for_end_date(
-                ts_code,
-                trade_date,
-                end_date,
-                "n_cashflow_act",
-            )?;
-            let cfi = cashflow_annual.annual_value_for_end_date(
-                ts_code,
-                trade_date,
-                end_date,
-                "n_cashflow_inv_act",
-            )?;
-            let da = annual_da(&cashflow_annual, ts_code, trade_date, end_date).unwrap_or(0.0);
-            let ta =
-                balance.annual_value_for_end_date(ts_code, trade_date, end_date, "total_assets")?;
-            safe_div(-(ni - (cfo + cfi) + da), ta)
-        })?;
         let accruals_cf =
             standardize_panel_industry_filled_weighted(&accruals_cf_raw, &weights, data)?;
         let earnings_quality_raw = average_columns(panel, &[&accruals_bs, &accruals_cf])?;
         let earnings_quality = zscore_panel_weighted_filled_zero(&earnings_quality_raw, &weights)?;
 
-        let asset_turnover_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let sales = income.ttm_sum(ts_code, trade_date, "revenue")?;
-            let ta = balance.latest_annual_value(ts_code, trade_date, "total_assets")?;
-            safe_div(sales, ta)
-        })?;
+        let (
+            asset_turnover_raw,
+            gross_profitability_raw,
+            gross_profit_margin_raw,
+            return_on_assets_raw,
+        ) = profitability_raw_columns(panel, &income, &income_annual, &balance)?;
         let asset_turnover =
             standardize_panel_industry_filled_weighted(&asset_turnover_raw, &weights, data)?;
-        let gross_profitability_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let sales = income_annual.latest_annual_value(ts_code, trade_date, "revenue")?;
-            let cogs = income_annual
-                .latest_annual_value(ts_code, trade_date, "oper_cost")
-                .unwrap_or(0.0);
-            let ta = balance.latest_annual_value(ts_code, trade_date, "total_assets")?;
-            safe_div(sales - cogs, ta)
-        })?;
         let gross_profitability =
             standardize_panel_industry_filled_weighted(&gross_profitability_raw, &weights, data)?;
-        let gross_profit_margin_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let sales = income_annual.latest_annual_value(ts_code, trade_date, "revenue")?;
-            let cogs = income_annual
-                .latest_annual_value(ts_code, trade_date, "oper_cost")
-                .unwrap_or(0.0);
-            safe_div(sales - cogs, sales)
-        })?;
         let gross_profit_margin =
             standardize_panel_industry_filled_weighted(&gross_profit_margin_raw, &weights, data)?;
-        let return_on_assets_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let earnings = income.ttm_sum(ts_code, trade_date, "n_income_attr_p")?;
-            let ta = balance.latest_annual_value(ts_code, trade_date, "total_assets")?;
-            safe_div(earnings, ta)
-        })?;
         let return_on_assets =
             standardize_panel_industry_filled_weighted(&return_on_assets_raw, &weights, data)?;
         let profitability = average_columns(
@@ -258,14 +197,31 @@ impl BarraExposure for StockDailyBarraCne6Quality {
         )?;
         let profitability = zscore_panel_weighted_filled_zero(&profitability, &weights)?;
 
-        let total_assets_growth_raw = annual_slope_ratio(panel, &balance, "total_assets", true)?;
+        let total_assets_growth_raw = annual_slope_ratio(
+            panel,
+            &balance,
+            FinancialStatementDataset::BalanceSheet,
+            "total_assets",
+            true,
+        )?;
         let total_assets_growth =
             standardize_panel_industry_filled_weighted(&total_assets_growth_raw, &weights, data)?;
-        let issuance_growth_raw = annual_slope_ratio(panel, &balance, "total_share", true)?;
+        let issuance_growth_raw = annual_slope_ratio(
+            panel,
+            &balance,
+            FinancialStatementDataset::BalanceSheet,
+            "total_share",
+            true,
+        )?;
         let issuance_growth =
             standardize_panel_industry_filled_weighted(&issuance_growth_raw, &weights, data)?;
-        let capex_growth_raw =
-            annual_slope_ratio(panel, &cashflow_annual, "c_pay_acq_const_fiolta", true)?;
+        let capex_growth_raw = annual_slope_ratio(
+            panel,
+            &cashflow_annual,
+            FinancialStatementDataset::CashFlow,
+            "c_pay_acq_const_fiolta",
+            true,
+        )?;
         let capex_growth =
             standardize_panel_industry_filled_weighted(&capex_growth_raw, &weights, data)?;
         let investment_quality = average_columns(
@@ -384,30 +340,398 @@ fn quality_spec(id: &str) -> BarraSpec {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct LeverageSlowSnapshot {
+    total_ncl: f64,
+    equity: Option<f64>,
+    total_liab: Option<f64>,
+    total_assets: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EarningsQualitySlowSnapshot {
+    accruals_bs: Option<f64>,
+    accruals_cf: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProfitabilitySlowSnapshot {
+    asset_turnover: Option<f64>,
+    gross_profitability: Option<f64>,
+    gross_profit_margin: Option<f64>,
+    return_on_assets: Option<f64>,
+}
+
+fn leverage_raw_columns(
+    panel: &crate::factor::common::DailyPanel,
+    balance: &PitFinancialData,
+    total_mv: &PanelColumn,
+) -> Result<(PanelColumn, PanelColumn, PanelColumn)> {
+    let instrument_count = panel.instruments().len();
+    let mut market_values = vec![None; panel.shape_len()];
+    let mut book_values = vec![None; panel.shape_len()];
+    let mut debt_values = vec![None; panel.shape_len()];
+    let mut cache = crate::factor::common::FinancialStockSnapshotCache::<LeverageSlowSnapshot>::new(
+        instrument_count,
+    );
+
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
+            continue;
+        }
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let offset = date_offset + instrument_idx;
+            let snapshot = cache.get_or_update(
+                instrument_idx,
+                leverage_marker(ts_code, trade_date, balance),
+                || leverage_snapshot(ts_code, trade_date, balance),
+            );
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            let Some(me) = clean(total_mv.values()[offset]) else {
+                continue;
+            };
+            market_values[offset] = safe_div(me + snapshot.total_ncl, me);
+            book_values[offset] = snapshot
+                .equity
+                .and_then(|be| safe_div(be + snapshot.total_ncl, me));
+            debt_values[offset] = snapshot
+                .total_liab
+                .zip(snapshot.total_assets)
+                .and_then(|(tl, ta)| safe_div(tl, ta));
+        }
+    }
+
+    Ok((
+        panel.column_from_values(market_values)?,
+        panel.column_from_values(book_values)?,
+        panel.column_from_values(debt_values)?,
+    ))
+}
+
+fn leverage_marker(
+    ts_code: &str,
+    trade_date: i32,
+    balance: &PitFinancialData,
+) -> Option<FinancialEventMarker> {
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_latest_annual(
+        FinancialStatementDataset::BalanceSheet,
+        balance,
+        ts_code,
+        trade_date,
+    );
+    if let Some(marker) = builder.build() {
+        return Some(marker);
+    }
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_synthetic("no_balance_annual", 1);
+    builder.build()
+}
+
+fn leverage_snapshot(
+    ts_code: &str,
+    trade_date: i32,
+    balance: &PitFinancialData,
+) -> Option<LeverageSlowSnapshot> {
+    Some(LeverageSlowSnapshot {
+        total_ncl: balance
+            .latest_annual_value(ts_code, trade_date, "total_ncl")
+            .unwrap_or(0.0),
+        equity: balance.latest_annual_value(ts_code, trade_date, "total_hldr_eqy_exc_min_int"),
+        total_liab: balance.latest_annual_value(ts_code, trade_date, "total_liab"),
+        total_assets: balance.latest_annual_value(ts_code, trade_date, "total_assets"),
+    })
+}
+
+fn earnings_quality_raw_columns(
+    panel: &crate::factor::common::DailyPanel,
+    balance: &PitFinancialData,
+    income_annual: &PitFinancialData,
+    cashflow_annual: &PitFinancialData,
+) -> Result<(PanelColumn, PanelColumn)> {
+    let instrument_count = panel.instruments().len();
+    let mut accruals_bs = vec![None; panel.shape_len()];
+    let mut accruals_cf = vec![None; panel.shape_len()];
+    let mut cache =
+        crate::factor::common::FinancialStockSnapshotCache::<EarningsQualitySlowSnapshot>::new(
+            instrument_count,
+        );
+
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
+            continue;
+        }
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let offset = date_offset + instrument_idx;
+            let snapshot = cache.get_or_update(
+                instrument_idx,
+                earnings_quality_marker(
+                    ts_code,
+                    trade_date,
+                    balance,
+                    income_annual,
+                    cashflow_annual,
+                ),
+                || {
+                    earnings_quality_snapshot(
+                        ts_code,
+                        trade_date,
+                        balance,
+                        income_annual,
+                        cashflow_annual,
+                    )
+                },
+            );
+            if let Some(snapshot) = snapshot {
+                accruals_bs[offset] = snapshot.accruals_bs;
+                accruals_cf[offset] = snapshot.accruals_cf;
+            }
+        }
+    }
+
+    Ok((
+        panel.column_from_values(accruals_bs)?,
+        panel.column_from_values(accruals_cf)?,
+    ))
+}
+
+fn earnings_quality_marker(
+    ts_code: &str,
+    trade_date: i32,
+    balance: &PitFinancialData,
+    income_annual: &PitFinancialData,
+    cashflow_annual: &PitFinancialData,
+) -> Option<FinancialEventMarker> {
+    let end_date = balance.latest_annual_end_date(ts_code, trade_date)?;
+    let prev_end = (end_date / 10_000 - 1) * 10_000 + 12_31;
+    let mut builder = FinancialEventMarkerBuilder::new();
+    for end_date in [end_date, prev_end] {
+        builder.include_record_for_end_date(
+            FinancialStatementDataset::BalanceSheet,
+            balance,
+            ts_code,
+            trade_date,
+            end_date,
+        );
+    }
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::Income,
+        income_annual,
+        ts_code,
+        trade_date,
+        end_date,
+    );
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::CashFlow,
+        cashflow_annual,
+        ts_code,
+        trade_date,
+        end_date,
+    );
+    builder.build()
+}
+
+fn earnings_quality_snapshot(
+    ts_code: &str,
+    trade_date: i32,
+    balance: &PitFinancialData,
+    income_annual: &PitFinancialData,
+    cashflow_annual: &PitFinancialData,
+) -> Option<EarningsQualitySlowSnapshot> {
+    let end_date = balance.latest_annual_end_date(ts_code, trade_date)?;
+    let prev_end = (end_date / 10_000 - 1) * 10_000 + 12_31;
+    let current_noa = noa(balance, ts_code, trade_date, end_date);
+    let prev_noa = noa(balance, ts_code, trade_date, prev_end);
+    let da = annual_da(cashflow_annual, ts_code, trade_date, end_date).unwrap_or(0.0);
+    let ta = balance.annual_value_for_end_date(ts_code, trade_date, end_date, "total_assets");
+    let accruals_bs = current_noa
+        .zip(prev_noa)
+        .zip(ta)
+        .and_then(|((current_noa, prev_noa), ta)| safe_div(-(current_noa - prev_noa - da), ta));
+
+    let ni = cashflow_annual
+        .annual_value_for_end_date(ts_code, trade_date, end_date, "net_profit")
+        .or_else(|| {
+            income_annual.annual_value_for_end_date(
+                ts_code,
+                trade_date,
+                end_date,
+                "n_income_attr_p",
+            )
+        });
+    let cfo =
+        cashflow_annual.annual_value_for_end_date(ts_code, trade_date, end_date, "n_cashflow_act");
+    let cfi = cashflow_annual.annual_value_for_end_date(
+        ts_code,
+        trade_date,
+        end_date,
+        "n_cashflow_inv_act",
+    );
+    let accruals_cf = ni
+        .zip(cfo)
+        .zip(cfi)
+        .zip(ta)
+        .and_then(|(((ni, cfo), cfi), ta)| safe_div(-(ni - (cfo + cfi) + da), ta));
+    Some(EarningsQualitySlowSnapshot {
+        accruals_bs,
+        accruals_cf,
+    })
+}
+
+fn profitability_raw_columns(
+    panel: &crate::factor::common::DailyPanel,
+    income: &PitFinancialData,
+    income_annual: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Result<(PanelColumn, PanelColumn, PanelColumn, PanelColumn)> {
+    let instrument_count = panel.instruments().len();
+    let mut asset_turnover = vec![None; panel.shape_len()];
+    let mut gross_profitability = vec![None; panel.shape_len()];
+    let mut gross_profit_margin = vec![None; panel.shape_len()];
+    let mut return_on_assets = vec![None; panel.shape_len()];
+    let mut cache =
+        crate::factor::common::FinancialStockSnapshotCache::<ProfitabilitySlowSnapshot>::new(
+            instrument_count,
+        );
+
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
+            continue;
+        }
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let offset = date_offset + instrument_idx;
+            let snapshot = cache.get_or_update(
+                instrument_idx,
+                profitability_marker(ts_code, trade_date, income, income_annual, balance),
+                || profitability_snapshot(ts_code, trade_date, income, income_annual, balance),
+            );
+            if let Some(snapshot) = snapshot {
+                asset_turnover[offset] = snapshot.asset_turnover;
+                gross_profitability[offset] = snapshot.gross_profitability;
+                gross_profit_margin[offset] = snapshot.gross_profit_margin;
+                return_on_assets[offset] = snapshot.return_on_assets;
+            }
+        }
+    }
+
+    Ok((
+        panel.column_from_values(asset_turnover)?,
+        panel.column_from_values(gross_profitability)?,
+        panel.column_from_values(gross_profit_margin)?,
+        panel.column_from_values(return_on_assets)?,
+    ))
+}
+
+fn profitability_marker(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    income_annual: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<FinancialEventMarker> {
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_latest_ttm(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+    );
+    builder.include_latest_annual(
+        FinancialStatementDataset::Income,
+        income_annual,
+        ts_code,
+        trade_date,
+    );
+    builder.include_latest_annual(
+        FinancialStatementDataset::BalanceSheet,
+        balance,
+        ts_code,
+        trade_date,
+    );
+    builder.build()
+}
+
+fn profitability_snapshot(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    income_annual: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<ProfitabilitySlowSnapshot> {
+    let sales_ttm = income.ttm_sum(ts_code, trade_date, "revenue");
+    let earnings_ttm = income.ttm_sum(ts_code, trade_date, "n_income_attr_p");
+    let annual_sales = income_annual.latest_annual_value(ts_code, trade_date, "revenue");
+    let annual_cogs = income_annual
+        .latest_annual_value(ts_code, trade_date, "oper_cost")
+        .unwrap_or(0.0);
+    let total_assets = balance.latest_annual_value(ts_code, trade_date, "total_assets");
+    Some(ProfitabilitySlowSnapshot {
+        asset_turnover: sales_ttm
+            .zip(total_assets)
+            .and_then(|(sales, ta)| safe_div(sales, ta)),
+        gross_profitability: annual_sales
+            .zip(total_assets)
+            .and_then(|(sales, ta)| safe_div(sales - annual_cogs, ta)),
+        gross_profit_margin: annual_sales.and_then(|sales| safe_div(sales - annual_cogs, sales)),
+        return_on_assets: earnings_ttm
+            .zip(total_assets)
+            .and_then(|(earnings, ta)| safe_div(earnings, ta)),
+    })
+}
+
 fn annual_cv(
     panel: &crate::factor::common::DailyPanel,
     data: &PitFinancialData,
+    dataset: FinancialStatementDataset,
     column: &str,
 ) -> Result<crate::factor::common::PanelColumn> {
-    panel_from_target_stock_map(panel, |trade_date, ts_code| {
-        let values = data.annual_values(ts_code, trade_date, column, 5)?;
-        let mean = values.iter().sum::<f64>() / values.len() as f64;
-        sample_std(&values).and_then(|std| safe_div(std, mean.abs()))
-    })
+    cached_financial_stock_panel(
+        panel,
+        |trade_date, ts_code| annual_chain_marker(dataset, data, ts_code, trade_date, 5),
+        |trade_date, ts_code| {
+            let values = data.annual_values(ts_code, trade_date, column, 5)?;
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            sample_std(&values).and_then(|std| safe_div(std, mean.abs()))
+        },
+        |value, _trade_date, _ts_code, _offset| Some(*value),
+    )
 }
 
 fn annual_slope_ratio(
     panel: &crate::factor::common::DailyPanel,
     data: &PitFinancialData,
+    dataset: FinancialStatementDataset,
     column: &str,
     negate: bool,
 ) -> Result<crate::factor::common::PanelColumn> {
-    panel_from_target_stock_map(panel, |trade_date, ts_code| {
-        let values = data.annual_values(ts_code, trade_date, column, 5)?;
-        let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
-        let slope = slope_over_time(&values)?;
-        safe_div(slope, mean).map(|value| if negate { -value } else { value })
-    })
+    cached_financial_stock_panel(
+        panel,
+        |trade_date, ts_code| annual_chain_marker(dataset, data, ts_code, trade_date, 5),
+        |trade_date, ts_code| {
+            let values = data.annual_values(ts_code, trade_date, column, 5)?;
+            let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
+            let slope = slope_over_time(&values)?;
+            safe_div(slope, mean).map(|value| if negate { -value } else { value })
+        },
+        |value, _trade_date, _ts_code, _offset| Some(*value),
+    )
+}
+
+fn annual_chain_marker(
+    dataset: FinancialStatementDataset,
+    data: &PitFinancialData,
+    ts_code: &str,
+    trade_date: i32,
+    count: usize,
+) -> Option<FinancialEventMarker> {
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_annual_chain(dataset, data, ts_code, trade_date, count);
+    builder.build()
 }
 
 fn total_debt(data: &PitFinancialData, ts_code: &str, trade_date: i32, end_date: i32) -> f64 {

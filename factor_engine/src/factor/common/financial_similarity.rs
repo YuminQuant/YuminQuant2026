@@ -12,7 +12,10 @@ use crate::factor::common::stock_daily_ops::{
     adjusted_20d_return, is_bj_stock, mask_bj, neutralize_size_sector,
 };
 use crate::factor::common::vector::clean;
-use crate::factor::common::{DailyPanel, PanelColumn, PitFinancialData, ReportTypePreference};
+use crate::factor::common::{
+    DailyPanel, FinancialEventMarker, FinancialEventMarkerBuilder, FinancialStatementDataset,
+    FinancialStockSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+};
 use crate::operators::{cs_pctrank, cs_regression_residual};
 
 pub const F_MOMENTUM_80PEC_ID: &str = "f_momentum_80pec";
@@ -35,6 +38,12 @@ const BALANCE_COLUMNS: [&str; 6] = [
     "inventories",
     "accounts_receiv",
 ];
+
+#[derive(Clone, Copy, Debug)]
+struct FinancialMetricSlowSnapshot {
+    metrics: [Option<f64>; METRIC_DIM],
+    cash_dividend_ltm: f64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FinancialSimilarityOutput {
@@ -217,6 +226,8 @@ fn financial_metric_columns(
 ) -> Result<Vec<PanelColumn>> {
     let mut metric_values = vec![vec![None; panel.shape_len()]; METRIC_DIM];
     let instrument_count = panel.instruments().len();
+    let mut cache =
+        FinancialStockSnapshotCache::<FinancialMetricSlowSnapshot>::new(instrument_count);
 
     for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
         if !panel.is_target_date(trade_date) {
@@ -225,23 +236,32 @@ fn financial_metric_columns(
         let dividend_sum =
             dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date);
         for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let offset = date_idx * instrument_count + instrument_idx;
             if is_bj_stock(ts_code) {
+                cache.clear(instrument_idx);
                 continue;
             }
-            let offset = date_idx * instrument_count + instrument_idx;
             if !panel.is_present_offset(offset) {
+                cache.clear(instrument_idx);
                 continue;
             }
             let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
             let cash_dividend = dividend_sum.get(ts_code.as_str()).copied().unwrap_or(0.0);
-            let metrics = financial_metrics_for_stock(
-                ts_code,
-                trade_date,
-                income,
-                balance,
-                total_mv_value,
-                cash_dividend,
-            );
+            let marker =
+                financial_metric_marker(ts_code, trade_date, income, balance, cash_dividend);
+            let Some(snapshot) = cache.get_or_update(instrument_idx, marker, || {
+                financial_metrics_slow_for_stock(
+                    ts_code,
+                    trade_date,
+                    income,
+                    balance,
+                    cash_dividend,
+                )
+            }) else {
+                continue;
+            };
+            let mut metrics = snapshot.metrics;
+            metrics[6] = safe_div_opt(Some(snapshot.cash_dividend_ltm), total_mv_value);
             for metric_idx in 0..METRIC_DIM {
                 metric_values[metric_idx][offset] = metrics[metric_idx];
             }
@@ -254,18 +274,91 @@ fn financial_metric_columns(
         .collect()
 }
 
-fn financial_metrics_for_stock(
+fn financial_metric_marker(
     ts_code: &str,
     trade_date: i32,
     income: &PitFinancialData,
     balance: &PitFinancialData,
-    total_mv: Option<f64>,
     cash_dividend_ltm: f64,
-) -> [Option<f64>; METRIC_DIM] {
+) -> Option<FinancialEventMarker> {
+    let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
+    let yoy_end = same_quarter_previous_year(latest_end);
+    let previous_end = previous_quarter_end_date(latest_end);
+    let previous_yoy_end = previous_end.map(same_quarter_previous_year);
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        latest_end,
+    );
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        yoy_end,
+    );
+    if let Some(end_date) = previous_end {
+        builder.include_record_for_end_date(
+            FinancialStatementDataset::Income,
+            income,
+            ts_code,
+            trade_date,
+            end_date,
+        );
+    }
+    if let Some(end_date) = previous_yoy_end {
+        builder.include_record_for_end_date(
+            FinancialStatementDataset::Income,
+            income,
+            ts_code,
+            trade_date,
+            end_date,
+        );
+    }
+    builder.include_ttm_for_end_date(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        latest_end,
+    );
+    builder.include_ttm_for_end_date(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        yoy_end,
+    );
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::BalanceSheet,
+        balance,
+        ts_code,
+        trade_date,
+        latest_end,
+    );
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::BalanceSheet,
+        balance,
+        ts_code,
+        trade_date,
+        yoy_end,
+    );
+    builder.include_synthetic("cash_dividend_ltm", f64_marker_value(cash_dividend_ltm));
+    builder.build()
+}
+
+fn financial_metrics_slow_for_stock(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+    cash_dividend_ltm: f64,
+) -> Option<FinancialMetricSlowSnapshot> {
     let mut metrics = [None; METRIC_DIM];
-    let Some(latest_end) = income.latest_quarter_end_date(ts_code, trade_date) else {
-        return metrics;
-    };
+    let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
     let yoy_end = same_quarter_previous_year(latest_end);
     let previous_end = previous_quarter_end_date(latest_end);
     let previous_yoy_end = previous_end.map(same_quarter_previous_year);
@@ -326,11 +419,13 @@ fn financial_metrics_for_stock(
     metrics[5] = profit_yoy_growth
         .zip(previous_profit_yoy_growth)
         .and_then(|(latest_growth, previous_growth)| finite_value(latest_growth - previous_growth));
-    metrics[6] = safe_div_opt(Some(cash_dividend_ltm), total_mv);
     metrics[7] = growth_rate_opt(roe_ttm, roe_ttm_yoy);
     metrics[8] = safe_div_opt(revenue_ttm.map(|value| 2.0 * value), inventory_base);
     metrics[9] = safe_div_opt(revenue_ttm.map(|value| 2.0 * value), receivable_base);
-    metrics
+    Some(FinancialMetricSlowSnapshot {
+        metrics,
+        cash_dividend_ltm,
+    })
 }
 
 fn income_value(
@@ -379,6 +474,10 @@ fn sum_pair(left: Option<f64>, right: Option<f64>) -> Option<f64> {
 
 fn finite_value(value: f64) -> Option<f64> {
     value.is_finite().then_some(value)
+}
+
+fn f64_marker_value(value: f64) -> i64 {
+    i64::from_ne_bytes(value.to_bits().to_ne_bytes())
 }
 
 fn same_quarter_previous_year(end_date: i32) -> i32 {

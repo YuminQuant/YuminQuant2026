@@ -48,8 +48,10 @@ pub use cross_section::{
 };
 pub use daily::{compute_daily_by_instrument, DailySeries};
 pub use financial::{
-    DeadlinePolicy, PitFinancialData, PitFinancialRecord, QuarterMatrix, QuarterValue,
-    ReportTypePreference,
+    cached_financial_stock_panel, DeadlinePolicy, FinancialEventMarker,
+    FinancialEventMarkerBuilder, FinancialRecordMarker, FinancialStatementDataset,
+    FinancialStockSnapshotCache, FinancialSyntheticMarker, PitFinancialData, PitFinancialRecord,
+    QuarterMatrix, QuarterValue, ReportTypePreference,
 };
 pub use intraday_daily::{
     intraday_time_in_range, IntradayDailyPanel, IntradaySeries, IntradayWindow,

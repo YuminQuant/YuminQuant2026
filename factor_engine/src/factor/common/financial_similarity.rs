@@ -149,7 +149,10 @@ pub fn compute_requested(
         financial_metric_columns(&panel, &income, &balance, &total_mv, &dividends)?;
     let standardized_metrics = metric_columns
         .into_iter()
-        .map(|column| column.cs(|values| cs_pctrank(values, true)))
+        .map(|column| {
+            let ranked = column.cs(|values| cs_pctrank(values, true))?;
+            fill_present_non_bj_missing_ranks_with_zero(&ranked, &panel)
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let (f_momentum_raw, link_raw) = financial_similarity_raw_outputs(
@@ -226,20 +229,21 @@ fn financial_metric_columns(
                 continue;
             }
             let offset = date_idx * instrument_count + instrument_idx;
+            if !panel.is_present_offset(offset) {
+                continue;
+            }
             let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
             let cash_dividend = dividend_sum.get(ts_code.as_str()).copied().unwrap_or(0.0);
-            let Some(metrics) = financial_metrics_for_stock(
+            let metrics = financial_metrics_for_stock(
                 ts_code,
                 trade_date,
                 income,
                 balance,
                 total_mv_value,
                 cash_dividend,
-            ) else {
-                continue;
-            };
+            );
             for metric_idx in 0..METRIC_DIM {
-                metric_values[metric_idx][offset] = Some(metrics[metric_idx]);
+                metric_values[metric_idx][offset] = metrics[metric_idx];
             }
         }
     }
@@ -257,73 +261,76 @@ fn financial_metrics_for_stock(
     balance: &PitFinancialData,
     total_mv: Option<f64>,
     cash_dividend_ltm: f64,
-) -> Option<[f64; METRIC_DIM]> {
-    let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
+) -> [Option<f64>; METRIC_DIM] {
+    let mut metrics = [None; METRIC_DIM];
+    let Some(latest_end) = income.latest_quarter_end_date(ts_code, trade_date) else {
+        return metrics;
+    };
     let yoy_end = same_quarter_previous_year(latest_end);
-    let previous_end = previous_quarter_end_date(latest_end)?;
-    let previous_yoy_end = same_quarter_previous_year(previous_end);
+    let previous_end = previous_quarter_end_date(latest_end);
+    let previous_yoy_end = previous_end.map(same_quarter_previous_year);
 
     let current_assets =
-        balance_value(balance, ts_code, trade_date, latest_end, "total_cur_assets")?;
-    let current_liab = balance_value(balance, ts_code, trade_date, latest_end, "total_cur_liab")?;
-    let non_current_liab = balance_value(balance, ts_code, trade_date, latest_end, "total_ncl")?;
+        balance_value(balance, ts_code, trade_date, latest_end, "total_cur_assets");
+    let current_liab = balance_value(balance, ts_code, trade_date, latest_end, "total_cur_liab");
+    let non_current_liab = balance_value(balance, ts_code, trade_date, latest_end, "total_ncl");
     let equity = balance_value(
         balance,
         ts_code,
         trade_date,
         latest_end,
         "total_hldr_eqy_exc_min_int",
-    )?;
-    let current_liab_yoy = balance_value(balance, ts_code, trade_date, yoy_end, "total_cur_liab")?;
+    );
+    let current_liab_yoy = balance_value(balance, ts_code, trade_date, yoy_end, "total_cur_liab");
 
-    let revenue = income_value(income, ts_code, trade_date, latest_end, "revenue")?;
-    let revenue_yoy = income_value(income, ts_code, trade_date, yoy_end, "revenue")?;
-    let profit = income_value(income, ts_code, trade_date, latest_end, "n_income_attr_p")?;
-    let profit_yoy = income_value(income, ts_code, trade_date, yoy_end, "n_income_attr_p")?;
-    let previous_profit =
-        income_value(income, ts_code, trade_date, previous_end, "n_income_attr_p")?;
-    let previous_profit_yoy = income_value(
-        income,
-        ts_code,
-        trade_date,
-        previous_yoy_end,
-        "n_income_attr_p",
-    )?;
+    let revenue = income_value(income, ts_code, trade_date, latest_end, "revenue");
+    let revenue_yoy = income_value(income, ts_code, trade_date, yoy_end, "revenue");
+    let profit = income_value(income, ts_code, trade_date, latest_end, "n_income_attr_p");
+    let profit_yoy = income_value(income, ts_code, trade_date, yoy_end, "n_income_attr_p");
+    let previous_profit = previous_end.and_then(|end_date| {
+        income_value(income, ts_code, trade_date, end_date, "n_income_attr_p")
+    });
+    let previous_profit_yoy = previous_yoy_end.and_then(|end_date| {
+        income_value(income, ts_code, trade_date, end_date, "n_income_attr_p")
+    });
 
-    let revenue_ttm = income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, "revenue")?;
+    let revenue_ttm = income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, "revenue");
     let profit_ttm =
-        income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, "n_income_attr_p")?;
+        income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, "n_income_attr_p");
     let profit_ttm_yoy =
-        income.ttm_sum_for_end_date(ts_code, trade_date, yoy_end, "n_income_attr_p")?;
+        income.ttm_sum_for_end_date(ts_code, trade_date, yoy_end, "n_income_attr_p");
     let equity_yoy = balance_value(
         balance,
         ts_code,
         trade_date,
         yoy_end,
         "total_hldr_eqy_exc_min_int",
-    )?;
-    let inventories = balance_value(balance, ts_code, trade_date, latest_end, "inventories")?;
-    let inventories_yoy = balance_value(balance, ts_code, trade_date, yoy_end, "inventories")?;
-    let receivables = balance_value(balance, ts_code, trade_date, latest_end, "accounts_receiv")?;
-    let receivables_yoy = balance_value(balance, ts_code, trade_date, yoy_end, "accounts_receiv")?;
+    );
+    let inventories = balance_value(balance, ts_code, trade_date, latest_end, "inventories");
+    let inventories_yoy = balance_value(balance, ts_code, trade_date, yoy_end, "inventories");
+    let receivables = balance_value(balance, ts_code, trade_date, latest_end, "accounts_receiv");
+    let receivables_yoy = balance_value(balance, ts_code, trade_date, yoy_end, "accounts_receiv");
 
-    let profit_yoy_growth = growth_rate(profit, profit_yoy)?;
-    let previous_profit_yoy_growth = growth_rate(previous_profit, previous_profit_yoy)?;
-    let roe_ttm = safe_div(profit_ttm, equity)?;
-    let roe_ttm_yoy = safe_div(profit_ttm_yoy, equity_yoy)?;
+    let profit_yoy_growth = growth_rate_opt(profit, profit_yoy);
+    let previous_profit_yoy_growth = growth_rate_opt(previous_profit, previous_profit_yoy);
+    let roe_ttm = safe_div_opt(profit_ttm, equity);
+    let roe_ttm_yoy = safe_div_opt(profit_ttm_yoy, equity_yoy);
+    let inventory_base = sum_pair(inventories, inventories_yoy);
+    let receivable_base = sum_pair(receivables, receivables_yoy);
 
-    finite_array([
-        safe_div(current_assets, current_liab)?,
-        safe_div(non_current_liab, equity)?,
-        growth_rate(current_liab, current_liab_yoy)?,
-        growth_rate(revenue, revenue_yoy)?,
-        profit_yoy_growth,
-        profit_yoy_growth - previous_profit_yoy_growth,
-        safe_div(cash_dividend_ltm, total_mv?)?,
-        growth_rate(roe_ttm, roe_ttm_yoy)?,
-        safe_div(2.0 * revenue_ttm, inventories + inventories_yoy)?,
-        safe_div(2.0 * revenue_ttm, receivables + receivables_yoy)?,
-    ])
+    metrics[0] = safe_div_opt(current_assets, current_liab);
+    metrics[1] = safe_div_opt(non_current_liab, equity);
+    metrics[2] = growth_rate_opt(current_liab, current_liab_yoy);
+    metrics[3] = growth_rate_opt(revenue, revenue_yoy);
+    metrics[4] = profit_yoy_growth;
+    metrics[5] = profit_yoy_growth
+        .zip(previous_profit_yoy_growth)
+        .and_then(|(latest_growth, previous_growth)| finite_value(latest_growth - previous_growth));
+    metrics[6] = safe_div_opt(Some(cash_dividend_ltm), total_mv);
+    metrics[7] = growth_rate_opt(roe_ttm, roe_ttm_yoy);
+    metrics[8] = safe_div_opt(revenue_ttm.map(|value| 2.0 * value), inventory_base);
+    metrics[9] = safe_div_opt(revenue_ttm.map(|value| 2.0 * value), receivable_base);
+    metrics
 }
 
 fn income_value(
@@ -352,21 +359,51 @@ fn growth_rate(current: f64, previous: f64) -> Option<f64> {
     (previous.abs() > f64::EPSILON).then_some((current - previous) / previous.abs())
 }
 
+fn growth_rate_opt(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
+    growth_rate(current?, previous?)
+}
+
 fn safe_div(numerator: f64, denominator: f64) -> Option<f64> {
     (denominator.abs() > f64::EPSILON)
         .then_some(numerator / denominator)
         .filter(|value| value.is_finite())
 }
 
-fn finite_array(values: [f64; METRIC_DIM]) -> Option<[f64; METRIC_DIM]> {
-    values
-        .iter()
-        .all(|value| value.is_finite())
-        .then_some(values)
+fn safe_div_opt(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
+    safe_div(numerator?, denominator?)
+}
+
+fn sum_pair(left: Option<f64>, right: Option<f64>) -> Option<f64> {
+    finite_value(left? + right?)
+}
+
+fn finite_value(value: f64) -> Option<f64> {
+    value.is_finite().then_some(value)
 }
 
 fn same_quarter_previous_year(end_date: i32) -> i32 {
     (end_date / 10_000 - 1) * 10_000 + end_date % 10_000
+}
+
+fn fill_present_non_bj_missing_ranks_with_zero(
+    column: &PanelColumn,
+    panel: &DailyPanel,
+) -> Result<PanelColumn> {
+    let instrument_count = panel.instruments().len();
+    let mut values = column.values().to_vec();
+    for date_idx in 0..panel.dates().len() {
+        let offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let panel_idx = offset + instrument_idx;
+            if panel.is_present_offset(panel_idx)
+                && !is_bj_stock(ts_code)
+                && values[panel_idx].is_none()
+            {
+                values[panel_idx] = Some(0.0);
+            }
+        }
+    }
+    panel.column_from_values(values)
 }
 
 fn financial_similarity_raw_outputs(
@@ -415,6 +452,9 @@ fn financial_points_for_date(
             continue;
         }
         let panel_idx = offset + code_idx;
+        if !panel.is_present_offset(panel_idx) {
+            continue;
+        }
         let Some(values) = financial_unit_vector_at(metric_columns, panel_idx) else {
             continue;
         };
@@ -708,6 +748,11 @@ fn is_leap_year(year: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::core::{AssetClass, FactorContext, Frequency};
+    use crate::data::{ColumnData, Table};
+
     use super::*;
 
     fn assert_close(actual: f64, expected: f64) {
@@ -715,6 +760,129 @@ mod tests {
             (actual - expected).abs() < 1e-12,
             "actual={actual}, expected={expected}"
         );
+    }
+
+    fn test_context(target_dates: Vec<i32>) -> FactorContext {
+        FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: *target_dates.first().unwrap(),
+            end_date: *target_dates.last().unwrap(),
+            load_start_date: *target_dates.first().unwrap(),
+            load_dates: target_dates.clone(),
+            target_dates,
+        }
+    }
+
+    fn test_panel(rows: &[(i32, &str)]) -> DailyPanel {
+        let table = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(rows.iter().map(|(date, _)| Some(*date)).collect()),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(
+                    rows.iter()
+                        .map(|(_, ts_code)| Some((*ts_code).to_string()))
+                        .collect(),
+                ),
+            ),
+            (
+                "close".to_string(),
+                ColumnData::F64(rows.iter().map(|_| Some(1.0)).collect()),
+            ),
+        ]))
+        .expect("valid table");
+        let dates = rows.iter().map(|(date, _)| *date).collect::<Vec<_>>();
+        DailyPanel::from_table(&table, &test_context(dates)).expect("panel")
+    }
+
+    fn financial_similarity_income_table(ts_codes: &[&str]) -> Table {
+        let mut columns = BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(
+                    ts_codes
+                        .iter()
+                        .map(|ts_code| Some((*ts_code).to_string()))
+                        .collect(),
+                ),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(ts_codes.iter().map(|_| Some(20260101)).collect()),
+            ),
+            (
+                "f_ann_date".to_string(),
+                ColumnData::I32(ts_codes.iter().map(|_| Some(20260101)).collect()),
+            ),
+            (
+                "end_date".to_string(),
+                ColumnData::I32(ts_codes.iter().map(|_| Some(20251231)).collect()),
+            ),
+            (
+                "report_type".to_string(),
+                ColumnData::I64(ts_codes.iter().map(|_| Some(3)).collect()),
+            ),
+            (
+                "update_flag".to_string(),
+                ColumnData::I64(ts_codes.iter().map(|_| Some(0)).collect()),
+            ),
+        ]);
+        for column in INCOME_COLUMNS {
+            columns.insert(
+                column.to_string(),
+                ColumnData::F64(ts_codes.iter().map(|_| Some(1.0)).collect()),
+            );
+        }
+        Table::new(columns).expect("valid income table")
+    }
+
+    fn financial_similarity_balance_table(ts_codes: &[&str]) -> Table {
+        let mut columns = BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(
+                    ts_codes
+                        .iter()
+                        .map(|ts_code| Some((*ts_code).to_string()))
+                        .collect(),
+                ),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(ts_codes.iter().map(|_| Some(20260101)).collect()),
+            ),
+            (
+                "f_ann_date".to_string(),
+                ColumnData::I32(ts_codes.iter().map(|_| Some(20260101)).collect()),
+            ),
+            (
+                "end_date".to_string(),
+                ColumnData::I32(ts_codes.iter().map(|_| Some(20251231)).collect()),
+            ),
+            (
+                "report_type".to_string(),
+                ColumnData::I64(ts_codes.iter().map(|_| Some(1)).collect()),
+            ),
+            (
+                "update_flag".to_string(),
+                ColumnData::I64(ts_codes.iter().map(|_| Some(0)).collect()),
+            ),
+        ]);
+        for column in BALANCE_COLUMNS {
+            let value = if column == "total_cur_assets" {
+                2.0
+            } else {
+                1.0
+            };
+            columns.insert(
+                column.to_string(),
+                ColumnData::F64(ts_codes.iter().map(|_| Some(value)).collect()),
+            );
+        }
+        Table::new(columns).expect("valid balance table")
     }
 
     fn point(instrument_idx: usize, first_dim: f64, ret20: Option<f64>) -> FinancialPoint {
@@ -739,6 +907,109 @@ mod tests {
         assert_close(growth_rate(3.0, 2.0).unwrap(), 0.5);
         assert_close(growth_rate(-1.0, -2.0).unwrap(), 0.5);
         assert_eq!(growth_rate(1.0, 0.0), None);
+    }
+
+    #[test]
+    fn financial_similarity_metric_raw_skips_not_present_slots_even_with_financial_records() {
+        let panel = test_panel(&[
+            (20260101, "000001.SZ"),
+            (20260101, "000002.SZ"),
+            (20260102, "000001.SZ"),
+        ]);
+        let income_table = financial_similarity_income_table(&["000001.SZ", "000002.SZ"]);
+        let balance_table = financial_similarity_balance_table(&["000001.SZ", "000002.SZ"]);
+        let income = PitFinancialData::from_table(
+            &income_table,
+            &INCOME_COLUMNS,
+            ReportTypePreference::income_single_quarter(),
+        )
+        .unwrap();
+        let balance = PitFinancialData::from_table(
+            &balance_table,
+            &BALANCE_COLUMNS,
+            ReportTypePreference::balance_sheet_consolidated(),
+        )
+        .unwrap();
+        let total_mv = panel
+            .column_from_values(vec![Some(100.0); panel.shape_len()])
+            .unwrap();
+
+        let metric_columns =
+            financial_metric_columns(&panel, &income, &balance, &total_mv, &[]).unwrap();
+
+        assert_eq!(metric_columns[0].values()[2], Some(2.0));
+        assert_eq!(metric_columns[0].values()[3], None);
+    }
+
+    #[test]
+    fn financial_similarity_fills_missing_rank_only_for_present_non_bj() {
+        let panel = test_panel(&[
+            (20260101, "000001.SZ"),
+            (20260101, "000002.SZ"),
+            (20260101, "920001.BJ"),
+            (20260102, "000001.SZ"),
+            (20260102, "920001.BJ"),
+        ]);
+        let raw = panel
+            .column_from_values(vec![Some(1.0), Some(2.0), None, None, None, None])
+            .unwrap();
+        let ranked = raw.cs(|values| cs_pctrank(values, true)).unwrap();
+        let filled = fill_present_non_bj_missing_ranks_with_zero(&ranked, &panel).unwrap();
+
+        assert_eq!(
+            filled.values(),
+            &[Some(0.0), Some(1.0), None, Some(0.0), None, None]
+        );
+    }
+
+    #[test]
+    fn financial_similarity_partial_zero_filled_vector_still_enters_points() {
+        let panel = test_panel(&[
+            (20260101, "000001.SZ"),
+            (20260101, "000002.SZ"),
+            (20260101, "920001.BJ"),
+        ]);
+        let mut metric_columns = Vec::new();
+        metric_columns.push(
+            panel
+                .column_from_values(vec![Some(0.5), Some(0.0), None])
+                .unwrap(),
+        );
+        for _ in 1..METRIC_DIM {
+            metric_columns.push(
+                panel
+                    .column_from_values(vec![Some(0.0), Some(0.0), None])
+                    .unwrap(),
+            );
+        }
+
+        let points =
+            financial_points_for_date(&metric_columns, None, &panel, 0, panel.instruments().len());
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].instrument_idx, 0);
+    }
+
+    #[test]
+    fn financial_similarity_points_skip_not_present_slots_even_if_values_exist() {
+        let panel = test_panel(&[
+            (20260101, "000001.SZ"),
+            (20260101, "000002.SZ"),
+            (20260102, "000001.SZ"),
+        ]);
+        let metric_columns = (0..METRIC_DIM)
+            .map(|_| {
+                panel
+                    .column_from_values(vec![Some(0.1), Some(0.1), Some(0.1), Some(0.1)])
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let points =
+            financial_points_for_date(&metric_columns, None, &panel, 2, panel.instruments().len());
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].instrument_idx, 0);
     }
 
     #[test]

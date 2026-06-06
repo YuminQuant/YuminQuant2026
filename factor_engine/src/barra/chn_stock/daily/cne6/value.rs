@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::barra::common::{
     add_months, align_table_column, arithmetic_return, average_columns, clean, expand_index_column,
     fy1_quarter, log_return, panel_from_target_stock_map, safe_div, sqrt_circ_mv_weights,
-    standardize_panel_industry_filled_weighted, zscore_panel_weighted_filled_zero, StatementData,
+    standardize_panel_industry_filled_weighted, zscore_panel_weighted_filled_zero,
 };
 use crate::barra::BarraExposure;
 use crate::core::{
@@ -11,7 +11,7 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
-use crate::factor::common::DailyPanel;
+use crate::factor::common::{DailyPanel, PitFinancialData, ReportTypePreference};
 use crate::operators::{ts_ew_regression_alpha_beta_residual_sigma, ts_ew_sum};
 
 pub struct StockDailyBarraCne6Value;
@@ -119,10 +119,10 @@ impl BarraExposure for StockDailyBarraCne6Value {
         let analyst_ep =
             standardize_panel_industry_filled_weighted(&analyst_ep_raw, &weights, data)?;
 
-        let cashflow = StatementData::from_table(
+        let cashflow = PitFinancialData::from_table(
             data.daily(DatasetId::StockCashFlow)?,
             &["n_cashflow_act"],
-            &[3, 2],
+            ReportTypePreference::income_single_quarter(),
         )?;
         let cash_ep_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let cash = cashflow.ttm_sum(ts_code, trade_date, "n_cashflow_act")?;
@@ -132,12 +132,15 @@ impl BarraExposure for StockDailyBarraCne6Value {
         })?;
         let cash_ep = standardize_panel_industry_filled_weighted(&cash_ep_raw, &weights, data)?;
 
-        let income =
-            StatementData::from_table(data.daily(DatasetId::StockIncome)?, &["ebit"], &[1, 4])?;
-        let balance = StatementData::from_table(
+        let income = PitFinancialData::from_table(
+            data.daily(DatasetId::StockIncome)?,
+            &["ebit"],
+            ReportTypePreference::consolidated(),
+        )?;
+        let balance = PitFinancialData::from_table(
             data.daily(DatasetId::StockBalanceSheet)?,
             &["total_liab", "money_cap"],
-            &[1, 4],
+            ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let ebit_ev_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
             let ebit = income.latest_annual_value(ts_code, trade_date, "ebit")?;

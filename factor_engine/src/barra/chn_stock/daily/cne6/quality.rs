@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::barra::common::{
     align_table_column, average_columns, clean, panel_from_target_stock_map, safe_div, sample_std,
     slope_over_time, sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
-    zscore_panel_weighted_filled_zero, StatementData,
+    zscore_panel_weighted_filled_zero,
 };
 use crate::barra::BarraExposure;
 use crate::core::{
@@ -11,6 +11,7 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
+use crate::factor::common::{PitFinancialData, ReportTypePreference};
 
 pub struct StockDailyBarraCne6Quality;
 
@@ -64,7 +65,7 @@ impl BarraExposure for StockDailyBarraCne6Quality {
         let close = panel.column("close")?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
-        let balance = StatementData::from_table(
+        let balance = PitFinancialData::from_table(
             data.daily(DatasetId::StockBalanceSheet)?,
             &[
                 "total_assets",
@@ -78,19 +79,19 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 "non_cur_liab_due_1y",
                 "total_share",
             ],
-            &[1, 4],
+            ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let income = StatementData::from_table(
+        let income = PitFinancialData::from_table(
             data.daily(DatasetId::StockIncome)?,
             &["revenue", "oper_cost", "n_income_attr_p"],
-            &[3, 2],
+            ReportTypePreference::income_single_quarter(),
         )?;
-        let income_annual = StatementData::from_table(
+        let income_annual = PitFinancialData::from_table(
             data.daily(DatasetId::StockIncome)?,
             &["revenue", "oper_cost", "n_income_attr_p"],
-            &[1, 4],
+            ReportTypePreference::consolidated(),
         )?;
-        let cashflow_annual = StatementData::from_table(
+        let cashflow_annual = PitFinancialData::from_table(
             data.daily(DatasetId::StockCashFlow)?,
             &[
                 "n_cashflow_act",
@@ -103,7 +104,7 @@ impl BarraExposure for StockDailyBarraCne6Quality {
                 "amort_intang_assets",
                 "lt_amort_deferred_exp",
             ],
-            &[1, 4],
+            ReportTypePreference::consolidated(),
         )?;
         let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
         let analyst_by_stock = index_analyst_records(&analyst_records);
@@ -385,7 +386,7 @@ fn quality_spec(id: &str) -> BarraSpec {
 
 fn annual_cv(
     panel: &crate::factor::common::DailyPanel,
-    data: &StatementData,
+    data: &PitFinancialData,
     column: &str,
 ) -> Result<crate::factor::common::PanelColumn> {
     panel_from_target_stock_map(panel, |trade_date, ts_code| {
@@ -397,7 +398,7 @@ fn annual_cv(
 
 fn annual_slope_ratio(
     panel: &crate::factor::common::DailyPanel,
-    data: &StatementData,
+    data: &PitFinancialData,
     column: &str,
     negate: bool,
 ) -> Result<crate::factor::common::PanelColumn> {
@@ -409,14 +410,14 @@ fn annual_slope_ratio(
     })
 }
 
-fn total_debt(data: &StatementData, ts_code: &str, trade_date: i32, end_date: i32) -> f64 {
+fn total_debt(data: &PitFinancialData, ts_code: &str, trade_date: i32, end_date: i32) -> f64 {
     ["st_borr", "lt_borr", "bond_payable", "non_cur_liab_due_1y"]
         .iter()
         .filter_map(|column| data.annual_value_for_end_date(ts_code, trade_date, end_date, column))
         .sum()
 }
 
-fn noa(data: &StatementData, ts_code: &str, trade_date: i32, end_date: i32) -> Option<f64> {
+fn noa(data: &PitFinancialData, ts_code: &str, trade_date: i32, end_date: i32) -> Option<f64> {
     let ta = data.annual_value_for_end_date(ts_code, trade_date, end_date, "total_assets")?;
     let cash = data
         .annual_value_for_end_date(ts_code, trade_date, end_date, "money_cap")
@@ -426,7 +427,12 @@ fn noa(data: &StatementData, ts_code: &str, trade_date: i32, end_date: i32) -> O
     Some((ta - cash) - (tl - td))
 }
 
-fn annual_da(data: &StatementData, ts_code: &str, trade_date: i32, end_date: i32) -> Option<f64> {
+fn annual_da(
+    data: &PitFinancialData,
+    ts_code: &str,
+    trade_date: i32,
+    end_date: i32,
+) -> Option<f64> {
     let mut sum = 0.0;
     let mut any = false;
     for column in [

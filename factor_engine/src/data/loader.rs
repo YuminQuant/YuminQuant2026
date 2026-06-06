@@ -22,6 +22,15 @@ impl DisclosureTableCache {
         self.yearly_tables.len()
     }
 
+    pub fn retain_financial_years(&mut self, years: &BTreeSet<i32>) {
+        self.yearly_tables.retain(|key, _| {
+            if !is_financial_statement_dataset(key.dataset) {
+                return true;
+            }
+            file_stem_year(&key.file).is_none_or(|year| years.contains(&year))
+        });
+    }
+
     fn load_year(
         &mut self,
         dataset: DatasetId,
@@ -245,10 +254,13 @@ impl MarketDataLoader {
                 "update_flag",
             ],
         );
-        let start_year = start_date / 10_000;
-        let end_year = end_date / 10_000;
-        let lookback_years = financial_lookback_years(quarters);
-        let file_start_year = start_year.saturating_sub(lookback_years);
+        let years = financial_disclosure_years_for_range(start_date, end_date, quarters);
+        let file_start_year = years.iter().next().copied().unwrap_or(end_date / 10_000);
+        let end_year = years
+            .iter()
+            .next_back()
+            .copied()
+            .unwrap_or(end_date / 10_000);
         let files = self.catalog.daily_year_files(
             dataset,
             file_start_year * 10_000 + 101,
@@ -501,11 +513,57 @@ fn append_table_filtered_by_dates(
     target.append(&filtered)
 }
 
-fn financial_lookback_years(quarters: usize) -> i32 {
+pub fn financial_disclosure_years_for_range(
+    start_date: i32,
+    end_date: i32,
+    quarters: usize,
+) -> BTreeSet<i32> {
+    let start_year = financial_file_start_year_for_range(start_date, end_date, quarters);
+    let end_year = end_date / 10_000;
+    (start_year..=end_year).collect()
+}
+
+fn financial_file_start_year_for_range(start_date: i32, end_date: i32, quarters: usize) -> i32 {
+    let start = financial_file_start_year_for_date(start_date, quarters);
+    let end = financial_file_start_year_for_date(end_date, quarters);
+    start.min(end)
+}
+
+fn financial_file_start_year_for_date(date: i32, quarters: usize) -> i32 {
+    let year = date / 10_000;
     if quarters == 0 {
-        return 0;
+        return year;
     }
-    (quarters.div_ceil(4) as i32) + 3
+    if quarters <= 8 {
+        let previous_disclosure = previous_mandatory_disclosure_mmdd(date);
+        let lookback_years = if previous_disclosure == 10_31 { 3 } else { 2 };
+        return year.saturating_sub(lookback_years);
+    }
+    year.saturating_sub(quarters.div_ceil(4) as i32)
+}
+
+fn previous_mandatory_disclosure_mmdd(date: i32) -> i32 {
+    let mmdd = date % 10_000;
+    if mmdd < 4_30 {
+        10_31
+    } else if mmdd < 8_31 {
+        4_30
+    } else if mmdd < 10_31 {
+        8_31
+    } else {
+        10_31
+    }
+}
+
+fn is_financial_statement_dataset(dataset: DatasetId) -> bool {
+    matches!(
+        dataset,
+        DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow
+    )
+}
+
+fn file_stem_year(path: &std::path::Path) -> Option<i32> {
+    path.file_stem()?.to_str()?.parse::<i32>().ok()
 }
 
 fn prior_year_start(date: i32) -> i32 {
@@ -557,7 +615,7 @@ fn with_required_columns(requested: &[String], required: &[&str]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -565,6 +623,26 @@ mod tests {
     use crate::data::table::ColumnData;
 
     use super::*;
+
+    #[test]
+    fn financial_disclosure_years_follow_mandatory_disclosure_windows() {
+        assert_eq!(
+            financial_disclosure_years_for_range(20260105, 20260105, 8),
+            BTreeSet::from([2023, 2024, 2025, 2026])
+        );
+        assert_eq!(
+            financial_disclosure_years_for_range(20260507, 20260507, 8),
+            BTreeSet::from([2024, 2025, 2026])
+        );
+        assert_eq!(
+            financial_disclosure_years_for_range(20260105, 20260105, 24),
+            BTreeSet::from([2020, 2021, 2022, 2023, 2024, 2025, 2026])
+        );
+        assert_eq!(
+            financial_disclosure_years_for_range(20260507, 20261102, 8),
+            BTreeSet::from([2023, 2024, 2025, 2026])
+        );
+    }
 
     #[test]
     fn empty_disclosure_table_preserves_requested_schema() {
@@ -676,6 +754,84 @@ mod tests {
             later.required_f64_cast("ebit").expect("ebit"),
             vec![Some(10.0), Some(20.0)]
         );
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn disclosure_cache_prunes_financial_years_only() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_financial_prune_test_{unique}"));
+        let income_2023 = root.join("stock_data").join("income").join("2023.parquet");
+        let income_2024 = root.join("stock_data").join("income").join("2024.parquet");
+        let analyst_2023 = root
+            .join("stock_data")
+            .join("analyst_report")
+            .join("2023.parquet");
+        let financial = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(vec![Some(20230401)]),
+            ),
+            (
+                "f_ann_date".to_string(),
+                ColumnData::I32(vec![Some(20230401)]),
+            ),
+            (
+                "end_date".to_string(),
+                ColumnData::I32(vec![Some(20230331)]),
+            ),
+            ("report_type".to_string(), ColumnData::I64(vec![Some(1)])),
+            ("update_flag".to_string(), ColumnData::I64(vec![Some(0)])),
+            ("ebit".to_string(), ColumnData::F64(vec![Some(10.0)])),
+        ]))
+        .expect("financial table");
+        let analyst = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            (
+                "report_date".to_string(),
+                ColumnData::I32(vec![Some(20230401)]),
+            ),
+            (
+                "quarter".to_string(),
+                ColumnData::Utf8(vec![Some("2023Q4".to_string())]),
+            ),
+            ("rd".to_string(), ColumnData::F64(vec![Some(1.0)])),
+        ]))
+        .expect("analyst table");
+        write_parquet(&income_2023, &financial).expect("write 2023 income");
+        write_parquet(&income_2024, &financial).expect("write 2024 income");
+        write_parquet(&analyst_2023, &analyst).expect("write analyst");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let mut cache = DisclosureTableCache::default();
+        loader
+            .load_financial_cached(
+                DatasetId::StockIncome,
+                &["ebit".to_string()],
+                20230101,
+                20241231,
+                0,
+                &mut cache,
+            )
+            .expect("load financial");
+        loader
+            .load_stock_analyst_report_cached(&["rd".to_string()], 20230101, 20231231, &mut cache)
+            .expect("load analyst");
+
+        assert_eq!(cache.len(), 3);
+        cache.retain_financial_years(&BTreeSet::from([2024]));
+        assert_eq!(cache.len(), 2);
 
         fs::remove_dir_all(root).expect("cleanup");
     }

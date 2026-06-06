@@ -198,6 +198,10 @@ impl DailyPanel {
         self.index.date_count() * self.index.instrument_count()
     }
 
+    pub fn is_present_offset(&self, offset: usize) -> bool {
+        self.index.present.get(offset).copied().unwrap_or(false)
+    }
+
     pub fn column_from_values(&self, values: Vec<Option<f64>>) -> Result<PanelColumn> {
         if values.len() != self.shape_len() {
             return Err(err(format!(

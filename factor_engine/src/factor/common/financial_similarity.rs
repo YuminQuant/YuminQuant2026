@@ -320,7 +320,7 @@ fn financial_metrics_for_stock(
         profit_yoy_growth,
         profit_yoy_growth - previous_profit_yoy_growth,
         safe_div(cash_dividend_ltm, total_mv?)?,
-        safe_div(roe_ttm, roe_ttm_yoy)? - 1.0,
+        growth_rate(roe_ttm, roe_ttm_yoy)?,
         safe_div(2.0 * revenue_ttm, inventories + inventories_yoy)?,
         safe_div(2.0 * revenue_ttm, receivables + receivables_yoy)?,
     ])

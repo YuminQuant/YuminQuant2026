@@ -339,6 +339,7 @@ English rules:
 ## 开发入口 / Development Guides
 
 - Factor development: [FACTOR_DEVELOPMENT_README.md](FACTOR_DEVELOPMENT_README.md)
+- Financial factor development: [FINANCIAL_FACTOR_DEVELOPMENT_README.md](FINANCIAL_FACTOR_DEVELOPMENT_README.md)
 - Short factor development navigation: [docs/FACTOR_DEVELOPMENT.md](docs/FACTOR_DEVELOPMENT.md)
 - Strategy development: [STRATEGY_README.md](STRATEGY_README.md)
 

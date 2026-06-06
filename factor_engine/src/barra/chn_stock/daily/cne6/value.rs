@@ -11,7 +11,10 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
-use crate::factor::common::{DailyPanel, PitFinancialData, ReportTypePreference};
+use crate::factor::common::{
+    cached_financial_stock_panel, DailyPanel, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialStatementDataset, PitFinancialData, ReportTypePreference,
+};
 use crate::operators::{ts_ew_regression_alpha_beta_residual_sigma, ts_ew_sum};
 
 pub struct StockDailyBarraCne6Value;
@@ -124,12 +127,15 @@ impl BarraExposure for StockDailyBarraCne6Value {
             &["n_cashflow_act"],
             ReportTypePreference::income_single_quarter(),
         )?;
-        let cash_ep_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let cash = cashflow.ttm_sum(ts_code, trade_date, "n_cashflow_act")?;
-            let offset = panel_offset(panel, trade_date, ts_code)?;
-            let mv = total_mv.values()[offset]?;
-            clean(Some(mv)).and_then(|mv| safe_div(cash, mv))
-        })?;
+        let cash_ep_raw = cached_financial_stock_panel(
+            panel,
+            |trade_date, ts_code| cash_ep_marker(ts_code, trade_date, &cashflow),
+            |trade_date, ts_code| cash_ep_snapshot(ts_code, trade_date, &cashflow),
+            |cash, _trade_date, _ts_code, offset| {
+                let mv = total_mv.values()[offset]?;
+                clean(Some(mv)).and_then(|mv| safe_div(*cash, mv))
+            },
+        )?;
         let cash_ep = standardize_panel_industry_filled_weighted(&cash_ep_raw, &weights, data)?;
 
         let income = PitFinancialData::from_table(
@@ -142,19 +148,16 @@ impl BarraExposure for StockDailyBarraCne6Value {
             &["total_liab", "money_cap"],
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let ebit_ev_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let ebit = income.latest_annual_value(ts_code, trade_date, "ebit")?;
-            let total_liab = balance
-                .latest_annual_value(ts_code, trade_date, "total_liab")
-                .unwrap_or(0.0);
-            let money_cap = balance
-                .latest_annual_value(ts_code, trade_date, "money_cap")
-                .unwrap_or(0.0);
-            let offset = panel_offset(panel, trade_date, ts_code)?;
-            let mv = total_mv.values()[offset]?;
-            let ev = clean(Some(mv))? + total_liab - money_cap;
-            safe_div(ebit, ev)
-        })?;
+        let ebit_ev_raw = cached_financial_stock_panel(
+            panel,
+            |trade_date, ts_code| ebit_ev_marker(ts_code, trade_date, &income, &balance),
+            |trade_date, ts_code| ebit_ev_snapshot(ts_code, trade_date, &income, &balance),
+            |snapshot, _trade_date, _ts_code, offset| {
+                let mv = total_mv.values()[offset]?;
+                let ev = clean(Some(mv))? + snapshot.total_liab - snapshot.money_cap;
+                safe_div(snapshot.ebit, ev)
+            },
+        )?;
         let ebit_ev = standardize_panel_industry_filled_weighted(&ebit_ev_raw, &weights, data)?;
 
         let stock_returns = panel
@@ -205,6 +208,71 @@ impl BarraExposure for StockDailyBarraCne6Value {
             value.to_barra_series(specs[9].clone()),
         ])
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EbitEvSlowSnapshot {
+    ebit: f64,
+    total_liab: f64,
+    money_cap: f64,
+}
+
+fn cash_ep_marker(
+    ts_code: &str,
+    trade_date: i32,
+    cashflow: &PitFinancialData,
+) -> Option<FinancialEventMarker> {
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_latest_ttm(
+        FinancialStatementDataset::CashFlow,
+        cashflow,
+        ts_code,
+        trade_date,
+    );
+    builder.build()
+}
+
+fn cash_ep_snapshot(ts_code: &str, trade_date: i32, cashflow: &PitFinancialData) -> Option<f64> {
+    cashflow.ttm_sum(ts_code, trade_date, "n_cashflow_act")
+}
+
+fn ebit_ev_marker(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<FinancialEventMarker> {
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_latest_annual(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+    );
+    builder.include_latest_annual(
+        FinancialStatementDataset::BalanceSheet,
+        balance,
+        ts_code,
+        trade_date,
+    );
+    builder.build()
+}
+
+fn ebit_ev_snapshot(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<EbitEvSlowSnapshot> {
+    Some(EbitEvSlowSnapshot {
+        ebit: income.latest_annual_value(ts_code, trade_date, "ebit")?,
+        total_liab: balance
+            .latest_annual_value(ts_code, trade_date, "total_liab")
+            .unwrap_or(0.0),
+        money_cap: balance
+            .latest_annual_value(ts_code, trade_date, "money_cap")
+            .unwrap_or(0.0),
+    })
 }
 
 fn value_spec(id: &str, name: &str, description: &str, lookback: usize) -> BarraSpec {
@@ -315,15 +383,6 @@ fn index_analyst_records(records: &[AnalystRecord]) -> HashMap<&str, Vec<&Analys
             .push(record);
     }
     by_stock
-}
-
-fn panel_offset(panel: &DailyPanel, trade_date: i32, ts_code: &str) -> Option<usize> {
-    let date_idx = panel.dates().iter().position(|date| *date == trade_date)?;
-    let code_idx = panel
-        .instruments()
-        .iter()
-        .position(|code| code == ts_code)?;
-    Some(date_idx * panel.instruments().len() + code_idx)
 }
 
 fn long_relative_strength_raw(values: &[Option<f64>]) -> Vec<Option<f64>> {

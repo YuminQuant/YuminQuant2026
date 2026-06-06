@@ -11,7 +11,10 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
-use crate::factor::common::{PitFinancialData, ReportTypePreference};
+use crate::factor::common::{
+    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialStatementDataset,
+    FinancialStockSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+};
 
 pub struct StockDailyBarraCne6Growth;
 
@@ -58,24 +61,10 @@ impl BarraExposure for StockDailyBarraCne6Growth {
 
         let predicted_raw = predicted_growth_column(panel, &analyst_by_stock)?;
         let predicted = standardize_panel_industry_filled_weighted(&predicted_raw, &weights, data)?;
-        let eps_growth_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let values = income.annual_values(ts_code, trade_date, "basic_eps", 5)?;
-            let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
-            slope_over_time(&values).and_then(|slope| safe_div(slope, mean))
-        })?;
+        let (eps_growth_raw, sales_growth_raw) =
+            historical_growth_columns(panel, &income, &balance)?;
         let eps_growth =
             standardize_panel_industry_filled_weighted(&eps_growth_raw, &weights, data)?;
-        let sales_growth_raw = panel_from_target_stock_map(panel, |trade_date, ts_code| {
-            let revenue = income.annual_values(ts_code, trade_date, "revenue", 5)?;
-            let shares = balance.annual_values(ts_code, trade_date, "total_share", 5)?;
-            let values = revenue
-                .iter()
-                .zip(shares.iter())
-                .map(|(revenue, shares)| safe_div(*revenue, *shares))
-                .collect::<Option<Vec<_>>>()?;
-            let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
-            slope_over_time(&values).and_then(|slope| safe_div(slope, mean))
-        })?;
         let sales_growth =
             standardize_panel_industry_filled_weighted(&sales_growth_raw, &weights, data)?;
         let growth_raw = average_columns(panel, &[&predicted, &eps_growth, &sales_growth])?;
@@ -89,6 +78,101 @@ impl BarraExposure for StockDailyBarraCne6Growth {
             growth.to_barra_series(specs[3].clone()),
         ])
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GrowthSlowSnapshot {
+    eps_growth: Option<f64>,
+    sales_growth: Option<f64>,
+}
+
+fn historical_growth_columns(
+    panel: &crate::factor::common::DailyPanel,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Result<(PanelColumn, PanelColumn)> {
+    let instrument_count = panel.instruments().len();
+    let mut eps_values = vec![None; panel.shape_len()];
+    let mut sales_values = vec![None; panel.shape_len()];
+    let mut cache = FinancialStockSnapshotCache::<GrowthSlowSnapshot>::new(instrument_count);
+
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
+            continue;
+        }
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let offset = date_offset + instrument_idx;
+            let snapshot = cache.get_or_update(
+                instrument_idx,
+                growth_marker(ts_code, trade_date, income, balance),
+                || growth_snapshot(ts_code, trade_date, income, balance),
+            );
+            if let Some(snapshot) = snapshot {
+                eps_values[offset] = snapshot.eps_growth;
+                sales_values[offset] = snapshot.sales_growth;
+            }
+        }
+    }
+
+    Ok((
+        panel.column_from_values(eps_values)?,
+        panel.column_from_values(sales_values)?,
+    ))
+}
+
+fn growth_marker(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<FinancialEventMarker> {
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_annual_chain(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        5,
+    );
+    builder.include_annual_chain(
+        FinancialStatementDataset::BalanceSheet,
+        balance,
+        ts_code,
+        trade_date,
+        5,
+    );
+    builder.build()
+}
+
+fn growth_snapshot(
+    ts_code: &str,
+    trade_date: i32,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<GrowthSlowSnapshot> {
+    let eps_growth = income
+        .annual_values(ts_code, trade_date, "basic_eps", 5)
+        .and_then(|values| {
+            let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
+            slope_over_time(&values).and_then(|slope| safe_div(slope, mean))
+        });
+    let sales_growth = income
+        .annual_values(ts_code, trade_date, "revenue", 5)
+        .zip(balance.annual_values(ts_code, trade_date, "total_share", 5))
+        .and_then(|(revenue, shares)| {
+            let values = revenue
+                .iter()
+                .zip(shares.iter())
+                .map(|(revenue, shares)| safe_div(*revenue, *shares))
+                .collect::<Option<Vec<_>>>()?;
+            let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
+            slope_over_time(&values).and_then(|slope| safe_div(slope, mean))
+        });
+    Some(GrowthSlowSnapshot {
+        eps_growth,
+        sales_growth,
+    })
 }
 
 fn growth_spec(id: &str) -> BarraSpec {

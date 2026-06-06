@@ -24,6 +24,232 @@ impl PitFinancialRecord {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum FinancialStatementDataset {
+    Income,
+    BalanceSheet,
+    CashFlow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct FinancialRecordMarker {
+    pub dataset: FinancialStatementDataset,
+    pub end_date: i32,
+    pub disclosure_date: i32,
+    pub report_type: i64,
+    pub update_flag: i64,
+}
+
+impl FinancialRecordMarker {
+    pub fn from_record(dataset: FinancialStatementDataset, record: &PitFinancialRecord) -> Self {
+        Self {
+            dataset,
+            end_date: record.end_date,
+            disclosure_date: record.disclosure_date,
+            report_type: record.report_type,
+            update_flag: record.update_flag,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct FinancialSyntheticMarker {
+    pub key: &'static str,
+    pub value: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinancialEventMarker {
+    records: Vec<FinancialRecordMarker>,
+    synthetic: Vec<FinancialSyntheticMarker>,
+}
+
+impl FinancialEventMarker {
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty() && self.synthetic.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FinancialEventMarkerBuilder {
+    records: Vec<FinancialRecordMarker>,
+    synthetic: Vec<FinancialSyntheticMarker>,
+}
+
+impl FinancialEventMarkerBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn include_record(
+        &mut self,
+        dataset: FinancialStatementDataset,
+        record: Option<&PitFinancialRecord>,
+    ) -> &mut Self {
+        if let Some(record) = record {
+            self.records
+                .push(FinancialRecordMarker::from_record(dataset, record));
+        }
+        self
+    }
+
+    pub fn include_record_for_end_date(
+        &mut self,
+        dataset: FinancialStatementDataset,
+        data: &PitFinancialData,
+        ts_code: &str,
+        trade_date: i32,
+        end_date: i32,
+    ) -> &mut Self {
+        self.include_record(
+            dataset,
+            data.record_for_end_date(ts_code, trade_date, end_date),
+        )
+    }
+
+    pub fn include_ttm_for_end_date(
+        &mut self,
+        dataset: FinancialStatementDataset,
+        data: &PitFinancialData,
+        ts_code: &str,
+        trade_date: i32,
+        end_date: i32,
+    ) -> &mut Self {
+        let mut current = Some(end_date);
+        for _ in 0..4 {
+            let Some(end_date) = current else {
+                break;
+            };
+            self.include_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
+            current = previous_quarter_end_date(end_date);
+        }
+        self
+    }
+
+    pub fn include_latest_ttm(
+        &mut self,
+        dataset: FinancialStatementDataset,
+        data: &PitFinancialData,
+        ts_code: &str,
+        trade_date: i32,
+    ) -> &mut Self {
+        if let Some(end_date) = data.latest_quarter_end_date(ts_code, trade_date) {
+            self.include_ttm_for_end_date(dataset, data, ts_code, trade_date, end_date);
+        }
+        self
+    }
+
+    pub fn include_latest_quarter(
+        &mut self,
+        dataset: FinancialStatementDataset,
+        data: &PitFinancialData,
+        ts_code: &str,
+        trade_date: i32,
+    ) -> &mut Self {
+        if let Some(end_date) = data.latest_quarter_end_date(ts_code, trade_date) {
+            self.include_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
+        }
+        self
+    }
+
+    pub fn include_latest_annual(
+        &mut self,
+        dataset: FinancialStatementDataset,
+        data: &PitFinancialData,
+        ts_code: &str,
+        trade_date: i32,
+    ) -> &mut Self {
+        if let Some(end_date) = data.latest_annual_end_date(ts_code, trade_date) {
+            self.include_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
+        }
+        self
+    }
+
+    pub fn include_annual_chain(
+        &mut self,
+        dataset: FinancialStatementDataset,
+        data: &PitFinancialData,
+        ts_code: &str,
+        trade_date: i32,
+        count: usize,
+    ) -> &mut Self {
+        let Some(anchor) = data.latest_annual_end_date(ts_code, trade_date) else {
+            return self;
+        };
+        let mut year = anchor / 10_000;
+        for _ in 0..count {
+            let end_date = year * 10_000 + 12_31;
+            self.include_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
+            year -= 1;
+        }
+        self
+    }
+
+    pub fn include_synthetic(&mut self, key: &'static str, value: i64) -> &mut Self {
+        self.synthetic.push(FinancialSyntheticMarker { key, value });
+        self
+    }
+
+    pub fn build(mut self) -> Option<FinancialEventMarker> {
+        self.records.sort();
+        self.records.dedup();
+        self.synthetic.sort();
+        self.synthetic.dedup();
+        let marker = FinancialEventMarker {
+            records: self.records,
+            synthetic: self.synthetic,
+        };
+        (!marker.is_empty()).then_some(marker)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FinancialStockSnapshotCache<T> {
+    last_marker_by_stock: Vec<Option<FinancialEventMarker>>,
+    last_snapshot_by_stock: Vec<Option<T>>,
+}
+
+impl<T: Clone> FinancialStockSnapshotCache<T> {
+    pub fn new(instrument_count: usize) -> Self {
+        Self {
+            last_marker_by_stock: vec![None; instrument_count],
+            last_snapshot_by_stock: vec![None; instrument_count],
+        }
+    }
+
+    pub fn clear(&mut self, instrument_idx: usize) {
+        if instrument_idx < self.last_marker_by_stock.len() {
+            self.last_marker_by_stock[instrument_idx] = None;
+            self.last_snapshot_by_stock[instrument_idx] = None;
+        }
+    }
+
+    pub fn get_or_update<F>(
+        &mut self,
+        instrument_idx: usize,
+        marker: Option<FinancialEventMarker>,
+        compute: F,
+    ) -> Option<T>
+    where
+        F: FnOnce() -> Option<T>,
+    {
+        if instrument_idx >= self.last_marker_by_stock.len() {
+            return None;
+        }
+        let Some(marker) = marker else {
+            self.clear(instrument_idx);
+            return None;
+        };
+        if self.last_marker_by_stock[instrument_idx].as_ref() == Some(&marker) {
+            return self.last_snapshot_by_stock[instrument_idx].clone();
+        }
+        let snapshot = compute();
+        self.last_marker_by_stock[instrument_idx] = Some(marker);
+        self.last_snapshot_by_stock[instrument_idx] = snapshot.clone();
+        snapshot
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReportTypePreference {
     order: Vec<i64>,
@@ -51,6 +277,40 @@ impl ReportTypePreference {
     fn contains(&self, report_type: i64) -> bool {
         self.order.contains(&report_type)
     }
+}
+
+pub fn cached_financial_stock_panel<T, MarkerFn, ComputeFn, ValueFn>(
+    panel: &DailyPanel,
+    mut marker_fn: MarkerFn,
+    mut compute_fn: ComputeFn,
+    mut value_fn: ValueFn,
+) -> Result<PanelColumn>
+where
+    T: Clone,
+    MarkerFn: FnMut(i32, &str) -> Option<FinancialEventMarker>,
+    ComputeFn: FnMut(i32, &str) -> Option<T>,
+    ValueFn: FnMut(&T, i32, &str, usize) -> Option<f64>,
+{
+    let instrument_count = panel.instruments().len();
+    let mut values = vec![None; panel.shape_len()];
+    let mut cache = FinancialStockSnapshotCache::<T>::new(instrument_count);
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
+            continue;
+        }
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let offset = date_offset + instrument_idx;
+            let snapshot =
+                cache.get_or_update(instrument_idx, marker_fn(trade_date, ts_code), || {
+                    compute_fn(trade_date, ts_code)
+                });
+            if let Some(snapshot) = snapshot.as_ref() {
+                values[offset] = value_fn(snapshot, trade_date, ts_code, offset);
+            }
+        }
+    }
+    panel.column_from_values(values)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -510,7 +770,10 @@ mod tests {
     use crate::data::{ColumnData, Table};
 
     use super::{latest_possible_end_date, required_anchor_end_date};
-    use super::{DeadlinePolicy, PitFinancialData, ReportTypePreference};
+    use super::{
+        DeadlinePolicy, FinancialEventMarkerBuilder, FinancialStatementDataset,
+        FinancialStockSnapshotCache, PitFinancialData, ReportTypePreference,
+    };
 
     fn financial_table(rows: &[(i32, i32, i64, i64, f64)]) -> Table {
         Table::new(BTreeMap::from([
@@ -589,6 +852,64 @@ mod tests {
             target_dates: dates.to_vec(),
         };
         crate::factor::common::DailyPanel::from_table(&table, &context).expect("panel")
+    }
+
+    fn financial_table_with_codes(rows: &[(&str, i32, i32, i64, i64, f64)]) -> Table {
+        Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(
+                    rows.iter()
+                        .map(|(ts_code, _, _, _, _, _)| Some((*ts_code).to_string()))
+                        .collect(),
+                ),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(
+                    rows.iter()
+                        .map(|(_, _, date, _, _, _)| Some(*date))
+                        .collect(),
+                ),
+            ),
+            (
+                "f_ann_date".to_string(),
+                ColumnData::I32(
+                    rows.iter()
+                        .map(|(_, _, date, _, _, _)| Some(*date))
+                        .collect(),
+                ),
+            ),
+            (
+                "end_date".to_string(),
+                ColumnData::I32(rows.iter().map(|(_, end, _, _, _, _)| Some(*end)).collect()),
+            ),
+            (
+                "report_type".to_string(),
+                ColumnData::I64(
+                    rows.iter()
+                        .map(|(_, _, _, report_type, _, _)| Some(*report_type))
+                        .collect(),
+                ),
+            ),
+            (
+                "update_flag".to_string(),
+                ColumnData::I64(
+                    rows.iter()
+                        .map(|(_, _, _, _, update_flag, _)| Some(*update_flag))
+                        .collect(),
+                ),
+            ),
+            (
+                "value".to_string(),
+                ColumnData::F64(
+                    rows.iter()
+                        .map(|(_, _, _, _, _, value)| Some(*value))
+                        .collect(),
+                ),
+            ),
+        ]))
+        .expect("valid table")
     }
 
     fn statutory_disclosure_date(end_date: i32) -> i32 {
@@ -694,6 +1015,71 @@ mod tests {
             Some(vec![20.0, 4.0, 40.0])
         );
         assert_eq!(data.ttm_sum("000001.SZ", 20240501, "value"), Some(10.0));
+    }
+
+    #[test]
+    fn stock_snapshot_cache_reuses_until_stock_marker_changes() {
+        let table = financial_table_with_codes(&[
+            ("000001.SZ", 20241231, 20250331, 1, 0, 10.0),
+            ("000001.SZ", 20250331, 20250428, 1, 0, 11.0),
+            ("000002.SZ", 20241231, 20250331, 1, 0, 20.0),
+        ]);
+        let data =
+            PitFinancialData::from_table(&table, &["value"], ReportTypePreference::consolidated())
+                .expect("pit data");
+        let mut cache = FinancialStockSnapshotCache::<f64>::new(2);
+        let mut calls = [0usize; 2];
+
+        for trade_date in [20250425, 20250428, 20250429] {
+            for (idx, ts_code) in ["000001.SZ", "000002.SZ"].iter().enumerate() {
+                let mut builder = FinancialEventMarkerBuilder::new();
+                builder.include_latest_quarter(
+                    FinancialStatementDataset::Income,
+                    &data,
+                    ts_code,
+                    trade_date,
+                );
+                let marker = builder.build();
+                let value = cache.get_or_update(idx, marker, || {
+                    calls[idx] += 1;
+                    data.latest_quarter_end_date(ts_code, trade_date)
+                        .and_then(|end_date| {
+                            data.record_for_end_date(ts_code, trade_date, end_date)
+                                .and_then(|record| record.column("value"))
+                        })
+                });
+                assert!(value.is_some());
+            }
+        }
+
+        assert_eq!(calls, [2, 1]);
+    }
+
+    #[test]
+    fn stock_snapshot_cache_does_not_reuse_when_marker_is_missing() {
+        let mut cache = FinancialStockSnapshotCache::<f64>::new(1);
+        let mut calls = 0usize;
+        let mut builder = FinancialEventMarkerBuilder::new();
+        builder.include_synthetic("event", 1);
+        let marker = builder.build();
+        assert_eq!(
+            cache.get_or_update(0, marker, || {
+                calls += 1;
+                Some(1.0)
+            }),
+            Some(1.0)
+        );
+        assert_eq!(cache.get_or_update(0, None, || Some(2.0)), None);
+        let mut builder = FinancialEventMarkerBuilder::new();
+        builder.include_synthetic("event", 1);
+        assert_eq!(
+            cache.get_or_update(0, builder.build(), || {
+                calls += 1;
+                Some(3.0)
+            }),
+            Some(3.0)
+        );
+        assert_eq!(calls, 2);
     }
 
     #[test]

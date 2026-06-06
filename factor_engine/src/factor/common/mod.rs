@@ -6,6 +6,7 @@ pub mod dbzq_coskewness;
 pub mod dbzq_intraday_volume_distribution;
 pub mod financial;
 pub mod financial_similarity;
+pub mod gaussian_financial;
 pub mod gfzq_5min_salience;
 pub mod gfzq_apl_beta;
 pub mod gfzq_behavioral;

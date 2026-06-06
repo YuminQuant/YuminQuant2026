@@ -43,6 +43,7 @@ const BALANCE_COLUMNS: [&str; 6] = [
 struct FinancialMetricSlowSnapshot {
     metrics: [Option<f64>; METRIC_DIM],
     cash_dividend_ltm: f64,
+    total_mv_snapshot: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -256,12 +257,13 @@ fn financial_metric_columns(
                     income,
                     balance,
                     cash_dividend,
+                    total_mv_value,
                 )
             }) else {
                 continue;
             };
             let mut metrics = snapshot.metrics;
-            metrics[6] = safe_div_opt(Some(snapshot.cash_dividend_ltm), total_mv_value);
+            metrics[6] = safe_div_opt(Some(snapshot.cash_dividend_ltm), snapshot.total_mv_snapshot);
             for metric_idx in 0..METRIC_DIM {
                 metric_values[metric_idx][offset] = metrics[metric_idx];
             }
@@ -356,6 +358,7 @@ fn financial_metrics_slow_for_stock(
     income: &PitFinancialData,
     balance: &PitFinancialData,
     cash_dividend_ltm: f64,
+    total_mv_snapshot: Option<f64>,
 ) -> Option<FinancialMetricSlowSnapshot> {
     let mut metrics = [None; METRIC_DIM];
     let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
@@ -425,6 +428,7 @@ fn financial_metrics_slow_for_stock(
     Some(FinancialMetricSlowSnapshot {
         metrics,
         cash_dividend_ltm,
+        total_mv_snapshot,
     })
 }
 

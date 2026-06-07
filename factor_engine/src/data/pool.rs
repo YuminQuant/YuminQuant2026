@@ -189,6 +189,29 @@ impl DataPool {
         }
     }
 
+    pub fn slice_dates(&self, selected_dates: &[i32]) -> Self {
+        Self {
+            daily: self.daily.clone(),
+            daily_panels: self
+                .daily_panels
+                .iter()
+                .map(|(dataset, panel)| (*dataset, panel.slice_dates(selected_dates)))
+                .collect(),
+            index_daily: self.index_daily.clone(),
+            index_daily_panels: self
+                .index_daily_panels
+                .iter()
+                .map(|(ts_code, panel)| (ts_code.clone(), panel.slice_dates(selected_dates)))
+                .collect(),
+            minute: self.minute.clone(),
+            intraday_daily_raw: self.intraday_daily_raw.clone(),
+            intraday_daily_raw_panel: self
+                .intraday_daily_raw_panel
+                .as_ref()
+                .map(|panel| panel.slice_dates(selected_dates)),
+        }
+    }
+
     pub fn daily(&self, dataset: DatasetId) -> Result<&Table> {
         self.daily
             .get(&dataset)

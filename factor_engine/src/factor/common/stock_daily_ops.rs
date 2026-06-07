@@ -57,6 +57,15 @@ pub fn neutralize_size_sector(
         data.daily(DatasetId::StockSwClassification)?,
         ClassificationLevel::Sector,
     )?;
+    neutralize_size_sector_with_inputs(values, panel, &size, &sector_map)
+}
+
+pub fn neutralize_size_sector_with_inputs(
+    values: &PanelColumn,
+    _panel: &DailyPanel,
+    size: &PanelColumn,
+    sector_map: &ClassificationMap,
+) -> Result<PanelColumn> {
     values.cs_neutralize_regression_by_group(&[&size], None, |trade_date, ts_codes| {
         sector_map.groups_for(trade_date, ts_codes)
     })
@@ -174,6 +183,11 @@ fn safe_div(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use crate::core::{AssetClass, DatasetId, FactorContext, Frequency};
+    use crate::data::{ColumnData, DataPool, Table};
+
     use super::*;
 
     fn assert_close(actual: Option<f64>, expected: Option<f64>) {
@@ -222,5 +236,90 @@ mod tests {
         assert_close(shifted[1], Some(2.0));
         assert_eq!(shifted[2], None);
         assert_close(shifted[3], Some(3.5));
+    }
+
+    #[test]
+    fn neutralize_size_sector_aligns_size_to_factor_panel_index() {
+        let context = FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20260105,
+            end_date: 20260105,
+            load_start_date: 20260105,
+            load_dates: vec![20260105],
+            target_dates: vec![20260105],
+        };
+        let pv = Table::new(std::collections::BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260105), Some(20260105)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000002.SZ".to_string()),
+                ]),
+            ),
+            (
+                "close".to_string(),
+                ColumnData::F64(vec![Some(10.0), Some(20.0)]),
+            ),
+        ]))
+        .expect("pv table");
+        let barra = Table::new(std::collections::BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260105), Some(20260105)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000003.SZ".to_string()),
+                ]),
+            ),
+            (
+                "SIZE".to_string(),
+                ColumnData::F64(vec![Some(1.0), Some(3.0)]),
+            ),
+        ]))
+        .expect("barra table");
+        let sw = Table::new(std::collections::BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000002.SZ".to_string()),
+                ]),
+            ),
+            (
+                "in_date".to_string(),
+                ColumnData::I32(vec![Some(20200101), Some(20200101)]),
+            ),
+            ("out_date".to_string(), ColumnData::I32(vec![None, None])),
+            (
+                "l1_code".to_string(),
+                ColumnData::Utf8(vec![Some("10".to_string()), Some("10".to_string())]),
+            ),
+        ]))
+        .expect("sw table");
+        let data = DataPool::from_daily_tables_for_test(
+            HashMap::from([
+                (DatasetId::StockDailyPv, pv),
+                (DatasetId::StockBarraDaily, barra),
+                (DatasetId::StockSwClassification, sw),
+            ]),
+            &context,
+        )
+        .expect("pool");
+        let panel = data.daily_panel(DatasetId::StockDailyPv).expect("pv panel");
+        let raw = panel
+            .column_from_values(vec![Some(1.0), Some(2.0)])
+            .expect("raw");
+
+        let neutralized = neutralize_size_sector(&raw, panel, &data);
+
+        assert!(neutralized.is_ok());
     }
 }

@@ -11,10 +11,10 @@ use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::is_bj_stock;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
-    ClassificationLevel, ClassificationMap, DailyPanel, EventDrivenCrossSectionCache,
-    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
-    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
-    ReportTypePreference,
+    factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
+    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::cs_zscore_by_group;
@@ -25,6 +25,7 @@ const RIDGE_LAMBDA: f64 = 10.0;
 const MIN_RIDGE_OBS: usize = 10;
 const REGRESSOR_COUNT: usize = 6;
 const PARAM_COUNT: usize = REGRESSOR_COUNT + 1;
+const ABCFO_RAW_ID: &str = "__abcfo_residual_raw";
 
 const CFO_COLUMN: &str = "n_cashflow_act";
 const EMPLOYEE_CASH_COLUMN: &str = "c_paid_to_for_empl";
@@ -36,7 +37,7 @@ pub struct StockDailyAbcfo;
 
 #[derive(Default)]
 struct AbcfoComputeState {
-    final_cache: EventDrivenCrossSectionCache,
+    raw_cache: EventDrivenCrossSectionCache,
     snapshot_cache: InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
 }
 
@@ -107,12 +108,21 @@ impl Factor for StockDailyAbcfo {
             .downcast_mut::<AbcfoComputeState>()
             .ok_or_else(|| err("abcfo received incompatible event cache state"))?;
         let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement(data.daily(DatasetId::StockCashFlow)?),
-            FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
-            FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
+            FinancialEventTable::statement_with_preference(
+                data.daily(DatasetId::StockCashFlow)?,
+                ReportTypePreference::income_single_quarter(),
+            ),
+            FinancialEventTable::statement_with_preference(
+                data.daily(DatasetId::StockIncome)?,
+                ReportTypePreference::income_single_quarter(),
+            ),
+            FinancialEventTable::statement_with_preference(
+                data.daily(DatasetId::StockBalanceSheet)?,
+                ReportTypePreference::balance_sheet_consolidated(),
+            ),
         ])?;
-        let specs = [self.spec()];
-        let final_cache = &mut state.final_cache;
+        let raw_specs = [raw_spec()];
+        let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
         let cashflow = PitFinancialData::from_table(
             data.daily(DatasetId::StockCashFlow)?,
@@ -130,15 +140,15 @@ impl Factor for StockDailyAbcfo {
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
-        compute_financial_event_snapshot_streaming(
+        let raw_series = compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
             data,
-            final_cache,
+            raw_cache,
             &schedule,
-            &specs,
+            &raw_specs,
             |_, _, data| {
-                self.compute_with_prepared_financials(
+                self.compute_raw_with_prepared_financials(
                     data,
                     &cashflow,
                     &income,
@@ -148,7 +158,9 @@ impl Factor for StockDailyAbcfo {
                 )
                 .map(|series| vec![series])
             },
-        )
+        )?;
+        self.finalize_raw_series(data, raw_series)
+            .map(|series| vec![series])
     }
 }
 
@@ -175,17 +187,18 @@ impl StockDailyAbcfo {
         )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
 
-        self.compute_with_prepared_financials(
+        let raw_series = vec![self.compute_raw_with_prepared_financials(
             data,
             &cashflow,
             &income,
             &balance,
             &list_dates,
             snapshot_cache,
-        )
+        )?];
+        self.finalize_raw_series(data, raw_series)
     }
 
-    fn compute_with_prepared_financials(
+    fn compute_raw_with_prepared_financials(
         &self,
         data: &DataPool,
         cashflow: &PitFinancialData,
@@ -203,6 +216,20 @@ impl StockDailyAbcfo {
             &list_dates,
             snapshot_cache,
         )?;
+        Ok(raw.to_factor_series(raw_spec()))
+    }
+
+    fn finalize_raw_series(
+        &self,
+        data: &DataPool,
+        raw_series: Vec<FactorSeries>,
+    ) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let series = raw_series
+            .into_iter()
+            .find(|series| series.spec.id == ABCFO_RAW_ID)
+            .ok_or_else(|| err("missing abcfo raw series"))?;
+        let raw = factor_series_to_panel_column(&panel, &series)?;
         let standardized = industry_zscore(&raw, data)?;
         Ok(standardized.to_factor_series(self.spec()))
     }
@@ -247,6 +274,22 @@ fn tags() -> Vec<String> {
     .iter()
     .map(|value| value.to_string())
     .collect()
+}
+
+fn raw_spec() -> FactorSpec {
+    FactorSpec {
+        id: ABCFO_RAW_ID.to_string(),
+        aliases: Vec::new(),
+        name: ABCFO_RAW_ID.to_string(),
+        asset_class: AssetClass::Stock,
+        frequency: Frequency::Daily,
+        version: VERSION.to_string(),
+        tags: vec!["internal".to_string(), "financial_raw".to_string()],
+        description: "Internal abcfo ridge residual raw series.".to_string(),
+        dependencies: Vec::new(),
+        intraday_raw_dependencies: Vec::new(),
+        lookback: Lookback { trading_days: 0 },
+    }
 }
 
 fn stock_basic_list_dates(table: &Table) -> Result<BTreeMap<String, i32>> {

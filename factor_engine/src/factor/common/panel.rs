@@ -36,7 +36,7 @@ impl DailyPanelIndex {
 #[derive(Clone, Debug)]
 pub struct DailyPanel {
     index: Arc<DailyPanelIndex>,
-    columns: BTreeMap<String, Vec<Option<f64>>>,
+    columns: BTreeMap<String, Arc<Vec<Option<f64>>>>,
 }
 
 impl DailyPanel {
@@ -127,7 +127,10 @@ impl DailyPanel {
                 target_dates: context.target_dates.iter().copied().collect(),
                 present,
             }),
-            columns,
+            columns: columns
+                .into_iter()
+                .map(|(name, values)| (name, Arc::new(values)))
+                .collect(),
         })
     }
 
@@ -140,6 +143,48 @@ impl DailyPanel {
                 present: self.index.present.clone(),
             }),
             columns: self.columns.clone(),
+        }
+    }
+
+    pub fn slice_dates(&self, selected_dates: &[i32]) -> Self {
+        let selected = selected_dates.iter().copied().collect::<BTreeSet<_>>();
+        let date_indices = self
+            .index
+            .dates
+            .iter()
+            .enumerate()
+            .filter_map(|(date_idx, date)| selected.contains(date).then_some(date_idx))
+            .collect::<Vec<_>>();
+        let dates = date_indices
+            .iter()
+            .map(|date_idx| self.index.dates[*date_idx])
+            .collect::<Vec<_>>();
+        let instrument_count = self.index.instrument_count();
+        let mut present = Vec::with_capacity(dates.len() * instrument_count);
+        for date_idx in &date_indices {
+            let offset = date_idx * instrument_count;
+            present.extend_from_slice(&self.index.present[offset..offset + instrument_count]);
+        }
+        let columns = self
+            .columns
+            .iter()
+            .map(|(name, values)| {
+                let mut sliced = Vec::with_capacity(dates.len() * instrument_count);
+                for date_idx in &date_indices {
+                    let offset = date_idx * instrument_count;
+                    sliced.extend_from_slice(&values[offset..offset + instrument_count]);
+                }
+                (name.clone(), Arc::new(sliced))
+            })
+            .collect();
+        Self {
+            index: Arc::new(DailyPanelIndex {
+                dates,
+                instruments: self.index.instruments.clone(),
+                target_dates: selected_dates.iter().copied().collect(),
+                present,
+            }),
+            columns,
         }
     }
 
@@ -224,7 +269,7 @@ impl DailyPanel {
         }
         Ok(PanelColumn {
             index: Arc::clone(&self.index),
-            values,
+            values: Arc::new(values),
         })
     }
 }
@@ -232,7 +277,7 @@ impl DailyPanel {
 #[derive(Clone, Debug)]
 pub struct PanelColumn {
     index: Arc<DailyPanelIndex>,
-    values: Vec<Option<f64>>,
+    values: Arc<Vec<Option<f64>>>,
 }
 
 impl PanelColumn {
@@ -255,7 +300,7 @@ impl PanelColumn {
         Ok(self.with_values(
             self.values
                 .iter()
-                .zip(&other.values)
+                .zip(other.values.iter())
                 .map(|(left, right)| f(*left, *right))
                 .collect(),
         ))
@@ -270,8 +315,8 @@ impl PanelColumn {
         Ok(self.with_values(
             self.values
                 .iter()
-                .zip(&second.values)
-                .zip(&third.values)
+                .zip(second.values.iter())
+                .zip(third.values.iter())
                 .map(|((first, second), third)| f(*first, *second, *third))
                 .collect(),
         ))
@@ -293,9 +338,9 @@ impl PanelColumn {
         Ok(self.with_values(
             self.values
                 .iter()
-                .zip(&second.values)
-                .zip(&third.values)
-                .zip(&fourth.values)
+                .zip(second.values.iter())
+                .zip(third.values.iter())
+                .zip(fourth.values.iter())
                 .map(|(((first, second), third), fourth)| f(*first, *second, *third, *fourth))
                 .collect(),
         ))
@@ -600,7 +645,7 @@ impl PanelColumn {
     fn with_values(&self, values: Vec<Option<f64>>) -> Self {
         Self {
             index: Arc::clone(&self.index),
-            values,
+            values: Arc::new(values),
         }
     }
 
@@ -681,6 +726,7 @@ mod tests {
     use crate::operators::{
         cs_neutralize, cs_rank, cs_regression_residual, ts_corr, ts_pctchg, ts_sum,
     };
+    use std::sync::Arc;
 
     use super::DailyPanel;
 
@@ -774,6 +820,40 @@ mod tests {
                 Some(20.0)
             ]
         );
+    }
+
+    #[test]
+    fn daily_panel_with_target_dates_shares_column_storage() {
+        let panel = DailyPanel::from_table(
+            &sample_table(),
+            &context(vec![20260101, 20260102, 20260103]),
+        )
+        .expect("panel");
+        let retargeted = panel.with_target_dates(&[20260103]);
+        let original_close = panel.columns.get("close").expect("original close");
+        let retargeted_close = retargeted.columns.get("close").expect("retargeted close");
+        assert!(Arc::ptr_eq(original_close, retargeted_close));
+        assert_eq!(retargeted.column("close").unwrap().values()[5], Some(20.0));
+    }
+
+    #[test]
+    fn daily_panel_slice_dates_keeps_only_selected_date_rows() {
+        let panel = DailyPanel::from_table(
+            &sample_table(),
+            &context(vec![20260101, 20260102, 20260103]),
+        )
+        .expect("panel");
+        let sliced = panel.slice_dates(&[20260103]);
+
+        assert_eq!(sliced.dates(), &[20260103]);
+        assert_eq!(sliced.instruments(), panel.instruments());
+        assert_eq!(sliced.shape_len(), panel.instruments().len());
+        assert!(sliced.is_target_date(20260103));
+
+        let close = sliced.column("close").expect("close");
+        assert_eq!(close.values(), &[Some(4.0), Some(20.0)]);
+        assert!(sliced.is_present_offset(0));
+        assert!(sliced.is_present_offset(1));
     }
 
     #[test]

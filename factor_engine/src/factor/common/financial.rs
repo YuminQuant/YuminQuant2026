@@ -623,7 +623,7 @@ where
     output
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ReportTypePreference {
     order: Vec<i64>,
 }

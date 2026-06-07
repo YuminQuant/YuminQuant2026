@@ -7,7 +7,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::barra::registry::all_barra_exposures;
-use crate::barra::BarraExposure;
+use crate::barra::{BarraExposure, BarraSharedCache};
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{
@@ -645,12 +645,16 @@ fn compute_exposure_batch(
             (key, *provider, selected_ids.clone(), state)
         })
         .collect::<Vec<_>>();
+    let shared_cache = BarraSharedCache::default();
     let compute = || {
         jobs.into_par_iter()
             .map(|(key, provider, selected_ids, mut state)| {
-                let series = provider
-                    .exposure
-                    .compute_stateful(context, pool, state.as_mut())?;
+                let series = provider.exposure.compute_stateful(
+                    context,
+                    pool,
+                    state.as_mut(),
+                    &shared_cache,
+                )?;
                 let selected = series
                     .into_iter()
                     .filter(|series| selected_ids.contains(&series.spec.id))

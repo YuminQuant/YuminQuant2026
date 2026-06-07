@@ -334,12 +334,16 @@ Financial factor update frequency is never inferred from the `fundamental` tag. 
 1. 纯财报慢因子使用 `FinancialEventSnapshot` 和 `EventDrivenCrossSectionCache`。
 2. 快慢混合因子使用 `FinancialEventStateDailyFast`，只缓存慢状态，快变量每日重新计算。
 3. 估值指标、价格收益指标和其他日频快变量保持 `Daily`。
-4. 多输出 provider 必须继续 requested-aware；同 provider 的 wrapper 共享 `compute_provider_key()`，并使用同一种 state 类型。
+4. 财务科目查表和股票级慢指标公式必须放入 provider state，例如 `InstrumentAlignedSnapshotCache<T>` + `cached_financial_stock_snapshots_for_date(...)`；不要放在单次函数调用的局部 cache 中。
+5. Barra CNE6 的 `growth / quality / value / dividend_yield` 财报或分红 slow legs 使用同一规则；分析师 legs 仍按日频快分支处理。
+6. 多输出 provider 必须继续 requested-aware；同 provider 的 wrapper 共享 `compute_provider_key()`，并使用同一种 state 类型。
 
 1. Use `FinancialEventSnapshot` plus `EventDrivenCrossSectionCache` for pure slow statement factors.
 2. Use `FinancialEventStateDailyFast` for mixed factors: cache only slow state, recompute fast variables daily.
 3. Keep valuation, price/return, and other daily fast variables on `Daily`.
-4. Multi-output providers must remain requested-aware; wrappers sharing a provider key must use the same state type.
+4. Put financial statement lookups and stock-level slow formulas in provider state, for example `InstrumentAlignedSnapshotCache<T>` plus `cached_financial_stock_snapshots_for_date(...)`; do not keep them in one-shot local function caches.
+5. Barra CNE6 `growth / quality / value / dividend_yield` statement or dividend slow legs follow the same rule; analyst legs remain daily fast branches.
+6. Multi-output providers must remain requested-aware; wrappers sharing a provider key must use the same state type.
 
 股票级财报慢指标应优先使用 `cached_financial_stock_snapshots(...)`。`skip_fn` 负责剔除 `.BJ`、非在市或不在股票池的股票；`marker_fn` 声明会影响 snapshot 的 PIT 记录链和 synthetic marker；`compute_fn` 只写股票级慢指标公式。截面 rank、OLS/ridge、网络降维和中性化仍放在事件日或每日的后续步骤中。
 

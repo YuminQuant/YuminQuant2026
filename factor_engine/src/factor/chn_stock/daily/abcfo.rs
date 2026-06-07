@@ -10,10 +10,11 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::is_bj_stock;
 use crate::factor::common::{
-    cached_financial_stock_snapshots, compute_financial_event_snapshot_many, ClassificationLevel,
-    ClassificationMap, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
-    FinancialStatementDataset, PanelColumn, PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    ClassificationLevel, ClassificationMap, DailyPanel, EventDrivenCrossSectionCache,
+    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
+    ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::cs_zscore_by_group;
@@ -32,6 +33,12 @@ const REVENUE_COLUMN: &str = "revenue";
 const ASSET_COLUMN: &str = "total_assets";
 
 pub struct StockDailyAbcfo;
+
+#[derive(Default)]
+struct AbcfoComputeState {
+    final_cache: EventDrivenCrossSectionCache,
+    snapshot_cache: InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
+}
 
 pub fn create() -> Box<dyn Factor> {
     Box::new(StockDailyAbcfo)
@@ -78,10 +85,56 @@ impl Factor for StockDailyAbcfo {
     }
 
     fn initial_compute_state(&self, _requested_ids: &[String]) -> Box<dyn Any + Send> {
-        Box::new(EventDrivenCrossSectionCache::default())
+        Box::new(AbcfoComputeState::default())
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let mut snapshot_cache = InstrumentAlignedSnapshotCache::default();
+        self.compute_with_snapshot_cache(data, &mut snapshot_cache)
+    }
+
+    fn compute_many_stateful(
+        &self,
+        requested_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+        state: &mut (dyn Any + Send),
+    ) -> Result<Vec<FactorSeries>> {
+        if requested_ids.iter().all(|id| id != "abcfo") {
+            return Ok(Vec::new());
+        }
+        let state = state
+            .downcast_mut::<AbcfoComputeState>()
+            .ok_or_else(|| err("abcfo received incompatible event cache state"))?;
+        let schedule = FinancialEventSchedule::from_tables(&[
+            FinancialEventTable::statement(data.daily(DatasetId::StockCashFlow)?),
+            FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
+            FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
+        ])?;
+        let specs = [self.spec()];
+        let final_cache = &mut state.final_cache;
+        let snapshot_cache = &mut state.snapshot_cache;
+        compute_financial_event_snapshot_streaming(
+            requested_ids,
+            context,
+            data,
+            final_cache,
+            &schedule,
+            &specs,
+            |_, _, data| {
+                self.compute_with_snapshot_cache(data, snapshot_cache)
+                    .map(|series| vec![series])
+            },
+        )
+    }
+}
+
+impl StockDailyAbcfo {
+    fn compute_with_snapshot_cache(
+        &self,
+        data: &DataPool,
+        snapshot_cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
+    ) -> Result<FactorSeries> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let cashflow = PitFinancialData::from_table(
             data.daily(DatasetId::StockCashFlow)?,
@@ -100,39 +153,16 @@ impl Factor for StockDailyAbcfo {
         )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
 
-        let raw = abcfo_ridge_residual_column(&panel, &cashflow, &income, &balance, &list_dates)?;
+        let raw = abcfo_ridge_residual_column(
+            &panel,
+            &cashflow,
+            &income,
+            &balance,
+            &list_dates,
+            snapshot_cache,
+        )?;
         let standardized = industry_zscore(&raw, data)?;
         Ok(standardized.to_factor_series(self.spec()))
-    }
-
-    fn compute_many_stateful(
-        &self,
-        requested_ids: &[String],
-        context: &FactorContext,
-        data: &DataPool,
-        state: &mut (dyn Any + Send),
-    ) -> Result<Vec<FactorSeries>> {
-        if requested_ids.iter().all(|id| id != "abcfo") {
-            return Ok(Vec::new());
-        }
-        let state = state
-            .downcast_mut::<EventDrivenCrossSectionCache>()
-            .ok_or_else(|| err("abcfo received incompatible event cache state"))?;
-        let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement(data.daily(DatasetId::StockCashFlow)?),
-            FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
-            FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
-        ])?;
-        let specs = [self.spec()];
-        compute_financial_event_snapshot_many(
-            requested_ids,
-            context,
-            data,
-            state,
-            &schedule,
-            &specs,
-            |_, context, data| self.compute(context, data).map(|series| vec![series]),
-        )
     }
 }
 
@@ -196,27 +226,32 @@ fn abcfo_ridge_residual_column(
     income: &PitFinancialData,
     balance: &PitFinancialData,
     list_dates: &BTreeMap<String, i32>,
+    cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
 ) -> Result<PanelColumn> {
     let instrument_count = panel.instruments().len();
     let mut values = vec![None; panel.shape_len()];
-    let snapshots = cached_financial_stock_snapshots(
-        panel,
-        |_, ts_code, offset| {
-            is_bj_stock(ts_code)
-                || !panel.is_present_offset(offset)
-                || !list_dates.contains_key(ts_code)
-        },
-        |trade_date, ts_code, _| abcfo_marker(ts_code, trade_date, cashflow, income, balance),
-        |trade_date, ts_code, _| {
-            let list_date = list_dates.get(ts_code).copied()?;
-            abcfo_slow_snapshot_for_stock(ts_code, trade_date, list_date, cashflow, income, balance)
-        },
-    );
 
     for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
         if !panel.is_target_date(trade_date) {
             continue;
         }
+        let snapshots = cached_financial_stock_snapshots_for_date(
+            panel,
+            trade_date,
+            cache,
+            |_, ts_code, offset| {
+                is_bj_stock(ts_code)
+                    || !panel.is_present_offset(offset)
+                    || !list_dates.contains_key(ts_code)
+            },
+            |trade_date, ts_code, _| abcfo_marker(ts_code, trade_date, cashflow, income, balance),
+            |trade_date, ts_code, _| {
+                let list_date = list_dates.get(ts_code).copied()?;
+                abcfo_slow_snapshot_for_stock(
+                    ts_code, trade_date, list_date, cashflow, income, balance,
+                )
+            },
+        );
         let date_offset = date_idx * instrument_count;
         let mut observations = Vec::new();
         for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
@@ -224,7 +259,7 @@ fn abcfo_ridge_residual_column(
             if is_bj_stock(ts_code) || !panel.is_present_offset(offset) {
                 continue;
             }
-            let Some(snapshot) = snapshots[offset] else {
+            let Some(snapshot) = snapshots[instrument_idx] else {
                 continue;
             };
             let Some(row) = abcfo_row_from_snapshot(&snapshot, trade_date) else {

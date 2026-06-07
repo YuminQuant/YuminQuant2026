@@ -10,10 +10,10 @@ use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots, compute_financial_event_snapshot_many, DailyPanel,
-    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset, PanelColumn,
-    PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::cs_pctrank;
@@ -36,6 +36,12 @@ struct RoeSnapshot {
 }
 
 pub struct StockDailyRoeEnhance;
+
+#[derive(Default)]
+struct RoeEnhanceComputeState {
+    final_cache: EventDrivenCrossSectionCache,
+    snapshot_cache: InstrumentAlignedSnapshotCache<RoeSnapshot>,
+}
 
 pub fn create() -> Box<dyn Factor> {
     Box::new(StockDailyRoeEnhance)
@@ -77,32 +83,12 @@ impl Factor for StockDailyRoeEnhance {
     }
 
     fn initial_compute_state(&self, _requested_ids: &[String]) -> Box<dyn Any + Send> {
-        Box::new(EventDrivenCrossSectionCache::default())
+        Box::new(RoeEnhanceComputeState::default())
     }
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &[INCOME_COLUMN],
-            ReportTypePreference::income_single_quarter(),
-        )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[EQUITY_COLUMN],
-            ReportTypePreference::balance_sheet_consolidated(),
-        )?;
-
-        let components = roe_component_columns(&panel, &income, &balance)?;
-        let r_yoy = neutralize_rank_fill_present_non_bj(&components.yoy, &panel, data)?;
-        let r_stb = neutralize_rank_fill_present_non_bj(&components.stb, &panel, data)?;
-        let r_last = neutralize_rank_fill_present_non_bj(&components.last, &panel, data)?;
-        let r_growth = neutralize_rank_fill_present_non_bj(&components.growth, &panel, data)?;
-
-        let layer1 = pctrank_fill_present_non_bj(&average_pair(&r_growth, &r_last)?, &panel)?;
-        let layer2 = pctrank_fill_present_non_bj(&average_pair(&layer1, &r_stb)?, &panel)?;
-        let raw = pctrank_fill_present_non_bj(&sum_pair(&layer2, &r_yoy)?, &panel)?;
-        Ok(raw.to_factor_series(self.spec()))
+        let mut snapshot_cache = InstrumentAlignedSnapshotCache::default();
+        self.compute_with_snapshot_cache(data, &mut snapshot_cache)
     }
 
     fn compute_many_stateful(
@@ -116,22 +102,58 @@ impl Factor for StockDailyRoeEnhance {
             return Ok(Vec::new());
         }
         let state = state
-            .downcast_mut::<EventDrivenCrossSectionCache>()
+            .downcast_mut::<RoeEnhanceComputeState>()
             .ok_or_else(|| err("roe_enhance received incompatible event cache state"))?;
         let schedule = FinancialEventSchedule::from_tables(&[
             FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
             FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
         ])?;
         let specs = [self.spec()];
-        compute_financial_event_snapshot_many(
+        let final_cache = &mut state.final_cache;
+        let snapshot_cache = &mut state.snapshot_cache;
+        compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
             data,
-            state,
+            final_cache,
             &schedule,
             &specs,
-            |_, context, data| self.compute(context, data).map(|series| vec![series]),
+            |_, _, data| {
+                self.compute_with_snapshot_cache(data, snapshot_cache)
+                    .map(|series| vec![series])
+            },
         )
+    }
+}
+
+impl StockDailyRoeEnhance {
+    fn compute_with_snapshot_cache(
+        &self,
+        data: &DataPool,
+        snapshot_cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
+    ) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let income = PitFinancialData::from_table(
+            data.daily(DatasetId::StockIncome)?,
+            &[INCOME_COLUMN],
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let balance = PitFinancialData::from_table(
+            data.daily(DatasetId::StockBalanceSheet)?,
+            &[EQUITY_COLUMN],
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?;
+
+        let components = roe_component_columns(&panel, &income, &balance, snapshot_cache)?;
+        let r_yoy = neutralize_rank_fill_present_non_bj(&components.yoy, &panel, data)?;
+        let r_stb = neutralize_rank_fill_present_non_bj(&components.stb, &panel, data)?;
+        let r_last = neutralize_rank_fill_present_non_bj(&components.last, &panel, data)?;
+        let r_growth = neutralize_rank_fill_present_non_bj(&components.growth, &panel, data)?;
+
+        let layer1 = pctrank_fill_present_non_bj(&average_pair(&r_growth, &r_last)?, &panel)?;
+        let layer2 = pctrank_fill_present_non_bj(&average_pair(&layer1, &r_stb)?, &panel)?;
+        let raw = pctrank_fill_present_non_bj(&sum_pair(&layer2, &r_yoy)?, &panel)?;
+        Ok(raw.to_factor_series(self.spec()))
     }
 }
 
@@ -165,27 +187,37 @@ fn roe_component_columns(
     panel: &DailyPanel,
     income: &PitFinancialData,
     balance: &PitFinancialData,
+    cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
 ) -> Result<RoeComponentColumns> {
     let mut yoy = vec![None; panel.shape_len()];
     let mut stb = vec![None; panel.shape_len()];
     let mut last = vec![None; panel.shape_len()];
     let mut growth = vec![None; panel.shape_len()];
 
-    let snapshots = cached_financial_stock_snapshots(
-        panel,
-        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
-        |trade_date, ts_code, _| roe_marker(ts_code, trade_date, income, balance),
-        |trade_date, ts_code, _| roe_snapshot_for_stock(ts_code, trade_date, income, balance),
-    );
-
-    for (offset, snapshot) in snapshots.into_iter().enumerate() {
-        let Some(snapshot) = snapshot else {
+    let instrument_count = panel.instruments().len();
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
             continue;
-        };
-        yoy[offset] = snapshot.yoy;
-        stb[offset] = snapshot.stb;
-        last[offset] = snapshot.last;
-        growth[offset] = snapshot.growth;
+        }
+        let snapshots = cached_financial_stock_snapshots_for_date(
+            panel,
+            trade_date,
+            cache,
+            |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+            |trade_date, ts_code, _| roe_marker(ts_code, trade_date, income, balance),
+            |trade_date, ts_code, _| roe_snapshot_for_stock(ts_code, trade_date, income, balance),
+        );
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            let offset = date_offset + instrument_idx;
+            yoy[offset] = snapshot.yoy;
+            stb[offset] = snapshot.stb;
+            last[offset] = snapshot.last;
+            growth[offset] = snapshot.growth;
+        }
     }
 
     Ok(RoeComponentColumns {

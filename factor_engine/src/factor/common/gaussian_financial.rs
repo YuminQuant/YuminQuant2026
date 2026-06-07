@@ -10,10 +10,11 @@ use crate::error::{err, Result};
 use crate::factor::common::stock_daily_ops::{is_bj_stock, mask_bj, neutralize_size_sector};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots, compute_financial_event_snapshot_many, ClassificationLevel,
-    ClassificationMap, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
-    FinancialStatementDataset, PanelColumn, PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    ClassificationLevel, ClassificationMap, DailyPanel, EventDrivenCrossSectionCache,
+    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
+    ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_neutralize_regression, cs_pctrank};
@@ -92,6 +93,12 @@ pub struct GaussianFinancialFactor {
     kind: GaussianFinancialOutput,
 }
 
+#[derive(Default)]
+struct GaussianFinancialComputeState {
+    final_cache: EventDrivenCrossSectionCache,
+    snapshot_cache: InstrumentAlignedSnapshotCache<FinancialSnapshot>,
+}
+
 impl GaussianFinancialFactor {
     pub fn new(kind: GaussianFinancialOutput) -> Self {
         Self { kind }
@@ -134,7 +141,7 @@ impl Factor for GaussianFinancialFactor {
     }
 
     fn initial_compute_state(&self, _requested_ids: &[String]) -> Box<dyn Any + Send> {
-        Box::new(EventDrivenCrossSectionCache::default())
+        Box::new(GaussianFinancialComputeState::default())
     }
 
     fn compute_many_stateful(
@@ -145,7 +152,7 @@ impl Factor for GaussianFinancialFactor {
         state: &mut (dyn Any + Send),
     ) -> Result<Vec<FactorSeries>> {
         let state = state
-            .downcast_mut::<EventDrivenCrossSectionCache>()
+            .downcast_mut::<GaussianFinancialComputeState>()
             .ok_or_else(|| err("gaussian financial provider received incompatible state"))?;
         let mut requested = requested_ids
             .iter()
@@ -180,14 +187,18 @@ impl Factor for GaussianFinancialFactor {
         }
         let schedule = FinancialEventSchedule::from_tables(&event_tables)?;
         let specs = requested.iter().copied().map(spec).collect::<Vec<_>>();
-        compute_financial_event_snapshot_many(
+        let final_cache = &mut state.final_cache;
+        let snapshot_cache = &mut state.snapshot_cache;
+        compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
             data,
-            state,
+            final_cache,
             &schedule,
             &specs,
-            compute_requested,
+            |requested_ids, context, data| {
+                compute_requested_with_snapshot_cache(requested_ids, context, data, snapshot_cache)
+            },
         )
     }
 }
@@ -246,8 +257,18 @@ pub fn spec(kind: GaussianFinancialOutput) -> FactorSpec {
 
 pub fn compute_requested(
     requested_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+) -> Result<Vec<FactorSeries>> {
+    let mut snapshot_cache = InstrumentAlignedSnapshotCache::default();
+    compute_requested_with_snapshot_cache(requested_ids, context, data, &mut snapshot_cache)
+}
+
+fn compute_requested_with_snapshot_cache(
+    requested_ids: &[String],
     _context: &FactorContext,
     data: &DataPool,
+    snapshot_cache: &mut InstrumentAlignedSnapshotCache<FinancialSnapshot>,
 ) -> Result<Vec<FactorSeries>> {
     let mut requested = requested_ids
         .iter()
@@ -295,7 +316,14 @@ pub fn compute_requested(
         Vec::new()
     };
     let columns = financial_snapshot_columns(
-        &panel, &total_mv, &income, &balance, &cashflow, &dividends, needs,
+        &panel,
+        &total_mv,
+        &income,
+        &balance,
+        &cashflow,
+        &dividends,
+        needs,
+        snapshot_cache,
     )?;
 
     let mut raw_cache = GaussianRawCache::default();
@@ -478,6 +506,7 @@ fn financial_snapshot_columns(
     cashflow: &PitFinancialData,
     dividends: &[DividendRecord],
     needs: FinancialNeeds,
+    cache: &mut InstrumentAlignedSnapshotCache<FinancialSnapshot>,
 ) -> Result<FinancialSnapshotColumns> {
     let mut total_mv_snapshot = vec![None; panel.shape_len()];
     let mut netprofit_ttm = vec![None; panel.shape_len()];
@@ -501,57 +530,67 @@ fn financial_snapshot_columns(
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let snapshots = cached_financial_stock_snapshots(
-        panel,
-        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
-        |trade_date, ts_code, _| {
-            let cash_dividend = dividend_sums_by_date
-                .get(&trade_date)
-                .and_then(|sum| sum.get(ts_code).copied())
-                .unwrap_or(0.0);
-            financial_snapshot_marker(
-                ts_code,
-                trade_date,
-                income,
-                balance,
-                cashflow,
-                cash_dividend,
-                needs,
-            )
-        },
-        |trade_date, ts_code, offset| {
-            let cash_dividend = dividend_sums_by_date
-                .get(&trade_date)
-                .and_then(|sum| sum.get(ts_code).copied())
-                .unwrap_or(0.0);
-            let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
-            financial_snapshot_for_stock(
-                ts_code,
-                trade_date,
-                income,
-                balance,
-                cashflow,
-                cash_dividend,
-                total_mv_value,
-                needs,
-            )
-        },
-    );
-
-    for (offset, snapshot) in snapshots.into_iter().enumerate() {
-        let Some(snapshot) = snapshot else {
+    let instrument_count = panel.instruments().len();
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
             continue;
-        };
-        total_mv_snapshot[offset] = snapshot.total_mv_snapshot;
-        netprofit_ttm[offset] = snapshot.netprofit_ttm;
-        netprofit_sq[offset] = snapshot.netprofit_sq;
-        netprofit_sq_yoy[offset] = snapshot.netprofit_sq_yoy;
-        revenue_sq[offset] = snapshot.revenue_sq;
-        cashflow_sq[offset] = snapshot.cashflow_sq;
-        book_value[offset] = snapshot.book_value;
-        cash_equ_end_period[offset] = snapshot.cash_equ_end_period;
-        div_ttm[offset] = snapshot.div_ttm;
-        delta_profit_sq_yoy[offset] = diff_opt(snapshot.netprofit_sq, snapshot.netprofit_sq_yoy);
+        }
+        let snapshots = cached_financial_stock_snapshots_for_date(
+            panel,
+            trade_date,
+            cache,
+            |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+            |trade_date, ts_code, _| {
+                let cash_dividend = dividend_sums_by_date
+                    .get(&trade_date)
+                    .and_then(|sum| sum.get(ts_code).copied())
+                    .unwrap_or(0.0);
+                financial_snapshot_marker(
+                    ts_code,
+                    trade_date,
+                    income,
+                    balance,
+                    cashflow,
+                    cash_dividend,
+                    needs,
+                )
+            },
+            |trade_date, ts_code, offset| {
+                let cash_dividend = dividend_sums_by_date
+                    .get(&trade_date)
+                    .and_then(|sum| sum.get(ts_code).copied())
+                    .unwrap_or(0.0);
+                let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
+                financial_snapshot_for_stock(
+                    ts_code,
+                    trade_date,
+                    income,
+                    balance,
+                    cashflow,
+                    cash_dividend,
+                    total_mv_value,
+                    needs,
+                )
+            },
+        );
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            let offset = date_offset + instrument_idx;
+            total_mv_snapshot[offset] = snapshot.total_mv_snapshot;
+            netprofit_ttm[offset] = snapshot.netprofit_ttm;
+            netprofit_sq[offset] = snapshot.netprofit_sq;
+            netprofit_sq_yoy[offset] = snapshot.netprofit_sq_yoy;
+            revenue_sq[offset] = snapshot.revenue_sq;
+            cashflow_sq[offset] = snapshot.cashflow_sq;
+            book_value[offset] = snapshot.book_value;
+            cash_equ_end_period[offset] = snapshot.cash_equ_end_period;
+            div_ttm[offset] = snapshot.div_ttm;
+            delta_profit_sq_yoy[offset] =
+                diff_opt(snapshot.netprofit_sq, snapshot.netprofit_sq_yoy);
+        }
     }
 
     Ok(FinancialSnapshotColumns {

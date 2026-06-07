@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -288,6 +289,7 @@ impl BarraEngine {
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();
         let mut disclosure_cache = DisclosureTableCache::default();
+        let mut provider_states = BTreeMap::<String, Box<dyn Any + Send>>::new();
 
         for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
             let batch_start_date = *date_batch
@@ -348,6 +350,7 @@ impl BarraEngine {
                     &batch_selected_ids,
                     &context,
                     &pool,
+                    &mut provider_states,
                     thread_pool.as_ref(),
                 )?;
                 let compute_ms = compute_started.elapsed().as_millis();
@@ -628,18 +631,31 @@ fn compute_exposure_batch(
     selected_ids: &[BTreeSet<String>],
     context: &FactorContext,
     pool: &DataPool,
+    provider_states: &mut BTreeMap<String, Box<dyn Any + Send>>,
     thread_pool: Option<&rayon::ThreadPool>,
 ) -> Result<Vec<BarraSeries>> {
+    let jobs = providers
+        .iter()
+        .zip(selected_ids.iter())
+        .map(|(provider, selected_ids)| {
+            let key = provider.exposure.compute_provider_key();
+            let state = provider_states
+                .remove(&key)
+                .unwrap_or_else(|| provider.exposure.initial_compute_state(selected_ids));
+            (key, *provider, selected_ids.clone(), state)
+        })
+        .collect::<Vec<_>>();
     let compute = || {
-        providers
-            .par_iter()
-            .zip(selected_ids.par_iter())
-            .map(|(provider, selected_ids)| {
-                let series = provider.exposure.compute(context, pool)?;
-                Ok(series
+        jobs.into_par_iter()
+            .map(|(key, provider, selected_ids, mut state)| {
+                let series = provider
+                    .exposure
+                    .compute_stateful(context, pool, state.as_mut())?;
+                let selected = series
                     .into_iter()
                     .filter(|series| selected_ids.contains(&series.spec.id))
-                    .collect::<Vec<_>>())
+                    .collect::<Vec<_>>();
+                Ok((key, state, selected))
             })
             .collect::<Vec<_>>()
     };
@@ -647,12 +663,12 @@ fn compute_exposure_batch(
         Some(thread_pool) => thread_pool.install(compute),
         None => compute(),
     };
-    let series = results
-        .into_iter()
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    let mut series = Vec::new();
+    for item in results.into_iter().collect::<Result<Vec<_>>>()? {
+        let (key, state, selected) = item;
+        provider_states.insert(key, state);
+        series.extend(selected);
+    }
     Ok(series)
 }
 

@@ -113,13 +113,24 @@ cross-sectional work.
 
 财报数据是低频稀疏数据。新的财务因子应把流程拆成“股票级财报慢指标 snapshot”和“每日快变量/截面处理”两层。
 
-Prefer the high-level helper `cached_financial_stock_snapshots(...)`. It wraps
-`FinancialStockSnapshotCache<T>` and keeps one stock-level cache alive for the
-whole provider/date-batch calculation.
+New financial factors should prefer provider-state caching:
+`InstrumentAlignedSnapshotCache<T>` lives in the factor/provider state, and each
+trading date calls `cached_financial_stock_snapshots_for_date(...)` to update
+only stocks whose marker changed. This keeps exactly one current stock-level
+snapshot cache per provider and avoids holding multiple event cross-sections in
+memory.
 
-优先使用高层 helper `cached_financial_stock_snapshots(...)`。它封装了
-`FinancialStockSnapshotCache<T>`，并让同一个 provider/date-batch 内的股票级
-慢指标缓存持续存在。
+新的财务因子应优先使用 provider-state 缓存：把
+`InstrumentAlignedSnapshotCache<T>` 放在因子或 provider state 中，每个交易日调用
+`cached_financial_stock_snapshots_for_date(...)`，只更新 marker 变化的股票。这样每个
+provider 只维护一个当前股票级 snapshot cache，不会在内存中堆积多个事件截面。
+
+`cached_financial_stock_snapshots(...)` is still available as a small batch
+utility, but it should not be the default path for long-lived financial factors
+or Barra financial exposures.
+
+`cached_financial_stock_snapshots(...)` 仍可作为小范围批量工具使用，但不再是长期运行的
+财务因子或 Barra 财务暴露的默认开发方式。
 
 Use it when all of the following are true:
 
@@ -138,13 +149,18 @@ Do **not** cache daily fast variables:
 - peer/network reductions such as F-Link weighted returns / F-Link、peer 加权收益等截面网络降维；
 - rolling calendar values unless the calendar boundary is added to the marker. / 如果 rolling calendar 边界会改变结果，必须把边界加入 marker，否则不要缓存。
 
-Recommended pattern / 推荐写法：
+Recommended provider-state pattern / 推荐 provider-state 写法：
 
 ```rust
 #[derive(Clone, Copy, Debug)]
 struct SlowSnapshot {
     revenue_ttm: Option<f64>,
     equity_latest: Option<f64>,
+}
+
+#[derive(Default)]
+struct MyProviderState {
+    slow_cache: InstrumentAlignedSnapshotCache<SlowSnapshot>,
 }
 
 fn slow_marker(
@@ -185,22 +201,31 @@ fn slow_snapshot(
     })
 }
 
-let snapshots = cached_financial_stock_snapshots(
-    panel,
-    |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
-    |trade_date, ts_code, _| slow_marker(ts_code, trade_date, &income, &balance),
-    |trade_date, ts_code, _| slow_snapshot(ts_code, trade_date, &income, &balance),
-);
-
-let values = snapshots
-    .into_iter()
-    .enumerate()
-    .map(|(offset, snapshot)| {
-        let snapshot = snapshot?;
-        let mv = total_mv.values()[offset]?;
-        snapshot.revenue_ttm.and_then(|revenue| safe_div(revenue, mv))
-    })
-    .collect::<Vec<_>>();
+let mut values = vec![None; panel.shape_len()];
+let instrument_count = panel.instruments().len();
+for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+    if !panel.is_target_date(trade_date) {
+        continue;
+    }
+    let snapshots = cached_financial_stock_snapshots_for_date(
+        panel,
+        trade_date,
+        &mut state.slow_cache,
+        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| slow_marker(ts_code, trade_date, &income, &balance),
+        |trade_date, ts_code, _| slow_snapshot(ts_code, trade_date, &income, &balance),
+    );
+    for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
+        let offset = date_idx * instrument_count + instrument_idx;
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        let Some(mv) = total_mv.values()[offset] else {
+            continue;
+        };
+        values[offset] = snapshot.revenue_ttm.and_then(|revenue| safe_div(revenue, mv));
+    }
+}
 let raw = panel.column_from_values(values)?;
 ```
 
@@ -218,13 +243,17 @@ Marker rules / marker 规则：
 - When a stock is not present in `DailyPanel.present` or is excluded by the factor universe, clear or skip the cache entry rather than carrying the previous snapshot forward. / 股票不在市或被因子股票池剔除时，应清空或跳过缓存，不能沿用旧 snapshot。
 - If marker is missing, do not reuse an old snapshot. / marker 缺失时不能复用旧 snapshot。
 
-Multi-output providers should compute shared slow snapshots once, then write all
-requested outputs from the same snapshot. For example, `f_momentum_80pec` and
-`link_new` share the 10-dimensional financial vector; Barra `growth`,
-`quality`, and `value` cache their statement-driven subcomponents but still run
-standardization and neutralization every day.
+Multi-output providers should store shared slow snapshot caches in provider
+state, then write all requested outputs from the current snapshots. For example,
+`f_momentum_80pec` and `link_new` share the 10-dimensional financial vector;
+Barra `growth`, `quality`, `value`, and `dividend_yield` cache their
+statement/dividend-driven subcomponents but still run Barra standardization and
+neutralization on the normal daily panel.
 
-多输出 provider 应一次性构造共享慢指标 snapshot，再根据 `requested_ids` 输出需要的因子。例如 `f_momentum_80pec` 和 `link_new` 共用 10 维财务向量；Barra `growth`、`quality`、`value` 会缓存财报驱动的子指标，但标准化和中性化仍然每天执行。
+多输出 provider 应把共享慢指标 snapshot cache 放在 provider state 中，再基于当前 snapshot
+输出请求的因子。例如 `f_momentum_80pec` 和 `link_new` 共用 10 维财务向量；Barra
+`growth`、`quality`、`value`、`dividend_yield` 会缓存财报或分红驱动的子指标，但 Barra
+标准化和中性化仍按正常日频 panel 执行。
 
 ## Factor Update Policy / 因子截面更新策略
 

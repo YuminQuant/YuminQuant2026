@@ -81,6 +81,11 @@ impl DataPool {
                 pool.daily.insert(dataset, table);
                 continue;
             }
+            if dataset == DatasetId::StockBasic {
+                let table = loader.load_stock_basic(&columns)?;
+                pool.daily.insert(dataset, table);
+                continue;
+            }
             if dataset == DatasetId::StockBarraDaily {
                 let table = loader.load_barra_daily(
                     context.asset_class,
@@ -277,6 +282,28 @@ impl DataPool {
             intraday_daily_raw: None,
             intraday_daily_raw_panel: None,
         }
+    }
+
+    #[cfg(test)]
+    pub fn from_daily_tables_for_test(
+        daily: HashMap<DatasetId, Table>,
+        context: &FactorContext,
+    ) -> Result<Self> {
+        let mut daily_panels = HashMap::new();
+        for (dataset, table) in &daily {
+            if should_build_daily_panel(*dataset) {
+                daily_panels.insert(*dataset, DailyPanel::from_table(table, context)?);
+            }
+        }
+        Ok(Self {
+            daily,
+            daily_panels,
+            index_daily: HashMap::new(),
+            index_daily_panels: HashMap::new(),
+            minute: HashMap::new(),
+            intraday_daily_raw: None,
+            intraday_daily_raw_panel: None,
+        })
     }
 }
 

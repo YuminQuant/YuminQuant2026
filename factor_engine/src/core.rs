@@ -70,6 +70,7 @@ pub enum DatasetId {
     StockCashFlow,
     StockDividend,
     StockAnalystReport,
+    StockBasic,
     StockMinute1m,
     StockDerivedBar,
     StockSwClassification,
@@ -93,6 +94,7 @@ impl DatasetId {
             | Self::StockCashFlow
             | Self::StockDividend
             | Self::StockAnalystReport
+            | Self::StockBasic
             | Self::StockMinute1m
             | Self::StockDerivedBar
             | Self::StockSwClassification
@@ -115,6 +117,7 @@ impl DatasetId {
             | Self::StockCashFlow
             | Self::StockDividend
             | Self::StockAnalystReport
+            | Self::StockBasic
             | Self::StockSwClassification
             | Self::StockCiClassification
             | Self::StockBarraDaily
@@ -138,6 +141,7 @@ impl DatasetId {
             Self::StockCashFlow => "stock.cashflow",
             Self::StockDividend => "stock.dividend",
             Self::StockAnalystReport => "stock.analyst_report",
+            Self::StockBasic => "stock.basic",
             Self::StockMinute1m => "stock.minute.1m",
             Self::StockDerivedBar => "stock.derived.bar",
             Self::StockSwClassification => "stock.sw_classification",

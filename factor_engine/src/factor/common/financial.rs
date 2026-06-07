@@ -198,24 +198,106 @@ where
     F: FnMut(&[String], &FactorContext, &DataPool) -> Result<Vec<FactorSeries>>,
 {
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-    let mut output = Vec::new();
+    let event_trade_dates = event_trade_dates_for_context(state, schedule, &context.target_dates);
+    let event_series_by_factor_date = if event_trade_dates.is_empty() {
+        BTreeMap::new()
+    } else {
+        let event_context = multi_target_context(context, &event_trade_dates);
+        let event_pool = data.with_target_dates(&event_trade_dates);
+        let series_list = compute_on_event(requested_ids, &event_context, &event_pool)?;
+        split_event_series_by_factor_date(series_list)
+    };
+    let event_trade_date_set = event_trade_dates.into_iter().collect::<BTreeSet<_>>();
+    let mut output_by_factor = specs
+        .iter()
+        .map(|spec| {
+            (
+                spec.id.clone(),
+                FactorSeries {
+                    spec: spec.clone(),
+                    values: Vec::new(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     for trade_date in &context.target_dates {
-        if state.should_recompute(schedule, *trade_date) {
-            let event_context = single_target_context(context, *trade_date);
-            let event_pool = data.with_target_dates(&[*trade_date]);
-            let series_list = compute_on_event(requested_ids, &event_context, &event_pool)?;
-            for series in &series_list {
-                state.update_series(series);
+        if event_trade_date_set.contains(trade_date) {
+            for spec in specs {
+                let series = event_series_by_factor_date
+                    .get(&spec.id)
+                    .and_then(|by_date| by_date.get(trade_date))
+                    .cloned()
+                    .unwrap_or_else(|| FactorSeries {
+                        spec: spec.clone(),
+                        values: Vec::new(),
+                    });
+                state.update_series(&series);
+                append_series_values(&mut output_by_factor, series);
             }
-            output.extend(series_list);
         } else {
             for spec in specs {
-                output.push(state.replay_series(spec.clone(), panel, *trade_date));
+                let series = state.replay_series(spec.clone(), panel, *trade_date);
+                append_series_values(&mut output_by_factor, series);
             }
         }
         state.mark_processed(*trade_date);
     }
-    Ok(output)
+    Ok(specs
+        .iter()
+        .filter_map(|spec| output_by_factor.remove(&spec.id))
+        .collect())
+}
+
+fn append_series_values(
+    output_by_factor: &mut BTreeMap<String, FactorSeries>,
+    series: FactorSeries,
+) {
+    if let Some(output) = output_by_factor.get_mut(&series.spec.id) {
+        output.values.extend(series.values);
+    }
+}
+
+fn event_trade_dates_for_context(
+    state: &EventDrivenCrossSectionCache,
+    schedule: &FinancialEventSchedule,
+    target_dates: &[i32],
+) -> Vec<i32> {
+    let mut last_processed = state.last_processed_trade_date;
+    let mut event_trade_dates = Vec::new();
+    for trade_date in target_dates {
+        let should_recompute =
+            last_processed.is_none() || schedule.has_event_after_until(last_processed, *trade_date);
+        if should_recompute {
+            event_trade_dates.push(*trade_date);
+        }
+        last_processed = Some(*trade_date);
+    }
+    event_trade_dates
+}
+
+fn split_event_series_by_factor_date(
+    series_list: Vec<FactorSeries>,
+) -> BTreeMap<String, BTreeMap<i32, FactorSeries>> {
+    let mut output = BTreeMap::<String, BTreeMap<i32, FactorSeries>>::new();
+    for series in series_list {
+        let spec = series.spec;
+        let factor_id = spec.id.clone();
+        let by_date = output.entry(factor_id).or_default();
+        for value in series.values {
+            let FactorRowKey::Daily { trade_date, .. } = &value.key else {
+                continue;
+            };
+            by_date
+                .entry(*trade_date)
+                .or_insert_with(|| FactorSeries {
+                    spec: spec.clone(),
+                    values: Vec::new(),
+                })
+                .values
+                .push(value);
+        }
+    }
+    output
 }
 
 fn collect_statement_event_dates(table: &Table, event_dates: &mut BTreeSet<i32>) -> Result<()> {
@@ -250,15 +332,17 @@ fn collect_dividend_ltm_event_dates(table: &Table, event_dates: &mut BTreeSet<i3
     Ok(())
 }
 
-fn single_target_context(context: &FactorContext, trade_date: i32) -> FactorContext {
+fn multi_target_context(context: &FactorContext, target_dates: &[i32]) -> FactorContext {
+    let start_date = target_dates.first().copied().unwrap_or(context.start_date);
+    let end_date = target_dates.last().copied().unwrap_or(context.end_date);
     FactorContext {
         asset_class: context.asset_class,
         frequency: context.frequency,
-        start_date: trade_date,
-        end_date: trade_date,
+        start_date,
+        end_date,
         load_start_date: context.load_start_date,
         load_dates: context.load_dates.clone(),
-        target_dates: vec![trade_date],
+        target_dates: target_dates.to_vec(),
     }
 }
 
@@ -529,6 +613,13 @@ pub struct PitFinancialData {
 }
 
 impl PitFinancialData {
+    pub fn empty(preference: ReportTypePreference) -> Self {
+        Self {
+            preference,
+            by_ts_code: BTreeMap::new(),
+        }
+    }
+
     pub fn from_table(
         table: &Table,
         value_columns: &[&str],
@@ -1035,20 +1126,21 @@ fn is_leap_year(year: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
 
     use crate::core::{
-        AssetClass, DataRequest, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+        AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
         FactorValue, Frequency, Lookback,
     };
-    use crate::data::{ColumnData, Table};
+    use crate::data::{ColumnData, DataPool, Table};
 
-    use super::{latest_possible_end_date, required_anchor_end_date};
     use super::{
-        DeadlinePolicy, EventDrivenCrossSectionCache, FinancialEventMarkerBuilder,
-        FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
-        FinancialStockSnapshotCache, PitFinancialData, ReportTypePreference,
+        compute_financial_event_snapshot_many, DeadlinePolicy, EventDrivenCrossSectionCache,
+        FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+        FinancialStatementDataset, FinancialStockSnapshotCache, PitFinancialData,
+        ReportTypePreference,
     };
+    use super::{latest_possible_end_date, required_anchor_end_date};
 
     fn financial_table(rows: &[(i32, i32, i64, i64, f64)]) -> Table {
         Table::new(BTreeMap::from([
@@ -1214,6 +1306,41 @@ mod tests {
         }
     }
 
+    fn factor_context(dates: &[i32]) -> FactorContext {
+        FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: *dates.first().unwrap(),
+            end_date: *dates.last().unwrap(),
+            load_start_date: *dates.first().unwrap(),
+            load_dates: dates.to_vec(),
+            target_dates: dates.to_vec(),
+        }
+    }
+
+    fn daily_pv_table(dates: &[i32]) -> Table {
+        Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(dates.iter().map(|date| Some(*date)).collect()),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(
+                    dates
+                        .iter()
+                        .map(|_| Some("000001.SZ".to_string()))
+                        .collect(),
+                ),
+            ),
+            (
+                "close".to_string(),
+                ColumnData::F64(dates.iter().map(|_| Some(1.0)).collect()),
+            ),
+        ]))
+        .expect("valid daily pv table")
+    }
+
     #[test]
     fn financial_event_schedule_maps_statement_and_dividend_dates() {
         let statement = financial_table(&[(20251231, 20260103, 1, 0, 1.0)]);
@@ -1263,6 +1390,76 @@ mod tests {
             }
         );
         assert_eq!(replay.values[0].value, Some(1.23));
+    }
+
+    #[test]
+    fn financial_event_snapshot_batches_all_event_dates_into_one_compute_call() {
+        let dates = vec![20260102, 20260105, 20260106, 20260107, 20260108];
+        let context = factor_context(&dates);
+        let data = DataPool::from_daily_tables_for_test(
+            HashMap::from([(DatasetId::StockDailyPv, daily_pv_table(&dates))]),
+            &context,
+        )
+        .expect("data pool");
+        let statement = financial_table(&[
+            (20251231, 20260104, 1, 0, 1.0),
+            (20260331, 20260107, 1, 0, 2.0),
+        ]);
+        let schedule =
+            FinancialEventSchedule::from_tables(&[FinancialEventTable::statement(&statement)])
+                .expect("schedule");
+        let spec = event_spec("slow_factor");
+        let mut state = EventDrivenCrossSectionCache::default();
+        let mut call_count = 0usize;
+        let mut seen_event_dates = Vec::new();
+        let output = compute_financial_event_snapshot_many(
+            &[spec.id.clone()],
+            &context,
+            &data,
+            &mut state,
+            &schedule,
+            &[spec.clone()],
+            |_, event_context, _| {
+                call_count += 1;
+                seen_event_dates = event_context.target_dates.clone();
+                Ok(vec![FactorSeries {
+                    spec: spec.clone(),
+                    values: event_context
+                        .target_dates
+                        .iter()
+                        .map(|trade_date| FactorValue {
+                            key: FactorRowKey::Daily {
+                                trade_date: *trade_date,
+                                ts_code: "000001.SZ".to_string(),
+                            },
+                            value: Some(*trade_date as f64),
+                        })
+                        .collect(),
+                }])
+            },
+        )
+        .expect("event snapshot");
+
+        assert_eq!(call_count, 1);
+        assert_eq!(seen_event_dates, vec![20260102, 20260105, 20260107]);
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].values.len(), dates.len());
+
+        let by_date = output[0]
+            .values
+            .iter()
+            .map(|value| {
+                let FactorRowKey::Daily { trade_date, .. } = &value.key else {
+                    unreachable!("daily key")
+                };
+                (*trade_date, value.value)
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(by_date.get(&20260102), Some(&Some(20260102.0)));
+        assert_eq!(by_date.get(&20260105), Some(&Some(20260105.0)));
+        assert_eq!(by_date.get(&20260106), Some(&Some(20260105.0)));
+        assert_eq!(by_date.get(&20260107), Some(&Some(20260107.0)));
+        assert_eq!(by_date.get(&20260108), Some(&Some(20260107.0)));
     }
 
     #[test]

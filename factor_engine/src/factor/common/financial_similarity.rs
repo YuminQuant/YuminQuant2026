@@ -15,9 +15,8 @@ use crate::factor::common::vector::clean;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, factor_series_to_panel_column,
     financial_event_trade_dates, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
-    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
-    ReportTypePreference,
+    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable, FinancialPitReader,
+    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
 use crate::operators::{cs_pctrank, cs_regression_residual};
 
@@ -183,14 +182,12 @@ pub fn compute_requested(
 
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
-    let income = PitFinancialData::from_table(
-        data.daily(DatasetId::StockIncome)?,
-        &INCOME_COLUMNS,
+    let income = data.financial_reader(
+        DatasetId::StockIncome,
         ReportTypePreference::income_single_quarter(),
     )?;
-    let balance = PitFinancialData::from_table(
-        data.daily(DatasetId::StockBalanceSheet)?,
-        &BALANCE_COLUMNS,
+    let balance = data.financial_reader(
+        DatasetId::StockBalanceSheet,
         ReportTypePreference::balance_sheet_consolidated(),
     )?;
     let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
@@ -264,17 +261,19 @@ pub fn compute_requested_stateful(
     }
 
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-    let schedule = FinancialEventSchedule::from_tables(&[
-        FinancialEventTable::statement_with_preference(
-            data.daily(DatasetId::StockIncome)?,
-            ReportTypePreference::income_single_quarter(),
-        ),
-        FinancialEventTable::statement_with_preference(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            ReportTypePreference::balance_sheet_consolidated(),
-        ),
+    let income_reader = data.financial_reader(
+        DatasetId::StockIncome,
+        ReportTypePreference::income_single_quarter(),
+    )?;
+    let balance_reader = data.financial_reader(
+        DatasetId::StockBalanceSheet,
+        ReportTypePreference::balance_sheet_consolidated(),
+    )?;
+    let mut schedule =
+        FinancialEventSchedule::from_pit_readers(&[income_reader.clone(), balance_reader.clone()]);
+    schedule.merge(FinancialEventSchedule::from_tables(&[
         FinancialEventTable::dividend_ltm(data.daily(DatasetId::StockDividend)?),
-    ])?;
+    ])?);
     let ret20 = if want_f_momentum {
         Some(adjusted_20d_return(data, &panel)?)
     } else {
@@ -371,22 +370,20 @@ pub fn compute_requested_stateful(
 struct FinancialSimilarityInputs<'a> {
     panel: &'a DailyPanel,
     total_mv: PanelColumn,
-    income: PitFinancialData,
-    balance: PitFinancialData,
+    income: FinancialPitReader<'a>,
+    balance: FinancialPitReader<'a>,
     dividends: Vec<DividendRecord>,
 }
 
 fn financial_similarity_inputs(data: &DataPool) -> Result<FinancialSimilarityInputs<'_>> {
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
-    let income = PitFinancialData::from_table(
-        data.daily(DatasetId::StockIncome)?,
-        &INCOME_COLUMNS,
+    let income = data.financial_reader(
+        DatasetId::StockIncome,
         ReportTypePreference::income_single_quarter(),
     )?;
-    let balance = PitFinancialData::from_table(
-        data.daily(DatasetId::StockBalanceSheet)?,
-        &BALANCE_COLUMNS,
+    let balance = data.financial_reader(
+        DatasetId::StockBalanceSheet,
         ReportTypePreference::balance_sheet_consolidated(),
     )?;
     let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
@@ -575,8 +572,8 @@ fn tags() -> Vec<String> {
 
 fn financial_metric_columns(
     panel: &DailyPanel,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     total_mv: &PanelColumn,
     dividends: &[DividendRecord],
     cache: &mut InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
@@ -649,8 +646,8 @@ fn financial_metric_columns(
 
 fn financial_similarity_points_for_trade_date(
     panel: &DailyPanel,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     total_mv: &PanelColumn,
     dividends: &[DividendRecord],
     cache: &mut InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
@@ -734,8 +731,8 @@ fn financial_similarity_points_for_trade_date(
 fn financial_metric_marker(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     cash_dividend_ltm: f64,
 ) -> Option<FinancialEventMarker> {
     let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
@@ -743,14 +740,14 @@ fn financial_metric_marker(
     let previous_end = previous_quarter_end_date(latest_end);
     let previous_yoy_end = previous_end.map(same_quarter_previous_year);
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
         latest_end,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
@@ -758,7 +755,7 @@ fn financial_metric_marker(
         yoy_end,
     );
     if let Some(end_date) = previous_end {
-        builder.include_record_for_end_date(
+        builder.include_reader_record_for_end_date(
             FinancialStatementDataset::Income,
             income,
             ts_code,
@@ -767,7 +764,7 @@ fn financial_metric_marker(
         );
     }
     if let Some(end_date) = previous_yoy_end {
-        builder.include_record_for_end_date(
+        builder.include_reader_record_for_end_date(
             FinancialStatementDataset::Income,
             income,
             ts_code,
@@ -775,28 +772,28 @@ fn financial_metric_marker(
             end_date,
         );
     }
-    builder.include_ttm_for_end_date(
+    builder.include_reader_ttm_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
         latest_end,
     );
-    builder.include_ttm_for_end_date(
+    builder.include_reader_ttm_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
         yoy_end,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
         trade_date,
         latest_end,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
@@ -810,8 +807,8 @@ fn financial_metric_marker(
 fn financial_metrics_slow_for_stock(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     cash_dividend_ltm: f64,
     total_mv_snapshot: Option<f64>,
 ) -> Option<FinancialMetricSlowSnapshot> {
@@ -888,7 +885,7 @@ fn financial_metrics_slow_for_stock(
 }
 
 fn income_value(
-    data: &PitFinancialData,
+    data: &FinancialPitReader<'_>,
     ts_code: &str,
     trade_date: i32,
     end_date: i32,
@@ -899,7 +896,7 @@ fn income_value(
 }
 
 fn balance_value(
-    data: &PitFinancialData,
+    data: &FinancialPitReader<'_>,
     ts_code: &str,
     trade_date: i32,
     end_date: i32,
@@ -1331,9 +1328,11 @@ fn is_leap_year(year: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use crate::core::{AssetClass, FactorContext, Frequency};
     use crate::data::{ColumnData, Table};
+    use crate::factor::common::FinancialPitIndex;
 
     use super::*;
 
@@ -1500,18 +1499,10 @@ mod tests {
         ]);
         let income_table = financial_similarity_income_table(&["000001.SZ", "000002.SZ"]);
         let balance_table = financial_similarity_balance_table(&["000001.SZ", "000002.SZ"]);
-        let income = PitFinancialData::from_table(
-            &income_table,
-            &INCOME_COLUMNS,
-            ReportTypePreference::income_single_quarter(),
-        )
-        .unwrap();
-        let balance = PitFinancialData::from_table(
-            &balance_table,
-            &BALANCE_COLUMNS,
-            ReportTypePreference::balance_sheet_consolidated(),
-        )
-        .unwrap();
+        let income_index = FinancialPitIndex::from_table(Arc::new(income_table)).unwrap();
+        let balance_index = FinancialPitIndex::from_table(Arc::new(balance_table)).unwrap();
+        let income = income_index.reader(ReportTypePreference::income_single_quarter());
+        let balance = balance_index.reader(ReportTypePreference::balance_sheet_consolidated());
         let total_mv = panel
             .column_from_values(vec![Some(100.0); panel.shape_len()])
             .unwrap();

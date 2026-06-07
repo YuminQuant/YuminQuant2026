@@ -14,7 +14,7 @@ use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
+    FinancialPitReader, FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn,
     ReportTypePreference,
 };
 
@@ -83,12 +83,12 @@ impl StockDailyBarraCne6Growth {
         shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let income = shared_cache.pit_financial_data(
+        let income = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockIncome,
             ReportTypePreference::consolidated(),
         )?;
-        let balance = shared_cache.pit_financial_data(
+        let balance = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
@@ -126,8 +126,8 @@ struct GrowthSlowSnapshot {
 
 fn historical_growth_columns(
     panel: &crate::factor::common::DailyPanel,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<GrowthSlowSnapshot>,
 ) -> Result<(PanelColumn, PanelColumn)> {
     let mut eps_values = vec![None; panel.shape_len()];
@@ -165,18 +165,18 @@ fn historical_growth_columns(
 fn growth_marker(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_annual_chain(
+    builder.include_reader_annual_chain(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
         5,
     );
-    builder.include_annual_chain(
+    builder.include_reader_annual_chain(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
@@ -189,8 +189,8 @@ fn growth_marker(
 fn growth_snapshot(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<GrowthSlowSnapshot> {
     let eps_growth = income
         .annual_values(ts_code, trade_date, "basic_eps", 5)

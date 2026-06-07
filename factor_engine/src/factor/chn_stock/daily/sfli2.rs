@@ -11,8 +11,8 @@ use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
-    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
+    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
+    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialRecordView,
     ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
@@ -100,26 +100,16 @@ impl Factor for StockDailySfli2 {
         let state = state
             .downcast_mut::<Sfli2ComputeState>()
             .ok_or_else(|| err("sfli2 received incompatible event cache state"))?;
-        let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockCashFlow)?,
-                ReportTypePreference::income_single_quarter(),
-            ),
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockBalanceSheet)?,
-                ReportTypePreference::balance_sheet_consolidated(),
-            ),
-        ])?;
-        let cashflow = PitFinancialData::from_table(
-            data.daily(DatasetId::StockCashFlow)?,
-            &[CPACF_COLUMN, CFO_COLUMN, CIDF_COLUMN],
+        let cashflow = data.financial_reader(
+            DatasetId::StockCashFlow,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[LONG_BORROW_COLUMN, EQUITY_COLUMN, ASSET_COLUMN],
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
+        let schedule =
+            FinancialEventSchedule::from_pit_readers(&[cashflow.clone(), balance.clone()]);
         let raw_specs = [raw_spec()];
         let raw_series = compute_financial_event_snapshot_streaming(
             requested_ids,
@@ -149,14 +139,12 @@ impl StockDailySfli2 {
         data: &DataPool,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<Sfli2Snapshot>,
     ) -> Result<FactorSeries> {
-        let cashflow = PitFinancialData::from_table(
-            data.daily(DatasetId::StockCashFlow)?,
-            &[CPACF_COLUMN, CFO_COLUMN, CIDF_COLUMN],
+        let cashflow = data.financial_reader(
+            DatasetId::StockCashFlow,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[LONG_BORROW_COLUMN, EQUITY_COLUMN, ASSET_COLUMN],
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let raw_series = vec![self.compute_raw_with_prepared_financials(
@@ -171,8 +159,8 @@ impl StockDailySfli2 {
     fn compute_raw_with_prepared_financials(
         &self,
         data: &DataPool,
-        cashflow: &PitFinancialData,
-        balance: &PitFinancialData,
+        cashflow: &FinancialPitReader<'_>,
+        balance: &FinancialPitReader<'_>,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<Sfli2Snapshot>,
     ) -> Result<FactorSeries> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
@@ -203,8 +191,8 @@ struct Sfli2Snapshot {
 
 fn sfli2_raw_column(
     panel: &DailyPanel,
-    cashflow: &PitFinancialData,
-    balance: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<Sfli2Snapshot>,
 ) -> Result<PanelColumn> {
     let instrument_count = panel.instruments().len();
@@ -238,28 +226,28 @@ fn sfli2_raw_column(
 fn sfli2_marker(
     ts_code: &str,
     trade_date: i32,
-    cashflow: &PitFinancialData,
-    balance: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let mut current = cashflow.latest_quarter_end_date(ts_code, trade_date)?;
     let mut builder = FinancialEventMarkerBuilder::new();
     for _ in 0..SFLI_WINDOW {
         let prev = previous_quarter_end_date(current)?;
-        builder.include_record_for_end_date(
+        builder.include_reader_record_for_end_date(
             FinancialStatementDataset::CashFlow,
             cashflow,
             ts_code,
             trade_date,
             current,
         );
-        builder.include_record_for_end_date(
+        builder.include_reader_record_for_end_date(
             FinancialStatementDataset::BalanceSheet,
             balance,
             ts_code,
             trade_date,
             current,
         );
-        builder.include_record_for_end_date(
+        builder.include_reader_record_for_end_date(
             FinancialStatementDataset::BalanceSheet,
             balance,
             ts_code,
@@ -274,8 +262,8 @@ fn sfli2_marker(
 fn sfli2_snapshot_for_stock(
     ts_code: &str,
     trade_date: i32,
-    cashflow: &PitFinancialData,
-    balance: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<Sfli2Snapshot> {
     let mut current = cashflow.latest_quarter_end_date(ts_code, trade_date)?;
     let mut sfli_values = Vec::with_capacity(SFLI_WINDOW);
@@ -293,9 +281,9 @@ fn sfli2_snapshot_for_stock(
 }
 
 fn sfli_for_records(
-    cash_t: &crate::factor::common::PitFinancialRecord,
-    balance_t: &crate::factor::common::PitFinancialRecord,
-    balance_prev: &crate::factor::common::PitFinancialRecord,
+    cash_t: PitFinancialRecordView<'_>,
+    balance_t: PitFinancialRecordView<'_>,
+    balance_prev: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
     let cpacf = clean_or_zero(cash_t.column(CPACF_COLUMN));
     let cfo = clean_or_zero(cash_t.column(CFO_COLUMN));

@@ -14,7 +14,7 @@ use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
+    FinancialPitReader, FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn,
     ReportTypePreference,
 };
 
@@ -119,22 +119,22 @@ impl StockDailyBarraCne6Quality {
         let close = panel.column("close")?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
-        let balance = shared_cache.pit_financial_data(
+        let balance = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let income = shared_cache.pit_financial_data(
+        let income = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let income_annual = shared_cache.pit_financial_data(
+        let income_annual = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockIncome,
             ReportTypePreference::consolidated(),
         )?;
-        let cashflow_annual = shared_cache.pit_financial_data(
+        let cashflow_annual = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockCashFlow,
             ReportTypePreference::consolidated(),
@@ -412,7 +412,7 @@ struct ProfitabilitySlowSnapshot {
 
 fn leverage_raw_columns(
     panel: &crate::factor::common::DailyPanel,
-    balance: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
     total_mv: &PanelColumn,
     cache: &mut InstrumentAlignedSnapshotCache<LeverageSlowSnapshot>,
 ) -> Result<(PanelColumn, PanelColumn, PanelColumn)> {
@@ -466,10 +466,10 @@ fn leverage_raw_columns(
 fn leverage_marker(
     ts_code: &str,
     trade_date: i32,
-    balance: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_latest_annual(
+    builder.include_reader_latest_annual(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
@@ -486,7 +486,7 @@ fn leverage_marker(
 fn leverage_snapshot(
     ts_code: &str,
     trade_date: i32,
-    balance: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
     total_mv_snapshot: Option<f64>,
 ) -> Option<LeverageSlowSnapshot> {
     Some(LeverageSlowSnapshot {
@@ -502,9 +502,9 @@ fn leverage_snapshot(
 
 fn earnings_quality_raw_columns(
     panel: &crate::factor::common::DailyPanel,
-    balance: &PitFinancialData,
-    income_annual: &PitFinancialData,
-    cashflow_annual: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
+    cashflow_annual: &FinancialPitReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<EarningsQualitySlowSnapshot>,
 ) -> Result<(PanelColumn, PanelColumn)> {
     let mut accruals_bs = vec![None; panel.shape_len()];
@@ -558,15 +558,15 @@ fn earnings_quality_raw_columns(
 fn earnings_quality_marker(
     ts_code: &str,
     trade_date: i32,
-    balance: &PitFinancialData,
-    income_annual: &PitFinancialData,
-    cashflow_annual: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
+    cashflow_annual: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let end_date = balance.latest_annual_end_date(ts_code, trade_date)?;
     let prev_end = (end_date / 10_000 - 1) * 10_000 + 12_31;
     let mut builder = FinancialEventMarkerBuilder::new();
     for end_date in [end_date, prev_end] {
-        builder.include_record_for_end_date(
+        builder.include_reader_record_for_end_date(
             FinancialStatementDataset::BalanceSheet,
             balance,
             ts_code,
@@ -574,14 +574,14 @@ fn earnings_quality_marker(
             end_date,
         );
     }
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
         income_annual,
         ts_code,
         trade_date,
         end_date,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::CashFlow,
         cashflow_annual,
         ts_code,
@@ -594,9 +594,9 @@ fn earnings_quality_marker(
 fn earnings_quality_snapshot(
     ts_code: &str,
     trade_date: i32,
-    balance: &PitFinancialData,
-    income_annual: &PitFinancialData,
-    cashflow_annual: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
+    cashflow_annual: &FinancialPitReader<'_>,
 ) -> Option<EarningsQualitySlowSnapshot> {
     let end_date = balance.latest_annual_end_date(ts_code, trade_date)?;
     let prev_end = (end_date / 10_000 - 1) * 10_000 + 12_31;
@@ -640,9 +640,9 @@ fn earnings_quality_snapshot(
 
 fn profitability_raw_columns(
     panel: &crate::factor::common::DailyPanel,
-    income: &PitFinancialData,
-    income_annual: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<ProfitabilitySlowSnapshot>,
 ) -> Result<(PanelColumn, PanelColumn, PanelColumn, PanelColumn)> {
     let mut asset_turnover = vec![None; panel.shape_len()];
@@ -690,24 +690,24 @@ fn profitability_raw_columns(
 fn profitability_marker(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    income_annual: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_latest_ttm(
+    builder.include_reader_latest_ttm(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
     );
-    builder.include_latest_annual(
+    builder.include_reader_latest_annual(
         FinancialStatementDataset::Income,
         income_annual,
         ts_code,
         trade_date,
     );
-    builder.include_latest_annual(
+    builder.include_reader_latest_annual(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
@@ -719,9 +719,9 @@ fn profitability_marker(
 fn profitability_snapshot(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    income_annual: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<ProfitabilitySlowSnapshot> {
     let sales_ttm = income.ttm_sum(ts_code, trade_date, "revenue");
     let earnings_ttm = income.ttm_sum(ts_code, trade_date, "n_income_attr_p");
@@ -746,7 +746,7 @@ fn profitability_snapshot(
 
 fn annual_cv(
     panel: &crate::factor::common::DailyPanel,
-    data: &PitFinancialData,
+    data: &FinancialPitReader<'_>,
     dataset: FinancialStatementDataset,
     column: &str,
     cache: &mut InstrumentAlignedSnapshotCache<f64>,
@@ -778,7 +778,7 @@ fn annual_cv(
 
 fn annual_slope_ratio(
     panel: &crate::factor::common::DailyPanel,
-    data: &PitFinancialData,
+    data: &FinancialPitReader<'_>,
     dataset: FinancialStatementDataset,
     column: &str,
     negate: bool,
@@ -813,24 +813,29 @@ fn annual_slope_ratio(
 
 fn annual_chain_marker(
     dataset: FinancialStatementDataset,
-    data: &PitFinancialData,
+    data: &FinancialPitReader<'_>,
     ts_code: &str,
     trade_date: i32,
     count: usize,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_annual_chain(dataset, data, ts_code, trade_date, count);
+    builder.include_reader_annual_chain(dataset, data, ts_code, trade_date, count);
     builder.build()
 }
 
-fn total_debt(data: &PitFinancialData, ts_code: &str, trade_date: i32, end_date: i32) -> f64 {
+fn total_debt(data: &FinancialPitReader<'_>, ts_code: &str, trade_date: i32, end_date: i32) -> f64 {
     ["st_borr", "lt_borr", "bond_payable", "non_cur_liab_due_1y"]
         .iter()
         .filter_map(|column| data.annual_value_for_end_date(ts_code, trade_date, end_date, column))
         .sum()
 }
 
-fn noa(data: &PitFinancialData, ts_code: &str, trade_date: i32, end_date: i32) -> Option<f64> {
+fn noa(
+    data: &FinancialPitReader<'_>,
+    ts_code: &str,
+    trade_date: i32,
+    end_date: i32,
+) -> Option<f64> {
     let ta = data.annual_value_for_end_date(ts_code, trade_date, end_date, "total_assets")?;
     let cash = data
         .annual_value_for_end_date(ts_code, trade_date, end_date, "money_cap")
@@ -841,7 +846,7 @@ fn noa(data: &PitFinancialData, ts_code: &str, trade_date: i32, end_date: i32) -
 }
 
 fn annual_da(
-    data: &PitFinancialData,
+    data: &FinancialPitReader<'_>,
     ts_code: &str,
     trade_date: i32,
     end_date: i32,

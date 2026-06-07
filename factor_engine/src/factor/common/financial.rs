@@ -1,30 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::core::{DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue};
 use crate::data::DataPool;
-use crate::data::Table;
-use crate::error::{err, Result};
+use crate::data::{ColumnData, Table};
+use crate::error::Result;
 
 use super::{DailyPanel, PanelColumn};
-
-#[derive(Clone, Debug)]
-pub struct PitFinancialRecord {
-    pub end_date: i32,
-    pub disclosure_date: i32,
-    pub report_type: i64,
-    pub update_flag: i64,
-    columns: BTreeMap<String, Option<f64>>,
-}
-
-impl PitFinancialRecord {
-    pub fn column(&self, name: &str) -> Option<f64> {
-        self.columns
-            .get(name)
-            .copied()
-            .flatten()
-            .filter(|value| !value.is_nan())
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum FinancialStatementDataset {
@@ -43,14 +25,33 @@ pub struct FinancialRecordMarker {
 }
 
 impl FinancialRecordMarker {
-    pub fn from_record(dataset: FinancialStatementDataset, record: &PitFinancialRecord) -> Self {
+    pub fn from_fields(
+        dataset: FinancialStatementDataset,
+        end_date: i32,
+        disclosure_date: i32,
+        report_type: i64,
+        update_flag: i64,
+    ) -> Self {
         Self {
             dataset,
-            end_date: record.end_date,
-            disclosure_date: record.disclosure_date,
-            report_type: record.report_type,
-            update_flag: record.update_flag,
+            end_date,
+            disclosure_date,
+            report_type,
+            update_flag,
         }
+    }
+
+    pub fn from_record_view(
+        dataset: FinancialStatementDataset,
+        record: &PitFinancialRecordView<'_>,
+    ) -> Self {
+        Self::from_fields(
+            dataset,
+            record.end_date(),
+            record.disclosure_date(),
+            record.report_type(),
+            record.update_flag(),
+        )
     }
 }
 
@@ -60,42 +61,14 @@ pub struct FinancialSyntheticMarker {
     pub value: i64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FinancialEventTableKind {
-    Statement,
-    DividendLtm,
-}
-
 #[derive(Clone, Debug)]
 pub struct FinancialEventTable<'a> {
     table: &'a Table,
-    kind: FinancialEventTableKind,
-    preference: Option<ReportTypePreference>,
 }
 
 impl<'a> FinancialEventTable<'a> {
-    pub fn statement(table: &'a Table) -> Self {
-        Self {
-            table,
-            kind: FinancialEventTableKind::Statement,
-            preference: None,
-        }
-    }
-
-    pub fn statement_with_preference(table: &'a Table, preference: ReportTypePreference) -> Self {
-        Self {
-            table,
-            kind: FinancialEventTableKind::Statement,
-            preference: Some(preference),
-        }
-    }
-
     pub fn dividend_ltm(table: &'a Table) -> Self {
-        Self {
-            table,
-            kind: FinancialEventTableKind::DividendLtm,
-            preference: None,
-        }
+        Self { table }
     }
 }
 
@@ -108,20 +81,21 @@ impl FinancialEventSchedule {
     pub fn from_tables(tables: &[FinancialEventTable<'_>]) -> Result<Self> {
         let mut event_dates = BTreeSet::new();
         for event_table in tables {
-            match event_table.kind {
-                FinancialEventTableKind::Statement => {
-                    collect_statement_event_dates(
-                        event_table.table,
-                        event_table.preference.as_ref(),
-                        &mut event_dates,
-                    )?;
-                }
-                FinancialEventTableKind::DividendLtm => {
-                    collect_dividend_ltm_event_dates(event_table.table, &mut event_dates)?;
-                }
-            }
+            collect_dividend_ltm_event_dates(event_table.table, &mut event_dates)?;
         }
         Ok(Self { event_dates })
+    }
+
+    pub fn from_pit_readers(readers: &[FinancialPitReader<'_>]) -> Self {
+        let mut event_dates = BTreeSet::new();
+        for reader in readers {
+            collect_pit_reader_event_dates(reader, &mut event_dates);
+        }
+        Self { event_dates }
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.event_dates.extend(other.event_dates);
     }
 
     pub fn has_event_after_until(
@@ -134,6 +108,17 @@ impl FinancialEventSchedule {
             .range((lower + 1)..=until_inclusive)
             .next()
             .is_some()
+    }
+}
+
+fn collect_pit_reader_event_dates(
+    reader: &FinancialPitReader<'_>,
+    event_dates: &mut BTreeSet<i32>,
+) {
+    for record in reader.index.iter_records() {
+        if reader.preference.contains(record.report_type) {
+            event_dates.insert(record.disclosure_date);
+        }
     }
 }
 
@@ -337,37 +322,6 @@ pub fn financial_event_trade_dates(
     event_trade_dates
 }
 
-fn collect_statement_event_dates(
-    table: &Table,
-    preference: Option<&ReportTypePreference>,
-    event_dates: &mut BTreeSet<i32>,
-) -> Result<()> {
-    if table.len == 0 {
-        return Ok(());
-    }
-    let ann_dates = table.required_i32_date_cast("ann_date")?;
-    let f_ann_dates = table.required_i32_date_cast("f_ann_date")?;
-    let report_types = if preference.is_some() && table.columns.contains_key("report_type") {
-        Some(table.required_i64_cast("report_type")?)
-    } else {
-        None
-    };
-    for idx in 0..table.len {
-        if let (Some(preference), Some(report_types)) = (preference, report_types.as_ref()) {
-            let Some(report_type) = report_types[idx] else {
-                continue;
-            };
-            if !preference.contains(report_type) {
-                continue;
-            }
-        }
-        if let Some(date) = f_ann_dates[idx].or(ann_dates[idx]) {
-            event_dates.insert(date);
-        }
-    }
-    Ok(())
-}
-
 fn collect_dividend_ltm_event_dates(table: &Table, event_dates: &mut BTreeSet<i32>) -> Result<()> {
     if table.len == 0 {
         return Ok(());
@@ -423,36 +377,36 @@ impl FinancialEventMarkerBuilder {
         Self::default()
     }
 
-    pub fn include_record(
+    pub fn include_record_view(
         &mut self,
         dataset: FinancialStatementDataset,
-        record: Option<&PitFinancialRecord>,
+        record: Option<PitFinancialRecordView<'_>>,
     ) -> &mut Self {
         if let Some(record) = record {
             self.records
-                .push(FinancialRecordMarker::from_record(dataset, record));
+                .push(FinancialRecordMarker::from_record_view(dataset, &record));
         }
         self
     }
 
-    pub fn include_record_for_end_date(
+    pub fn include_reader_record_for_end_date(
         &mut self,
         dataset: FinancialStatementDataset,
-        data: &PitFinancialData,
+        data: &FinancialPitReader<'_>,
         ts_code: &str,
         trade_date: i32,
         end_date: i32,
     ) -> &mut Self {
-        self.include_record(
+        self.include_record_view(
             dataset,
             data.record_for_end_date(ts_code, trade_date, end_date),
         )
     }
 
-    pub fn include_ttm_for_end_date(
+    pub fn include_reader_ttm_for_end_date(
         &mut self,
         dataset: FinancialStatementDataset,
-        data: &PitFinancialData,
+        data: &FinancialPitReader<'_>,
         ts_code: &str,
         trade_date: i32,
         end_date: i32,
@@ -462,55 +416,55 @@ impl FinancialEventMarkerBuilder {
             let Some(end_date) = current else {
                 break;
             };
-            self.include_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
+            self.include_reader_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
             current = previous_quarter_end_date(end_date);
         }
         self
     }
 
-    pub fn include_latest_ttm(
+    pub fn include_reader_latest_ttm(
         &mut self,
         dataset: FinancialStatementDataset,
-        data: &PitFinancialData,
+        data: &FinancialPitReader<'_>,
         ts_code: &str,
         trade_date: i32,
     ) -> &mut Self {
         if let Some(end_date) = data.latest_quarter_end_date(ts_code, trade_date) {
-            self.include_ttm_for_end_date(dataset, data, ts_code, trade_date, end_date);
+            self.include_reader_ttm_for_end_date(dataset, data, ts_code, trade_date, end_date);
         }
         self
     }
 
-    pub fn include_latest_quarter(
+    pub fn include_reader_latest_quarter(
         &mut self,
         dataset: FinancialStatementDataset,
-        data: &PitFinancialData,
+        data: &FinancialPitReader<'_>,
         ts_code: &str,
         trade_date: i32,
     ) -> &mut Self {
         if let Some(end_date) = data.latest_quarter_end_date(ts_code, trade_date) {
-            self.include_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
+            self.include_reader_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
         }
         self
     }
 
-    pub fn include_latest_annual(
+    pub fn include_reader_latest_annual(
         &mut self,
         dataset: FinancialStatementDataset,
-        data: &PitFinancialData,
+        data: &FinancialPitReader<'_>,
         ts_code: &str,
         trade_date: i32,
     ) -> &mut Self {
         if let Some(end_date) = data.latest_annual_end_date(ts_code, trade_date) {
-            self.include_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
+            self.include_reader_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
         }
         self
     }
 
-    pub fn include_annual_chain(
+    pub fn include_reader_annual_chain(
         &mut self,
         dataset: FinancialStatementDataset,
-        data: &PitFinancialData,
+        data: &FinancialPitReader<'_>,
         ts_code: &str,
         trade_date: i32,
         count: usize,
@@ -521,7 +475,7 @@ impl FinancialEventMarkerBuilder {
         let mut year = anchor / 10_000;
         for _ in 0..count {
             let end_date = year * 10_000 + 12_31;
-            self.include_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
+            self.include_reader_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
             year -= 1;
         }
         self
@@ -721,66 +675,24 @@ impl ReportTypePreference {
     }
 }
 
-pub fn cached_financial_stock_snapshots<T, SkipFn, MarkerFn, ComputeFn>(
-    panel: &DailyPanel,
-    mut skip_fn: SkipFn,
-    mut marker_fn: MarkerFn,
-    mut compute_fn: ComputeFn,
-) -> Vec<Option<T>>
-where
-    T: Clone,
-    SkipFn: FnMut(i32, &str, usize) -> bool,
-    MarkerFn: FnMut(i32, &str, usize) -> Option<FinancialEventMarker>,
-    ComputeFn: FnMut(i32, &str, usize) -> Option<T>,
-{
-    let instrument_count = panel.instruments().len();
-    let mut snapshots = vec![None; panel.shape_len()];
-    let mut cache = FinancialStockSnapshotCache::<T>::new(instrument_count);
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
-            continue;
-        }
-        let date_offset = date_idx * instrument_count;
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_offset + instrument_idx;
-            if skip_fn(trade_date, ts_code, offset) {
-                cache.clear(instrument_idx);
-                continue;
-            }
-            snapshots[offset] = cache.get_or_update(
-                instrument_idx,
-                marker_fn(trade_date, ts_code, offset),
-                || compute_fn(trade_date, ts_code, offset),
-            );
-        }
-    }
-    snapshots
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeadlinePolicy {
-    RequiredAfterDeadline,
-}
-
 #[derive(Clone, Debug)]
-pub struct PitFinancialData {
-    preference: ReportTypePreference,
-    by_ts_code: BTreeMap<String, BTreeMap<i32, BTreeMap<i64, Vec<PitFinancialRecord>>>>,
+pub struct FinancialPitIndex {
+    table: Arc<Table>,
+    records: Vec<FinancialIndexedRecord>,
+    by_ts_code: BTreeMap<String, BTreeMap<i32, BTreeMap<i64, Vec<usize>>>>,
 }
 
-impl PitFinancialData {
-    pub fn empty(preference: ReportTypePreference) -> Self {
-        Self {
-            preference,
-            by_ts_code: BTreeMap::new(),
-        }
-    }
+#[derive(Clone, Copy, Debug)]
+struct FinancialIndexedRecord {
+    row_idx: usize,
+    end_date: i32,
+    disclosure_date: i32,
+    report_type: i64,
+    update_flag: i64,
+}
 
-    pub fn from_table(
-        table: &Table,
-        value_columns: &[&str],
-        preference: ReportTypePreference,
-    ) -> Result<Self> {
+impl FinancialPitIndex {
+    pub fn from_table(table: Arc<Table>) -> Result<Self> {
         let ts_codes = table.required_utf8("ts_code")?;
         let ann_dates = table.required_i32_date_cast("ann_date")?;
         let f_ann_dates = table.required_i32_date_cast("f_ann_date")?;
@@ -791,15 +703,9 @@ impl PitFinancialData {
         } else {
             vec![Some(1); table.len]
         };
-        let mut value_data = BTreeMap::new();
-        for column in value_columns {
-            value_data.insert((*column).to_string(), table.required_f64_cast(column)?);
-        }
 
-        let mut by_ts_code: BTreeMap<
-            String,
-            BTreeMap<i32, BTreeMap<i64, Vec<PitFinancialRecord>>>,
-        > = BTreeMap::new();
+        let mut records = Vec::new();
+        let mut by_ts_code = BTreeMap::<String, BTreeMap<i32, BTreeMap<i64, Vec<usize>>>>::new();
         for idx in 0..table.len {
             let (Some(ts_code), Some(end_date), Some(disclosure_date), Some(report_type)) = (
                 ts_codes[idx].clone(),
@@ -809,13 +715,14 @@ impl PitFinancialData {
             ) else {
                 continue;
             };
-            if !preference.contains(report_type) {
-                continue;
-            }
-            let columns = value_data
-                .iter()
-                .map(|(name, values)| (name.clone(), values[idx]))
-                .collect::<BTreeMap<_, _>>();
+            let record_idx = records.len();
+            records.push(FinancialIndexedRecord {
+                row_idx: idx,
+                end_date,
+                disclosure_date,
+                report_type,
+                update_flag: update_flags[idx].unwrap_or(0),
+            });
             by_ts_code
                 .entry(ts_code)
                 .or_default()
@@ -823,19 +730,15 @@ impl PitFinancialData {
                 .or_default()
                 .entry(report_type)
                 .or_default()
-                .push(PitFinancialRecord {
-                    end_date,
-                    disclosure_date,
-                    report_type,
-                    update_flag: update_flags[idx].unwrap_or(0),
-                    columns,
-                });
+                .push(record_idx);
         }
 
         for by_end_date in by_ts_code.values_mut() {
             for by_report_type in by_end_date.values_mut() {
                 for versions in by_report_type.values_mut() {
                     versions.sort_by(|left, right| {
+                        let left = records[*left];
+                        let right = records[*right];
                         right
                             .disclosure_date
                             .cmp(&left.disclosure_date)
@@ -846,34 +749,58 @@ impl PitFinancialData {
         }
 
         Ok(Self {
-            preference,
+            table,
+            records,
             by_ts_code,
         })
     }
 
+    pub fn reader(&self, preference: ReportTypePreference) -> FinancialPitReader<'_> {
+        FinancialPitReader {
+            index: self,
+            preference,
+        }
+    }
+
+    fn iter_records(&self) -> impl Iterator<Item = &FinancialIndexedRecord> {
+        self.records.iter()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FinancialPitReader<'a> {
+    index: &'a FinancialPitIndex,
+    preference: ReportTypePreference,
+}
+
+impl<'a> FinancialPitReader<'a> {
     pub fn record_for_end_date(
         &self,
         ts_code: &str,
         trade_date: i32,
         end_date: i32,
-    ) -> Option<&PitFinancialRecord> {
-        let by_report_type = self.by_ts_code.get(ts_code)?.get(&end_date)?;
+    ) -> Option<PitFinancialRecordView<'a>> {
+        let by_report_type = self.index.by_ts_code.get(ts_code)?.get(&end_date)?;
         for report_type in &self.preference.order {
             let Some(versions) = by_report_type.get(report_type) else {
                 continue;
             };
-            if let Some(record) = versions
+            if let Some(record_idx) = versions
                 .iter()
-                .find(|record| record.disclosure_date <= trade_date)
+                .copied()
+                .find(|idx| self.index.records[*idx].disclosure_date <= trade_date)
             {
-                return Some(record);
+                return Some(PitFinancialRecordView {
+                    table: self.index.table.as_ref(),
+                    record: &self.index.records[record_idx],
+                });
             }
         }
         None
     }
 
     pub fn latest_quarter_end_date(&self, ts_code: &str, trade_date: i32) -> Option<i32> {
-        let by_end_date = self.by_ts_code.get(ts_code)?;
+        let by_end_date = self.index.by_ts_code.get(ts_code)?;
         for (&end_date, _) in by_end_date.iter().rev() {
             if self
                 .record_for_end_date(ts_code, trade_date, end_date)
@@ -903,7 +830,7 @@ impl PitFinancialData {
     }
 
     pub fn ttm_sum(&self, ts_code: &str, trade_date: i32, column: &str) -> Option<f64> {
-        let by_end_date = self.by_ts_code.get(ts_code)?;
+        let by_end_date = self.index.by_ts_code.get(ts_code)?;
         for (&anchor, _) in by_end_date.iter().rev() {
             if let Some(value) = self.ttm_sum_for_end_date(ts_code, trade_date, anchor, column) {
                 return Some(value);
@@ -913,7 +840,7 @@ impl PitFinancialData {
     }
 
     pub fn latest_annual_end_date(&self, ts_code: &str, trade_date: i32) -> Option<i32> {
-        let by_end_date = self.by_ts_code.get(ts_code)?;
+        let by_end_date = self.index.by_ts_code.get(ts_code)?;
         for (&end_date, _) in by_end_date.iter().rev() {
             if end_date % 10_000 == 12_31
                 && self
@@ -949,7 +876,7 @@ impl PitFinancialData {
         column: &str,
         count: usize,
     ) -> Option<Vec<f64>> {
-        let by_end_date = self.by_ts_code.get(ts_code)?;
+        let by_end_date = self.index.by_ts_code.get(ts_code)?;
         for (&anchor, _) in by_end_date.iter().rev() {
             if anchor % 10_000 != 12_31 {
                 continue;
@@ -975,231 +902,89 @@ impl PitFinancialData {
         }
         None
     }
+}
 
-    pub fn quarters<'a>(
-        &'a self,
-        panel: &'a DailyPanel,
-        column: &str,
-        count: usize,
-        policy: DeadlinePolicy,
-    ) -> Result<QuarterMatrix<'a>> {
-        let mut values = Vec::with_capacity(panel.shape_len());
-        for trade_date in panel.dates() {
-            for ts_code in panel.instruments() {
-                let row = self
-                    .quarter_chain(ts_code, *trade_date, count, policy)
-                    .map(|records| {
-                        records
-                            .into_iter()
-                            .map(|record| {
-                                Some(QuarterValue {
-                                    end_date: record.end_date,
-                                    value: record.column(column),
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_else(|| vec![None; count]);
-                values.push(row);
-            }
-        }
-        Ok(QuarterMatrix {
-            panel,
-            quarter_count: count,
-            values,
-        })
+#[derive(Clone, Copy, Debug)]
+pub struct PitFinancialRecordView<'a> {
+    table: &'a Table,
+    record: &'a FinancialIndexedRecord,
+}
+
+impl PitFinancialRecordView<'_> {
+    pub fn end_date(&self) -> i32 {
+        self.record.end_date
     }
 
-    pub fn quarters_like<'a>(
-        &'a self,
-        panel: &'a DailyPanel,
-        column: &str,
-        template: &QuarterMatrix<'a>,
-    ) -> Result<QuarterMatrix<'a>> {
-        template.require_same_panel(panel)?;
-        let mut values = Vec::with_capacity(panel.shape_len());
-        for (date_idx, trade_date) in panel.dates().iter().enumerate() {
-            for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-                let offset = panel_offset(panel, date_idx, instrument_idx);
-                let row = template.values[offset]
-                    .iter()
-                    .map(|quarter| {
-                        let end_date = quarter.as_ref()?.end_date;
-                        Some(QuarterValue {
-                            end_date,
-                            value: self
-                                .record_for_end_date(ts_code, *trade_date, end_date)
-                                .and_then(|record| record.column(column)),
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                values.push(row);
-            }
-        }
-        Ok(QuarterMatrix {
-            panel,
-            quarter_count: template.quarter_count,
-            values,
-        })
+    pub fn disclosure_date(&self) -> i32 {
+        self.record.disclosure_date
     }
 
-    fn quarter_chain(
-        &self,
-        ts_code: &str,
-        trade_date: i32,
-        count: usize,
-        _policy: DeadlinePolicy,
-    ) -> Option<Vec<&PitFinancialRecord>> {
-        if count == 0 {
-            return Some(Vec::new());
-        }
-        let by_end_date = self.by_ts_code.get(ts_code)?;
-        let required_anchor = required_anchor_end_date(trade_date);
-        let latest_possible = latest_possible_end_date(trade_date);
+    pub fn report_type(&self) -> i64 {
+        self.record.report_type
+    }
 
-        for (&anchor, _) in by_end_date.iter().rev() {
-            if anchor > latest_possible || anchor < required_anchor {
+    pub fn update_flag(&self) -> i64 {
+        self.record.update_flag
+    }
+
+    pub fn column(&self, name: &str) -> Option<f64> {
+        let value = match self.table.columns.get(name)? {
+            ColumnData::F64(values) => values.get(self.record.row_idx).copied().flatten(),
+            ColumnData::F32(values) => values
+                .get(self.record.row_idx)
+                .copied()
+                .flatten()
+                .map(f64::from),
+            ColumnData::I64(values) => values
+                .get(self.record.row_idx)
+                .copied()
+                .flatten()
+                .map(|value| value as f64),
+            ColumnData::I32(values) => values
+                .get(self.record.row_idx)
+                .copied()
+                .flatten()
+                .map(f64::from),
+            _ => None,
+        }?;
+        (!value.is_nan()).then_some(value)
+    }
+}
+
+pub fn cached_financial_stock_snapshots<T, SkipFn, MarkerFn, ComputeFn>(
+    panel: &DailyPanel,
+    mut skip_fn: SkipFn,
+    mut marker_fn: MarkerFn,
+    mut compute_fn: ComputeFn,
+) -> Vec<Option<T>>
+where
+    T: Clone,
+    SkipFn: FnMut(i32, &str, usize) -> bool,
+    MarkerFn: FnMut(i32, &str, usize) -> Option<FinancialEventMarker>,
+    ComputeFn: FnMut(i32, &str, usize) -> Option<T>,
+{
+    let instrument_count = panel.instruments().len();
+    let mut snapshots = vec![None; panel.shape_len()];
+    let mut cache = FinancialStockSnapshotCache::<T>::new(instrument_count);
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
+            continue;
+        }
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let offset = date_offset + instrument_idx;
+            if skip_fn(trade_date, ts_code, offset) {
+                cache.clear(instrument_idx);
                 continue;
             }
-            let mut current = anchor;
-            let mut records = Vec::with_capacity(count);
-            let mut complete = true;
-            for _ in 0..count {
-                let Some(record) = self.record_for_end_date(ts_code, trade_date, current) else {
-                    complete = false;
-                    break;
-                };
-                records.push(record);
-                current = previous_quarter_end_date(current)?;
-            }
-            if complete {
-                return Some(records);
-            }
+            snapshots[offset] = cache.get_or_update(
+                instrument_idx,
+                marker_fn(trade_date, ts_code, offset),
+                || compute_fn(trade_date, ts_code, offset),
+            );
         }
-        None
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct QuarterValue {
-    pub end_date: i32,
-    pub value: Option<f64>,
-}
-
-#[derive(Clone, Debug)]
-pub struct QuarterMatrix<'a> {
-    panel: &'a DailyPanel,
-    quarter_count: usize,
-    values: Vec<Vec<Option<QuarterValue>>>,
-}
-
-impl<'a> QuarterMatrix<'a> {
-    pub fn binary<F>(&self, other: &Self, mut f: F) -> Result<Self>
-    where
-        F: FnMut(f64, f64) -> Option<f64>,
-    {
-        self.require_same_shape(other)?;
-        let values = self
-            .values
-            .iter()
-            .zip(&other.values)
-            .map(|(left_row, right_row)| {
-                left_row
-                    .iter()
-                    .zip(right_row)
-                    .map(|(left, right)| match (left, right) {
-                        (Some(left), Some(right)) if left.end_date == right.end_date => {
-                            Some(QuarterValue {
-                                end_date: left.end_date,
-                                value: match (left.value, right.value) {
-                                    (Some(left), Some(right))
-                                        if !left.is_nan() && !right.is_nan() =>
-                                    {
-                                        f(left, right)
-                                    }
-                                    _ => None,
-                                },
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        Ok(Self {
-            panel: self.panel,
-            quarter_count: self.quarter_count,
-            values,
-        })
-    }
-
-    pub fn mean(&self) -> Result<PanelColumn> {
-        let values = self
-            .values
-            .iter()
-            .map(|row| {
-                if row.len() != self.quarter_count {
-                    return None;
-                }
-                let mut sum = 0.0;
-                for quarter in row {
-                    let value = quarter.as_ref()?.value?;
-                    if value.is_nan() {
-                        return None;
-                    }
-                    sum += value;
-                }
-                (self.quarter_count > 0).then_some(sum / self.quarter_count as f64)
-            })
-            .collect::<Vec<_>>();
-        self.panel.column_from_values(values)
-    }
-
-    fn require_same_panel(&self, panel: &DailyPanel) -> Result<()> {
-        if self.panel.dates() == panel.dates() && self.panel.instruments() == panel.instruments() {
-            return Ok(());
-        }
-        Err(err(
-            "quarter matrix and panel use different indexes and cannot be combined",
-        ))
-    }
-
-    fn require_same_shape(&self, other: &Self) -> Result<()> {
-        self.require_same_panel(other.panel)?;
-        if self.quarter_count == other.quarter_count && self.values.len() == other.values.len() {
-            return Ok(());
-        }
-        Err(err(
-            "quarter matrices use different shapes and cannot be combined",
-        ))
-    }
-}
-
-fn panel_offset(panel: &DailyPanel, date_idx: usize, instrument_idx: usize) -> usize {
-    date_idx * panel.instruments().len() + instrument_idx
-}
-
-fn latest_possible_end_date(trade_date: i32) -> i32 {
-    let year = trade_date / 10_000;
-    let mmdd = trade_date % 10_000;
-    match mmdd {
-        1231..=9999 => year * 10_000 + 1231,
-        930..=1230 => year * 10_000 + 930,
-        630..=929 => year * 10_000 + 630,
-        331..=629 => year * 10_000 + 331,
-        _ => (year - 1) * 10_000 + 1231,
-    }
-}
-
-fn required_anchor_end_date(trade_date: i32) -> i32 {
-    let year = trade_date / 10_000;
-    let mmdd = trade_date % 10_000;
-    match mmdd {
-        1031..=9999 => year * 10_000 + 930,
-        831..=1030 => year * 10_000 + 630,
-        430..=830 => year * 10_000 + 331,
-        _ => (year - 1) * 10_000 + 930,
-    }
+    snapshots
 }
 
 pub fn previous_quarter_end_date(end_date: i32) -> Option<i32> {
@@ -1283,6 +1068,7 @@ fn is_leap_year(year: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
 
     use crate::core::{
         AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
@@ -1292,12 +1078,11 @@ mod tests {
 
     use super::{
         cached_financial_stock_snapshots, cached_financial_stock_snapshots_for_date,
-        compute_financial_event_snapshot_streaming, DailyPanel, DeadlinePolicy,
-        EventDrivenCrossSectionCache, FinancialEventMarkerBuilder, FinancialEventSchedule,
-        FinancialEventTable, FinancialStatementDataset, FinancialStockSnapshotCache,
-        InstrumentAlignedSnapshotCache, PitFinancialData, ReportTypePreference,
+        compute_financial_event_snapshot_streaming, DailyPanel, EventDrivenCrossSectionCache,
+        FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+        FinancialPitIndex, FinancialStatementDataset, FinancialStockSnapshotCache,
+        InstrumentAlignedSnapshotCache, ReportTypePreference,
     };
-    use super::{latest_possible_end_date, required_anchor_end_date};
 
     fn financial_table(rows: &[(i32, i32, i64, i64, f64)]) -> Table {
         Table::new(BTreeMap::from([
@@ -1436,17 +1221,6 @@ mod tests {
         .expect("valid table")
     }
 
-    fn statutory_disclosure_date(end_date: i32) -> i32 {
-        let year = end_date / 10_000;
-        match end_date % 10_000 {
-            331 => year * 10_000 + 430,
-            630 => year * 10_000 + 831,
-            930 => year * 10_000 + 1031,
-            1231 => (year + 1) * 10_000 + 430,
-            _ => end_date,
-        }
-    }
-
     fn event_spec(id: &str) -> FactorSpec {
         FactorSpec {
             id: id.to_string(),
@@ -1501,6 +1275,7 @@ mod tests {
     #[test]
     fn financial_event_schedule_maps_statement_and_dividend_dates() {
         let statement = financial_table(&[(20251231, 20260103, 1, 0, 1.0)]);
+        let statement_index = FinancialPitIndex::from_table(Arc::new(statement)).expect("index");
         let dividend = Table::new(BTreeMap::from([
             (
                 "ann_date".to_string(),
@@ -1509,11 +1284,13 @@ mod tests {
             ("ex_date".to_string(), ColumnData::I32(vec![Some(20250131)])),
         ]))
         .expect("valid dividend table");
-        let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement(&statement),
-            FinancialEventTable::dividend_ltm(&dividend),
-        ])
-        .expect("schedule");
+        let mut schedule = FinancialEventSchedule::from_pit_readers(&[
+            statement_index.reader(ReportTypePreference::consolidated())
+        ]);
+        schedule.merge(
+            FinancialEventSchedule::from_tables(&[FinancialEventTable::dividend_ltm(&dividend)])
+                .expect("schedule"),
+        );
 
         assert!(schedule.has_event_after_until(Some(20260102), 20260105));
         assert!(!schedule.has_event_after_until(Some(20260105), 20260106));
@@ -1565,9 +1342,10 @@ mod tests {
             (20251231, 20260104, 1, 0, 1.0),
             (20260331, 20260107, 1, 0, 2.0),
         ]);
-        let schedule =
-            FinancialEventSchedule::from_tables(&[FinancialEventTable::statement(&statement)])
-                .expect("schedule");
+        let statement_index = FinancialPitIndex::from_table(Arc::new(statement)).expect("index");
+        let schedule = FinancialEventSchedule::from_pit_readers(&[
+            statement_index.reader(ReportTypePreference::consolidated())
+        ]);
         let spec = event_spec("slow_factor");
         let mut state = EventDrivenCrossSectionCache::default();
         let mut call_count = 0usize;
@@ -1630,18 +1408,9 @@ mod tests {
             (20250331, 20250420, 3, 0, 3.0),
             (20250331, 20250420, 4, 0, 4.0),
         ]);
-        let income = PitFinancialData::from_table(
-            &table,
-            &["value"],
-            ReportTypePreference::income_single_quarter(),
-        )
-        .expect("income");
-        let balance = PitFinancialData::from_table(
-            &table,
-            &["value"],
-            ReportTypePreference::balance_sheet_consolidated(),
-        )
-        .expect("balance");
+        let index = FinancialPitIndex::from_table(Arc::new(table)).expect("index");
+        let income = index.reader(ReportTypePreference::income_single_quarter());
+        let balance = index.reader(ReportTypePreference::balance_sheet_consolidated());
 
         assert_eq!(
             income
@@ -1658,17 +1427,54 @@ mod tests {
     }
 
     #[test]
-    fn pit_financial_data_uses_only_disclosed_versions() {
+    fn financial_pit_index_shares_rows_but_keeps_report_type_preferences_separate() {
+        let table = Arc::new(financial_table(&[
+            (20250331, 20250420, 1, 0, 1.0),
+            (20250331, 20250420, 2, 0, 2.0),
+            (20250331, 20250420, 3, 0, 3.0),
+            (20250331, 20250420, 4, 0, 4.0),
+        ]));
+        let index = FinancialPitIndex::from_table(Arc::clone(&table)).expect("pit index");
+        let income = index.reader(ReportTypePreference::income_single_quarter());
+        let balance = index.reader(ReportTypePreference::balance_sheet_consolidated());
+
+        assert_eq!(
+            income
+                .record_for_end_date("000001.SZ", 20250501, 20250331)
+                .and_then(|record| record.column("value")),
+            Some(3.0)
+        );
+        assert_eq!(
+            balance
+                .record_for_end_date("000001.SZ", 20250501, 20250331)
+                .and_then(|record| record.column("value")),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn financial_event_schedule_from_pit_reader_filters_unrequested_report_types() {
+        let table = Arc::new(financial_table(&[
+            (20250331, 20250420, 1, 0, 1.0),
+            (20250331, 20250421, 9, 0, 9.0),
+        ]));
+        let index = FinancialPitIndex::from_table(table).expect("pit index");
+        let schedule = FinancialEventSchedule::from_pit_readers(&[
+            index.reader(ReportTypePreference::balance_sheet_consolidated())
+        ]);
+
+        assert!(schedule.has_event_after_until(Some(20250419), 20250420));
+        assert!(!schedule.has_event_after_until(Some(20250420), 20250421));
+    }
+
+    #[test]
+    fn financial_pit_reader_uses_only_disclosed_versions() {
         let table = financial_table(&[
             (20241231, 20250331, 3, 0, 10.0),
             (20241231, 20250430, 3, 1, 12.0),
         ]);
-        let data = PitFinancialData::from_table(
-            &table,
-            &["value"],
-            ReportTypePreference::income_single_quarter(),
-        )
-        .expect("pit data");
+        let index = FinancialPitIndex::from_table(Arc::new(table)).expect("index");
+        let data = index.reader(ReportTypePreference::income_single_quarter());
 
         assert_eq!(
             data.record_for_end_date("000001.SZ", 20250401, 20241231)
@@ -1683,7 +1489,7 @@ mod tests {
     }
 
     #[test]
-    fn pit_financial_data_exposes_annual_and_ttm_helpers() {
+    fn financial_pit_reader_exposes_annual_and_ttm_helpers() {
         let table = financial_table(&[
             (20211231, 20220430, 1, 0, 10.0),
             (20221231, 20230430, 1, 0, 20.0),
@@ -1693,9 +1499,8 @@ mod tests {
             (20231231, 20240430, 1, 0, 4.0),
             (20241231, 20250430, 1, 0, 40.0),
         ]);
-        let data =
-            PitFinancialData::from_table(&table, &["value"], ReportTypePreference::consolidated())
-                .expect("pit data");
+        let index = FinancialPitIndex::from_table(Arc::new(table)).expect("index");
+        let data = index.reader(ReportTypePreference::consolidated());
 
         assert_eq!(
             data.latest_annual_end_date("000001.SZ", 20240501),
@@ -1723,16 +1528,15 @@ mod tests {
             ("000001.SZ", 20250331, 20250428, 1, 0, 11.0),
             ("000002.SZ", 20241231, 20250331, 1, 0, 20.0),
         ]);
-        let data =
-            PitFinancialData::from_table(&table, &["value"], ReportTypePreference::consolidated())
-                .expect("pit data");
+        let index = FinancialPitIndex::from_table(Arc::new(table)).expect("index");
+        let data = index.reader(ReportTypePreference::consolidated());
         let mut cache = FinancialStockSnapshotCache::<f64>::new(2);
         let mut calls = [0usize; 2];
 
         for trade_date in [20250425, 20250428, 20250429] {
             for (idx, ts_code) in ["000001.SZ", "000002.SZ"].iter().enumerate() {
                 let mut builder = FinancialEventMarkerBuilder::new();
-                builder.include_latest_quarter(
+                builder.include_reader_latest_quarter(
                     FinancialStatementDataset::Income,
                     &data,
                     ts_code,
@@ -1897,41 +1701,5 @@ mod tests {
         }
 
         assert_eq!(calls, [1, 1]);
-    }
-
-    #[test]
-    fn deadline_policy_falls_back_before_deadline_but_requires_latest_after_deadline() {
-        let mut rows = Vec::new();
-        for end_date in [
-            20231231, 20240331, 20240630, 20240930, 20241231, 20250331, 20250630, 20250930,
-            20251231,
-        ] {
-            rows.push((end_date, statutory_disclosure_date(end_date), 3, 0, 1.0));
-        }
-        rows.push((20260331, 20260507, 3, 0, 2.0));
-        let data = PitFinancialData::from_table(
-            &financial_table(&rows),
-            &["value"],
-            ReportTypePreference::income_single_quarter(),
-        )
-        .expect("pit data");
-        let panel = panel(&[20260429, 20260506, 20260508]);
-        let quarters = data
-            .quarters(&panel, "value", 8, DeadlinePolicy::RequiredAfterDeadline)
-            .expect("quarters");
-        let mean = quarters.mean().expect("mean");
-
-        assert_eq!(mean.values()[0], Some(1.0));
-        assert_eq!(mean.values()[1], None);
-        assert_eq!(mean.values()[2], Some(1.125));
-    }
-
-    #[test]
-    fn quarter_deadlines_map_to_expected_required_periods() {
-        assert_eq!(required_anchor_end_date(20260429), 20250930);
-        assert_eq!(required_anchor_end_date(20260430), 20260331);
-        assert_eq!(required_anchor_end_date(20260831), 20260630);
-        assert_eq!(required_anchor_end_date(20261031), 20260930);
-        assert_eq!(latest_possible_end_date(20260429), 20260331);
     }
 }

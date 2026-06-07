@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::any::Any;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::barra::common::{
     sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
@@ -11,7 +12,8 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
-    cached_financial_stock_snapshots, DailyPanel, FinancialEventMarkerBuilder, PanelColumn,
+    cached_financial_stock_snapshots_for_date, DailyPanel, FinancialEventMarkerBuilder,
+    InstrumentAlignedSnapshotCache, PanelColumn,
 };
 
 pub struct StockDailyBarraCne6DividendYield;
@@ -23,6 +25,11 @@ const IMPLEMENTED_DIV_PROC: &str = "\u{5b9e}\u{65bd}";
 
 pub fn create() -> Box<dyn BarraExposure> {
     Box::new(StockDailyBarraCne6DividendYield)
+}
+
+#[derive(Default)]
+struct DividendYieldComputeState {
+    dtop_cache: InstrumentAlignedSnapshotCache<DtopSlowSnapshot>,
 }
 
 impl BarraExposure for StockDailyBarraCne6DividendYield {
@@ -53,7 +60,35 @@ impl BarraExposure for StockDailyBarraCne6DividendYield {
         ]
     }
 
-    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
+    fn initial_compute_state(&self, _selected_ids: &BTreeSet<String>) -> Box<dyn Any + Send> {
+        Box::new(DividendYieldComputeState::default())
+    }
+
+    fn compute_stateful(
+        &self,
+        context: &FactorContext,
+        data: &DataPool,
+        state: &mut (dyn Any + Send),
+    ) -> Result<Vec<BarraSeries>> {
+        let state = state
+            .downcast_mut::<DividendYieldComputeState>()
+            .expect("DIVIDEND_YIELD compute state type");
+        self.compute_with_cache(context, data, &mut state.dtop_cache)
+    }
+
+    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
+        let mut cache = InstrumentAlignedSnapshotCache::default();
+        self.compute_with_cache(context, data, &mut cache)
+    }
+}
+
+impl StockDailyBarraCne6DividendYield {
+    fn compute_with_cache(
+        &self,
+        _context: &FactorContext,
+        data: &DataPool,
+        dtop_cache: &mut InstrumentAlignedSnapshotCache<DtopSlowSnapshot>,
+    ) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let total_mv =
             panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
@@ -61,7 +96,7 @@ impl BarraExposure for StockDailyBarraCne6DividendYield {
         let analyst_reports = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
-        let dtop_raw = dtop_column(panel, &total_mv, &dividends)?;
+        let dtop_raw = dtop_column(panel, &total_mv, &dividends, dtop_cache)?;
         let dtop = standardize_panel_industry_filled_weighted(&dtop_raw, &weights, data)?;
         let dtopf_raw = dtopf_column(panel, &analyst_reports)?;
         let dtopf = standardize_panel_industry_filled_weighted(&dtopf_raw, &weights, data)?;
@@ -206,50 +241,40 @@ fn dtop_column(
     panel: &DailyPanel,
     total_mv: &PanelColumn,
     records: &[DividendRecord],
+    cache: &mut InstrumentAlignedSnapshotCache<DtopSlowSnapshot>,
 ) -> Result<PanelColumn> {
-    let dividend_sums_by_date = panel
-        .dates()
-        .iter()
-        .copied()
-        .filter(|trade_date| panel.is_target_date(*trade_date))
-        .map(|trade_date| {
-            (
-                trade_date,
-                dividend_sum_by_stock(records, add_months(trade_date, -12), trade_date),
-            )
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let snapshots = cached_financial_stock_snapshots(
-        panel,
-        |_, _, offset| !panel.is_present_offset(offset),
-        |trade_date, ts_code, _| {
-            let cash = dividend_sums_by_date
-                .get(&trade_date)
-                .and_then(|sum| sum.get(ts_code).copied())
-                .unwrap_or(0.0);
-            let mut builder = FinancialEventMarkerBuilder::new();
-            builder.include_synthetic("dtop_cash_ltm", f64_marker_value(cash));
-            builder.build()
-        },
-        |trade_date, ts_code, offset| {
-            let cash = dividend_sums_by_date
-                .get(&trade_date)
-                .and_then(|sum| sum.get(ts_code).copied())
-                .unwrap_or(0.0);
-            let total_mv = clean(total_mv.values()[offset]).filter(|value| *value > 0.0)?;
-            Some(DtopSlowSnapshot { cash, total_mv })
-        },
-    );
+    let mut values = vec![None; panel.shape_len()];
+    let instrument_count = panel.instruments().len();
 
-    panel.column_from_values(
-        snapshots
-            .into_iter()
-            .map(|snapshot| {
-                let snapshot = snapshot?;
-                Some(snapshot.cash / snapshot.total_mv)
-            })
-            .collect(),
-    )
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
+            continue;
+        }
+        let dividend_sums = dividend_sum_by_stock(records, add_months(trade_date, -12), trade_date);
+        let snapshots = cached_financial_stock_snapshots_for_date(
+            panel,
+            trade_date,
+            cache,
+            |_, _, offset| !panel.is_present_offset(offset),
+            |_, ts_code, _| {
+                let cash = dividend_sums.get(ts_code).copied().unwrap_or(0.0);
+                let mut builder = FinancialEventMarkerBuilder::new();
+                builder.include_synthetic("dtop_cash_ltm", f64_marker_value(cash));
+                builder.build()
+            },
+            |_, ts_code, offset| {
+                let cash = dividend_sums.get(ts_code).copied().unwrap_or(0.0);
+                let total_mv = clean(total_mv.values()[offset]).filter(|value| *value > 0.0)?;
+                Some(DtopSlowSnapshot { cash, total_mv })
+            },
+        );
+        for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
+            let offset = date_idx * instrument_count + instrument_idx;
+            values[offset] = snapshot.map(|snapshot| snapshot.cash / snapshot.total_mv);
+        }
+    }
+
+    panel.column_from_values(values)
 }
 
 fn dividend_sum_by_stock(
@@ -376,7 +401,7 @@ fn clean(value: Option<f64>) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use crate::factor::common::DailyPanel;
+    use crate::factor::common::{DailyPanel, InstrumentAlignedSnapshotCache};
 
     use super::{
         add_months, composite_available, dividend_sum_by_stock, dtop_column,
@@ -473,7 +498,8 @@ mod tests {
             },
         ];
 
-        let dtop = dtop_column(&panel, &total_mv, &records).unwrap();
+        let mut cache = InstrumentAlignedSnapshotCache::default();
+        let dtop = dtop_column(&panel, &total_mv, &records, &mut cache).unwrap();
 
         assert_close(dtop.values()[0].unwrap(), 0.02);
         assert_eq!(dtop.values()[1], None);

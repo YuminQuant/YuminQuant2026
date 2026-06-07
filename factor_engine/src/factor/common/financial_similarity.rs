@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 
 use crate::core::{
-    AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+    AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, FactorValue,
     Frequency, Lookback,
 };
 use crate::data::{DataPool, Table};
@@ -13,10 +13,10 @@ use crate::factor::common::stock_daily_ops::{
 };
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots, financial_event_trade_dates, DailyPanel,
+    cached_financial_stock_snapshots_for_date, financial_event_trade_dates, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset, PanelColumn,
-    PitFinancialData, ReportTypePreference,
+    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
 };
 use crate::operators::{cs_pctrank, cs_regression_residual};
 
@@ -50,13 +50,13 @@ struct FinancialMetricSlowSnapshot {
 
 #[derive(Clone, Debug)]
 struct FinancialPeerLink {
-    peer_code: String,
+    peer_idx: usize,
     similarity: f64,
 }
 
 #[derive(Clone, Debug, Default)]
 struct FinancialSimilarityPeerState {
-    top_peers: BTreeMap<String, Vec<FinancialPeerLink>>,
+    top_peers: Vec<Vec<FinancialPeerLink>>,
     last_processed_trade_date: Option<i32>,
 }
 
@@ -70,6 +70,7 @@ impl FinancialSimilarityPeerState {
 pub struct FinancialSimilarityComputeState {
     final_cache: EventDrivenCrossSectionCache,
     peer_state: FinancialSimilarityPeerState,
+    snapshot_cache: InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,8 +182,15 @@ pub fn compute_requested(
         None
     };
 
-    let metric_columns =
-        financial_metric_columns(&panel, &income, &balance, &total_mv, &dividends)?;
+    let mut snapshot_cache = InstrumentAlignedSnapshotCache::default();
+    let metric_columns = financial_metric_columns(
+        &panel,
+        &income,
+        &balance,
+        &total_mv,
+        &dividends,
+        &mut snapshot_cache,
+    )?;
     let standardized_metrics = metric_columns
         .into_iter()
         .map(|column| {
@@ -248,12 +256,6 @@ pub fn compute_requested_stateful(
     } else {
         None
     };
-    let instrument_lookup = panel
-        .instruments()
-        .iter()
-        .enumerate()
-        .map(|(idx, ts_code)| (ts_code.clone(), idx))
-        .collect::<BTreeMap<_, _>>();
 
     let event_trade_dates = financial_event_trade_dates(
         state.peer_state.last_processed_trade_date,
@@ -261,28 +263,35 @@ pub fn compute_requested_stateful(
         &context.target_dates,
     );
     let event_trade_date_set = event_trade_dates.iter().copied().collect::<BTreeSet<_>>();
-    let event_states =
-        compute_financial_similarity_event_states(data, &event_trade_dates, want_link_new)?;
+    let standardized_metrics = if event_trade_dates.is_empty() {
+        None
+    } else {
+        Some(financial_similarity_standardized_metrics(
+            data,
+            &mut state.snapshot_cache,
+        )?)
+    };
 
     let mut f_momentum_raw = want_f_momentum.then(|| vec![None; panel.shape_len()]);
     let mut link_values = Vec::new();
     for trade_date in context.target_dates.iter().copied() {
         if event_trade_date_set.contains(&trade_date) {
-            state.peer_state.top_peers = event_states
-                .top_peers_by_date
-                .get(&trade_date)
-                .cloned()
-                .unwrap_or_default();
-            if want_link_new {
-                if let Some(series) = event_states.link_series_by_date.get(&trade_date) {
-                    state.final_cache.update_series(series);
-                }
+            if let Some(metrics) = standardized_metrics.as_ref() {
+                update_financial_similarity_event_state(
+                    &mut state.peer_state,
+                    &mut state.final_cache,
+                    metrics,
+                    &panel,
+                    data,
+                    trade_date,
+                    want_f_momentum,
+                    want_link_new,
+                )?;
             }
         }
         if let (Some(output), Some(ret20)) = (f_momentum_raw.as_mut(), ret20.as_ref()) {
             write_f_momentum_raw_for_date(
                 &state.peer_state.top_peers,
-                &instrument_lookup,
                 ret20,
                 &panel,
                 trade_date,
@@ -324,109 +333,83 @@ pub fn compute_requested_stateful(
     Ok(output)
 }
 
-#[derive(Default)]
-struct FinancialSimilarityEventStates {
-    top_peers_by_date: BTreeMap<i32, BTreeMap<String, Vec<FinancialPeerLink>>>,
-    link_series_by_date: BTreeMap<i32, FactorSeries>,
-}
-
-fn compute_financial_similarity_event_states(
+fn financial_similarity_standardized_metrics(
     data: &DataPool,
-    event_trade_dates: &[i32],
-    want_link_new: bool,
-) -> Result<FinancialSimilarityEventStates> {
-    if event_trade_dates.is_empty() {
-        return Ok(FinancialSimilarityEventStates::default());
-    }
-    let event_data = data.with_target_dates(event_trade_dates);
-    let panel = event_data.daily_panel(DatasetId::StockDailyPv)?;
-    let total_mv =
-        panel.column_from_table(event_data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
+    snapshot_cache: &mut InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
+) -> Result<Vec<PanelColumn>> {
+    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
     let income = PitFinancialData::from_table(
-        event_data.daily(DatasetId::StockIncome)?,
+        data.daily(DatasetId::StockIncome)?,
         &INCOME_COLUMNS,
         ReportTypePreference::income_single_quarter(),
     )?;
     let balance = PitFinancialData::from_table(
-        event_data.daily(DatasetId::StockBalanceSheet)?,
+        data.daily(DatasetId::StockBalanceSheet)?,
         &BALANCE_COLUMNS,
         ReportTypePreference::balance_sheet_consolidated(),
     )?;
-    let dividends = parse_dividend_records(event_data.daily(DatasetId::StockDividend)?)?;
-    let metric_columns =
-        financial_metric_columns(&panel, &income, &balance, &total_mv, &dividends)?;
-    let standardized_metrics = metric_columns
-        .into_iter()
-        .map(|column| {
-            let ranked = column.cs(|values| cs_pctrank(values, true))?;
-            fill_present_non_bj_missing_ranks_with_zero(&ranked, &panel)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let instrument_count = panel.instruments().len();
-    let mut states = FinancialSimilarityEventStates::default();
-    let mut link_raw_values = want_link_new.then(|| vec![None; panel.shape_len()]);
-
-    for trade_date in event_trade_dates {
-        let Some(date_idx) = panel.dates().iter().position(|date| date == trade_date) else {
-            continue;
-        };
-        let offset = date_idx * instrument_count;
-        let points = financial_points_for_date(
-            &standardized_metrics,
-            None,
-            &panel,
-            offset,
-            instrument_count,
-        );
-        states.top_peers_by_date.insert(
-            *trade_date,
-            financial_top_peer_links(&points, &panel, instrument_count),
-        );
-
-        if let Some(raw_values) = link_raw_values.as_mut() {
-            let day_link = link_new_from_vector_sum(&points, instrument_count);
-            for instrument_idx in 0..instrument_count {
-                raw_values[offset + instrument_idx] = day_link[instrument_idx];
-            }
-        }
-    }
-
-    if let Some(raw_values) = link_raw_values {
-        let raw = panel.column_from_values(raw_values)?;
-        let masked = mask_bj(&raw, &panel)?;
-        let neutralized = neutralize_size_sector(&masked, &panel, &event_data)?;
-        let series = mask_bj(&neutralized, &panel)?
-            .to_factor_series(spec(FinancialSimilarityOutput::LinkNew));
-        states.link_series_by_date = split_series_by_trade_date(series);
-    }
-
-    Ok(states)
+    let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
+    financial_metric_columns(
+        &panel,
+        &income,
+        &balance,
+        &total_mv,
+        &dividends,
+        snapshot_cache,
+    )?
+    .into_iter()
+    .map(|column| {
+        let ranked = column.cs(|values| cs_pctrank(values, true))?;
+        fill_present_non_bj_missing_ranks_with_zero(&ranked, &panel)
+    })
+    .collect::<Result<Vec<_>>>()
 }
 
-fn split_series_by_trade_date(series: FactorSeries) -> BTreeMap<i32, FactorSeries> {
-    let spec = series.spec;
-    let mut output = BTreeMap::<i32, FactorSeries>::new();
-    for value in series.values {
-        let FactorRowKey::Daily { trade_date, .. } = &value.key else {
-            continue;
-        };
-        output
-            .entry(*trade_date)
-            .or_insert_with(|| FactorSeries {
-                spec: spec.clone(),
-                values: Vec::new(),
-            })
-            .values
-            .push(value);
+fn update_financial_similarity_event_state(
+    peer_state: &mut FinancialSimilarityPeerState,
+    final_cache: &mut EventDrivenCrossSectionCache,
+    standardized_metrics: &[PanelColumn],
+    panel: &DailyPanel,
+    data: &DataPool,
+    trade_date: i32,
+    want_f_momentum: bool,
+    want_link_new: bool,
+) -> Result<()> {
+    let instrument_count = panel.instruments().len();
+    let Some(date_idx) = panel.dates().iter().position(|date| *date == trade_date) else {
+        return Ok(());
+    };
+    let offset = date_idx * instrument_count;
+    let points =
+        financial_points_for_date(standardized_metrics, None, panel, offset, instrument_count);
+    if want_f_momentum {
+        peer_state.top_peers = financial_top_peer_links(&points, instrument_count);
     }
-    output
+    if want_link_new {
+        let day_link = link_new_from_vector_sum(&points, instrument_count);
+        let mut raw_values = vec![None; panel.shape_len()];
+        for instrument_idx in 0..instrument_count {
+            raw_values[offset + instrument_idx] = day_link[instrument_idx];
+        }
+        let raw = panel.column_from_values(raw_values)?;
+        let masked = mask_bj(&raw, &panel)?;
+        let neutralized = neutralize_size_sector(&masked, panel, data)?;
+        let series = factor_series_for_trade_date(
+            spec(FinancialSimilarityOutput::LinkNew),
+            panel,
+            trade_date,
+            &mask_bj(&neutralized, panel)?,
+        );
+        final_cache.update_series(&series, panel);
+    }
+    Ok(())
 }
 
 fn financial_top_peer_links(
     points: &[FinancialPoint],
-    panel: &DailyPanel,
     instrument_count: usize,
-) -> BTreeMap<String, Vec<FinancialPeerLink>> {
+) -> Vec<Vec<FinancialPeerLink>> {
     let keep_count = points
         .len()
         .saturating_sub(1)
@@ -466,25 +449,19 @@ fn financial_top_peer_links(
     heaps
         .into_iter()
         .enumerate()
-        .filter_map(|(instrument_idx, heap)| {
-            if heap.is_empty() {
-                return None;
-            }
-            let links = heap
-                .into_iter()
+        .map(|(_, heap)| {
+            heap.into_iter()
                 .map(|Reverse(peer)| FinancialPeerLink {
-                    peer_code: panel.instruments()[peer.order].clone(),
+                    peer_idx: peer.order,
                     similarity: peer.similarity,
                 })
-                .collect::<Vec<_>>();
-            Some((panel.instruments()[instrument_idx].clone(), links))
+                .collect::<Vec<_>>()
         })
         .collect()
 }
 
 fn write_f_momentum_raw_for_date(
-    top_peers: &BTreeMap<String, Vec<FinancialPeerLink>>,
-    instrument_lookup: &BTreeMap<String, usize>,
+    top_peers: &[Vec<FinancialPeerLink>],
     ret20: &PanelColumn,
     panel: &DailyPanel,
     trade_date: i32,
@@ -500,15 +477,13 @@ fn write_f_momentum_raw_for_date(
         if is_bj_stock(ts_code) || !panel.is_present_offset(panel_idx) {
             continue;
         }
-        let Some(peers) = top_peers.get(ts_code) else {
+        let Some(peers) = top_peers.get(instrument_idx) else {
             continue;
         };
         let mut numerator = 0.0;
         let mut denominator = 0.0;
         for peer in peers {
-            let Some(peer_idx) = instrument_lookup.get(&peer.peer_code).copied() else {
-                continue;
-            };
+            let peer_idx = peer.peer_idx;
             let peer_panel_idx = offset + peer_idx;
             if !panel.is_present_offset(peer_panel_idx) {
                 continue;
@@ -523,6 +498,37 @@ fn write_f_momentum_raw_for_date(
         }
     }
     Ok(())
+}
+
+fn factor_series_for_trade_date(
+    spec: FactorSpec,
+    panel: &DailyPanel,
+    trade_date: i32,
+    column: &PanelColumn,
+) -> FactorSeries {
+    let Some(date_idx) = panel.dates().iter().position(|date| *date == trade_date) else {
+        return FactorSeries {
+            spec,
+            values: Vec::new(),
+        };
+    };
+    let instrument_count = panel.instruments().len();
+    let offset = date_idx * instrument_count;
+    let mut values = Vec::new();
+    for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+        let panel_idx = offset + instrument_idx;
+        if !panel.is_present_offset(panel_idx) {
+            continue;
+        }
+        values.push(FactorValue {
+            key: crate::core::FactorRowKey::Daily {
+                trade_date,
+                ts_code: ts_code.clone(),
+            },
+            value: column.values()[panel_idx],
+        });
+    }
+    FactorSeries { spec, values }
 }
 
 fn tags() -> Vec<String> {
@@ -550,6 +556,7 @@ fn financial_metric_columns(
     balance: &PitFinancialData,
     total_mv: &PanelColumn,
     dividends: &[DividendRecord],
+    cache: &mut InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
 ) -> Result<Vec<PanelColumn>> {
     let mut metric_values = vec![vec![None; panel.shape_len()]; METRIC_DIM];
     let dividend_sums_by_date = panel
@@ -564,41 +571,50 @@ fn financial_metric_columns(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let snapshots = cached_financial_stock_snapshots(
-        panel,
-        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
-        |trade_date, ts_code, _| {
-            let cash_dividend = dividend_sums_by_date
-                .get(&trade_date)
-                .and_then(|sum| sum.get(ts_code).copied())
-                .unwrap_or(0.0);
-            financial_metric_marker(ts_code, trade_date, income, balance, cash_dividend)
-        },
-        |trade_date, ts_code, offset| {
-            let cash_dividend = dividend_sums_by_date
-                .get(&trade_date)
-                .and_then(|sum| sum.get(ts_code).copied())
-                .unwrap_or(0.0);
-            let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
-            financial_metrics_slow_for_stock(
-                ts_code,
-                trade_date,
-                income,
-                balance,
-                cash_dividend,
-                total_mv_value,
-            )
-        },
-    );
-
-    for (offset, snapshot) in snapshots.into_iter().enumerate() {
-        let Some(snapshot) = snapshot else {
+    let instrument_count = panel.instruments().len();
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
             continue;
-        };
-        let mut metrics = snapshot.metrics;
-        metrics[6] = safe_div_opt(Some(snapshot.cash_dividend_ltm), snapshot.total_mv_snapshot);
-        for metric_idx in 0..METRIC_DIM {
-            metric_values[metric_idx][offset] = metrics[metric_idx];
+        }
+        let snapshots = cached_financial_stock_snapshots_for_date(
+            panel,
+            trade_date,
+            cache,
+            |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+            |trade_date, ts_code, _| {
+                let cash_dividend = dividend_sums_by_date
+                    .get(&trade_date)
+                    .and_then(|sum| sum.get(ts_code).copied())
+                    .unwrap_or(0.0);
+                financial_metric_marker(ts_code, trade_date, income, balance, cash_dividend)
+            },
+            |trade_date, ts_code, offset| {
+                let cash_dividend = dividend_sums_by_date
+                    .get(&trade_date)
+                    .and_then(|sum| sum.get(ts_code).copied())
+                    .unwrap_or(0.0);
+                let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
+                financial_metrics_slow_for_stock(
+                    ts_code,
+                    trade_date,
+                    income,
+                    balance,
+                    cash_dividend,
+                    total_mv_value,
+                )
+            },
+        );
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            let offset = date_offset + instrument_idx;
+            let mut metrics = snapshot.metrics;
+            metrics[6] = safe_div_opt(Some(snapshot.cash_dividend_ltm), snapshot.total_mv_snapshot);
+            for metric_idx in 0..METRIC_DIM {
+                metric_values[metric_idx][offset] = metrics[metric_idx];
+            }
         }
     }
 
@@ -1369,8 +1385,10 @@ mod tests {
             .column_from_values(vec![Some(100.0); panel.shape_len()])
             .unwrap();
 
+        let mut cache = InstrumentAlignedSnapshotCache::default();
         let metric_columns =
-            financial_metric_columns(&panel, &income, &balance, &total_mv, &[]).unwrap();
+            financial_metric_columns(&panel, &income, &balance, &total_mv, &[], &mut cache)
+                .unwrap();
 
         assert_eq!(metric_columns[0].values()[2], Some(2.0));
         assert_eq!(metric_columns[0].values()[3], None);

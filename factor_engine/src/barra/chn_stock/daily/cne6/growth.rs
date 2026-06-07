@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::any::Any;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::barra::common::{
     add_months, average_columns, clean, fy_quarter, panel_from_target_stock_map, safe_div,
@@ -12,8 +13,9 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
-    cached_financial_stock_snapshots, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialStatementDataset, PanelColumn, PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots_for_date, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
+    ReportTypePreference,
 };
 
 pub struct StockDailyBarraCne6Growth;
@@ -24,6 +26,11 @@ const LOOKBACK: usize = 1260;
 
 pub fn create() -> Box<dyn BarraExposure> {
     Box::new(StockDailyBarraCne6Growth)
+}
+
+#[derive(Default)]
+struct GrowthComputeState {
+    slow_cache: InstrumentAlignedSnapshotCache<GrowthSlowSnapshot>,
 }
 
 impl BarraExposure for StockDailyBarraCne6Growth {
@@ -43,7 +50,35 @@ impl BarraExposure for StockDailyBarraCne6Growth {
         .collect()
     }
 
-    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
+    fn initial_compute_state(&self, _selected_ids: &BTreeSet<String>) -> Box<dyn Any + Send> {
+        Box::new(GrowthComputeState::default())
+    }
+
+    fn compute_stateful(
+        &self,
+        context: &FactorContext,
+        data: &DataPool,
+        state: &mut (dyn Any + Send),
+    ) -> Result<Vec<BarraSeries>> {
+        let state = state
+            .downcast_mut::<GrowthComputeState>()
+            .expect("GROWTH compute state type");
+        self.compute_with_cache(context, data, &mut state.slow_cache)
+    }
+
+    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
+        let mut cache = InstrumentAlignedSnapshotCache::default();
+        self.compute_with_cache(context, data, &mut cache)
+    }
+}
+
+impl StockDailyBarraCne6Growth {
+    fn compute_with_cache(
+        &self,
+        _context: &FactorContext,
+        data: &DataPool,
+        slow_cache: &mut InstrumentAlignedSnapshotCache<GrowthSlowSnapshot>,
+    ) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let income = PitFinancialData::from_table(
             data.daily(DatasetId::StockIncome)?,
@@ -62,7 +97,7 @@ impl BarraExposure for StockDailyBarraCne6Growth {
         let predicted_raw = predicted_growth_column(panel, &analyst_by_stock)?;
         let predicted = standardize_panel_industry_filled_weighted(&predicted_raw, &weights, data)?;
         let (eps_growth_raw, sales_growth_raw) =
-            historical_growth_columns(panel, &income, &balance)?;
+            historical_growth_columns(panel, &income, &balance, slow_cache)?;
         let eps_growth =
             standardize_panel_industry_filled_weighted(&eps_growth_raw, &weights, data)?;
         let sales_growth =
@@ -90,23 +125,32 @@ fn historical_growth_columns(
     panel: &crate::factor::common::DailyPanel,
     income: &PitFinancialData,
     balance: &PitFinancialData,
+    cache: &mut InstrumentAlignedSnapshotCache<GrowthSlowSnapshot>,
 ) -> Result<(PanelColumn, PanelColumn)> {
     let mut eps_values = vec![None; panel.shape_len()];
     let mut sales_values = vec![None; panel.shape_len()];
+    let instrument_count = panel.instruments().len();
 
-    let snapshots = cached_financial_stock_snapshots(
-        panel,
-        |_, _, offset| !panel.is_present_offset(offset),
-        |trade_date, ts_code, _| growth_marker(ts_code, trade_date, income, balance),
-        |trade_date, ts_code, _| growth_snapshot(ts_code, trade_date, income, balance),
-    );
-
-    for (offset, snapshot) in snapshots.into_iter().enumerate() {
-        let Some(snapshot) = snapshot else {
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
             continue;
-        };
-        eps_values[offset] = snapshot.eps_growth;
-        sales_values[offset] = snapshot.sales_growth;
+        }
+        let snapshots = cached_financial_stock_snapshots_for_date(
+            panel,
+            trade_date,
+            cache,
+            |_, _, offset| !panel.is_present_offset(offset),
+            |trade_date, ts_code, _| growth_marker(ts_code, trade_date, income, balance),
+            |trade_date, ts_code, _| growth_snapshot(ts_code, trade_date, income, balance),
+        );
+        for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            let offset = date_idx * instrument_count + instrument_idx;
+            eps_values[offset] = snapshot.eps_growth;
+            sales_values[offset] = snapshot.sales_growth;
+        }
     }
 
     Ok((

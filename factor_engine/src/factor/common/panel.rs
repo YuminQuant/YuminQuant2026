@@ -131,6 +131,18 @@ impl DailyPanel {
         })
     }
 
+    pub fn with_target_dates(&self, target_dates: &[i32]) -> Self {
+        Self {
+            index: Arc::new(DailyPanelIndex {
+                dates: self.index.dates.clone(),
+                instruments: self.index.instruments.clone(),
+                target_dates: target_dates.iter().copied().collect(),
+                present: self.index.present.clone(),
+            }),
+            columns: self.columns.clone(),
+        }
+    }
+
     pub fn column(&self, name: &str) -> Result<PanelColumn> {
         let values = self
             .columns

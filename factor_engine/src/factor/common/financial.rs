@@ -1,5 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::core::{DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue};
+use crate::data::DataPool;
 use crate::data::Table;
 use crate::error::{err, Result};
 
@@ -56,6 +58,208 @@ impl FinancialRecordMarker {
 pub struct FinancialSyntheticMarker {
     pub key: &'static str,
     pub value: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinancialEventTableKind {
+    Statement,
+    DividendLtm,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FinancialEventTable<'a> {
+    table: &'a Table,
+    kind: FinancialEventTableKind,
+}
+
+impl<'a> FinancialEventTable<'a> {
+    pub fn statement(table: &'a Table) -> Self {
+        Self {
+            table,
+            kind: FinancialEventTableKind::Statement,
+        }
+    }
+
+    pub fn dividend_ltm(table: &'a Table) -> Self {
+        Self {
+            table,
+            kind: FinancialEventTableKind::DividendLtm,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FinancialEventSchedule {
+    event_dates: BTreeSet<i32>,
+}
+
+impl FinancialEventSchedule {
+    pub fn from_tables(tables: &[FinancialEventTable<'_>]) -> Result<Self> {
+        let mut event_dates = BTreeSet::new();
+        for event_table in tables {
+            match event_table.kind {
+                FinancialEventTableKind::Statement => {
+                    collect_statement_event_dates(event_table.table, &mut event_dates)?;
+                }
+                FinancialEventTableKind::DividendLtm => {
+                    collect_dividend_ltm_event_dates(event_table.table, &mut event_dates)?;
+                }
+            }
+        }
+        Ok(Self { event_dates })
+    }
+
+    pub fn has_event_after_until(
+        &self,
+        after_exclusive: Option<i32>,
+        until_inclusive: i32,
+    ) -> bool {
+        let lower = after_exclusive.unwrap_or(i32::MIN);
+        self.event_dates
+            .range((lower + 1)..=until_inclusive)
+            .next()
+            .is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EventDrivenCrossSectionCache {
+    latest_values: BTreeMap<String, BTreeMap<String, Option<f64>>>,
+    last_processed_trade_date: Option<i32>,
+}
+
+impl EventDrivenCrossSectionCache {
+    pub fn should_recompute(&self, schedule: &FinancialEventSchedule, trade_date: i32) -> bool {
+        self.last_processed_trade_date.is_none()
+            || schedule.has_event_after_until(self.last_processed_trade_date, trade_date)
+    }
+
+    pub fn update_series(&mut self, series: &FactorSeries) {
+        let values = self
+            .latest_values
+            .entry(series.spec.id.clone())
+            .or_default();
+        for item in &series.values {
+            let FactorRowKey::Daily { ts_code, .. } = &item.key else {
+                continue;
+            };
+            values.insert(ts_code.clone(), item.value);
+        }
+    }
+
+    pub fn replay_series(
+        &self,
+        spec: FactorSpec,
+        panel: &DailyPanel,
+        trade_date: i32,
+    ) -> FactorSeries {
+        let cached = self.latest_values.get(&spec.id);
+        let date_idx = panel
+            .dates()
+            .iter()
+            .position(|date| *date == trade_date)
+            .unwrap_or(usize::MAX);
+        let instrument_count = panel.instruments().len();
+        let mut values = Vec::new();
+        if date_idx != usize::MAX {
+            let offset = date_idx * instrument_count;
+            for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+                let panel_idx = offset + instrument_idx;
+                if !panel.is_present_offset(panel_idx) {
+                    continue;
+                }
+                values.push(FactorValue {
+                    key: FactorRowKey::Daily {
+                        trade_date,
+                        ts_code: ts_code.clone(),
+                    },
+                    value: cached.and_then(|values| values.get(ts_code).copied().flatten()),
+                });
+            }
+        }
+        FactorSeries { spec, values }
+    }
+
+    pub fn mark_processed(&mut self, trade_date: i32) {
+        self.last_processed_trade_date = Some(trade_date);
+    }
+}
+
+pub fn compute_financial_event_snapshot_many<F>(
+    requested_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    state: &mut EventDrivenCrossSectionCache,
+    schedule: &FinancialEventSchedule,
+    specs: &[FactorSpec],
+    mut compute_on_event: F,
+) -> Result<Vec<FactorSeries>>
+where
+    F: FnMut(&[String], &FactorContext, &DataPool) -> Result<Vec<FactorSeries>>,
+{
+    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let mut output = Vec::new();
+    for trade_date in &context.target_dates {
+        if state.should_recompute(schedule, *trade_date) {
+            let event_context = single_target_context(context, *trade_date);
+            let event_pool = data.with_target_dates(&[*trade_date]);
+            let series_list = compute_on_event(requested_ids, &event_context, &event_pool)?;
+            for series in &series_list {
+                state.update_series(series);
+            }
+            output.extend(series_list);
+        } else {
+            for spec in specs {
+                output.push(state.replay_series(spec.clone(), panel, *trade_date));
+            }
+        }
+        state.mark_processed(*trade_date);
+    }
+    Ok(output)
+}
+
+fn collect_statement_event_dates(table: &Table, event_dates: &mut BTreeSet<i32>) -> Result<()> {
+    if table.len == 0 {
+        return Ok(());
+    }
+    let ann_dates = table.required_i32_date_cast("ann_date")?;
+    let f_ann_dates = table.required_i32_date_cast("f_ann_date")?;
+    for idx in 0..table.len {
+        if let Some(date) = f_ann_dates[idx].or(ann_dates[idx]) {
+            event_dates.insert(date);
+        }
+    }
+    Ok(())
+}
+
+fn collect_dividend_ltm_event_dates(table: &Table, event_dates: &mut BTreeSet<i32>) -> Result<()> {
+    if table.len == 0 {
+        return Ok(());
+    }
+    let ann_dates = table.required_i32_date_cast("ann_date")?;
+    let ex_dates = table.required_i32_date_cast("ex_date")?;
+    for idx in 0..table.len {
+        if let Some(date) = ann_dates[idx] {
+            event_dates.insert(date);
+        }
+        if let Some(date) = ex_dates[idx] {
+            event_dates.insert(date);
+            event_dates.insert(add_days(add_months(date, 12), 1));
+        }
+    }
+    Ok(())
+}
+
+fn single_target_context(context: &FactorContext, trade_date: i32) -> FactorContext {
+    FactorContext {
+        asset_class: context.asset_class,
+        frequency: context.frequency,
+        start_date: trade_date,
+        end_date: trade_date,
+        load_start_date: context.load_start_date,
+        load_dates: context.load_dates.clone(),
+        target_dates: vec![trade_date],
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -762,16 +966,87 @@ pub fn previous_quarter_end_date(end_date: i32) -> Option<i32> {
     }
 }
 
+fn add_months(date: i32, months_delta: i32) -> i32 {
+    let (year, month, day) = ymd(date);
+    let month_index = year * 12 + month as i32 - 1 + months_delta;
+    let new_year = month_index.div_euclid(12);
+    let new_month = month_index.rem_euclid(12) + 1;
+    let new_day = day.min(days_in_month(new_year, new_month as u32));
+    new_year * 10_000 + new_month * 100 + new_day as i32
+}
+
+fn add_days(date: i32, days_delta: i32) -> i32 {
+    if days_delta == 0 {
+        return date;
+    }
+    let (mut year, mut month, mut day) = ymd(date);
+    if days_delta > 0 {
+        for _ in 0..days_delta {
+            day += 1;
+            let days = days_in_month(year, month);
+            if day > days {
+                day = 1;
+                month += 1;
+                if month > 12 {
+                    month = 1;
+                    year += 1;
+                }
+            }
+        }
+    } else {
+        for _ in days_delta..0 {
+            if day > 1 {
+                day -= 1;
+            } else {
+                if month > 1 {
+                    month -= 1;
+                } else {
+                    month = 12;
+                    year -= 1;
+                }
+                day = days_in_month(year, month);
+            }
+        }
+    }
+    year * 10_000 + month as i32 * 100 + day as i32
+}
+
+fn ymd(date: i32) -> (i32, u32, u32) {
+    (
+        date / 10_000,
+        ((date / 100) % 100) as u32,
+        (date % 100) as u32,
+    )
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 30,
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::core::{AssetClass, FactorContext, Frequency};
+    use crate::core::{
+        AssetClass, DataRequest, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+        FactorValue, Frequency, Lookback,
+    };
     use crate::data::{ColumnData, Table};
 
     use super::{latest_possible_end_date, required_anchor_end_date};
     use super::{
-        DeadlinePolicy, FinancialEventMarkerBuilder, FinancialStatementDataset,
+        DeadlinePolicy, EventDrivenCrossSectionCache, FinancialEventMarkerBuilder,
+        FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
         FinancialStockSnapshotCache, PitFinancialData, ReportTypePreference,
     };
 
@@ -921,6 +1196,73 @@ mod tests {
             1231 => (year + 1) * 10_000 + 430,
             _ => end_date,
         }
+    }
+
+    fn event_spec(id: &str) -> FactorSpec {
+        FactorSpec {
+            id: id.to_string(),
+            aliases: Vec::new(),
+            name: id.to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: "0.1.0".to_string(),
+            tags: Vec::new(),
+            description: String::new(),
+            dependencies: Vec::<DataRequest>::new(),
+            intraday_raw_dependencies: Vec::new(),
+            lookback: Lookback { trading_days: 0 },
+        }
+    }
+
+    #[test]
+    fn financial_event_schedule_maps_statement_and_dividend_dates() {
+        let statement = financial_table(&[(20251231, 20260103, 1, 0, 1.0)]);
+        let dividend = Table::new(BTreeMap::from([
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(vec![Some(20250115)]),
+            ),
+            ("ex_date".to_string(), ColumnData::I32(vec![Some(20250131)])),
+        ]))
+        .expect("valid dividend table");
+        let schedule = FinancialEventSchedule::from_tables(&[
+            FinancialEventTable::statement(&statement),
+            FinancialEventTable::dividend_ltm(&dividend),
+        ])
+        .expect("schedule");
+
+        assert!(schedule.has_event_after_until(Some(20260102), 20260105));
+        assert!(!schedule.has_event_after_until(Some(20260105), 20260106));
+        assert!(schedule.has_event_after_until(Some(20260131), 20260201));
+    }
+
+    #[test]
+    fn event_driven_cross_section_cache_replays_latest_values_daily() {
+        let panel = panel(&[20260105, 20260106]);
+        let spec = event_spec("slow_factor");
+        let mut cache = EventDrivenCrossSectionCache::default();
+        cache.update_series(&FactorSeries {
+            spec: spec.clone(),
+            values: vec![FactorValue {
+                key: FactorRowKey::Daily {
+                    trade_date: 20260105,
+                    ts_code: "000001.SZ".to_string(),
+                },
+                value: Some(1.23),
+            }],
+        });
+
+        let replay = cache.replay_series(spec, &panel, 20260106);
+
+        assert_eq!(replay.values.len(), 1);
+        assert_eq!(
+            replay.values[0].key,
+            FactorRowKey::Daily {
+                trade_date: 20260106,
+                ts_code: "000001.SZ".to_string(),
+            }
+        );
+        assert_eq!(replay.values[0].value, Some(1.23));
     }
 
     #[test]

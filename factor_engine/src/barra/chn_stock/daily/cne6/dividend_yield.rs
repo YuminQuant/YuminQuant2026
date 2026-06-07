@@ -12,8 +12,8 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, DailyPanel, FinancialEventMarkerBuilder,
-    InstrumentAlignedSnapshotCache, PanelColumn,
+    cached_financial_stock_snapshots_for_date, DailyPanel, DividendReader,
+    FinancialEventMarkerBuilder, InstrumentAlignedSnapshotCache, PanelColumn,
 };
 
 pub struct StockDailyBarraCne6DividendYield;
@@ -21,7 +21,6 @@ pub struct StockDailyBarraCne6DividendYield;
 const MODEL: &str = "CNE6";
 const VERSION: &str = "0.4.0";
 const LOOKBACK: usize = 252;
-const IMPLEMENTED_DIV_PROC: &str = "\u{5b9e}\u{65bd}";
 
 pub fn create() -> Box<dyn BarraExposure> {
     Box::new(StockDailyBarraCne6DividendYield)
@@ -93,7 +92,7 @@ impl StockDailyBarraCne6DividendYield {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let total_mv =
             panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
-        let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
+        let dividends = data.dividend_reader()?;
         let analyst_reports = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
@@ -156,16 +155,6 @@ fn dividend_yield_spec(id: &str, aliases: &[&str], name: &str, description: &str
 }
 
 #[derive(Clone, Debug)]
-struct DividendRecord {
-    ts_code: String,
-    ann_date: i32,
-    ex_date: i32,
-    cash_div_tax: f64,
-    base_share: f64,
-    implemented: bool,
-}
-
-#[derive(Clone, Debug)]
 struct AnalystRecord {
     ts_code: String,
     report_date: i32,
@@ -177,39 +166,6 @@ struct AnalystRecord {
 struct DtopSlowSnapshot {
     cash: f64,
     total_mv: f64,
-}
-
-fn parse_dividend_records(table: &Table) -> Result<Vec<DividendRecord>> {
-    let ts_codes = table.required_utf8("ts_code")?;
-    let ann_dates = table.required_i32_date_cast("ann_date")?;
-    let div_proc = table.required_utf8("div_proc")?;
-    let cash_div_tax = table.required_f64_cast("cash_div_tax")?;
-    let ex_dates = table.required_i32_date_cast("ex_date")?;
-    let base_share = table.required_f64_cast("base_share")?;
-
-    let mut records = Vec::new();
-    for idx in 0..table.len {
-        let (Some(ts_code), Some(ann_date), Some(ex_date), Some(cash_div_tax), Some(base_share)) = (
-            ts_codes[idx].clone(),
-            ann_dates[idx],
-            ex_dates[idx],
-            clean(cash_div_tax[idx]),
-            clean(base_share[idx]).filter(|value| *value > 0.0),
-        ) else {
-            continue;
-        };
-        records.push(DividendRecord {
-            ts_code,
-            ann_date,
-            ex_date,
-            cash_div_tax,
-            base_share,
-            implemented: div_proc[idx]
-                .as_deref()
-                .is_some_and(|value| value.trim() == IMPLEMENTED_DIV_PROC),
-        });
-    }
-    Ok(records)
 }
 
 fn parse_analyst_records(table: &Table) -> Result<Vec<AnalystRecord>> {
@@ -241,7 +197,7 @@ fn parse_analyst_records(table: &Table) -> Result<Vec<AnalystRecord>> {
 fn dtop_column(
     panel: &DailyPanel,
     total_mv: &PanelColumn,
-    records: &[DividendRecord],
+    dividends: &DividendReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<DtopSlowSnapshot>,
 ) -> Result<PanelColumn> {
     let mut values = vec![None; panel.shape_len()];
@@ -251,7 +207,8 @@ fn dtop_column(
         if !panel.is_target_date(trade_date) {
             continue;
         }
-        let dividend_sums = dividend_sum_by_stock(records, add_months(trade_date, -12), trade_date);
+        let dividend_sums =
+            dividends.implemented_ltm_sum_by_stock(add_months(trade_date, -12), trade_date);
         let snapshots = cached_financial_stock_snapshots_for_date(
             panel,
             trade_date,
@@ -276,26 +233,6 @@ fn dtop_column(
     }
 
     panel.column_from_values(values)
-}
-
-fn dividend_sum_by_stock(
-    records: &[DividendRecord],
-    start_date: i32,
-    trade_date: i32,
-) -> HashMap<&str, f64> {
-    let mut sums = HashMap::new();
-    for record in records {
-        if !record.implemented
-            || record.ann_date > trade_date
-            || record.ex_date > trade_date
-            || record.ex_date < start_date
-        {
-            continue;
-        }
-        *sums.entry(record.ts_code.as_str()).or_default() +=
-            record.cash_div_tax * record.base_share;
-    }
-    sums
 }
 
 fn f64_marker_value(value: f64) -> i64 {
@@ -402,15 +339,57 @@ fn clean(value: Option<f64>) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use crate::factor::common::{DailyPanel, InstrumentAlignedSnapshotCache};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use crate::data::{ColumnData, Table};
+    use crate::factor::common::{DailyPanel, DividendIndex, InstrumentAlignedSnapshotCache};
 
     use super::{
-        add_months, composite_available, dividend_sum_by_stock, dtop_column,
-        forecast_mean_by_stock, fy1_quarter, AnalystRecord, DividendRecord, IMPLEMENTED_DIV_PROC,
+        add_months, composite_available, dtop_column, forecast_mean_by_stock, fy1_quarter,
+        AnalystRecord,
     };
 
     fn assert_close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 1e-10, "{actual} != {expected}");
+    }
+
+    fn dividend_table(rows: &[(&str, i32, &str, f64, i32, f64)]) -> Table {
+        Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(
+                    rows.iter()
+                        .map(|row| Some(row.0.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(rows.iter().map(|row| Some(row.1)).collect()),
+            ),
+            (
+                "div_proc".to_string(),
+                ColumnData::Utf8(
+                    rows.iter()
+                        .map(|row| Some(row.2.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "cash_div_tax".to_string(),
+                ColumnData::F64(rows.iter().map(|row| Some(row.3)).collect()),
+            ),
+            (
+                "ex_date".to_string(),
+                ColumnData::I32(rows.iter().map(|row| Some(row.4)).collect()),
+            ),
+            (
+                "base_share".to_string(),
+                ColumnData::F64(rows.iter().map(|row| Some(row.5)).collect()),
+            ),
+        ]))
+        .expect("valid dividend table")
     }
 
     #[test]
@@ -428,41 +407,43 @@ mod tests {
 
     #[test]
     fn dtop_uses_only_implemented_announced_ex_date_records_in_past_year() {
-        let records = vec![
-            DividendRecord {
-                ts_code: "000001.SZ".to_string(),
-                ann_date: 20260101,
-                ex_date: 20260301,
-                cash_div_tax: 0.2,
-                base_share: 100.0,
-                implemented: true,
-            },
-            DividendRecord {
-                ts_code: "000001.SZ".to_string(),
-                ann_date: 20260101,
-                ex_date: 20260302,
-                cash_div_tax: 0.3,
-                base_share: 100.0,
-                implemented: false,
-            },
-            DividendRecord {
-                ts_code: "000001.SZ".to_string(),
-                ann_date: 20260101,
-                ex_date: 20270301,
-                cash_div_tax: 0.4,
-                base_share: 100.0,
-                implemented: true,
-            },
-            DividendRecord {
-                ts_code: "000002.SZ".to_string(),
-                ann_date: 20260101,
-                ex_date: 20260301,
-                cash_div_tax: 0.5,
-                base_share: 200.0,
-                implemented: IMPLEMENTED_DIV_PROC == "\u{5b9e}\u{65bd}",
-            },
-        ];
-        let sums = dividend_sum_by_stock(&records, 20250424, 20260424);
+        let index = DividendIndex::from_table(Arc::new(dividend_table(&[
+            (
+                "000001.SZ",
+                20260101,
+                "\u{5b9e}\u{65bd}",
+                0.2,
+                20260301,
+                100.0,
+            ),
+            (
+                "000001.SZ",
+                20260101,
+                "\u{9884}\u{6848}",
+                0.3,
+                20260302,
+                100.0,
+            ),
+            (
+                "000001.SZ",
+                20260101,
+                "\u{5b9e}\u{65bd}",
+                0.4,
+                20270301,
+                100.0,
+            ),
+            (
+                "000002.SZ",
+                20260101,
+                "\u{5b9e}\u{65bd}",
+                0.5,
+                20260301,
+                200.0,
+            ),
+        ])))
+        .unwrap();
+        let reader = index.reader();
+        let sums = reader.implemented_ltm_sum_by_stock(20250424, 20260424);
 
         assert_close(*sums.get("000001.SZ").unwrap(), 20.0);
         assert_close(*sums.get("000002.SZ").unwrap(), 100.0);
@@ -480,27 +461,29 @@ mod tests {
         let total_mv = panel
             .column_from_values(vec![Some(1000.0), Some(0.0), Some(2000.0), Some(2000.0)])
             .unwrap();
-        let records = vec![
-            DividendRecord {
-                ts_code: "000001.SZ".to_string(),
-                ann_date: 20260101,
-                ex_date: 20260301,
-                cash_div_tax: 0.2,
-                base_share: 100.0,
-                implemented: true,
-            },
-            DividendRecord {
-                ts_code: "000002.SZ".to_string(),
-                ann_date: 20260101,
-                ex_date: 20260301,
-                cash_div_tax: 0.5,
-                base_share: 200.0,
-                implemented: true,
-            },
-        ];
+        let index = DividendIndex::from_table(Arc::new(dividend_table(&[
+            (
+                "000001.SZ",
+                20260101,
+                "\u{5b9e}\u{65bd}",
+                0.2,
+                20260301,
+                100.0,
+            ),
+            (
+                "000002.SZ",
+                20260101,
+                "\u{5b9e}\u{65bd}",
+                0.5,
+                20260301,
+                200.0,
+            ),
+        ])))
+        .unwrap();
+        let reader = index.reader();
 
         let mut cache = InstrumentAlignedSnapshotCache::default();
-        let dtop = dtop_column(&panel, &total_mv, &records, &mut cache).unwrap();
+        let dtop = dtop_column(&panel, &total_mv, &reader, &mut cache).unwrap();
 
         assert_close(dtop.values()[0].unwrap(), 0.02);
         assert_eq!(dtop.values()[1], None);

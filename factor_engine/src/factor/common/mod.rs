@@ -51,8 +51,8 @@ pub use daily::{compute_daily_by_instrument, DailySeries};
 pub use financial::{
     cached_financial_stock_snapshots, cached_financial_stock_snapshots_for_date,
     compute_financial_event_snapshot_streaming, factor_series_to_panel_column,
-    financial_event_trade_dates, EventDrivenCrossSectionCache, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable, FinancialPitIndex,
+    financial_event_trade_dates, DividendIndex, DividendReader, EventDrivenCrossSectionCache,
+    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitIndex,
     FinancialPitReader, FinancialRecordMarker, FinancialStatementDataset,
     FinancialStockSnapshotCache, FinancialSyntheticMarker, InstrumentAlignedSnapshotCache,
     PitFinancialRecordView, ReportTypePreference,

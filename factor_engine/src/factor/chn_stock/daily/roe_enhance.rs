@@ -14,8 +14,8 @@ use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
-    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::cs_pctrank;
@@ -110,29 +110,18 @@ impl Factor for StockDailyRoeEnhance {
         let state = state
             .downcast_mut::<RoeEnhanceComputeState>()
             .ok_or_else(|| err("roe_enhance received incompatible event cache state"))?;
-        let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockIncome)?,
-                ReportTypePreference::income_single_quarter(),
-            ),
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockBalanceSheet)?,
-                ReportTypePreference::balance_sheet_consolidated(),
-            ),
-        ])?;
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?;
+        let schedule = FinancialEventSchedule::from_pit_readers(&[income.clone(), balance.clone()]);
         let raw_specs = roe_raw_specs();
         let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &[INCOME_COLUMN],
-            ReportTypePreference::income_single_quarter(),
-        )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[EQUITY_COLUMN],
-            ReportTypePreference::balance_sheet_consolidated(),
-        )?;
         let raw_series = compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
@@ -160,14 +149,12 @@ impl StockDailyRoeEnhance {
         data: &DataPool,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
     ) -> Result<FactorSeries> {
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &[INCOME_COLUMN],
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[EQUITY_COLUMN],
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
 
@@ -183,8 +170,8 @@ impl StockDailyRoeEnhance {
     fn compute_component_series_with_prepared_financials(
         &self,
         data: &DataPool,
-        income: &PitFinancialData,
-        balance: &PitFinancialData,
+        income: &FinancialPitReader<'_>,
+        balance: &FinancialPitReader<'_>,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
     ) -> Result<Vec<FactorSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
@@ -294,8 +281,8 @@ fn raw_column(
 
 fn roe_component_columns(
     panel: &DailyPanel,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
 ) -> Result<RoeComponentColumns> {
     let mut yoy = vec![None; panel.shape_len()];
@@ -340,8 +327,8 @@ fn roe_component_columns(
 fn roe_marker(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
     let mut builder = FinancialEventMarkerBuilder::new();
@@ -350,14 +337,14 @@ fn roe_marker(
         let Some(end_date) = current else {
             break;
         };
-        builder.include_record_for_end_date(
+        builder.include_reader_record_for_end_date(
             FinancialStatementDataset::Income,
             income,
             ts_code,
             trade_date,
             end_date,
         );
-        builder.include_record_for_end_date(
+        builder.include_reader_record_for_end_date(
             FinancialStatementDataset::BalanceSheet,
             balance,
             ts_code,
@@ -372,8 +359,8 @@ fn roe_marker(
 fn roe_snapshot_for_stock(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<RoeSnapshot> {
     let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
     let mut values = Vec::with_capacity(ROE_CHAIN_COUNT);

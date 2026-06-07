@@ -14,8 +14,8 @@ use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, DailyPanel, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialStatementDataset, InstrumentAlignedSnapshotCache,
-    PitFinancialData, ReportTypePreference,
+    FinancialEventMarkerBuilder, FinancialPitReader, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, ReportTypePreference,
 };
 use crate::operators::{ts_ew_regression_alpha_beta_residual_sigma, ts_ew_sum};
 
@@ -175,7 +175,7 @@ impl StockDailyBarraCne6Value {
         let analyst_ep =
             standardize_panel_industry_filled_weighted(&analyst_ep_raw, &weights, data)?;
 
-        let cashflow = shared_cache.pit_financial_data(
+        let cashflow = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockCashFlow,
             ReportTypePreference::income_single_quarter(),
@@ -183,12 +183,12 @@ impl StockDailyBarraCne6Value {
         let cash_ep_raw = cash_ep_raw_column(panel, &total_mv, &cashflow, cash_ep_cache)?;
         let cash_ep = standardize_panel_industry_filled_weighted(&cash_ep_raw, &weights, data)?;
 
-        let income = shared_cache.pit_financial_data(
+        let income = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockIncome,
             ReportTypePreference::consolidated(),
         )?;
-        let balance = shared_cache.pit_financial_data(
+        let balance = shared_cache.pit_financial_reader(
             data,
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
@@ -263,7 +263,7 @@ struct EbitEvSlowSnapshot {
 fn cash_ep_raw_column(
     panel: &DailyPanel,
     total_mv: &crate::factor::common::PanelColumn,
-    cashflow: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<CashEpSlowSnapshot>,
 ) -> Result<crate::factor::common::PanelColumn> {
     let mut values = vec![None; panel.shape_len()];
@@ -296,8 +296,8 @@ fn cash_ep_raw_column(
 fn ebit_ev_raw_column(
     panel: &DailyPanel,
     total_mv: &crate::factor::common::PanelColumn,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<EbitEvSlowSnapshot>,
 ) -> Result<crate::factor::common::PanelColumn> {
     let mut values = vec![None; panel.shape_len()];
@@ -332,10 +332,10 @@ fn ebit_ev_raw_column(
 fn cash_ep_marker(
     ts_code: &str,
     trade_date: i32,
-    cashflow: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_latest_ttm(
+    builder.include_reader_latest_ttm(
         FinancialStatementDataset::CashFlow,
         cashflow,
         ts_code,
@@ -347,7 +347,7 @@ fn cash_ep_marker(
 fn cash_ep_snapshot(
     ts_code: &str,
     trade_date: i32,
-    cashflow: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
     total_mv_snapshot: Option<f64>,
 ) -> Option<CashEpSlowSnapshot> {
     Some(CashEpSlowSnapshot {
@@ -359,17 +359,17 @@ fn cash_ep_snapshot(
 fn ebit_ev_marker(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_latest_annual(
+    builder.include_reader_latest_annual(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
     );
-    builder.include_latest_annual(
+    builder.include_reader_latest_annual(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
@@ -381,8 +381,8 @@ fn ebit_ev_marker(
 fn ebit_ev_snapshot(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     total_mv_snapshot: Option<f64>,
 ) -> Option<EbitEvSlowSnapshot> {
     Some(EbitEvSlowSnapshot {

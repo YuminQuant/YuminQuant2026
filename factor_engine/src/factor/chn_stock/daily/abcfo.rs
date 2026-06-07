@@ -13,8 +13,8 @@ use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
-    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::cs_zscore_by_group;
@@ -107,38 +107,26 @@ impl Factor for StockDailyAbcfo {
         let state = state
             .downcast_mut::<AbcfoComputeState>()
             .ok_or_else(|| err("abcfo received incompatible event cache state"))?;
-        let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockCashFlow)?,
-                ReportTypePreference::income_single_quarter(),
-            ),
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockIncome)?,
-                ReportTypePreference::income_single_quarter(),
-            ),
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockBalanceSheet)?,
-                ReportTypePreference::balance_sheet_consolidated(),
-            ),
-        ])?;
+        let cashflow = data.financial_reader(
+            DatasetId::StockCashFlow,
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?;
+        let schedule = FinancialEventSchedule::from_pit_readers(&[
+            cashflow.clone(),
+            income.clone(),
+            balance.clone(),
+        ]);
         let raw_specs = [raw_spec()];
         let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
-        let cashflow = PitFinancialData::from_table(
-            data.daily(DatasetId::StockCashFlow)?,
-            &[CFO_COLUMN, EMPLOYEE_CASH_COLUMN, OTHER_OPERATE_CASH_COLUMN],
-            ReportTypePreference::income_single_quarter(),
-        )?;
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &[REVENUE_COLUMN],
-            ReportTypePreference::income_single_quarter(),
-        )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[ASSET_COLUMN],
-            ReportTypePreference::balance_sheet_consolidated(),
-        )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockSwClassification)?,
@@ -175,19 +163,16 @@ impl StockDailyAbcfo {
         data: &DataPool,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
     ) -> Result<FactorSeries> {
-        let cashflow = PitFinancialData::from_table(
-            data.daily(DatasetId::StockCashFlow)?,
-            &[CFO_COLUMN, EMPLOYEE_CASH_COLUMN, OTHER_OPERATE_CASH_COLUMN],
+        let cashflow = data.financial_reader(
+            DatasetId::StockCashFlow,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &[REVENUE_COLUMN],
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[ASSET_COLUMN],
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
@@ -211,9 +196,9 @@ impl StockDailyAbcfo {
     fn compute_raw_with_prepared_financials(
         &self,
         data: &DataPool,
-        cashflow: &PitFinancialData,
-        income: &PitFinancialData,
-        balance: &PitFinancialData,
+        cashflow: &FinancialPitReader<'_>,
+        income: &FinancialPitReader<'_>,
+        balance: &FinancialPitReader<'_>,
         list_dates: &BTreeMap<String, i32>,
         sector_map: &ClassificationMap,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
@@ -319,9 +304,9 @@ fn stock_basic_list_dates(table: &Table) -> Result<BTreeMap<String, i32>> {
 
 fn abcfo_ridge_residual_column(
     panel: &DailyPanel,
-    cashflow: &PitFinancialData,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
     list_dates: &BTreeMap<String, i32>,
     sector_map: &ClassificationMap,
     cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
@@ -380,43 +365,43 @@ fn abcfo_ridge_residual_column(
 fn abcfo_marker(
     ts_code: &str,
     trade_date: i32,
-    cashflow: &PitFinancialData,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let end_t = cashflow.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
     let end_t2 = previous_quarter_end_date(end_t1)?;
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::CashFlow,
         cashflow,
         ts_code,
         trade_date,
         end_t,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
         end_t,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
         end_t1,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
         end_t2,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
@@ -430,9 +415,9 @@ fn abcfo_slow_snapshot_for_stock(
     ts_code: &str,
     trade_date: i32,
     list_date: i32,
-    cashflow: &PitFinancialData,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    cashflow: &FinancialPitReader<'_>,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<AbcfoSlowSnapshot> {
     let end_t = cashflow.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;

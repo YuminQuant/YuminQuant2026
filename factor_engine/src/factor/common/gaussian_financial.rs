@@ -15,8 +15,8 @@ use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
-    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    FinancialEventSchedule, FinancialEventTable, FinancialPitReader, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_neutralize_regression, cs_pctrank};
@@ -168,32 +168,23 @@ impl Factor for GaussianFinancialFactor {
             return Ok(Vec::new());
         }
         let needs = FinancialNeeds::from_outputs(&requested);
-        let mut event_tables = Vec::new();
+        let prepared = GaussianFinancialPrepared::from_data(data, needs)?;
+        let mut pit_readers = Vec::new();
         if needs.uses_income() {
-            event_tables.push(FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockIncome)?,
-                ReportTypePreference::income_single_quarter(),
-            ));
+            pit_readers.push(prepared.income.clone());
         }
         if needs.uses_balance() {
-            event_tables.push(FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockBalanceSheet)?,
-                ReportTypePreference::balance_sheet_consolidated(),
-            ));
+            pit_readers.push(prepared.balance.clone());
         }
         if needs.uses_cashflow() {
-            event_tables.push(FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockCashFlow)?,
-                ReportTypePreference::income_single_quarter(),
-            ));
+            pit_readers.push(prepared.cashflow.clone());
         }
+        let mut schedule = FinancialEventSchedule::from_pit_readers(&pit_readers);
         if needs.uses_dividend() {
-            event_tables.push(FinancialEventTable::dividend_ltm(
-                data.daily(DatasetId::StockDividend)?,
-            ));
+            schedule.merge(FinancialEventSchedule::from_tables(&[
+                FinancialEventTable::dividend_ltm(data.daily(DatasetId::StockDividend)?),
+            ])?);
         }
-        let schedule = FinancialEventSchedule::from_tables(&event_tables)?;
-        let prepared = GaussianFinancialPrepared::from_data(data, needs)?;
         let raw_specs = raw_specs_for_requested(&requested);
         let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
@@ -476,42 +467,27 @@ fn compute_requested_raw_with_prepared_financials(
     Ok(output)
 }
 
-struct GaussianFinancialPrepared {
-    income: PitFinancialData,
-    balance: PitFinancialData,
-    cashflow: PitFinancialData,
+struct GaussianFinancialPrepared<'a> {
+    income: FinancialPitReader<'a>,
+    balance: FinancialPitReader<'a>,
+    cashflow: FinancialPitReader<'a>,
     dividends: Vec<DividendRecord>,
 }
 
-impl GaussianFinancialPrepared {
-    fn from_data(data: &DataPool, needs: FinancialNeeds) -> Result<Self> {
-        let income = if needs.uses_income() {
-            PitFinancialData::from_table(
-                data.daily(DatasetId::StockIncome)?,
-                &INCOME_COLUMNS,
-                ReportTypePreference::income_single_quarter(),
-            )?
-        } else {
-            PitFinancialData::empty(ReportTypePreference::income_single_quarter())
-        };
-        let balance = if needs.uses_balance() {
-            PitFinancialData::from_table(
-                data.daily(DatasetId::StockBalanceSheet)?,
-                &BALANCE_COLUMNS,
-                ReportTypePreference::balance_sheet_consolidated(),
-            )?
-        } else {
-            PitFinancialData::empty(ReportTypePreference::balance_sheet_consolidated())
-        };
-        let cashflow = if needs.uses_cashflow() {
-            PitFinancialData::from_table(
-                data.daily(DatasetId::StockCashFlow)?,
-                &CASHFLOW_COLUMNS,
-                ReportTypePreference::income_single_quarter(),
-            )?
-        } else {
-            PitFinancialData::empty(ReportTypePreference::income_single_quarter())
-        };
+impl<'a> GaussianFinancialPrepared<'a> {
+    fn from_data(data: &'a DataPool, needs: FinancialNeeds) -> Result<Self> {
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?;
+        let cashflow = data.financial_reader(
+            DatasetId::StockCashFlow,
+            ReportTypePreference::income_single_quarter(),
+        )?;
         let dividends = if needs.uses_dividend() {
             parse_dividend_records(data.daily(DatasetId::StockDividend)?)?
         } else {
@@ -658,9 +634,9 @@ struct FinancialSnapshotColumns {
 fn financial_snapshot_columns(
     panel: &DailyPanel,
     total_mv: &PanelColumn,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
-    cashflow: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
+    cashflow: &FinancialPitReader<'_>,
     dividends: &[DividendRecord],
     needs: FinancialNeeds,
     cache: &mut InstrumentAlignedSnapshotCache<FinancialSnapshot>,
@@ -767,16 +743,16 @@ fn financial_snapshot_columns(
 fn financial_snapshot_marker(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
-    cashflow: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
+    cashflow: &FinancialPitReader<'_>,
     cash_dividend_ltm: f64,
     needs: FinancialNeeds,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
     if needs.income_latest || needs.income_yoy || needs.income_ttm {
         if let Some(end_date) = income.latest_quarter_end_date(ts_code, trade_date) {
-            builder.include_record_for_end_date(
+            builder.include_reader_record_for_end_date(
                 FinancialStatementDataset::Income,
                 income,
                 ts_code,
@@ -784,7 +760,7 @@ fn financial_snapshot_marker(
                 end_date,
             );
             if needs.income_yoy {
-                builder.include_record_for_end_date(
+                builder.include_reader_record_for_end_date(
                     FinancialStatementDataset::Income,
                     income,
                     ts_code,
@@ -793,7 +769,7 @@ fn financial_snapshot_marker(
                 );
             }
             if needs.income_ttm {
-                builder.include_ttm_for_end_date(
+                builder.include_reader_ttm_for_end_date(
                     FinancialStatementDataset::Income,
                     income,
                     ts_code,
@@ -804,7 +780,7 @@ fn financial_snapshot_marker(
         }
     }
     if needs.balance_latest {
-        builder.include_latest_quarter(
+        builder.include_reader_latest_quarter(
             FinancialStatementDataset::BalanceSheet,
             balance,
             ts_code,
@@ -812,7 +788,7 @@ fn financial_snapshot_marker(
         );
     }
     if needs.cashflow_latest {
-        builder.include_latest_quarter(
+        builder.include_reader_latest_quarter(
             FinancialStatementDataset::CashFlow,
             cashflow,
             ts_code,
@@ -828,9 +804,9 @@ fn financial_snapshot_marker(
 fn financial_snapshot_for_stock(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
-    cashflow: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
+    cashflow: &FinancialPitReader<'_>,
     cash_dividend_ltm: f64,
     total_mv_value: Option<f64>,
     needs: FinancialNeeds,
@@ -888,7 +864,7 @@ fn financial_snapshot_for_stock(
 }
 
 fn financial_value(
-    data: &PitFinancialData,
+    data: &FinancialPitReader<'_>,
     ts_code: &str,
     trade_date: i32,
     end_date: i32,

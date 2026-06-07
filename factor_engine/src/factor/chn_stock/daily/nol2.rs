@@ -13,8 +13,8 @@ use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
-    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialRecordView, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 
@@ -112,35 +112,15 @@ impl Factor for StockDailyNol2 {
         let state = state
             .downcast_mut::<Nol2ComputeState>()
             .ok_or_else(|| err("nol2 received incompatible event cache state"))?;
-        let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockBalanceSheet)?,
-                ReportTypePreference::balance_sheet_consolidated(),
-            ),
-            FinancialEventTable::statement_with_preference(
-                data.daily(DatasetId::StockIncome)?,
-                ReportTypePreference::income_single_quarter(),
-            ),
-        ])?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[
-                ACCOUNTS_PAY_COLUMN,
-                ADV_RECEIPTS_COLUMN,
-                CONTRACT_LIAB_COLUMN,
-                PAYROLL_PAYABLE_COLUMN,
-                PREPAYMENT_COLUMN,
-                CONTRACT_ASSETS_COLUMN,
-                ACCOUNTS_RECEIV_BILL_COLUMN,
-                ASSET_COLUMN,
-            ],
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &[REVENUE_COLUMN],
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
+        let schedule = FinancialEventSchedule::from_pit_readers(&[balance.clone(), income.clone()]);
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockSwClassification)?,
             ClassificationLevel::Sector,
@@ -175,23 +155,12 @@ impl StockDailyNol2 {
         data: &DataPool,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<Nol2Snapshot>,
     ) -> Result<FactorSeries> {
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[
-                ACCOUNTS_PAY_COLUMN,
-                ADV_RECEIPTS_COLUMN,
-                CONTRACT_LIAB_COLUMN,
-                PAYROLL_PAYABLE_COLUMN,
-                PREPAYMENT_COLUMN,
-                CONTRACT_ASSETS_COLUMN,
-                ACCOUNTS_RECEIV_BILL_COLUMN,
-                ASSET_COLUMN,
-            ],
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &[REVENUE_COLUMN],
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
         let sector_map = ClassificationMap::from_table(
@@ -211,8 +180,8 @@ impl StockDailyNol2 {
     fn compute_raw_with_prepared_financials(
         &self,
         data: &DataPool,
-        balance: &PitFinancialData,
-        income: &PitFinancialData,
+        balance: &FinancialPitReader<'_>,
+        income: &FinancialPitReader<'_>,
         sector_map: &ClassificationMap,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<Nol2Snapshot>,
     ) -> Result<FactorSeries> {
@@ -253,8 +222,8 @@ struct NolObservation {
 
 fn nol2_residual_column(
     panel: &DailyPanel,
-    balance: &PitFinancialData,
-    income: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
+    income: &FinancialPitReader<'_>,
     sector_map: &ClassificationMap,
     cache: &mut InstrumentAlignedSnapshotCache<Nol2Snapshot>,
 ) -> Result<PanelColumn> {
@@ -308,27 +277,27 @@ fn nol2_residual_column(
 fn nol2_marker(
     ts_code: &str,
     trade_date: i32,
-    balance: &PitFinancialData,
-    income: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
+    income: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let end_t = balance.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
         trade_date,
         end_t,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
         end_t,
     );
-    builder.include_record_for_end_date(
+    builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
         income,
         ts_code,
@@ -341,8 +310,8 @@ fn nol2_marker(
 fn nol2_snapshot_for_stock(
     ts_code: &str,
     trade_date: i32,
-    balance: &PitFinancialData,
-    income: &PitFinancialData,
+    balance: &FinancialPitReader<'_>,
+    income: &FinancialPitReader<'_>,
 ) -> Option<Nol2Snapshot> {
     let end_t = balance.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
@@ -362,10 +331,7 @@ fn nol2_snapshot_for_stock(
     })
 }
 
-fn nol_from_record(
-    balance_t: &crate::factor::common::PitFinancialRecord,
-    assets: f64,
-) -> Option<f64> {
+fn nol_from_record(balance_t: PitFinancialRecordView<'_>, assets: f64) -> Option<f64> {
     nol_from_values(
         clean_or_zero(balance_t.column(ACCOUNTS_PAY_COLUMN)),
         clean_or_zero(balance_t.column(ADV_RECEIPTS_COLUMN)),

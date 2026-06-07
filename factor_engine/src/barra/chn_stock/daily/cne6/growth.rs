@@ -12,8 +12,8 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
-    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialStatementDataset,
-    FinancialStockSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialStatementDataset, PanelColumn, PitFinancialData, ReportTypePreference,
 };
 
 pub struct StockDailyBarraCne6Growth;
@@ -91,28 +91,22 @@ fn historical_growth_columns(
     income: &PitFinancialData,
     balance: &PitFinancialData,
 ) -> Result<(PanelColumn, PanelColumn)> {
-    let instrument_count = panel.instruments().len();
     let mut eps_values = vec![None; panel.shape_len()];
     let mut sales_values = vec![None; panel.shape_len()];
-    let mut cache = FinancialStockSnapshotCache::<GrowthSlowSnapshot>::new(instrument_count);
 
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, _, offset| !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| growth_marker(ts_code, trade_date, income, balance),
+        |trade_date, ts_code, _| growth_snapshot(ts_code, trade_date, income, balance),
+    );
+
+    for (offset, snapshot) in snapshots.into_iter().enumerate() {
+        let Some(snapshot) = snapshot else {
             continue;
-        }
-        let date_offset = date_idx * instrument_count;
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_offset + instrument_idx;
-            let snapshot = cache.get_or_update(
-                instrument_idx,
-                growth_marker(ts_code, trade_date, income, balance),
-                || growth_snapshot(ts_code, trade_date, income, balance),
-            );
-            if let Some(snapshot) = snapshot {
-                eps_values[offset] = snapshot.eps_growth;
-                sales_values[offset] = snapshot.sales_growth;
-            }
-        }
+        };
+        eps_values[offset] = snapshot.eps_growth;
+        sales_values[offset] = snapshot.sales_growth;
     }
 
     Ok((

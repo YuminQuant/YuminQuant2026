@@ -10,9 +10,10 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::is_bj_stock;
 use crate::factor::common::{
-    compute_financial_event_snapshot_many, ClassificationLevel, ClassificationMap, DailyPanel,
-    EventDrivenCrossSectionCache, FinancialEventSchedule, FinancialEventTable, PanelColumn,
-    PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots, compute_financial_event_snapshot_many, ClassificationLevel,
+    ClassificationMap, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
+    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+    FinancialStatementDataset, PanelColumn, PitFinancialData, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::cs_zscore_by_group;
@@ -136,6 +137,18 @@ impl Factor for StockDailyAbcfo {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+struct AbcfoSlowSnapshot {
+    cfo: f64,
+    assets: f64,
+    revenue_t: f64,
+    revenue_t1: f64,
+    revenue_t2: f64,
+    employee_cash: f64,
+    other_operate_cash: f64,
+    list_date: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct AbcfoRow {
     y: f64,
     x: [f64; REGRESSOR_COUNT],
@@ -186,6 +199,19 @@ fn abcfo_ridge_residual_column(
 ) -> Result<PanelColumn> {
     let instrument_count = panel.instruments().len();
     let mut values = vec![None; panel.shape_len()];
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, ts_code, offset| {
+            is_bj_stock(ts_code)
+                || !panel.is_present_offset(offset)
+                || !list_dates.contains_key(ts_code)
+        },
+        |trade_date, ts_code, _| abcfo_marker(ts_code, trade_date, cashflow, income, balance),
+        |trade_date, ts_code, _| {
+            let list_date = list_dates.get(ts_code).copied()?;
+            abcfo_slow_snapshot_for_stock(ts_code, trade_date, list_date, cashflow, income, balance)
+        },
+    );
 
     for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
         if !panel.is_target_date(trade_date) {
@@ -198,12 +224,10 @@ fn abcfo_ridge_residual_column(
             if is_bj_stock(ts_code) || !panel.is_present_offset(offset) {
                 continue;
             }
-            let Some(list_date) = list_dates.get(ts_code).copied() else {
+            let Some(snapshot) = snapshots[offset] else {
                 continue;
             };
-            let Some(row) =
-                abcfo_row_for_stock(ts_code, trade_date, list_date, cashflow, income, balance)
-            else {
+            let Some(row) = abcfo_row_from_snapshot(&snapshot, trade_date) else {
                 continue;
             };
             observations.push(RidgeObservation { offset, row });
@@ -216,18 +240,66 @@ fn abcfo_ridge_residual_column(
     panel.column_from_values(values)
 }
 
-fn abcfo_row_for_stock(
+fn abcfo_marker(
+    ts_code: &str,
+    trade_date: i32,
+    cashflow: &PitFinancialData,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+) -> Option<FinancialEventMarker> {
+    let end_t = cashflow.latest_quarter_end_date(ts_code, trade_date)?;
+    let end_t1 = previous_quarter_end_date(end_t)?;
+    let end_t2 = previous_quarter_end_date(end_t1)?;
+    let mut builder = FinancialEventMarkerBuilder::new();
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::CashFlow,
+        cashflow,
+        ts_code,
+        trade_date,
+        end_t,
+    );
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        end_t,
+    );
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        end_t1,
+    );
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        end_t2,
+    );
+    builder.include_record_for_end_date(
+        FinancialStatementDataset::BalanceSheet,
+        balance,
+        ts_code,
+        trade_date,
+        end_t,
+    );
+    builder.build()
+}
+
+fn abcfo_slow_snapshot_for_stock(
     ts_code: &str,
     trade_date: i32,
     list_date: i32,
     cashflow: &PitFinancialData,
     income: &PitFinancialData,
     balance: &PitFinancialData,
-) -> Option<AbcfoRow> {
+) -> Option<AbcfoSlowSnapshot> {
     let end_t = cashflow.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
     let end_t2 = previous_quarter_end_date(end_t1)?;
-
     let cash_t = cashflow.record_for_end_date(ts_code, trade_date, end_t)?;
     let income_t = income.record_for_end_date(ts_code, trade_date, end_t)?;
     let income_t1 = income.record_for_end_date(ts_code, trade_date, end_t1)?;
@@ -241,8 +313,7 @@ fn abcfo_row_for_stock(
     let revenue_t1 = clean(income_t1.column(REVENUE_COLUMN))?;
     let revenue_t2 = clean(income_t2.column(REVENUE_COLUMN))?;
     let assets = clean(balance_t.column(ASSET_COLUMN)).filter(|value| *value > 0.0)?;
-    let age = listing_age_years(trade_date, list_date)?;
-    abcfo_row_from_values(
+    Some(AbcfoSlowSnapshot {
         cfo,
         assets,
         revenue_t,
@@ -250,6 +321,20 @@ fn abcfo_row_for_stock(
         revenue_t2,
         employee_cash,
         other_operate_cash,
+        list_date,
+    })
+}
+
+fn abcfo_row_from_snapshot(snapshot: &AbcfoSlowSnapshot, trade_date: i32) -> Option<AbcfoRow> {
+    let age = listing_age_years(trade_date, snapshot.list_date)?;
+    abcfo_row_from_values(
+        snapshot.cfo,
+        snapshot.assets,
+        snapshot.revenue_t,
+        snapshot.revenue_t1,
+        snapshot.revenue_t2,
+        snapshot.employee_cash,
+        snapshot.other_operate_cash,
         age,
     )
 }

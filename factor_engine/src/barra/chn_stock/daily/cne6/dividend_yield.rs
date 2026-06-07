@@ -10,7 +10,9 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::Result;
-use crate::factor::common::{DailyPanel, PanelColumn};
+use crate::factor::common::{
+    cached_financial_stock_snapshots, DailyPanel, FinancialEventMarkerBuilder, PanelColumn,
+};
 
 pub struct StockDailyBarraCne6DividendYield;
 
@@ -34,7 +36,7 @@ impl BarraExposure for StockDailyBarraCne6DividendYield {
                 "DTOP",
                 &[],
                 "CNE6 dividend-to-price",
-                "Past 12 natural months implemented cash dividend amount divided by target-date total market value.",
+                "Past 12 natural months implemented cash dividend amount divided by event-snapshot total market value.",
             ),
             dividend_yield_spec(
                 "DTOPF",
@@ -135,6 +137,12 @@ struct AnalystRecord {
     rd: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DtopSlowSnapshot {
+    cash: f64,
+    total_mv: f64,
+}
+
 fn parse_dividend_records(table: &Table) -> Result<Vec<DividendRecord>> {
     let ts_codes = table.required_utf8("ts_code")?;
     let ann_dates = table.required_i32_date_cast("ann_date")?;
@@ -199,28 +207,49 @@ fn dtop_column(
     total_mv: &PanelColumn,
     records: &[DividendRecord],
 ) -> Result<PanelColumn> {
-    let instrument_count = panel.instruments().len();
-    let mut values = vec![None; panel.shape_len()];
+    let dividend_sums_by_date = panel
+        .dates()
+        .iter()
+        .copied()
+        .filter(|trade_date| panel.is_target_date(*trade_date))
+        .map(|trade_date| {
+            (
+                trade_date,
+                dividend_sum_by_stock(records, add_months(trade_date, -12), trade_date),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, _, offset| !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| {
+            let cash = dividend_sums_by_date
+                .get(&trade_date)
+                .and_then(|sum| sum.get(ts_code).copied())
+                .unwrap_or(0.0);
+            let mut builder = FinancialEventMarkerBuilder::new();
+            builder.include_synthetic("dtop_cash_ltm", f64_marker_value(cash));
+            builder.build()
+        },
+        |trade_date, ts_code, offset| {
+            let cash = dividend_sums_by_date
+                .get(&trade_date)
+                .and_then(|sum| sum.get(ts_code).copied())
+                .unwrap_or(0.0);
+            let total_mv = clean(total_mv.values()[offset]).filter(|value| *value > 0.0)?;
+            Some(DtopSlowSnapshot { cash, total_mv })
+        },
+    );
 
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
-            continue;
-        }
-        let start_date = add_months(trade_date, -12);
-        let dividend_sum = dividend_sum_by_stock(records, start_date, trade_date);
-
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_idx * instrument_count + instrument_idx;
-            let Some(market_value) = clean(total_mv.values()[offset]).filter(|value| *value > 0.0)
-            else {
-                continue;
-            };
-            let cash = dividend_sum.get(ts_code.as_str()).copied().unwrap_or(0.0);
-            values[offset] = Some(cash / market_value);
-        }
-    }
-
-    panel.column_from_values(values)
+    panel.column_from_values(
+        snapshots
+            .into_iter()
+            .map(|snapshot| {
+                let snapshot = snapshot?;
+                Some(snapshot.cash / snapshot.total_mv)
+            })
+            .collect(),
+    )
 }
 
 fn dividend_sum_by_stock(
@@ -241,6 +270,10 @@ fn dividend_sum_by_stock(
             record.cash_div_tax * record.base_share;
     }
     sums
+}
+
+fn f64_marker_value(value: f64) -> i64 {
+    i64::from_ne_bytes(value.to_bits().to_ne_bytes())
 }
 
 fn dtopf_column(panel: &DailyPanel, records: &[AnalystRecord]) -> Result<PanelColumn> {
@@ -410,16 +443,16 @@ mod tests {
     }
 
     #[test]
-    fn dtop_uses_target_date_total_market_value() {
+    fn dtop_uses_slow_total_market_value_until_dividend_marker_changes() {
         let panel = DailyPanel::from_index(
-            vec![20260424],
+            vec![20260424, 20260425],
             vec!["000001.SZ".to_string(), "000002.SZ".to_string()],
-            &[20260424],
-            vec![true, true],
+            &[20260424, 20260425],
+            vec![true, true, true, true],
         )
         .unwrap();
         let total_mv = panel
-            .column_from_values(vec![Some(1000.0), Some(0.0)])
+            .column_from_values(vec![Some(1000.0), Some(0.0), Some(2000.0), Some(2000.0)])
             .unwrap();
         let records = vec![
             DividendRecord {
@@ -444,6 +477,8 @@ mod tests {
 
         assert_close(dtop.values()[0].unwrap(), 0.02);
         assert_eq!(dtop.values()[1], None);
+        assert_close(dtop.values()[2].unwrap(), 0.02);
+        assert_eq!(dtop.values()[3], None);
     }
 
     #[test]

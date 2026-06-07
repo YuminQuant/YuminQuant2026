@@ -10,10 +10,10 @@ use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    compute_financial_event_snapshot_many, DailyPanel, EventDrivenCrossSectionCache,
-    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
-    FinancialStatementDataset, FinancialStockSnapshotCache, PanelColumn, PitFinancialData,
-    ReportTypePreference,
+    cached_financial_stock_snapshots, compute_financial_event_snapshot_many, DailyPanel,
+    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset, PanelColumn,
+    PitFinancialData, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::cs_pctrank;
@@ -166,36 +166,26 @@ fn roe_component_columns(
     income: &PitFinancialData,
     balance: &PitFinancialData,
 ) -> Result<RoeComponentColumns> {
-    let instrument_count = panel.instruments().len();
     let mut yoy = vec![None; panel.shape_len()];
     let mut stb = vec![None; panel.shape_len()];
     let mut last = vec![None; panel.shape_len()];
     let mut growth = vec![None; panel.shape_len()];
-    let mut cache = FinancialStockSnapshotCache::<RoeSnapshot>::new(instrument_count);
 
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| roe_marker(ts_code, trade_date, income, balance),
+        |trade_date, ts_code, _| roe_snapshot_for_stock(ts_code, trade_date, income, balance),
+    );
+
+    for (offset, snapshot) in snapshots.into_iter().enumerate() {
+        let Some(snapshot) = snapshot else {
             continue;
-        }
-        let date_offset = date_idx * instrument_count;
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_offset + instrument_idx;
-            if is_bj_stock(ts_code) || !panel.is_present_offset(offset) {
-                cache.clear(instrument_idx);
-                continue;
-            }
-            let marker = roe_marker(ts_code, trade_date, income, balance);
-            let snapshot = cache.get_or_update(instrument_idx, marker, || {
-                roe_snapshot_for_stock(ts_code, trade_date, income, balance)
-            });
-            let Some(snapshot) = snapshot else {
-                continue;
-            };
-            yoy[offset] = snapshot.yoy;
-            stb[offset] = snapshot.stb;
-            last[offset] = snapshot.last;
-            growth[offset] = snapshot.growth;
-        }
+        };
+        yoy[offset] = snapshot.yoy;
+        stb[offset] = snapshot.stb;
+        last[offset] = snapshot.last;
+        growth[offset] = snapshot.growth;
     }
 
     Ok(RoeComponentColumns {

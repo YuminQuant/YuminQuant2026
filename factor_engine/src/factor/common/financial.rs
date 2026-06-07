@@ -198,7 +198,11 @@ where
     F: FnMut(&[String], &FactorContext, &DataPool) -> Result<Vec<FactorSeries>>,
 {
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-    let event_trade_dates = event_trade_dates_for_context(state, schedule, &context.target_dates);
+    let event_trade_dates = financial_event_trade_dates(
+        state.last_processed_trade_date,
+        schedule,
+        &context.target_dates,
+    );
     let event_series_by_factor_date = if event_trade_dates.is_empty() {
         BTreeMap::new()
     } else {
@@ -257,12 +261,12 @@ fn append_series_values(
     }
 }
 
-fn event_trade_dates_for_context(
-    state: &EventDrivenCrossSectionCache,
+pub fn financial_event_trade_dates(
+    last_processed_trade_date: Option<i32>,
     schedule: &FinancialEventSchedule,
     target_dates: &[i32],
 ) -> Vec<i32> {
-    let mut last_processed = state.last_processed_trade_date;
+    let mut last_processed = last_processed_trade_date;
     let mut event_trade_dates = Vec::new();
     for trade_date in target_dates {
         let should_recompute =
@@ -567,20 +571,20 @@ impl ReportTypePreference {
     }
 }
 
-pub fn cached_financial_stock_panel<T, MarkerFn, ComputeFn, ValueFn>(
+pub fn cached_financial_stock_snapshots<T, SkipFn, MarkerFn, ComputeFn>(
     panel: &DailyPanel,
+    mut skip_fn: SkipFn,
     mut marker_fn: MarkerFn,
     mut compute_fn: ComputeFn,
-    mut value_fn: ValueFn,
-) -> Result<PanelColumn>
+) -> Vec<Option<T>>
 where
     T: Clone,
-    MarkerFn: FnMut(i32, &str) -> Option<FinancialEventMarker>,
-    ComputeFn: FnMut(i32, &str) -> Option<T>,
-    ValueFn: FnMut(&T, i32, &str, usize) -> Option<f64>,
+    SkipFn: FnMut(i32, &str, usize) -> bool,
+    MarkerFn: FnMut(i32, &str, usize) -> Option<FinancialEventMarker>,
+    ComputeFn: FnMut(i32, &str, usize) -> Option<T>,
 {
     let instrument_count = panel.instruments().len();
-    let mut values = vec![None; panel.shape_len()];
+    let mut snapshots = vec![None; panel.shape_len()];
     let mut cache = FinancialStockSnapshotCache::<T>::new(instrument_count);
     for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
         if !panel.is_target_date(trade_date) {
@@ -589,16 +593,18 @@ where
         let date_offset = date_idx * instrument_count;
         for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
             let offset = date_offset + instrument_idx;
-            let snapshot =
-                cache.get_or_update(instrument_idx, marker_fn(trade_date, ts_code), || {
-                    compute_fn(trade_date, ts_code)
-                });
-            if let Some(snapshot) = snapshot.as_ref() {
-                values[offset] = value_fn(snapshot, trade_date, ts_code, offset);
+            if skip_fn(trade_date, ts_code, offset) {
+                cache.clear(instrument_idx);
+                continue;
             }
+            snapshots[offset] = cache.get_or_update(
+                instrument_idx,
+                marker_fn(trade_date, ts_code, offset),
+                || compute_fn(trade_date, ts_code, offset),
+            );
         }
     }
-    panel.column_from_values(values)
+    snapshots
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1135,10 +1141,10 @@ mod tests {
     use crate::data::{ColumnData, DataPool, Table};
 
     use super::{
-        compute_financial_event_snapshot_many, DeadlinePolicy, EventDrivenCrossSectionCache,
-        FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
-        FinancialStatementDataset, FinancialStockSnapshotCache, PitFinancialData,
-        ReportTypePreference,
+        cached_financial_stock_snapshots, compute_financial_event_snapshot_many, DeadlinePolicy,
+        EventDrivenCrossSectionCache, FinancialEventMarkerBuilder, FinancialEventSchedule,
+        FinancialEventTable, FinancialStatementDataset, FinancialStockSnapshotCache,
+        PitFinancialData, ReportTypePreference,
     };
     use super::{latest_possible_end_date, required_anchor_end_date};
 
@@ -1619,6 +1625,54 @@ mod tests {
             Some(3.0)
         );
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn cached_financial_stock_snapshots_reuses_until_marker_changes() {
+        let panel = panel(&[20260105, 20260106, 20260107]);
+        let mut calls = 0usize;
+        let snapshots = cached_financial_stock_snapshots(
+            &panel,
+            |_, _, _| false,
+            |trade_date, _, _| {
+                let mut builder = FinancialEventMarkerBuilder::new();
+                let marker_value = if trade_date < 20260107 { 1 } else { 2 };
+                builder.include_synthetic("marker", marker_value);
+                builder.build()
+            },
+            |trade_date, _, _| {
+                calls += 1;
+                Some(trade_date)
+            },
+        );
+
+        assert_eq!(calls, 2);
+        assert_eq!(
+            snapshots,
+            vec![Some(20260105), Some(20260105), Some(20260107)]
+        );
+    }
+
+    #[test]
+    fn cached_financial_stock_snapshots_skip_clears_cached_snapshot() {
+        let panel = panel(&[20260105, 20260106, 20260107]);
+        let mut calls = 0usize;
+        let snapshots = cached_financial_stock_snapshots(
+            &panel,
+            |trade_date, _, _| trade_date == 20260106,
+            |_, _, _| {
+                let mut builder = FinancialEventMarkerBuilder::new();
+                builder.include_synthetic("marker", 1);
+                builder.build()
+            },
+            |trade_date, _, _| {
+                calls += 1;
+                Some(trade_date)
+            },
+        );
+
+        assert_eq!(calls, 2);
+        assert_eq!(snapshots, vec![Some(20260105), None, Some(20260107)]);
     }
 
     #[test]

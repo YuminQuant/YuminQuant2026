@@ -1,9 +1,9 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 
 use crate::core::{
-    AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
-    Lookback,
+    AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+    Frequency, Lookback,
 };
 use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
@@ -13,9 +13,10 @@ use crate::factor::common::stock_daily_ops::{
 };
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
-    FinancialStockSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots, financial_event_trade_dates, DailyPanel,
+    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset, PanelColumn,
+    PitFinancialData, ReportTypePreference,
 };
 use crate::operators::{cs_pctrank, cs_regression_residual};
 
@@ -60,11 +61,6 @@ struct FinancialSimilarityPeerState {
 }
 
 impl FinancialSimilarityPeerState {
-    fn should_recompute(&self, schedule: &FinancialEventSchedule, trade_date: i32) -> bool {
-        self.last_processed_trade_date.is_none()
-            || schedule.has_event_after_until(self.last_processed_trade_date, trade_date)
-    }
-
     fn mark_processed(&mut self, trade_date: i32) {
         self.last_processed_trade_date = Some(trade_date);
     }
@@ -259,18 +255,30 @@ pub fn compute_requested_stateful(
         .map(|(idx, ts_code)| (ts_code.clone(), idx))
         .collect::<BTreeMap<_, _>>();
 
+    let event_trade_dates = financial_event_trade_dates(
+        state.peer_state.last_processed_trade_date,
+        &schedule,
+        &context.target_dates,
+    );
+    let event_trade_date_set = event_trade_dates.iter().copied().collect::<BTreeSet<_>>();
+    let event_states =
+        compute_financial_similarity_event_states(data, &event_trade_dates, want_link_new)?;
+
     let mut f_momentum_raw = want_f_momentum.then(|| vec![None; panel.shape_len()]);
     let mut link_values = Vec::new();
     for trade_date in context.target_dates.iter().copied() {
-        if state.peer_state.should_recompute(&schedule, trade_date) {
-            let (top_peers, link_series) =
-                compute_financial_similarity_event_state(data, trade_date, want_link_new)?;
-            state.peer_state.top_peers = top_peers;
-            if let Some(series) = link_series {
-                state.final_cache.update_series(&series);
+        if event_trade_date_set.contains(&trade_date) {
+            state.peer_state.top_peers = event_states
+                .top_peers_by_date
+                .get(&trade_date)
+                .cloned()
+                .unwrap_or_default();
+            if want_link_new {
+                if let Some(series) = event_states.link_series_by_date.get(&trade_date) {
+                    state.final_cache.update_series(series);
+                }
             }
         }
-
         if let (Some(output), Some(ret20)) = (f_momentum_raw.as_mut(), ret20.as_ref()) {
             write_f_momentum_raw_for_date(
                 &state.peer_state.top_peers,
@@ -316,15 +324,21 @@ pub fn compute_requested_stateful(
     Ok(output)
 }
 
-fn compute_financial_similarity_event_state(
+#[derive(Default)]
+struct FinancialSimilarityEventStates {
+    top_peers_by_date: BTreeMap<i32, BTreeMap<String, Vec<FinancialPeerLink>>>,
+    link_series_by_date: BTreeMap<i32, FactorSeries>,
+}
+
+fn compute_financial_similarity_event_states(
     data: &DataPool,
-    trade_date: i32,
+    event_trade_dates: &[i32],
     want_link_new: bool,
-) -> Result<(
-    BTreeMap<String, Vec<FinancialPeerLink>>,
-    Option<FactorSeries>,
-)> {
-    let event_data = data.with_target_dates(&[trade_date]);
+) -> Result<FinancialSimilarityEventStates> {
+    if event_trade_dates.is_empty() {
+        return Ok(FinancialSimilarityEventStates::default());
+    }
+    let event_data = data.with_target_dates(event_trade_dates);
     let panel = event_data.daily_panel(DatasetId::StockDailyPv)?;
     let total_mv =
         panel.column_from_table(event_data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
@@ -348,38 +362,64 @@ fn compute_financial_similarity_event_state(
             fill_present_non_bj_missing_ranks_with_zero(&ranked, &panel)
         })
         .collect::<Result<Vec<_>>>()?;
-    let Some(date_idx) = panel.dates().iter().position(|date| *date == trade_date) else {
-        return Ok((BTreeMap::new(), None));
-    };
     let instrument_count = panel.instruments().len();
-    let offset = date_idx * instrument_count;
-    let points = financial_points_for_date(
-        &standardized_metrics,
-        None,
-        &panel,
-        offset,
-        instrument_count,
-    );
-    let top_peers = financial_top_peer_links(&points, &panel, instrument_count);
+    let mut states = FinancialSimilarityEventStates::default();
+    let mut link_raw_values = want_link_new.then(|| vec![None; panel.shape_len()]);
 
-    let link_series = if want_link_new {
-        let day_link = link_new_from_vector_sum(&points, instrument_count);
-        let mut raw_values = vec![None; panel.shape_len()];
-        for instrument_idx in 0..instrument_count {
-            raw_values[offset + instrument_idx] = day_link[instrument_idx];
+    for trade_date in event_trade_dates {
+        let Some(date_idx) = panel.dates().iter().position(|date| date == trade_date) else {
+            continue;
+        };
+        let offset = date_idx * instrument_count;
+        let points = financial_points_for_date(
+            &standardized_metrics,
+            None,
+            &panel,
+            offset,
+            instrument_count,
+        );
+        states.top_peers_by_date.insert(
+            *trade_date,
+            financial_top_peer_links(&points, &panel, instrument_count),
+        );
+
+        if let Some(raw_values) = link_raw_values.as_mut() {
+            let day_link = link_new_from_vector_sum(&points, instrument_count);
+            for instrument_idx in 0..instrument_count {
+                raw_values[offset + instrument_idx] = day_link[instrument_idx];
+            }
         }
+    }
+
+    if let Some(raw_values) = link_raw_values {
         let raw = panel.column_from_values(raw_values)?;
         let masked = mask_bj(&raw, &panel)?;
         let neutralized = neutralize_size_sector(&masked, &panel, &event_data)?;
-        Some(
-            mask_bj(&neutralized, &panel)?
-                .to_factor_series(spec(FinancialSimilarityOutput::LinkNew)),
-        )
-    } else {
-        None
-    };
+        let series = mask_bj(&neutralized, &panel)?
+            .to_factor_series(spec(FinancialSimilarityOutput::LinkNew));
+        states.link_series_by_date = split_series_by_trade_date(series);
+    }
 
-    Ok((top_peers, link_series))
+    Ok(states)
+}
+
+fn split_series_by_trade_date(series: FactorSeries) -> BTreeMap<i32, FactorSeries> {
+    let spec = series.spec;
+    let mut output = BTreeMap::<i32, FactorSeries>::new();
+    for value in series.values {
+        let FactorRowKey::Daily { trade_date, .. } = &value.key else {
+            continue;
+        };
+        output
+            .entry(*trade_date)
+            .or_insert_with(|| FactorSeries {
+                spec: spec.clone(),
+                values: Vec::new(),
+            })
+            .values
+            .push(value);
+    }
+    output
 }
 
 fn financial_top_peer_links(
@@ -512,47 +552,53 @@ fn financial_metric_columns(
     dividends: &[DividendRecord],
 ) -> Result<Vec<PanelColumn>> {
     let mut metric_values = vec![vec![None; panel.shape_len()]; METRIC_DIM];
-    let instrument_count = panel.instruments().len();
-    let mut cache =
-        FinancialStockSnapshotCache::<FinancialMetricSlowSnapshot>::new(instrument_count);
-
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
-            continue;
-        }
-        let dividend_sum =
-            dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date);
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_idx * instrument_count + instrument_idx;
-            if is_bj_stock(ts_code) {
-                cache.clear(instrument_idx);
-                continue;
-            }
-            if !panel.is_present_offset(offset) {
-                cache.clear(instrument_idx);
-                continue;
-            }
+    let dividend_sums_by_date = panel
+        .dates()
+        .iter()
+        .copied()
+        .filter(|trade_date| panel.is_target_date(*trade_date))
+        .map(|trade_date| {
+            (
+                trade_date,
+                dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| {
+            let cash_dividend = dividend_sums_by_date
+                .get(&trade_date)
+                .and_then(|sum| sum.get(ts_code).copied())
+                .unwrap_or(0.0);
+            financial_metric_marker(ts_code, trade_date, income, balance, cash_dividend)
+        },
+        |trade_date, ts_code, offset| {
+            let cash_dividend = dividend_sums_by_date
+                .get(&trade_date)
+                .and_then(|sum| sum.get(ts_code).copied())
+                .unwrap_or(0.0);
             let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
-            let cash_dividend = dividend_sum.get(ts_code.as_str()).copied().unwrap_or(0.0);
-            let marker =
-                financial_metric_marker(ts_code, trade_date, income, balance, cash_dividend);
-            let Some(snapshot) = cache.get_or_update(instrument_idx, marker, || {
-                financial_metrics_slow_for_stock(
-                    ts_code,
-                    trade_date,
-                    income,
-                    balance,
-                    cash_dividend,
-                    total_mv_value,
-                )
-            }) else {
-                continue;
-            };
-            let mut metrics = snapshot.metrics;
-            metrics[6] = safe_div_opt(Some(snapshot.cash_dividend_ltm), snapshot.total_mv_snapshot);
-            for metric_idx in 0..METRIC_DIM {
-                metric_values[metric_idx][offset] = metrics[metric_idx];
-            }
+            financial_metrics_slow_for_stock(
+                ts_code,
+                trade_date,
+                income,
+                balance,
+                cash_dividend,
+                total_mv_value,
+            )
+        },
+    );
+
+    for (offset, snapshot) in snapshots.into_iter().enumerate() {
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        let mut metrics = snapshot.metrics;
+        metrics[6] = safe_div_opt(Some(snapshot.cash_dividend_ltm), snapshot.total_mv_snapshot);
+        for metric_idx in 0..METRIC_DIM {
+            metric_values[metric_idx][offset] = metrics[metric_idx];
         }
     }
 

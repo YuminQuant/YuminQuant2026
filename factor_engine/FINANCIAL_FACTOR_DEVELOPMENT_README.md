@@ -113,12 +113,20 @@ cross-sectional work.
 
 财报数据是低频稀疏数据。新的财务因子应把流程拆成“股票级财报慢指标 snapshot”和“每日快变量/截面处理”两层。
 
-Use `FinancialStockSnapshotCache<T>` when all of the following are true:
+Prefer the high-level helper `cached_financial_stock_snapshots(...)`. It wraps
+`FinancialStockSnapshotCache<T>` and keeps one stock-level cache alive for the
+whole provider/date-batch calculation.
 
-满足以下条件时，应使用 `FinancialStockSnapshotCache<T>`：
+优先使用高层 helper `cached_financial_stock_snapshots(...)`。它封装了
+`FinancialStockSnapshotCache<T>`，并让同一个 provider/date-batch 内的股票级
+慢指标缓存持续存在。
+
+Use it when all of the following are true:
+
+满足以下条件时使用该工具：
 
 - The value is a stock-level financial statement formula. / 该值是股票级财报公式。
-- The formula only changes when visible `ann_date/f_ann_date` records change. / 公式只会在 PIT 可见财报记录变化时变化。
+- The formula only changes when visible `ann_date/f_ann_date` records or declared synthetic events change. / 公式只会在 PIT 可见财报记录或声明的 synthetic event 变化时变化。
 - The result can be reused across target dates until the marker changes. / marker 不变时可跨目标日复用结果。
 
 Do **not** cache daily fast variables:
@@ -177,16 +185,30 @@ fn slow_snapshot(
     })
 }
 
-let raw = cached_financial_stock_panel(
+let snapshots = cached_financial_stock_snapshots(
     panel,
-    |trade_date, ts_code| slow_marker(ts_code, trade_date, &income, &balance),
-    |trade_date, ts_code| slow_snapshot(ts_code, trade_date, &income, &balance),
-    |snapshot, _trade_date, _ts_code, offset| {
+    |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+    |trade_date, ts_code, _| slow_marker(ts_code, trade_date, &income, &balance),
+    |trade_date, ts_code, _| slow_snapshot(ts_code, trade_date, &income, &balance),
+);
+
+let values = snapshots
+    .into_iter()
+    .enumerate()
+    .map(|(offset, snapshot)| {
+        let snapshot = snapshot?;
         let mv = total_mv.values()[offset]?;
         snapshot.revenue_ttm.and_then(|revenue| safe_div(revenue, mv))
-    },
-)?;
+    })
+    .collect::<Vec<_>>();
+let raw = panel.column_from_values(values)?;
 ```
+
+Callback roles / 回调职责：
+
+- `skip_fn(trade_date, ts_code, offset)`: return `true` for `.BJ`, non-present rows, or excluded universe members; this clears the stock cache. / 对 `.BJ`、不在市行或被股票池剔除的股票返回 `true`，同时清空该股票缓存。
+- `marker_fn(...)`: declare all PIT records and synthetic events that can change the snapshot. / 声明所有会影响 snapshot 的 PIT 记录链和 synthetic event。
+- `compute_fn(...)`: calculate only the stock-level slow snapshot; it runs only when marker changes. / 只计算股票级慢指标；只有 marker 变化时才执行。
 
 Marker rules / marker 规则：
 

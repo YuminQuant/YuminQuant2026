@@ -10,10 +10,10 @@ use crate::error::{err, Result};
 use crate::factor::common::stock_daily_ops::{is_bj_stock, mask_bj, neutralize_size_sector};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    compute_financial_event_snapshot_many, ClassificationLevel, ClassificationMap, DailyPanel,
-    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
-    FinancialStockSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots, compute_financial_event_snapshot_many, ClassificationLevel,
+    ClassificationMap, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
+    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+    FinancialStatementDataset, PanelColumn, PitFinancialData, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_neutralize_regression, cs_pctrank};
@@ -479,8 +479,6 @@ fn financial_snapshot_columns(
     dividends: &[DividendRecord],
     needs: FinancialNeeds,
 ) -> Result<FinancialSnapshotColumns> {
-    let instrument_count = panel.instruments().len();
-    let mut cache = FinancialStockSnapshotCache::<FinancialSnapshot>::new(instrument_count);
     let mut total_mv_snapshot = vec![None; panel.shape_len()];
     let mut netprofit_ttm = vec![None; panel.shape_len()];
     let mut netprofit_sq = vec![None; panel.shape_len()];
@@ -491,23 +489,27 @@ fn financial_snapshot_columns(
     let mut cash_equ_end_period = vec![None; panel.shape_len()];
     let mut div_ttm = vec![None; panel.shape_len()];
     let mut delta_profit_sq_yoy = vec![None; panel.shape_len()];
-
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
-            continue;
-        }
-        let dividend_sum =
-            dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date);
-        let date_offset = date_idx * instrument_count;
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_offset + instrument_idx;
-            if is_bj_stock(ts_code) || !panel.is_present_offset(offset) {
-                cache.clear(instrument_idx);
-                continue;
-            }
-            let cash_dividend = dividend_sum.get(ts_code.as_str()).copied().unwrap_or(0.0);
-            let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
-            let marker = financial_snapshot_marker(
+    let dividend_sums_by_date = panel
+        .dates()
+        .iter()
+        .copied()
+        .filter(|trade_date| panel.is_target_date(*trade_date))
+        .map(|trade_date| {
+            (
+                trade_date,
+                dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| {
+            let cash_dividend = dividend_sums_by_date
+                .get(&trade_date)
+                .and_then(|sum| sum.get(ts_code).copied())
+                .unwrap_or(0.0);
+            financial_snapshot_marker(
                 ts_code,
                 trade_date,
                 income,
@@ -515,33 +517,41 @@ fn financial_snapshot_columns(
                 cashflow,
                 cash_dividend,
                 needs,
-            );
-            let Some(snapshot) = cache.get_or_update(instrument_idx, marker, || {
-                financial_snapshot_for_stock(
-                    ts_code,
-                    trade_date,
-                    income,
-                    balance,
-                    cashflow,
-                    cash_dividend,
-                    total_mv_value,
-                    needs,
-                )
-            }) else {
-                continue;
-            };
-            total_mv_snapshot[offset] = snapshot.total_mv_snapshot;
-            netprofit_ttm[offset] = snapshot.netprofit_ttm;
-            netprofit_sq[offset] = snapshot.netprofit_sq;
-            netprofit_sq_yoy[offset] = snapshot.netprofit_sq_yoy;
-            revenue_sq[offset] = snapshot.revenue_sq;
-            cashflow_sq[offset] = snapshot.cashflow_sq;
-            book_value[offset] = snapshot.book_value;
-            cash_equ_end_period[offset] = snapshot.cash_equ_end_period;
-            div_ttm[offset] = snapshot.div_ttm;
-            delta_profit_sq_yoy[offset] =
-                diff_opt(snapshot.netprofit_sq, snapshot.netprofit_sq_yoy);
-        }
+            )
+        },
+        |trade_date, ts_code, offset| {
+            let cash_dividend = dividend_sums_by_date
+                .get(&trade_date)
+                .and_then(|sum| sum.get(ts_code).copied())
+                .unwrap_or(0.0);
+            let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
+            financial_snapshot_for_stock(
+                ts_code,
+                trade_date,
+                income,
+                balance,
+                cashflow,
+                cash_dividend,
+                total_mv_value,
+                needs,
+            )
+        },
+    );
+
+    for (offset, snapshot) in snapshots.into_iter().enumerate() {
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        total_mv_snapshot[offset] = snapshot.total_mv_snapshot;
+        netprofit_ttm[offset] = snapshot.netprofit_ttm;
+        netprofit_sq[offset] = snapshot.netprofit_sq;
+        netprofit_sq_yoy[offset] = snapshot.netprofit_sq_yoy;
+        revenue_sq[offset] = snapshot.revenue_sq;
+        cashflow_sq[offset] = snapshot.cashflow_sq;
+        book_value[offset] = snapshot.book_value;
+        cash_equ_end_period[offset] = snapshot.cash_equ_end_period;
+        div_ttm[offset] = snapshot.div_ttm;
+        delta_profit_sq_yoy[offset] = diff_opt(snapshot.netprofit_sq, snapshot.netprofit_sq_yoy);
     }
 
     Ok(FinancialSnapshotColumns {

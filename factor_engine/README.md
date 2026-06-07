@@ -341,6 +341,12 @@ Financial factor update frequency is never inferred from the `fundamental` tag. 
 3. Keep valuation, price/return, and other daily fast variables on `Daily`.
 4. Multi-output providers must remain requested-aware; wrappers sharing a provider key must use the same state type.
 
+股票级财报慢指标应优先使用 `cached_financial_stock_snapshots(...)`。`skip_fn` 负责剔除 `.BJ`、非在市或不在股票池的股票；`marker_fn` 声明会影响 snapshot 的 PIT 记录链和 synthetic marker；`compute_fn` 只写股票级慢指标公式。截面 rank、OLS/ridge、网络降维和中性化仍放在事件日或每日的后续步骤中。
+
+For stock-level slow financial metrics, prefer `cached_financial_stock_snapshots(...)`. `skip_fn` handles `.BJ`, non-present, or out-of-universe stocks; `marker_fn` declares PIT record chains and synthetic markers that can change the snapshot; `compute_fn` contains only the stock-level slow formula. Cross-sectional rank, OLS/ridge, network reductions, and neutralization stay in the event-date or daily post-processing stage.
+
+完整开发范式见 / Full development pattern: [FINANCIAL_FACTOR_DEVELOPMENT_README.md](FINANCIAL_FACTOR_DEVELOPMENT_README.md).
+
 分钟日频因子分两层：
 
 Minute-to-daily factors have two layers:

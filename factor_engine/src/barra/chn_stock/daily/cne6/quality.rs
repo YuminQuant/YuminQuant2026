@@ -12,7 +12,7 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::Result;
 use crate::factor::common::{
-    cached_financial_stock_panel, FinancialEventMarker, FinancialEventMarkerBuilder,
+    cached_financial_stock_snapshots, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialStatementDataset, PanelColumn, PitFinancialData, ReportTypePreference,
 };
 
@@ -346,6 +346,7 @@ struct LeverageSlowSnapshot {
     equity: Option<f64>,
     total_liab: Option<f64>,
     total_assets: Option<f64>,
+    total_mv: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -367,41 +368,35 @@ fn leverage_raw_columns(
     balance: &PitFinancialData,
     total_mv: &PanelColumn,
 ) -> Result<(PanelColumn, PanelColumn, PanelColumn)> {
-    let instrument_count = panel.instruments().len();
     let mut market_values = vec![None; panel.shape_len()];
     let mut book_values = vec![None; panel.shape_len()];
     let mut debt_values = vec![None; panel.shape_len()];
-    let mut cache = crate::factor::common::FinancialStockSnapshotCache::<LeverageSlowSnapshot>::new(
-        instrument_count,
+
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, _, offset| !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| leverage_marker(ts_code, trade_date, balance),
+        |trade_date, ts_code, offset| {
+            let total_mv_snapshot = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
+            leverage_snapshot(ts_code, trade_date, balance, total_mv_snapshot)
+        },
     );
 
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
+    for (offset, snapshot) in snapshots.into_iter().enumerate() {
+        let Some(snapshot) = snapshot else {
             continue;
-        }
-        let date_offset = date_idx * instrument_count;
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_offset + instrument_idx;
-            let snapshot = cache.get_or_update(
-                instrument_idx,
-                leverage_marker(ts_code, trade_date, balance),
-                || leverage_snapshot(ts_code, trade_date, balance),
-            );
-            let Some(snapshot) = snapshot else {
-                continue;
-            };
-            let Some(me) = clean(total_mv.values()[offset]) else {
-                continue;
-            };
-            market_values[offset] = safe_div(me + snapshot.total_ncl, me);
-            book_values[offset] = snapshot
-                .equity
-                .and_then(|be| safe_div(be + snapshot.total_ncl, me));
-            debt_values[offset] = snapshot
-                .total_liab
-                .zip(snapshot.total_assets)
-                .and_then(|(tl, ta)| safe_div(tl, ta));
-        }
+        };
+        let Some(me) = snapshot.total_mv else {
+            continue;
+        };
+        market_values[offset] = safe_div(me + snapshot.total_ncl, me);
+        book_values[offset] = snapshot
+            .equity
+            .and_then(|be| safe_div(be + snapshot.total_ncl, me));
+        debt_values[offset] = snapshot
+            .total_liab
+            .zip(snapshot.total_assets)
+            .and_then(|(tl, ta)| safe_div(tl, ta));
     }
 
     Ok((
@@ -435,6 +430,7 @@ fn leverage_snapshot(
     ts_code: &str,
     trade_date: i32,
     balance: &PitFinancialData,
+    total_mv_snapshot: Option<f64>,
 ) -> Option<LeverageSlowSnapshot> {
     Some(LeverageSlowSnapshot {
         total_ncl: balance
@@ -443,6 +439,7 @@ fn leverage_snapshot(
         equity: balance.latest_annual_value(ts_code, trade_date, "total_hldr_eqy_exc_min_int"),
         total_liab: balance.latest_annual_value(ts_code, trade_date, "total_liab"),
         total_assets: balance.latest_annual_value(ts_code, trade_date, "total_assets"),
+        total_mv: total_mv_snapshot,
     })
 }
 
@@ -452,45 +449,26 @@ fn earnings_quality_raw_columns(
     income_annual: &PitFinancialData,
     cashflow_annual: &PitFinancialData,
 ) -> Result<(PanelColumn, PanelColumn)> {
-    let instrument_count = panel.instruments().len();
     let mut accruals_bs = vec![None; panel.shape_len()];
     let mut accruals_cf = vec![None; panel.shape_len()];
-    let mut cache =
-        crate::factor::common::FinancialStockSnapshotCache::<EarningsQualitySlowSnapshot>::new(
-            instrument_count,
-        );
 
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, _, offset| !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| {
+            earnings_quality_marker(ts_code, trade_date, balance, income_annual, cashflow_annual)
+        },
+        |trade_date, ts_code, _| {
+            earnings_quality_snapshot(ts_code, trade_date, balance, income_annual, cashflow_annual)
+        },
+    );
+
+    for (offset, snapshot) in snapshots.into_iter().enumerate() {
+        let Some(snapshot) = snapshot else {
             continue;
-        }
-        let date_offset = date_idx * instrument_count;
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_offset + instrument_idx;
-            let snapshot = cache.get_or_update(
-                instrument_idx,
-                earnings_quality_marker(
-                    ts_code,
-                    trade_date,
-                    balance,
-                    income_annual,
-                    cashflow_annual,
-                ),
-                || {
-                    earnings_quality_snapshot(
-                        ts_code,
-                        trade_date,
-                        balance,
-                        income_annual,
-                        cashflow_annual,
-                    )
-                },
-            );
-            if let Some(snapshot) = snapshot {
-                accruals_bs[offset] = snapshot.accruals_bs;
-                accruals_cf[offset] = snapshot.accruals_cf;
-            }
-        }
+        };
+        accruals_bs[offset] = snapshot.accruals_bs;
+        accruals_cf[offset] = snapshot.accruals_cf;
     }
 
     Ok((
@@ -588,35 +566,30 @@ fn profitability_raw_columns(
     income_annual: &PitFinancialData,
     balance: &PitFinancialData,
 ) -> Result<(PanelColumn, PanelColumn, PanelColumn, PanelColumn)> {
-    let instrument_count = panel.instruments().len();
     let mut asset_turnover = vec![None; panel.shape_len()];
     let mut gross_profitability = vec![None; panel.shape_len()];
     let mut gross_profit_margin = vec![None; panel.shape_len()];
     let mut return_on_assets = vec![None; panel.shape_len()];
-    let mut cache =
-        crate::factor::common::FinancialStockSnapshotCache::<ProfitabilitySlowSnapshot>::new(
-            instrument_count,
-        );
 
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        if !panel.is_target_date(trade_date) {
+    let snapshots = cached_financial_stock_snapshots(
+        panel,
+        |_, _, offset| !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| {
+            profitability_marker(ts_code, trade_date, income, income_annual, balance)
+        },
+        |trade_date, ts_code, _| {
+            profitability_snapshot(ts_code, trade_date, income, income_annual, balance)
+        },
+    );
+
+    for (offset, snapshot) in snapshots.into_iter().enumerate() {
+        let Some(snapshot) = snapshot else {
             continue;
-        }
-        let date_offset = date_idx * instrument_count;
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_offset + instrument_idx;
-            let snapshot = cache.get_or_update(
-                instrument_idx,
-                profitability_marker(ts_code, trade_date, income, income_annual, balance),
-                || profitability_snapshot(ts_code, trade_date, income, income_annual, balance),
-            );
-            if let Some(snapshot) = snapshot {
-                asset_turnover[offset] = snapshot.asset_turnover;
-                gross_profitability[offset] = snapshot.gross_profitability;
-                gross_profit_margin[offset] = snapshot.gross_profit_margin;
-                return_on_assets[offset] = snapshot.return_on_assets;
-            }
-        }
+        };
+        asset_turnover[offset] = snapshot.asset_turnover;
+        gross_profitability[offset] = snapshot.gross_profitability;
+        gross_profit_margin[offset] = snapshot.gross_profit_margin;
+        return_on_assets[offset] = snapshot.return_on_assets;
     }
 
     Ok((
@@ -690,16 +663,17 @@ fn annual_cv(
     dataset: FinancialStatementDataset,
     column: &str,
 ) -> Result<crate::factor::common::PanelColumn> {
-    cached_financial_stock_panel(
+    let snapshots = cached_financial_stock_snapshots(
         panel,
-        |trade_date, ts_code| annual_chain_marker(dataset, data, ts_code, trade_date, 5),
-        |trade_date, ts_code| {
+        |_, _, offset| !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| annual_chain_marker(dataset, data, ts_code, trade_date, 5),
+        |trade_date, ts_code, _| {
             let values = data.annual_values(ts_code, trade_date, column, 5)?;
             let mean = values.iter().sum::<f64>() / values.len() as f64;
             sample_std(&values).and_then(|std| safe_div(std, mean.abs()))
         },
-        |value, _trade_date, _ts_code, _offset| Some(*value),
-    )
+    );
+    panel.column_from_values(snapshots)
 }
 
 fn annual_slope_ratio(
@@ -709,17 +683,18 @@ fn annual_slope_ratio(
     column: &str,
     negate: bool,
 ) -> Result<crate::factor::common::PanelColumn> {
-    cached_financial_stock_panel(
+    let snapshots = cached_financial_stock_snapshots(
         panel,
-        |trade_date, ts_code| annual_chain_marker(dataset, data, ts_code, trade_date, 5),
-        |trade_date, ts_code| {
+        |_, _, offset| !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| annual_chain_marker(dataset, data, ts_code, trade_date, 5),
+        |trade_date, ts_code, _| {
             let values = data.annual_values(ts_code, trade_date, column, 5)?;
             let mean = values.iter().map(|value| value.abs()).sum::<f64>() / values.len() as f64;
             let slope = slope_over_time(&values)?;
             safe_div(slope, mean).map(|value| if negate { -value } else { value })
         },
-        |value, _trade_date, _ts_code, _offset| Some(*value),
-    )
+    );
+    panel.column_from_values(snapshots)
 }
 
 fn annual_chain_marker(

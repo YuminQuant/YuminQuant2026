@@ -215,6 +215,14 @@ impl MarketDataLoader {
         filter_classification_range(&table, start_date, end_date)
     }
 
+    pub fn load_stock_basic(&self, requested_columns: &[String]) -> Result<Table> {
+        let columns = with_required_columns(requested_columns, &["ts_code"]);
+        let Some(file) = self.catalog.stock_basic_file() else {
+            return empty_static_keyed_table(&columns);
+        };
+        read_parquet(&file, Some(&columns))
+    }
+
     pub fn load_financial(
         &self,
         dataset: DatasetId,
@@ -453,6 +461,20 @@ fn empty_daily_keyed_table(columns: &[String]) -> Result<Table> {
     Table::new(values)
 }
 
+fn empty_static_keyed_table(columns: &[String]) -> Result<Table> {
+    let mut values = BTreeMap::new();
+    for column in columns {
+        let data = match column.as_str() {
+            "ts_code" | "symbol" | "name" | "area" | "industry" | "fullname" | "enname"
+            | "cnspell" | "market" | "exchange" | "curr_type" | "list_status" | "list_date"
+            | "delist_date" | "is_hs" => ColumnData::Utf8(Vec::new()),
+            _ => ColumnData::F64(Vec::new()),
+        };
+        values.insert(column.clone(), data);
+    }
+    Table::new(values)
+}
+
 fn empty_disclosure_table(columns: &[String]) -> Result<Table> {
     let mut values = BTreeMap::new();
     for column in columns {
@@ -678,6 +700,55 @@ mod tests {
         assert!(table.required_utf8("quarter").is_ok());
         assert!(table.required_i64_cast("report_type").is_ok());
         assert!(table.required_f64_cast("eps").is_ok());
+    }
+
+    #[test]
+    fn stock_basic_loader_reads_static_info_with_projection() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_stock_basic_loader_test_{unique}"));
+        let path = root
+            .join("stock_data")
+            .join("info")
+            .join("stock_basic.parquet");
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            (
+                "list_date".to_string(),
+                ColumnData::Utf8(vec![Some("19910403".to_string())]),
+            ),
+            (
+                "name".to_string(),
+                ColumnData::Utf8(vec![Some("Ping An".to_string())]),
+            ),
+        ]))
+        .expect("stock basic table");
+        write_parquet(&path, &table).expect("write stock basic table");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let loaded = loader
+            .load_stock_basic(&["list_date".to_string()])
+            .expect("load stock basic");
+
+        assert_eq!(loaded.len, 1);
+        assert_eq!(
+            loaded.required_utf8("ts_code").expect("ts_code"),
+            &vec![Some("000001.SZ".to_string())]
+        );
+        assert_eq!(
+            loaded
+                .required_i32_date_cast("list_date")
+                .expect("list_date"),
+            vec![Some(19910403)]
+        );
+        assert!(!loaded.columns.contains_key("name"));
+
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]

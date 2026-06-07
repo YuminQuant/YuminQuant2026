@@ -147,17 +147,39 @@ impl Factor for GaussianFinancialFactor {
         let state = state
             .downcast_mut::<EventDrivenCrossSectionCache>()
             .ok_or_else(|| err("gaussian financial provider received incompatible state"))?;
-        let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
-            FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
-            FinancialEventTable::statement(data.daily(DatasetId::StockCashFlow)?),
-            FinancialEventTable::dividend_ltm(data.daily(DatasetId::StockDividend)?),
-        ])?;
-        let specs = requested_ids
+        let mut requested = requested_ids
             .iter()
             .filter_map(|id| GaussianFinancialOutput::from_id(id))
-            .map(spec)
             .collect::<Vec<_>>();
+        requested.sort();
+        requested.dedup();
+        if requested.is_empty() {
+            return Ok(Vec::new());
+        }
+        let needs = FinancialNeeds::from_outputs(&requested);
+        let mut event_tables = Vec::new();
+        if needs.uses_income() {
+            event_tables.push(FinancialEventTable::statement(
+                data.daily(DatasetId::StockIncome)?,
+            ));
+        }
+        if needs.uses_balance() {
+            event_tables.push(FinancialEventTable::statement(
+                data.daily(DatasetId::StockBalanceSheet)?,
+            ));
+        }
+        if needs.uses_cashflow() {
+            event_tables.push(FinancialEventTable::statement(
+                data.daily(DatasetId::StockCashFlow)?,
+            ));
+        }
+        if needs.uses_dividend() {
+            event_tables.push(FinancialEventTable::dividend_ltm(
+                data.daily(DatasetId::StockDividend)?,
+            ));
+        }
+        let schedule = FinancialEventSchedule::from_tables(&event_tables)?;
+        let specs = requested.iter().copied().map(spec).collect::<Vec<_>>();
         compute_financial_event_snapshot_many(
             requested_ids,
             context,
@@ -240,22 +262,38 @@ pub fn compute_requested(
 
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
-    let income = PitFinancialData::from_table(
-        data.daily(DatasetId::StockIncome)?,
-        &INCOME_COLUMNS,
-        ReportTypePreference::income_single_quarter(),
-    )?;
-    let balance = PitFinancialData::from_table(
-        data.daily(DatasetId::StockBalanceSheet)?,
-        &BALANCE_COLUMNS,
-        ReportTypePreference::balance_sheet_consolidated(),
-    )?;
-    let cashflow = PitFinancialData::from_table(
-        data.daily(DatasetId::StockCashFlow)?,
-        &CASHFLOW_COLUMNS,
-        ReportTypePreference::income_single_quarter(),
-    )?;
-    let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
+    let income = if needs.uses_income() {
+        PitFinancialData::from_table(
+            data.daily(DatasetId::StockIncome)?,
+            &INCOME_COLUMNS,
+            ReportTypePreference::income_single_quarter(),
+        )?
+    } else {
+        PitFinancialData::empty(ReportTypePreference::income_single_quarter())
+    };
+    let balance = if needs.uses_balance() {
+        PitFinancialData::from_table(
+            data.daily(DatasetId::StockBalanceSheet)?,
+            &BALANCE_COLUMNS,
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?
+    } else {
+        PitFinancialData::empty(ReportTypePreference::balance_sheet_consolidated())
+    };
+    let cashflow = if needs.uses_cashflow() {
+        PitFinancialData::from_table(
+            data.daily(DatasetId::StockCashFlow)?,
+            &CASHFLOW_COLUMNS,
+            ReportTypePreference::income_single_quarter(),
+        )?
+    } else {
+        PitFinancialData::empty(ReportTypePreference::income_single_quarter())
+    };
+    let dividends = if needs.uses_dividend() {
+        parse_dividend_records(data.daily(DatasetId::StockDividend)?)?
+    } else {
+        Vec::new()
+    };
     let columns = financial_snapshot_columns(
         &panel, &total_mv, &income, &balance, &cashflow, &dividends, needs,
     )?;
@@ -387,6 +425,22 @@ impl FinancialNeeds {
             }
         }
         needs
+    }
+
+    fn uses_income(self) -> bool {
+        self.income_latest || self.income_yoy || self.income_ttm
+    }
+
+    fn uses_balance(self) -> bool {
+        self.balance_latest
+    }
+
+    fn uses_cashflow(self) -> bool {
+        self.cashflow_latest
+    }
+
+    fn uses_dividend(self) -> bool {
+        self.dividend_ltm
     }
 }
 
@@ -1117,6 +1171,27 @@ mod tests {
         assert!(spec.tags.contains(&"DFZQ".to_string()));
         assert!(spec.tags.contains(&"DBZQ".to_string()));
         assert_eq!(spec.id, "ep_sq_gauss_resid");
+    }
+
+    #[test]
+    fn gaussian_financial_event_sources_follow_requested_outputs() {
+        let ep_needs = FinancialNeeds::from_outputs(&[GaussianFinancialOutput::EpSq]);
+        assert!(ep_needs.uses_income());
+        assert!(!ep_needs.uses_balance());
+        assert!(!ep_needs.uses_cashflow());
+        assert!(!ep_needs.uses_dividend());
+
+        let cash_needs = FinancialNeeds::from_outputs(&[GaussianFinancialOutput::CashValue]);
+        assert!(!cash_needs.uses_income());
+        assert!(!cash_needs.uses_balance());
+        assert!(cash_needs.uses_cashflow());
+        assert!(!cash_needs.uses_dividend());
+
+        let div_needs = FinancialNeeds::from_outputs(&[GaussianFinancialOutput::DivTtm]);
+        assert!(!div_needs.uses_income());
+        assert!(!div_needs.uses_balance());
+        assert!(!div_needs.uses_cashflow());
+        assert!(div_needs.uses_dividend());
     }
 
     #[test]

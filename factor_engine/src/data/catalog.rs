@@ -239,6 +239,15 @@ impl DataCatalog {
         self.stock_ci_classification_path.as_deref()
     }
 
+    pub fn stock_basic_file(&self) -> Option<PathBuf> {
+        let path = self
+            .data_root
+            .join("stock_data")
+            .join("info")
+            .join("stock_basic.parquet");
+        path.exists().then_some(path)
+    }
+
     pub fn barra_daily_file(
         &self,
         asset_class: AssetClass,

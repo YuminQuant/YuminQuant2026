@@ -1,4 +1,5 @@
 pub mod ab_reversal_spread;
+pub mod abcfo;
 pub mod acf;
 pub mod act_positive_10;
 pub mod amihud_1min_5d;
@@ -372,6 +373,7 @@ pub mod wq_alpha_083;
 pub mod wq_alpha_100;
 pub mod wq_alpha_101;
 
+pub use abcfo::StockDailyAbcfo;
 pub use acf::StockDailyAcf;
 pub use act_positive_10::StockDailyActPositive10;
 pub use amihud_1min_5d::StockDailyAmihud1min5d;

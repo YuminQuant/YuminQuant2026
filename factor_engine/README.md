@@ -309,6 +309,38 @@ Engine compatibility:
 - `compute_many()` must be requested-aware: compute only branches needed by the current `requested_ids`. Shared setup is allowed, but expensive sibling-factor metric branches must not be computed opportunistically.
 - Deprecated factors do not enter selected factors and therefore do not enter provider `requested_ids`; deprecated-only branches should not run unless an active factor still shares the same required output or setup.
 
+### Financial Factor Update Policy / 财务因子更新策略
+
+财务因子不能仅凭 `fundamental` tag 自动切换更新频率，必须由 factor/provider 显式声明 `update_policy()`。
+
+Financial factor update frequency is never inferred from the `fundamental` tag. Each factor or provider must explicitly declare `update_policy()`.
+
+可选策略 / Policies:
+
+- `Daily`：默认策略。估值、价格、收益率、市值、换手率等快变量每日计算；旧因子默认走这个路径。
+- `FinancialEventSnapshot`：纯财报慢因子。只有当当前交易日区间内出现 `ann_date/f_ann_date` 财务事件时，重算完整截面、截面标准化、回归和中性化；非事件日仍逐日输出，但回放最近一次事件日的最终因子截面。
+- `FinancialEventStateDailyFast`：快慢混合因子。财务向量、F-Link、peer/network 等慢状态仅在财务事件日更新；Ret20、价格、行业市值中性化等快分支仍每日计算。
+
+- `Daily`: default behavior. Valuation, price, return, market-cap, turnover, and other fast variables are computed every day.
+- `FinancialEventSnapshot`: pure slow financial factors. On event dates, recompute the full cross-section, transforms, regressions, and neutralization. On non-event dates, still output daily rows by replaying the most recent final factor cross-section.
+- `FinancialEventStateDailyFast`: mixed slow/fast factors. Slow financial vectors, F-Link, peer sets, or network state update only on financial events; fast branches such as Ret20, prices, and neutralization still run daily.
+
+`trade_date` 仍由 `TradingCalendar` 控制。财务事件按 PIT 口径 `f_ann_date.or(ann_date) <= trade_date` 生效；非交易日公告会映射到后续第一个目标交易日，因为 schedule 检查的是 `(last_processed_trade_date, current_trade_date]` 区间内是否有事件。
+
+`trade_date` remains driven by `TradingCalendar`. Financial events follow the PIT rule `f_ann_date.or(ann_date) <= trade_date`; non-trading-day disclosures map to the next target trading day because the schedule checks events in `(last_processed_trade_date, current_trade_date]`.
+
+开发新财务因子时 / When adding a new financial factor:
+
+1. 纯财报慢因子使用 `FinancialEventSnapshot` 和 `EventDrivenCrossSectionCache`。
+2. 快慢混合因子使用 `FinancialEventStateDailyFast`，只缓存慢状态，快变量每日重新计算。
+3. 估值指标、价格收益指标和其他日频快变量保持 `Daily`。
+4. 多输出 provider 必须继续 requested-aware；同 provider 的 wrapper 共享 `compute_provider_key()`，并使用同一种 state 类型。
+
+1. Use `FinancialEventSnapshot` plus `EventDrivenCrossSectionCache` for pure slow statement factors.
+2. Use `FinancialEventStateDailyFast` for mixed factors: cache only slow state, recompute fast variables daily.
+3. Keep valuation, price/return, and other daily fast variables on `Daily`.
+4. Multi-output providers must remain requested-aware; wrappers sharing a provider key must use the same state type.
+
 分钟日频因子分两层：
 
 Minute-to-daily factors have two layers:

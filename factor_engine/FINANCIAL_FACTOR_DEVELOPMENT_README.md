@@ -204,6 +204,60 @@ standardization and neutralization every day.
 
 多输出 provider 应一次性构造共享慢指标 snapshot，再根据 `requested_ids` 输出需要的因子。例如 `f_momentum_80pec` 和 `link_new` 共用 10 维财务向量；Barra `growth`、`quality`、`value` 会缓存财报驱动的子指标，但标准化和中性化仍然每天执行。
 
+## Factor Update Policy / 因子截面更新策略
+
+Stock-level statement cache only controls slow financial lookups. The final
+factor cross-section has its own explicit update policy. Do not infer this from
+the `fundamental` tag.
+
+股票级财报缓存只控制慢财务查表。正式因子截面还有独立的显式更新策略，不能仅凭 `fundamental` tag 自动推断。
+
+Use `FactorUpdatePolicy` in the wrapper/provider:
+
+在 wrapper 或 provider 中声明 `FactorUpdatePolicy`：
+
+- `Daily`: default. Use for valuation factors, price/return factors, and any
+  factor whose effective signal changes every trading day.
+- `FinancialEventSnapshot`: pure statement factors. On financial event dates,
+  recompute the whole cross-section, including rank/zscore, OLS, peer/network
+  reductions, and neutralization. On non-event dates, write daily rows by
+  replaying the latest final factor cross-section.
+- `FinancialEventStateDailyFast`: mixed slow/fast factors. Recompute slow
+  statement-driven state only on events, but recompute fast branches every day.
+  `f_momentum_80pec` is the template: financial vectors and top peers are
+  event-driven, while peer Ret20, Ret20 residualization, and SIZE+sector
+  neutralization are daily.
+
+- `Daily`：默认策略。用于估值因子、价格收益因子，以及任何有效信号每天都会变化的因子。
+- `FinancialEventSnapshot`：纯财报慢因子。财务事件日重算完整截面，包括 rank/zscore、OLS、peer/network 降维和中性化；非事件日逐日写出，但回放最近一次最终因子截面。
+- `FinancialEventStateDailyFast`：快慢混合因子。只在事件日更新财报慢状态，快变量分支每日计算。`f_momentum_80pec` 是模板：财务向量和 top peers 事件驱动，peer Ret20、Ret20 残差化、SIZE+sector 中性化每日更新。
+
+Financial event schedules are built from the provider-declared event sources.
+Statement events use `f_ann_date.or(ann_date)`. Dividend LTM factors should also
+include dividend announcement dates, `ex_date`, and the 12-month window expiry
+date. `trade_date` remains the trading-calendar date; a weekend disclosure is
+picked up on the next target trading day because the engine checks
+`(last_processed_trade_date, current_trade_date]`.
+
+财务事件 schedule 由 provider 声明的事件源构建。财报事件使用 `f_ann_date.or(ann_date)`；分红 LTM 因子还应纳入分红公告日、`ex_date` 以及 12 个月窗口滚出日期。`trade_date` 仍然由交易日历控制；周末公告会在下一个目标交易日生效，因为引擎检查 `(last_processed_trade_date, current_trade_date]` 区间。
+
+Implementation checklist / 实现清单：
+
+1. Pure slow factor: override `update_policy()`, `initial_compute_state()`, and
+   `compute_many_stateful()`, then call `compute_financial_event_snapshot_many`.
+2. Mixed factor: keep a provider-specific state struct; update slow state only
+   when `FinancialEventSchedule::has_event_after_until(...)` is true; compute
+   fast daily branches for every target date.
+3. Multi-output provider: every wrapper sharing `compute_provider_key()` must
+   use the same state type, and `factor-batch-size` will not split that provider.
+4. Non-event replay stores final factor values, not raw financial metrics. This
+   means pure slow factors also reuse the event-date neutralized cross-section.
+
+1. 纯慢因子：覆盖 `update_policy()`、`initial_compute_state()` 和 `compute_many_stateful()`，再调用 `compute_financial_event_snapshot_many`。
+2. 快慢混合因子：维护 provider 自己的 state；只有 `FinancialEventSchedule::has_event_after_until(...)` 为真时更新慢状态；每个目标交易日都计算快变量分支。
+3. 多输出 provider：共享 `compute_provider_key()` 的 wrapper 必须使用同一种 state 类型，`factor-batch-size` 不会把同一个 provider 拆开。
+4. 非事件日回放的是最终因子值，而不是原始财务指标。因此纯慢因子也会复用事件日已经中性化后的截面。
+
 ## Missing Values / 缺失值处理
 
 Financial similarity factors use per-metric percentile ranks. For listed

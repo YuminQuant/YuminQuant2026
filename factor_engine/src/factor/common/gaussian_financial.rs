@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::core::{
@@ -9,11 +10,12 @@ use crate::error::{err, Result};
 use crate::factor::common::stock_daily_ops::{is_bj_stock, mask_bj, neutralize_size_sector};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    ClassificationLevel, ClassificationMap, DailyPanel, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialStatementDataset, FinancialStockSnapshotCache,
-    PanelColumn, PitFinancialData, ReportTypePreference,
+    compute_financial_event_snapshot_many, ClassificationLevel, ClassificationMap, DailyPanel,
+    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
+    FinancialStockSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
 };
-use crate::factor::Factor;
+use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_neutralize_regression, cs_pctrank};
 
 pub const PROVIDER_KEY: &str = "stock|daily|dfzq_dbzq_gaussian_financial";
@@ -105,6 +107,10 @@ impl Factor for GaussianFinancialFactor {
         PROVIDER_KEY.to_string()
     }
 
+    fn update_policy(&self) -> FactorUpdatePolicy {
+        FactorUpdatePolicy::FinancialEventSnapshot
+    }
+
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
         let requested = [self.kind.id().to_string()];
         compute_requested(&requested, context, data)?
@@ -125,6 +131,42 @@ impl Factor for GaussianFinancialFactor {
         data: &DataPool,
     ) -> Result<Vec<FactorSeries>> {
         compute_requested(requested_ids, context, data)
+    }
+
+    fn initial_compute_state(&self, _requested_ids: &[String]) -> Box<dyn Any + Send> {
+        Box::new(EventDrivenCrossSectionCache::default())
+    }
+
+    fn compute_many_stateful(
+        &self,
+        requested_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+        state: &mut (dyn Any + Send),
+    ) -> Result<Vec<FactorSeries>> {
+        let state = state
+            .downcast_mut::<EventDrivenCrossSectionCache>()
+            .ok_or_else(|| err("gaussian financial provider received incompatible state"))?;
+        let schedule = FinancialEventSchedule::from_tables(&[
+            FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
+            FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
+            FinancialEventTable::statement(data.daily(DatasetId::StockCashFlow)?),
+            FinancialEventTable::dividend_ltm(data.daily(DatasetId::StockDividend)?),
+        ])?;
+        let specs = requested_ids
+            .iter()
+            .filter_map(|id| GaussianFinancialOutput::from_id(id))
+            .map(spec)
+            .collect::<Vec<_>>();
+        compute_financial_event_snapshot_many(
+            requested_ids,
+            context,
+            data,
+            state,
+            &schedule,
+            &specs,
+            compute_requested,
+        )
     }
 }
 
@@ -397,6 +439,9 @@ fn financial_snapshot_columns(
     let mut delta_profit_sq_yoy = vec![None; panel.shape_len()];
 
     for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        if !panel.is_target_date(trade_date) {
+            continue;
+        }
         let dividend_sum =
             dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date);
         let date_offset = date_idx * instrument_count;

@@ -1,6 +1,6 @@
+use std::any::Any;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -233,7 +233,8 @@ impl Engine {
                 let date_batch_count =
                     date_batches_for_stage(&group.stage, &target_dates, date_batch_size).len();
                 let factor_batch_count =
-                    factor_batch_ranges(group.factor_indices.len(), factor_batch_size).len();
+                    provider_factor_batches(&factors, &group.factor_indices, factor_batch_size)
+                        .len();
                 (date_batch_count, factor_batch_count)
             })
             .collect::<Vec<_>>();
@@ -314,6 +315,7 @@ impl Engine {
         let mut profiles = Vec::new();
         let mut materialized_intraday_raw_dates = BTreeSet::<(String, i32)>::new();
         let mut disclosure_cache = DisclosureTableCache::default();
+        let mut compute_states = BTreeMap::<String, Box<dyn Any + Send>>::new();
         let progress = ProgressBar::new("run", execution_batch_count, true);
 
         for group in &execution_groups {
@@ -334,7 +336,8 @@ impl Engine {
                 .unwrap_or(0);
             let date_batches =
                 date_batches_for_stage(&group.stage, &target_dates, request.date_batch_size);
-            let factor_ranges = factor_batch_ranges(group.factor_indices.len(), factor_batch_size);
+            let provider_batches =
+                provider_factor_batches(&factors, &group.factor_indices, factor_batch_size);
             let stage_name = group.stage.name();
 
             for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
@@ -357,8 +360,7 @@ impl Engine {
                     target_dates: date_batch.clone(),
                 };
 
-                for (factor_batch_index, range) in factor_ranges.iter().enumerate() {
-                    let batch_indices = &group.factor_indices[range.clone()];
+                for (factor_batch_index, batch_indices) in provider_batches.iter().enumerate() {
                     let batch_specs = batch_indices
                         .iter()
                         .map(|idx| specs[*idx].clone())
@@ -405,6 +407,7 @@ impl Engine {
                         &batch_factors,
                         &context,
                         &pool,
+                        &mut compute_states,
                         thread_pool.as_ref(),
                     )?;
                     let compute_ms = compute_started.elapsed().as_millis();
@@ -1573,16 +1576,42 @@ fn spec_has_intraday_raw_dependency(spec: &FactorSpec) -> bool {
     !spec.intraday_raw_dependencies.is_empty()
 }
 
-fn factor_batch_ranges(factor_count: usize, factor_batch_size: usize) -> Vec<Range<usize>> {
-    if factor_count == 0 {
+fn provider_factor_batches(
+    factors: &[Box<dyn Factor>],
+    factor_indices: &[usize],
+    factor_batch_size: usize,
+) -> Vec<Vec<usize>> {
+    if factor_indices.is_empty() {
         return Vec::new();
+    }
+    let mut provider_positions = HashMap::<String, usize>::new();
+    let mut providers = Vec::<(String, Vec<usize>)>::new();
+    for factor_idx in factor_indices {
+        let key = factors[*factor_idx].compute_provider_key();
+        if let Some(position) = provider_positions.get(&key).copied() {
+            providers[position].1.push(*factor_idx);
+        } else {
+            provider_positions.insert(key.clone(), providers.len());
+            providers.push((key, vec![*factor_idx]));
+        }
     }
 
     let batch_size = factor_batch_size.max(1);
-    (0..factor_count)
-        .step_by(batch_size)
-        .map(|start| start..(start + batch_size).min(factor_count))
-        .collect()
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut current_count = 0usize;
+    for (_, indices) in providers {
+        if !current.is_empty() && current_count + indices.len() > batch_size {
+            batches.push(std::mem::take(&mut current));
+            current_count = 0;
+        }
+        current_count += indices.len();
+        current.extend(indices);
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
 }
 
 fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>> {
@@ -1601,6 +1630,7 @@ fn compute_factor_batch(
     factors: &[&dyn Factor],
     context: &FactorContext,
     pool: &DataPool,
+    states: &mut BTreeMap<String, Box<dyn Any + Send>>,
     thread_pool: Option<&rayon::ThreadPool>,
 ) -> Result<Vec<FactorSeries>> {
     let mut requested_order = BTreeMap::new();
@@ -1618,14 +1648,30 @@ fn compute_factor_batch(
         }
     }
 
-    let compute_groups = groups.values().collect::<Vec<_>>();
+    let jobs = groups
+        .into_iter()
+        .map(|(key, group)| {
+            let state = states
+                .remove(&key)
+                .unwrap_or_else(|| group.factor.initial_compute_state(&group.requested_ids));
+            ComputeProviderJob {
+                key,
+                factor: group.factor,
+                requested_ids: group.requested_ids,
+                state,
+            }
+        })
+        .collect::<Vec<_>>();
     let compute = || {
-        compute_groups
-            .par_iter()
-            .map(|group| {
-                group
-                    .factor
-                    .compute_many(&group.requested_ids, context, pool)
+        jobs.into_par_iter()
+            .map(|mut job| {
+                let result = job.factor.compute_many_stateful(
+                    &job.requested_ids,
+                    context,
+                    pool,
+                    job.state.as_mut(),
+                );
+                (job.key, job.state, result)
             })
             .collect::<Vec<_>>()
     };
@@ -1634,7 +1680,8 @@ fn compute_factor_batch(
         None => compute(),
     };
     let mut output = Vec::new();
-    for result in results {
+    for (key, state, result) in results {
+        states.insert(key, state);
         output.extend(result?);
     }
     let mut returned = BTreeSet::new();
@@ -1684,6 +1731,13 @@ struct ComputeProviderGroup<'a> {
     requested_ids: Vec<String>,
 }
 
+struct ComputeProviderJob<'a> {
+    key: String,
+    factor: &'a dyn Factor,
+    requested_ids: Vec<String>,
+    state: Box<dyn Any + Send>,
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1701,9 +1755,9 @@ mod tests {
     use crate::storage::FactorMetadata;
 
     use super::{
-        date_batches_for_stage, execution_groups_for_specs, factor_batch_ranges, select_metadata,
-        split_dates_by_chunk, validate_date_value, ExecutionStage, IntradayRawRequirement,
-        RawProvider, RunRequest, SelectionResult, DEFAULT_DATE_BATCH_SIZE,
+        date_batches_for_stage, execution_groups_for_specs, provider_factor_batches,
+        select_metadata, split_dates_by_chunk, validate_date_value, ExecutionStage,
+        IntradayRawRequirement, RawProvider, RunRequest, SelectionResult, DEFAULT_DATE_BATCH_SIZE,
     };
 
     #[test]
@@ -1713,14 +1767,22 @@ mod tests {
     }
 
     #[test]
-    fn chunks_factors_by_configured_batch_size() {
+    fn factor_batches_keep_provider_group_together() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let factors: Vec<Box<dyn Factor>> = vec![
+            Box::new(MultiOutputFactor::new("left", "provider_a", &counter)),
+            Box::new(MultiOutputFactor::new("right", "provider_a", &counter)),
+            Box::new(MultiOutputFactor::new("solo", "provider_b", &counter)),
+        ];
+
         assert_eq!(
-            factor_batch_ranges(0, 64),
-            Vec::<std::ops::Range<usize>>::new()
+            provider_factor_batches(&factors, &[0, 1, 2], 1),
+            vec![vec![0, 1], vec![2]]
         );
-        assert_eq!(factor_batch_ranges(63, 64), vec![0..63]);
-        assert_eq!(factor_batch_ranges(65, 64), vec![0..64, 64..65]);
-        assert_eq!(factor_batch_ranges(3, 0), vec![0..1, 1..2, 2..3]);
+        assert_eq!(
+            provider_factor_batches(&factors, &[], 1),
+            Vec::<Vec<usize>>::new()
+        );
     }
 
     #[test]
@@ -1978,8 +2040,15 @@ mod tests {
             target_dates: vec![20260105],
         };
 
-        let results =
-            super::compute_factor_batch(&factors, &context, &DataPool::default(), None).unwrap();
+        let mut states = BTreeMap::new();
+        let results = super::compute_factor_batch(
+            &factors,
+            &context,
+            &DataPool::default(),
+            &mut states,
+            None,
+        )
+        .unwrap();
         let ids = results
             .iter()
             .map(|series| series.spec.id.as_str())

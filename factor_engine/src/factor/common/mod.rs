@@ -49,8 +49,9 @@ pub use cross_section::{
 };
 pub use daily::{compute_daily_by_instrument, DailySeries};
 pub use financial::{
-    cached_financial_stock_panel, DeadlinePolicy, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialRecordMarker, FinancialStatementDataset,
+    cached_financial_stock_panel, compute_financial_event_snapshot_many, DeadlinePolicy,
+    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialEventSchedule, FinancialEventTable, FinancialRecordMarker, FinancialStatementDataset,
     FinancialStockSnapshotCache, FinancialSyntheticMarker, PitFinancialData, PitFinancialRecord,
     QuarterMatrix, QuarterValue, ReportTypePreference,
 };

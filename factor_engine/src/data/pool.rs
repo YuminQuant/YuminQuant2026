@@ -159,6 +159,25 @@ impl DataPool {
         Ok(pool)
     }
 
+    pub fn with_target_dates(&self, target_dates: &[i32]) -> Self {
+        let mut retargeted = self.clone();
+        retargeted.daily_panels = self
+            .daily_panels
+            .iter()
+            .map(|(dataset, panel)| (*dataset, panel.with_target_dates(target_dates)))
+            .collect();
+        retargeted.index_daily_panels = self
+            .index_daily_panels
+            .iter()
+            .map(|(ts_code, panel)| (ts_code.clone(), panel.with_target_dates(target_dates)))
+            .collect();
+        retargeted.intraday_daily_raw_panel = self
+            .intraday_daily_raw_panel
+            .as_ref()
+            .map(|panel| panel.with_target_dates(target_dates));
+        retargeted
+    }
+
     pub fn daily(&self, dataset: DatasetId) -> Result<&Table> {
         self.daily
             .get(&dataset)

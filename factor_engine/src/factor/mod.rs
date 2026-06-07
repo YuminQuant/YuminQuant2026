@@ -18,6 +18,13 @@ pub enum IntradayRawMaterializeMode {
     Stateful,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FactorUpdatePolicy {
+    Daily,
+    FinancialEventSnapshot,
+    FinancialEventStateDailyFast,
+}
+
 pub trait Factor: Send + Sync {
     fn spec(&self) -> FactorSpec;
 
@@ -27,6 +34,10 @@ pub trait Factor: Send + Sync {
 
     fn compute_provider_key(&self) -> String {
         self.spec().registry_key()
+    }
+
+    fn update_policy(&self) -> FactorUpdatePolicy {
+        FactorUpdatePolicy::Daily
     }
 
     fn requirements(&self) -> Vec<DataRequest> {
@@ -104,5 +115,19 @@ pub trait Factor: Send + Sync {
         } else {
             Ok(Vec::new())
         }
+    }
+
+    fn initial_compute_state(&self, _requested_ids: &[String]) -> Box<dyn Any + Send> {
+        Box::new(())
+    }
+
+    fn compute_many_stateful(
+        &self,
+        requested_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+        _state: &mut (dyn Any + Send),
+    ) -> Result<Vec<FactorSeries>> {
+        self.compute_many(requested_ids, context, data)
     }
 }

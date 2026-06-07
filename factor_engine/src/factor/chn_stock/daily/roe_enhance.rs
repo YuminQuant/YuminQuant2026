@@ -1,18 +1,22 @@
+use std::any::Any;
+
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
     Lookback,
 };
 use crate::data::DataPool;
-use crate::error::Result;
+use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, mask_bj, neutralize_size_sector};
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    DailyPanel, FinancialEventMarker, FinancialEventMarkerBuilder, FinancialStatementDataset,
-    FinancialStockSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    compute_financial_event_snapshot_many, DailyPanel, EventDrivenCrossSectionCache,
+    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+    FinancialStatementDataset, FinancialStockSnapshotCache, PanelColumn, PitFinancialData,
+    ReportTypePreference,
 };
-use crate::factor::Factor;
-use crate::operators::cs_zscore;
+use crate::factor::{Factor, FactorUpdatePolicy};
+use crate::operators::cs_pctrank;
 
 const VERSION: &str = "0.1.0";
 const FINANCIAL_QUARTERS: usize = 16;
@@ -47,7 +51,7 @@ impl Factor for StockDailyRoeEnhance {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "DWZQ ROE enhancement factor. It builds quarterly ROE from PIT single-quarter attributable net profit over latest shareholder equity, combines ROE YoY, stability, persistence and growth through nested z-score layers, fills z-score missing values with zero for present non-BJ stocks, then neutralizes by Barra SIZE and SW sector.".to_string(),
+            description: "DWZQ ROE enhancement factor. It builds quarterly ROE from PIT single-quarter attributable net profit over latest shareholder equity. Each ROE component is first neutralized by Barra SIZE and SW sector, then transformed with cross-sectional percentile rank with missing ranks filled to 0.5 for present non-BJ stocks. The components are combined through nested percentile-rank layers without final neutralization.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -68,6 +72,14 @@ impl Factor for StockDailyRoeEnhance {
         }
     }
 
+    fn update_policy(&self) -> FactorUpdatePolicy {
+        FactorUpdatePolicy::FinancialEventSnapshot
+    }
+
+    fn initial_compute_state(&self, _requested_ids: &[String]) -> Box<dyn Any + Send> {
+        Box::new(EventDrivenCrossSectionCache::default())
+    }
+
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let income = PitFinancialData::from_table(
@@ -82,17 +94,44 @@ impl Factor for StockDailyRoeEnhance {
         )?;
 
         let components = roe_component_columns(&panel, &income, &balance)?;
-        let z_yoy = zscore_fill_present_non_bj(&components.yoy, &panel)?;
-        let z_stb = zscore_fill_present_non_bj(&components.stb, &panel)?;
-        let z_last = zscore_fill_present_non_bj(&components.last, &panel)?;
-        let z_growth = zscore_fill_present_non_bj(&components.growth, &panel)?;
+        let r_yoy = neutralize_rank_fill_present_non_bj(&components.yoy, &panel, data)?;
+        let r_stb = neutralize_rank_fill_present_non_bj(&components.stb, &panel, data)?;
+        let r_last = neutralize_rank_fill_present_non_bj(&components.last, &panel, data)?;
+        let r_growth = neutralize_rank_fill_present_non_bj(&components.growth, &panel, data)?;
 
-        let layer1 = zscore_fill_present_non_bj(&average_pair(&z_growth, &z_last)?, &panel)?;
-        let layer2 = zscore_fill_present_non_bj(&average_pair(&layer1, &z_stb)?, &panel)?;
-        let raw = zscore_fill_present_non_bj(&sum_pair(&layer2, &z_yoy)?, &panel)?;
-        let neutralized = neutralize_size_sector(&raw, &panel, data)?;
-        let factor = mask_bj(&neutralized, &panel)?;
-        Ok(factor.to_factor_series(self.spec()))
+        let layer1 = pctrank_fill_present_non_bj(&average_pair(&r_growth, &r_last)?, &panel)?;
+        let layer2 = pctrank_fill_present_non_bj(&average_pair(&layer1, &r_stb)?, &panel)?;
+        let raw = pctrank_fill_present_non_bj(&sum_pair(&layer2, &r_yoy)?, &panel)?;
+        Ok(raw.to_factor_series(self.spec()))
+    }
+
+    fn compute_many_stateful(
+        &self,
+        requested_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+        state: &mut (dyn Any + Send),
+    ) -> Result<Vec<FactorSeries>> {
+        if requested_ids.iter().all(|id| id != "roe_enhance") {
+            return Ok(Vec::new());
+        }
+        let state = state
+            .downcast_mut::<EventDrivenCrossSectionCache>()
+            .ok_or_else(|| err("roe_enhance received incompatible event cache state"))?;
+        let schedule = FinancialEventSchedule::from_tables(&[
+            FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
+            FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
+        ])?;
+        let specs = [self.spec()];
+        compute_financial_event_snapshot_many(
+            requested_ids,
+            context,
+            data,
+            state,
+            &schedule,
+            &specs,
+            |_, context, data| self.compute(context, data).map(|series| vec![series]),
+        )
     }
 }
 
@@ -291,10 +330,19 @@ fn strict_mean(values: &[Option<f64>], start: usize, count: usize) -> Option<f64
     value.is_finite().then_some(value)
 }
 
-fn zscore_fill_present_non_bj(column: &PanelColumn, panel: &DailyPanel) -> Result<PanelColumn> {
-    let zscore = column.cs(cs_zscore)?;
+fn neutralize_rank_fill_present_non_bj(
+    column: &PanelColumn,
+    panel: &DailyPanel,
+    data: &DataPool,
+) -> Result<PanelColumn> {
+    let neutralized = neutralize_size_sector(column, panel, data)?;
+    pctrank_fill_present_non_bj(&neutralized, panel)
+}
+
+fn pctrank_fill_present_non_bj(column: &PanelColumn, panel: &DailyPanel) -> Result<PanelColumn> {
+    let ranked = column.cs(|values| cs_pctrank(values, true))?;
     let instrument_count = panel.instruments().len();
-    let values = zscore
+    let values = ranked
         .values()
         .iter()
         .enumerate()
@@ -302,7 +350,7 @@ fn zscore_fill_present_non_bj(column: &PanelColumn, panel: &DailyPanel) -> Resul
             let instrument_idx = offset % instrument_count;
             if panel.is_present_offset(offset) && !is_bj_stock(&panel.instruments()[instrument_idx])
             {
-                clean(*value).or(Some(0.0))
+                clean(*value).or(Some(0.5))
             } else {
                 None
             }

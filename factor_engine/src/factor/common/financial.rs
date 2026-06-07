@@ -66,10 +66,11 @@ pub enum FinancialEventTableKind {
     DividendLtm,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FinancialEventTable<'a> {
     table: &'a Table,
     kind: FinancialEventTableKind,
+    preference: Option<ReportTypePreference>,
 }
 
 impl<'a> FinancialEventTable<'a> {
@@ -77,6 +78,15 @@ impl<'a> FinancialEventTable<'a> {
         Self {
             table,
             kind: FinancialEventTableKind::Statement,
+            preference: None,
+        }
+    }
+
+    pub fn statement_with_preference(table: &'a Table, preference: ReportTypePreference) -> Self {
+        Self {
+            table,
+            kind: FinancialEventTableKind::Statement,
+            preference: Some(preference),
         }
     }
 
@@ -84,6 +94,7 @@ impl<'a> FinancialEventTable<'a> {
         Self {
             table,
             kind: FinancialEventTableKind::DividendLtm,
+            preference: None,
         }
     }
 }
@@ -99,7 +110,11 @@ impl FinancialEventSchedule {
         for event_table in tables {
             match event_table.kind {
                 FinancialEventTableKind::Statement => {
-                    collect_statement_event_dates(event_table.table, &mut event_dates)?;
+                    collect_statement_event_dates(
+                        event_table.table,
+                        event_table.preference.as_ref(),
+                        &mut event_dates,
+                    )?;
                 }
                 FinancialEventTableKind::DividendLtm => {
                     collect_dividend_ltm_event_dates(event_table.table, &mut event_dates)?;
@@ -228,7 +243,7 @@ where
     for trade_date in &context.target_dates {
         if state.should_recompute(schedule, *trade_date) {
             let event_context = multi_target_context(context, &[*trade_date]);
-            let event_pool = data.with_target_dates(&[*trade_date]);
+            let event_pool = data.slice_dates(&[*trade_date]);
             let event_series_by_id = compute_on_event(requested_ids, &event_context, &event_pool)?
                 .into_iter()
                 .map(|series| (series.spec.id.clone(), series))
@@ -267,6 +282,43 @@ fn append_series_values(
     }
 }
 
+pub fn factor_series_to_panel_column(
+    panel: &DailyPanel,
+    series: &FactorSeries,
+) -> Result<PanelColumn> {
+    let date_lookup = panel
+        .dates()
+        .iter()
+        .enumerate()
+        .map(|(idx, date)| (*date, idx))
+        .collect::<BTreeMap<_, _>>();
+    let instrument_lookup = panel
+        .instruments()
+        .iter()
+        .enumerate()
+        .map(|(idx, ts_code)| (ts_code.as_str(), idx))
+        .collect::<BTreeMap<_, _>>();
+    let instrument_count = panel.instruments().len();
+    let mut values = vec![None; panel.shape_len()];
+    for item in &series.values {
+        let FactorRowKey::Daily {
+            trade_date,
+            ts_code,
+        } = &item.key
+        else {
+            continue;
+        };
+        let (Some(date_idx), Some(instrument_idx)) = (
+            date_lookup.get(trade_date).copied(),
+            instrument_lookup.get(ts_code.as_str()).copied(),
+        ) else {
+            continue;
+        };
+        values[date_idx * instrument_count + instrument_idx] = item.value;
+    }
+    panel.column_from_values(values)
+}
+
 pub fn financial_event_trade_dates(
     last_processed_trade_date: Option<i32>,
     schedule: &FinancialEventSchedule,
@@ -285,13 +337,30 @@ pub fn financial_event_trade_dates(
     event_trade_dates
 }
 
-fn collect_statement_event_dates(table: &Table, event_dates: &mut BTreeSet<i32>) -> Result<()> {
+fn collect_statement_event_dates(
+    table: &Table,
+    preference: Option<&ReportTypePreference>,
+    event_dates: &mut BTreeSet<i32>,
+) -> Result<()> {
     if table.len == 0 {
         return Ok(());
     }
     let ann_dates = table.required_i32_date_cast("ann_date")?;
     let f_ann_dates = table.required_i32_date_cast("f_ann_date")?;
+    let report_types = if preference.is_some() && table.columns.contains_key("report_type") {
+        Some(table.required_i64_cast("report_type")?)
+    } else {
+        None
+    };
     for idx in 0..table.len {
+        if let (Some(preference), Some(report_types)) = (preference, report_types.as_ref()) {
+            let Some(report_type) = report_types[idx] else {
+                continue;
+            };
+            if !preference.contains(report_type) {
+                continue;
+            }
+        }
         if let Some(date) = f_ann_dates[idx].or(ann_dates[idx]) {
             event_dates.insert(date);
         }
@@ -647,7 +716,7 @@ impl ReportTypePreference {
         Self::new(&[1, 4])
     }
 
-    fn contains(&self, report_type: i64) -> bool {
+    pub fn contains(&self, report_type: i64) -> bool {
         self.order.contains(&report_type)
     }
 }

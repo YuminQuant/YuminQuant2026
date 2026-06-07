@@ -7,14 +7,16 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
-use crate::factor::common::stock_daily_ops::{is_bj_stock, mask_bj, neutralize_size_sector};
+use crate::factor::common::stock_daily_ops::{
+    is_bj_stock, mask_bj, neutralize_size_sector_with_inputs,
+};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
-    ClassificationLevel, ClassificationMap, DailyPanel, EventDrivenCrossSectionCache,
-    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
-    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
-    ReportTypePreference,
+    factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
+    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
+    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
+    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_neutralize_regression, cs_pctrank};
@@ -26,6 +28,8 @@ const LOOKBACK: usize = 252;
 const FINANCIAL_QUARTERS: usize = 8;
 const GAUSSIAN_P_EPS: f64 = 1e-6;
 const IMPLEMENTED_DIV_PROC: &str = "\u{5b9e}\u{65bd}";
+const PB_ROE_PB_RAW_ID: &str = "__gaussian_financial_pb_roe_pb_raw";
+const PB_ROE_ROE_RAW_ID: &str = "__gaussian_financial_pb_roe_roe_raw";
 
 const INCOME_COLUMNS: [&str; 2] = ["revenue", "n_income_attr_p"];
 const BALANCE_COLUMNS: [&str; 1] = ["total_hldr_eqy_exc_min_int"];
@@ -95,7 +99,7 @@ pub struct GaussianFinancialFactor {
 
 #[derive(Default)]
 struct GaussianFinancialComputeState {
-    final_cache: EventDrivenCrossSectionCache,
+    raw_cache: EventDrivenCrossSectionCache,
     snapshot_cache: InstrumentAlignedSnapshotCache<FinancialSnapshot>,
 }
 
@@ -166,18 +170,21 @@ impl Factor for GaussianFinancialFactor {
         let needs = FinancialNeeds::from_outputs(&requested);
         let mut event_tables = Vec::new();
         if needs.uses_income() {
-            event_tables.push(FinancialEventTable::statement(
+            event_tables.push(FinancialEventTable::statement_with_preference(
                 data.daily(DatasetId::StockIncome)?,
+                ReportTypePreference::income_single_quarter(),
             ));
         }
         if needs.uses_balance() {
-            event_tables.push(FinancialEventTable::statement(
+            event_tables.push(FinancialEventTable::statement_with_preference(
                 data.daily(DatasetId::StockBalanceSheet)?,
+                ReportTypePreference::balance_sheet_consolidated(),
             ));
         }
         if needs.uses_cashflow() {
-            event_tables.push(FinancialEventTable::statement(
+            event_tables.push(FinancialEventTable::statement_with_preference(
                 data.daily(DatasetId::StockCashFlow)?,
+                ReportTypePreference::income_single_quarter(),
             ));
         }
         if needs.uses_dividend() {
@@ -187,26 +194,28 @@ impl Factor for GaussianFinancialFactor {
         }
         let schedule = FinancialEventSchedule::from_tables(&event_tables)?;
         let prepared = GaussianFinancialPrepared::from_data(data, needs)?;
-        let specs = requested.iter().copied().map(spec).collect::<Vec<_>>();
-        let final_cache = &mut state.final_cache;
+        let raw_specs = raw_specs_for_requested(&requested);
+        let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
-        compute_financial_event_snapshot_streaming(
+        let raw_series = compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
             data,
-            final_cache,
+            raw_cache,
             &schedule,
-            &specs,
+            &raw_specs,
             |requested_ids, context, data| {
-                compute_requested_with_prepared_financials(
+                compute_requested_raw_with_prepared_financials(
                     requested_ids,
                     context,
                     data,
                     &prepared,
+                    &requested,
                     snapshot_cache,
                 )
             },
-        )
+        )?;
+        finalize_requested_from_raw(&requested, data, raw_series)
     }
 }
 
@@ -262,6 +271,90 @@ pub fn spec(kind: GaussianFinancialOutput) -> FactorSpec {
     }
 }
 
+fn raw_spec(id: &str) -> FactorSpec {
+    FactorSpec {
+        id: id.to_string(),
+        aliases: Vec::new(),
+        name: id.to_string(),
+        asset_class: AssetClass::Stock,
+        frequency: Frequency::Daily,
+        version: VERSION.to_string(),
+        tags: vec!["internal".to_string(), "financial_raw".to_string()],
+        description: format!("Internal Gaussian financial raw series {id}."),
+        dependencies: Vec::new(),
+        intraday_raw_dependencies: Vec::new(),
+        lookback: Lookback { trading_days: 0 },
+    }
+}
+
+fn raw_specs_for_requested(requested: &[GaussianFinancialOutput]) -> Vec<FactorSpec> {
+    let mut specs = Vec::new();
+    for kind in requested {
+        match kind {
+            GaussianFinancialOutput::PbRoeSpread => {
+                specs.push(raw_spec(PB_ROE_PB_RAW_ID));
+                specs.push(raw_spec(PB_ROE_ROE_RAW_ID));
+            }
+            _ => specs.push(raw_spec(kind.id())),
+        }
+    }
+    specs
+}
+
+fn finalize_requested_from_raw(
+    requested: &[GaussianFinancialOutput],
+    data: &DataPool,
+    raw_series: Vec<FactorSeries>,
+) -> Result<Vec<FactorSeries>> {
+    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let raw_by_id = raw_series
+        .into_iter()
+        .map(|series| (series.spec.id.clone(), series))
+        .collect::<HashMap<_, _>>();
+    let sector_map = ClassificationMap::from_table(
+        data.daily(DatasetId::StockSwClassification)?,
+        ClassificationLevel::Sector,
+    )?;
+    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let mut output = Vec::new();
+    for kind in requested.iter().copied() {
+        let factor = match kind {
+            GaussianFinancialOutput::EpSq
+            | GaussianFinancialOutput::SpSq
+            | GaussianFinancialOutput::CfpSq
+            | GaussianFinancialOutput::CashValue
+            | GaussianFinancialOutput::DivTtm => {
+                let raw = raw_column_by_id(&raw_by_id, kind.id(), panel)?;
+                neutralize_sector_only_with_map(&raw, panel, &sector_map)?
+            }
+            GaussianFinancialOutput::EbTwoVar
+            | GaussianFinancialOutput::ProfitYoySq
+            | GaussianFinancialOutput::DeltaRoe => {
+                let raw = raw_column_by_id(&raw_by_id, kind.id(), panel)?;
+                neutralize_size_sector_with_inputs(&raw, panel, &size, &sector_map)?
+            }
+            GaussianFinancialOutput::PbRoeSpread => {
+                let pb_raw = raw_column_by_id(&raw_by_id, PB_ROE_PB_RAW_ID, panel)?;
+                let roe_raw = raw_column_by_id(&raw_by_id, PB_ROE_ROE_RAW_ID, panel)?;
+                pb_roe_spread_from_raw(&pb_raw, &roe_raw, panel, &size, &sector_map)?
+            }
+        };
+        output.push(mask_bj(&factor, panel)?.to_factor_series(spec(kind)));
+    }
+    Ok(output)
+}
+
+fn raw_column_by_id(
+    raw_by_id: &HashMap<String, FactorSeries>,
+    id: &str,
+    panel: &DailyPanel,
+) -> Result<PanelColumn> {
+    let series = raw_by_id
+        .get(id)
+        .ok_or_else(|| err(format!("missing Gaussian financial raw series {id}")))?;
+    factor_series_to_panel_column(panel, series)
+}
+
 pub fn compute_requested(
     requested_ids: &[String],
     context: &FactorContext,
@@ -288,32 +381,29 @@ fn compute_requested_with_snapshot_cache(
     }
     let needs = FinancialNeeds::from_outputs(&requested);
     let prepared = GaussianFinancialPrepared::from_data(data, needs)?;
-    compute_requested_with_prepared_financials(
+    let raw_series = compute_requested_raw_with_prepared_financials(
         requested_ids,
         context,
         data,
         &prepared,
+        &requested,
         snapshot_cache,
-    )
+    )?;
+    finalize_requested_from_raw(&requested, data, raw_series)
 }
 
-fn compute_requested_with_prepared_financials(
-    requested_ids: &[String],
+fn compute_requested_raw_with_prepared_financials(
+    _requested_ids: &[String],
     _context: &FactorContext,
     data: &DataPool,
     prepared: &GaussianFinancialPrepared,
+    requested: &[GaussianFinancialOutput],
     snapshot_cache: &mut InstrumentAlignedSnapshotCache<FinancialSnapshot>,
 ) -> Result<Vec<FactorSeries>> {
-    let mut requested = requested_ids
-        .iter()
-        .filter_map(|id| GaussianFinancialOutput::from_id(id))
-        .collect::<Vec<_>>();
-    requested.sort();
-    requested.dedup();
     if requested.is_empty() {
         return Ok(Vec::new());
     }
-    let needs = FinancialNeeds::from_outputs(&requested);
+    let needs = FinancialNeeds::from_outputs(requested);
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
     let columns = financial_snapshot_columns(
@@ -329,43 +419,59 @@ fn compute_requested_with_prepared_financials(
 
     let mut raw_cache = GaussianRawCache::default();
     let mut output = Vec::new();
-    for kind in requested {
-        let factor = match kind {
-            GaussianFinancialOutput::EpSq => {
-                let raw = raw_cache.ep_sq(&columns, &panel)?;
-                neutralize_sector_only(raw, &panel, data)?
+    for kind in requested.iter().copied() {
+        match kind {
+            GaussianFinancialOutput::EpSq => output.push(
+                raw_cache
+                    .ep_sq(&columns, &panel)?
+                    .to_factor_series(raw_spec(kind.id())),
+            ),
+            GaussianFinancialOutput::EbTwoVar => output.push(
+                raw_cache
+                    .eb_two_var(&columns, &panel)?
+                    .to_factor_series(raw_spec(kind.id())),
+            ),
+            GaussianFinancialOutput::SpSq => output.push(
+                raw_cache
+                    .sp_sq(&columns, &panel)?
+                    .to_factor_series(raw_spec(kind.id())),
+            ),
+            GaussianFinancialOutput::CfpSq => output.push(
+                raw_cache
+                    .cfp_sq(&columns, &panel)?
+                    .to_factor_series(raw_spec(kind.id())),
+            ),
+            GaussianFinancialOutput::CashValue => output.push(
+                raw_cache
+                    .cash_value(&columns, &panel)?
+                    .to_factor_series(raw_spec(kind.id())),
+            ),
+            GaussianFinancialOutput::DivTtm => output.push(
+                raw_cache
+                    .div_ttm(&columns, &panel)?
+                    .to_factor_series(raw_spec(kind.id())),
+            ),
+            GaussianFinancialOutput::ProfitYoySq => output.push(
+                raw_cache
+                    .profit_yoy_sq(&columns, &panel)?
+                    .to_factor_series(raw_spec(kind.id())),
+            ),
+            GaussianFinancialOutput::DeltaRoe => output.push(
+                raw_cache
+                    .delta_roe(&columns, &panel)?
+                    .to_factor_series(raw_spec(kind.id())),
+            ),
+            GaussianFinancialOutput::PbRoeSpread => {
+                output.push(
+                    gaussian_residual(&columns.total_mv_snapshot, &[&columns.book_value])?
+                        .to_factor_series(raw_spec(PB_ROE_PB_RAW_ID)),
+                );
+                output.push(
+                    gaussian_residual(&columns.netprofit_sq, &[&columns.book_value])?
+                        .to_factor_series(raw_spec(PB_ROE_ROE_RAW_ID)),
+                );
             }
-            GaussianFinancialOutput::EbTwoVar => {
-                let raw = raw_cache.eb_two_var(&columns, &panel)?;
-                neutralize_size_sector(raw, &panel, data)?
-            }
-            GaussianFinancialOutput::SpSq => {
-                let raw = raw_cache.sp_sq(&columns, &panel)?;
-                neutralize_sector_only(raw, &panel, data)?
-            }
-            GaussianFinancialOutput::CfpSq => {
-                let raw = raw_cache.cfp_sq(&columns, &panel)?;
-                neutralize_sector_only(raw, &panel, data)?
-            }
-            GaussianFinancialOutput::CashValue => {
-                let raw = raw_cache.cash_value(&columns, &panel)?;
-                neutralize_sector_only(raw, &panel, data)?
-            }
-            GaussianFinancialOutput::DivTtm => {
-                let raw = raw_cache.div_ttm(&columns, &panel)?;
-                neutralize_sector_only(raw, &panel, data)?
-            }
-            GaussianFinancialOutput::ProfitYoySq => {
-                let raw = raw_cache.profit_yoy_sq(&columns, &panel)?;
-                neutralize_size_sector(raw, &panel, data)?
-            }
-            GaussianFinancialOutput::DeltaRoe => {
-                let raw = raw_cache.delta_roe(&columns, &panel)?;
-                neutralize_size_sector(raw, &panel, data)?
-            }
-            GaussianFinancialOutput::PbRoeSpread => pb_roe_spread(&columns, &panel, data)?,
-        };
-        output.push(mask_bj(&factor, &panel)?.to_factor_series(spec(kind)));
+        }
     }
     Ok(output)
 }
@@ -997,30 +1103,26 @@ fn orthogonal_two_x_residual(
     cs_neutralize_regression(y, &[x1, &x2_orth], None, None)
 }
 
-fn neutralize_sector_only(
+fn neutralize_sector_only_with_map(
     values: &PanelColumn,
     panel: &DailyPanel,
-    data: &DataPool,
+    sector_map: &ClassificationMap,
 ) -> Result<PanelColumn> {
-    let sector_map = ClassificationMap::from_table(
-        data.daily(DatasetId::StockSwClassification)?,
-        ClassificationLevel::Sector,
-    )?;
     let masked = mask_bj(values, panel)?;
     masked.cs_neutralize_regression_by_group(&[], None, |trade_date, ts_codes| {
         sector_map.groups_for(trade_date, ts_codes)
     })
 }
 
-fn pb_roe_spread(
-    columns: &FinancialSnapshotColumns,
+fn pb_roe_spread_from_raw(
+    pb_raw: &PanelColumn,
+    roe_raw: &PanelColumn,
     panel: &DailyPanel,
-    data: &DataPool,
+    size: &PanelColumn,
+    sector_map: &ClassificationMap,
 ) -> Result<PanelColumn> {
-    let pb_raw = gaussian_residual(&columns.total_mv_snapshot, &[&columns.book_value])?;
-    let roe_raw = gaussian_residual(&columns.netprofit_sq, &[&columns.book_value])?;
-    let pb_neutralized = neutralize_size_sector(&pb_raw, panel, data)?;
-    let roe_neutralized = neutralize_size_sector(&roe_raw, panel, data)?;
+    let pb_neutralized = neutralize_size_sector_with_inputs(pb_raw, panel, size, sector_map)?;
+    let roe_neutralized = neutralize_size_sector_with_inputs(roe_raw, panel, size, sector_map)?;
     let pb_rank = pb_neutralized.cs(|values| cs_pctrank(values, true))?;
     let roe_rank = roe_neutralized.cs(|values| cs_pctrank(values, true))?;
     pb_rank.zip_binary(&roe_rank, |pb, roe| match (clean(pb), clean(roe)) {

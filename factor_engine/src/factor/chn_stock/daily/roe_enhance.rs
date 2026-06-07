@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::collections::HashMap;
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
@@ -7,11 +8,12 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
-    DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
+    factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
+    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
     InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
 };
@@ -26,6 +28,10 @@ const ROE_EPS: f64 = 1e-12;
 
 const INCOME_COLUMN: &str = "n_income_attr_p";
 const EQUITY_COLUMN: &str = "total_hldr_eqy_exc_min_int";
+const ROE_YOY_RAW_ID: &str = "__roe_enhance_yoy_raw";
+const ROE_STB_RAW_ID: &str = "__roe_enhance_stb_raw";
+const ROE_LAST_RAW_ID: &str = "__roe_enhance_last_raw";
+const ROE_GROWTH_RAW_ID: &str = "__roe_enhance_growth_raw";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct RoeSnapshot {
@@ -39,7 +45,7 @@ pub struct StockDailyRoeEnhance;
 
 #[derive(Default)]
 struct RoeEnhanceComputeState {
-    final_cache: EventDrivenCrossSectionCache,
+    raw_cache: EventDrivenCrossSectionCache,
     snapshot_cache: InstrumentAlignedSnapshotCache<RoeSnapshot>,
 }
 
@@ -105,11 +111,17 @@ impl Factor for StockDailyRoeEnhance {
             .downcast_mut::<RoeEnhanceComputeState>()
             .ok_or_else(|| err("roe_enhance received incompatible event cache state"))?;
         let schedule = FinancialEventSchedule::from_tables(&[
-            FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
-            FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
+            FinancialEventTable::statement_with_preference(
+                data.daily(DatasetId::StockIncome)?,
+                ReportTypePreference::income_single_quarter(),
+            ),
+            FinancialEventTable::statement_with_preference(
+                data.daily(DatasetId::StockBalanceSheet)?,
+                ReportTypePreference::balance_sheet_consolidated(),
+            ),
         ])?;
-        let specs = [self.spec()];
-        let final_cache = &mut state.final_cache;
+        let raw_specs = roe_raw_specs();
+        let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
         let income = PitFinancialData::from_table(
             data.daily(DatasetId::StockIncome)?,
@@ -121,18 +133,24 @@ impl Factor for StockDailyRoeEnhance {
             &[EQUITY_COLUMN],
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        compute_financial_event_snapshot_streaming(
+        let raw_series = compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
             data,
-            final_cache,
+            raw_cache,
             &schedule,
-            &specs,
+            &raw_specs,
             |_, _, data| {
-                self.compute_with_prepared_financials(data, &income, &balance, snapshot_cache)
-                    .map(|series| vec![series])
+                self.compute_component_series_with_prepared_financials(
+                    data,
+                    &income,
+                    &balance,
+                    snapshot_cache,
+                )
             },
-        )
+        )?;
+        self.finalize_component_series(data, raw_series)
+            .map(|series| vec![series])
     }
 }
 
@@ -153,22 +171,57 @@ impl StockDailyRoeEnhance {
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
 
-        self.compute_with_prepared_financials(data, &income, &balance, snapshot_cache)
+        let raw_series = self.compute_component_series_with_prepared_financials(
+            data,
+            &income,
+            &balance,
+            snapshot_cache,
+        )?;
+        self.finalize_component_series(data, raw_series)
     }
 
-    fn compute_with_prepared_financials(
+    fn compute_component_series_with_prepared_financials(
         &self,
         data: &DataPool,
         income: &PitFinancialData,
         balance: &PitFinancialData,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
-    ) -> Result<FactorSeries> {
+    ) -> Result<Vec<FactorSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let components = roe_component_columns(&panel, &income, &balance, snapshot_cache)?;
-        let r_yoy = neutralize_rank_fill_present_non_bj(&components.yoy, &panel, data)?;
-        let r_stb = neutralize_rank_fill_present_non_bj(&components.stb, &panel, data)?;
-        let r_last = neutralize_rank_fill_present_non_bj(&components.last, &panel, data)?;
-        let r_growth = neutralize_rank_fill_present_non_bj(&components.growth, &panel, data)?;
+        Ok(vec![
+            components.yoy.to_factor_series(raw_spec(ROE_YOY_RAW_ID)),
+            components.stb.to_factor_series(raw_spec(ROE_STB_RAW_ID)),
+            components.last.to_factor_series(raw_spec(ROE_LAST_RAW_ID)),
+            components
+                .growth
+                .to_factor_series(raw_spec(ROE_GROWTH_RAW_ID)),
+        ])
+    }
+
+    fn finalize_component_series(
+        &self,
+        data: &DataPool,
+        raw_series: Vec<FactorSeries>,
+    ) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let raw_by_id = raw_series
+            .into_iter()
+            .map(|series| (series.spec.id.clone(), series))
+            .collect::<HashMap<_, _>>();
+        let yoy = raw_column(&raw_by_id, ROE_YOY_RAW_ID, &panel)?;
+        let stb = raw_column(&raw_by_id, ROE_STB_RAW_ID, &panel)?;
+        let last = raw_column(&raw_by_id, ROE_LAST_RAW_ID, &panel)?;
+        let growth = raw_column(&raw_by_id, ROE_GROWTH_RAW_ID, &panel)?;
+        let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+        let sector_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockSwClassification)?,
+            ClassificationLevel::Sector,
+        )?;
+        let r_yoy = neutralize_rank_fill_present_non_bj(&yoy, &panel, &size, &sector_map)?;
+        let r_stb = neutralize_rank_fill_present_non_bj(&stb, &panel, &size, &sector_map)?;
+        let r_last = neutralize_rank_fill_present_non_bj(&last, &panel, &size, &sector_map)?;
+        let r_growth = neutralize_rank_fill_present_non_bj(&growth, &panel, &size, &sector_map)?;
 
         let layer1 = pctrank_fill_present_non_bj(&average_pair(&r_growth, &r_last)?, &panel)?;
         let layer2 = pctrank_fill_present_non_bj(&average_pair(&layer1, &r_stb)?, &panel)?;
@@ -201,6 +254,42 @@ fn tags() -> Vec<String> {
     .iter()
     .map(|value| value.to_string())
     .collect()
+}
+
+fn raw_spec(id: &str) -> FactorSpec {
+    FactorSpec {
+        id: id.to_string(),
+        aliases: Vec::new(),
+        name: id.to_string(),
+        asset_class: AssetClass::Stock,
+        frequency: Frequency::Daily,
+        version: VERSION.to_string(),
+        tags: vec!["internal".to_string(), "financial_raw".to_string()],
+        description: format!("Internal roe_enhance component raw series {id}."),
+        dependencies: Vec::new(),
+        intraday_raw_dependencies: Vec::new(),
+        lookback: Lookback { trading_days: 0 },
+    }
+}
+
+fn roe_raw_specs() -> [FactorSpec; 4] {
+    [
+        raw_spec(ROE_YOY_RAW_ID),
+        raw_spec(ROE_STB_RAW_ID),
+        raw_spec(ROE_LAST_RAW_ID),
+        raw_spec(ROE_GROWTH_RAW_ID),
+    ]
+}
+
+fn raw_column(
+    raw_by_id: &HashMap<String, FactorSeries>,
+    id: &str,
+    panel: &DailyPanel,
+) -> Result<PanelColumn> {
+    let series = raw_by_id
+        .get(id)
+        .ok_or_else(|| err(format!("missing roe_enhance raw series {id}")))?;
+    factor_series_to_panel_column(panel, series)
 }
 
 fn roe_component_columns(
@@ -375,9 +464,10 @@ fn strict_mean(values: &[Option<f64>], start: usize, count: usize) -> Option<f64
 fn neutralize_rank_fill_present_non_bj(
     column: &PanelColumn,
     panel: &DailyPanel,
-    data: &DataPool,
+    size: &PanelColumn,
+    sector_map: &ClassificationMap,
 ) -> Result<PanelColumn> {
-    let neutralized = neutralize_size_sector(column, panel, data)?;
+    let neutralized = neutralize_size_sector_with_inputs(column, panel, size, sector_map)?;
     pctrank_fill_present_non_bj(&neutralized, panel)
 }
 

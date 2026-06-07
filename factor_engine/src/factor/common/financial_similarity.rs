@@ -13,16 +13,18 @@ use crate::factor::common::stock_daily_ops::{
 };
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, financial_event_trade_dates, DailyPanel,
-    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialStatementDataset,
-    InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData, ReportTypePreference,
+    cached_financial_stock_snapshots_for_date, factor_series_to_panel_column,
+    financial_event_trade_dates, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
+    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialData,
+    ReportTypePreference,
 };
 use crate::operators::{cs_pctrank, cs_regression_residual};
 
 pub const F_MOMENTUM_80PEC_ID: &str = "f_momentum_80pec";
 pub const LINK_NEW_ID: &str = "link_new";
 pub const PROVIDER_KEY: &str = "stock|daily|financial_similarity";
+const LINK_NEW_RAW_ID: &str = "__link_new_raw";
 
 const VERSION: &str = "0.1.0";
 const LOOKBACK: usize = 252;
@@ -68,7 +70,7 @@ impl FinancialSimilarityPeerState {
 
 #[derive(Clone, Debug, Default)]
 pub struct FinancialSimilarityComputeState {
-    final_cache: EventDrivenCrossSectionCache,
+    link_raw_cache: EventDrivenCrossSectionCache,
     peer_state: FinancialSimilarityPeerState,
     snapshot_cache: InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
 }
@@ -149,6 +151,22 @@ pub fn spec(kind: FinancialSimilarityOutput) -> FactorSpec {
         lookback: Lookback {
             trading_days: LOOKBACK,
         },
+    }
+}
+
+fn link_new_raw_spec() -> FactorSpec {
+    FactorSpec {
+        id: LINK_NEW_RAW_ID.to_string(),
+        aliases: Vec::new(),
+        name: LINK_NEW_RAW_ID.to_string(),
+        asset_class: AssetClass::Stock,
+        frequency: Frequency::Daily,
+        version: VERSION.to_string(),
+        tags: vec!["internal".to_string(), "financial_raw".to_string()],
+        description: "Internal link_new raw financial similarity series.".to_string(),
+        dependencies: Vec::new(),
+        intraday_raw_dependencies: Vec::new(),
+        lookback: Lookback { trading_days: 0 },
     }
 }
 
@@ -247,8 +265,14 @@ pub fn compute_requested_stateful(
 
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let schedule = FinancialEventSchedule::from_tables(&[
-        FinancialEventTable::statement(data.daily(DatasetId::StockIncome)?),
-        FinancialEventTable::statement(data.daily(DatasetId::StockBalanceSheet)?),
+        FinancialEventTable::statement_with_preference(
+            data.daily(DatasetId::StockIncome)?,
+            ReportTypePreference::income_single_quarter(),
+        ),
+        FinancialEventTable::statement_with_preference(
+            data.daily(DatasetId::StockBalanceSheet)?,
+            ReportTypePreference::balance_sheet_consolidated(),
+        ),
         FinancialEventTable::dividend_ltm(data.daily(DatasetId::StockDividend)?),
     ])?;
     let ret20 = if want_f_momentum {
@@ -285,10 +309,9 @@ pub fn compute_requested_stateful(
                 )?;
                 update_financial_similarity_event_state(
                     &mut state.peer_state,
-                    &mut state.final_cache,
+                    &mut state.link_raw_cache,
                     &points,
                     &panel,
-                    data,
                     trade_date,
                     want_f_momentum,
                     want_link_new,
@@ -305,15 +328,14 @@ pub fn compute_requested_stateful(
             )?;
         }
         if want_link_new {
-            let mut replay = state.final_cache.replay_series(
-                spec(FinancialSimilarityOutput::LinkNew),
-                &panel,
-                trade_date,
-            );
+            let mut replay =
+                state
+                    .link_raw_cache
+                    .replay_series(link_new_raw_spec(), &panel, trade_date);
             link_values.append(&mut replay.values);
         }
         state.peer_state.mark_processed(trade_date);
-        state.final_cache.mark_processed(trade_date);
+        state.link_raw_cache.mark_processed(trade_date);
     }
 
     let mut output = Vec::new();
@@ -331,10 +353,17 @@ pub fn compute_requested_stateful(
         );
     }
     if want_link_new {
-        output.push(FactorSeries {
-            spec: spec(FinancialSimilarityOutput::LinkNew),
+        let raw_series = FactorSeries {
+            spec: link_new_raw_spec(),
             values: link_values,
-        });
+        };
+        let raw = factor_series_to_panel_column(&panel, &raw_series)?;
+        let masked = mask_bj(&raw, &panel)?;
+        let neutralized = neutralize_size_sector(&masked, &panel, data)?;
+        output.push(
+            mask_bj(&neutralized, &panel)?
+                .to_factor_series(spec(FinancialSimilarityOutput::LinkNew)),
+        );
     }
     Ok(output)
 }
@@ -372,10 +401,9 @@ fn financial_similarity_inputs(data: &DataPool) -> Result<FinancialSimilarityInp
 
 fn update_financial_similarity_event_state(
     peer_state: &mut FinancialSimilarityPeerState,
-    final_cache: &mut EventDrivenCrossSectionCache,
+    link_raw_cache: &mut EventDrivenCrossSectionCache,
     points: &[FinancialPoint],
     panel: &DailyPanel,
-    data: &DataPool,
     trade_date: i32,
     want_f_momentum: bool,
     want_link_new: bool,
@@ -395,15 +423,8 @@ fn update_financial_similarity_event_state(
             raw_values[offset + instrument_idx] = day_link[instrument_idx];
         }
         let raw = panel.column_from_values(raw_values)?;
-        let masked = mask_bj(&raw, &panel)?;
-        let neutralized = neutralize_size_sector(&masked, panel, data)?;
-        let series = factor_series_for_trade_date(
-            spec(FinancialSimilarityOutput::LinkNew),
-            panel,
-            trade_date,
-            &mask_bj(&neutralized, panel)?,
-        );
-        final_cache.update_series(&series, panel);
+        let series = factor_series_for_trade_date(link_new_raw_spec(), panel, trade_date, &raw);
+        link_raw_cache.update_series(&series, panel);
     }
     Ok(())
 }

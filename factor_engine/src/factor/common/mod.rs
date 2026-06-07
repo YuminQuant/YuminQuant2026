@@ -50,11 +50,12 @@ pub use cross_section::{
 pub use daily::{compute_daily_by_instrument, DailySeries};
 pub use financial::{
     cached_financial_stock_snapshots, cached_financial_stock_snapshots_for_date,
-    compute_financial_event_snapshot_streaming, financial_event_trade_dates, DeadlinePolicy,
-    EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
-    FinancialEventSchedule, FinancialEventTable, FinancialRecordMarker, FinancialStatementDataset,
-    FinancialStockSnapshotCache, FinancialSyntheticMarker, InstrumentAlignedSnapshotCache,
-    PitFinancialData, PitFinancialRecord, QuarterMatrix, QuarterValue, ReportTypePreference,
+    compute_financial_event_snapshot_streaming, factor_series_to_panel_column,
+    financial_event_trade_dates, DeadlinePolicy, EventDrivenCrossSectionCache,
+    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+    FinancialRecordMarker, FinancialStatementDataset, FinancialStockSnapshotCache,
+    FinancialSyntheticMarker, InstrumentAlignedSnapshotCache, PitFinancialData, PitFinancialRecord,
+    QuarterMatrix, QuarterValue, ReportTypePreference,
 };
 pub use intraday_daily::{
     intraday_time_in_range, IntradayDailyPanel, IntradaySeries, IntradayWindow,

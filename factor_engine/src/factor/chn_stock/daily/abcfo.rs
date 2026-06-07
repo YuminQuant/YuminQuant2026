@@ -22,7 +22,7 @@ use crate::operators::cs_zscore_by_group;
 const VERSION: &str = "0.1.0";
 const FINANCIAL_QUARTERS: usize = 8;
 const RIDGE_LAMBDA: f64 = 10.0;
-const MIN_RIDGE_OBS: usize = 10;
+const MIN_INDUSTRY_RIDGE_OBS: usize = 3;
 const REGRESSOR_COUNT: usize = 6;
 const PARAM_COUNT: usize = REGRESSOR_COUNT + 1;
 const ABCFO_RAW_ID: &str = "__abcfo_residual_raw";
@@ -55,7 +55,7 @@ impl Factor for StockDailyAbcfo {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "DBZQ abnormal cashflow factor. It anchors on the latest PIT single-quarter cashflow report, builds scaled cashflow/revenue/employee-cash variables plus listing age, takes cross-sectional ridge residuals with lambda=10 and an unpenalized intercept, then standardizes residuals within SW level-1 industries. The final event-driven snapshot is recomputed on financial disclosure events and replayed on non-event trading days.".to_string(),
+            description: "DBZQ abnormal cashflow factor. It anchors on the latest PIT single-quarter cashflow report, builds scaled cashflow/revenue/employee-cash variables plus listing age, takes SW level-1 industry ridge residuals with lambda=10 and an unpenalized intercept, then standardizes residuals within SW level-1 industries. The final event-driven snapshot is recomputed on financial disclosure events and replayed on non-event trading days.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -140,6 +140,10 @@ impl Factor for StockDailyAbcfo {
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
+        let sector_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockSwClassification)?,
+            ClassificationLevel::Sector,
+        )?;
         let raw_series = compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
@@ -154,6 +158,7 @@ impl Factor for StockDailyAbcfo {
                     &income,
                     &balance,
                     &list_dates,
+                    &sector_map,
                     snapshot_cache,
                 )
                 .map(|series| vec![series])
@@ -186,6 +191,10 @@ impl StockDailyAbcfo {
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
+        let sector_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockSwClassification)?,
+            ClassificationLevel::Sector,
+        )?;
 
         let raw_series = vec![self.compute_raw_with_prepared_financials(
             data,
@@ -193,6 +202,7 @@ impl StockDailyAbcfo {
             &income,
             &balance,
             &list_dates,
+            &sector_map,
             snapshot_cache,
         )?];
         self.finalize_raw_series(data, raw_series)
@@ -205,6 +215,7 @@ impl StockDailyAbcfo {
         income: &PitFinancialData,
         balance: &PitFinancialData,
         list_dates: &BTreeMap<String, i32>,
+        sector_map: &ClassificationMap,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
     ) -> Result<FactorSeries> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
@@ -214,6 +225,7 @@ impl StockDailyAbcfo {
             &income,
             &balance,
             &list_dates,
+            sector_map,
             snapshot_cache,
         )?;
         Ok(raw.to_factor_series(raw_spec()))
@@ -311,6 +323,7 @@ fn abcfo_ridge_residual_column(
     income: &PitFinancialData,
     balance: &PitFinancialData,
     list_dates: &BTreeMap<String, i32>,
+    sector_map: &ClassificationMap,
     cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
 ) -> Result<PanelColumn> {
     let instrument_count = panel.instruments().len();
@@ -338,7 +351,7 @@ fn abcfo_ridge_residual_column(
             },
         );
         let date_offset = date_idx * instrument_count;
-        let mut observations = Vec::new();
+        let mut observations_by_sector = BTreeMap::<String, Vec<RidgeObservation>>::new();
         for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
             let offset = date_offset + instrument_idx;
             if is_bj_stock(ts_code) || !panel.is_present_offset(offset) {
@@ -350,9 +363,13 @@ fn abcfo_ridge_residual_column(
             let Some(row) = abcfo_row_from_snapshot(&snapshot, trade_date) else {
                 continue;
             };
-            observations.push(RidgeObservation { offset, row });
+            push_grouped_observation(
+                &mut observations_by_sector,
+                sector_map.group_for(trade_date, ts_code),
+                RidgeObservation { offset, row },
+            );
         }
-        for (offset, residual) in ridge_residuals(&observations) {
+        for (offset, residual) in grouped_ridge_residuals(&observations_by_sector) {
             values[offset] = Some(residual);
         }
     }
@@ -489,7 +506,7 @@ fn abcfo_row_from_values(
 }
 
 fn ridge_residuals(observations: &[RidgeObservation]) -> Vec<(usize, f64)> {
-    if observations.len() < MIN_RIDGE_OBS {
+    if observations.len() < MIN_INDUSTRY_RIDGE_OBS {
         return Vec::new();
     }
     let Some(beta) = ridge_beta(observations) else {
@@ -512,6 +529,30 @@ fn ridge_residuals(observations: &[RidgeObservation]) -> Vec<(usize, f64)> {
                 .then_some((observation.offset, residual))
         })
         .collect()
+}
+
+fn push_grouped_observation(
+    observations_by_sector: &mut BTreeMap<String, Vec<RidgeObservation>>,
+    group: Option<&str>,
+    observation: RidgeObservation,
+) {
+    let Some(group) = group.filter(|group| !group.is_empty()) else {
+        return;
+    };
+    observations_by_sector
+        .entry(group.to_string())
+        .or_default()
+        .push(observation);
+}
+
+fn grouped_ridge_residuals(
+    observations_by_sector: &BTreeMap<String, Vec<RidgeObservation>>,
+) -> Vec<(usize, f64)> {
+    let mut output = Vec::new();
+    for observations in observations_by_sector.values() {
+        output.extend(ridge_residuals(observations));
+    }
+    output
 }
 
 fn ridge_beta(observations: &[RidgeObservation]) -> Option<[f64; PARAM_COUNT]> {
@@ -688,7 +729,7 @@ mod tests {
 
     #[test]
     fn ridge_residuals_require_minimum_observations() {
-        let observations = (0..9)
+        let observations = (0..2)
             .map(|idx| RidgeObservation {
                 offset: idx,
                 row: AbcfoRow {
@@ -698,6 +739,84 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(ridge_residuals(&observations).is_empty());
+    }
+
+    #[test]
+    fn abcfo_grouped_ridge_skips_unclassified_observations() {
+        let mut grouped = BTreeMap::<String, Vec<RidgeObservation>>::new();
+        push_grouped_observation(
+            &mut grouped,
+            None,
+            RidgeObservation {
+                offset: 0,
+                row: AbcfoRow {
+                    y: 1.0,
+                    x: [0.0; REGRESSOR_COUNT],
+                },
+            },
+        );
+        assert!(grouped.is_empty());
+        assert!(grouped_ridge_residuals(&grouped).is_empty());
+    }
+
+    #[test]
+    fn abcfo_grouped_ridge_requires_more_than_two_industry_observations() {
+        let mut grouped = BTreeMap::<String, Vec<RidgeObservation>>::new();
+        for idx in 0..2 {
+            push_grouped_observation(
+                &mut grouped,
+                Some("801010"),
+                RidgeObservation {
+                    offset: idx,
+                    row: AbcfoRow {
+                        y: idx as f64,
+                        x: [0.0; REGRESSOR_COUNT],
+                    },
+                },
+            );
+        }
+        assert!(grouped_ridge_residuals(&grouped).is_empty());
+    }
+
+    #[test]
+    fn abcfo_grouped_ridge_uses_industry_specific_regressions() {
+        let mut grouped = BTreeMap::<String, Vec<RidgeObservation>>::new();
+        for (offset, y) in [(0, 10.0), (1, 11.0), (2, 12.0)] {
+            push_grouped_observation(
+                &mut grouped,
+                Some("801010"),
+                RidgeObservation {
+                    offset,
+                    row: AbcfoRow {
+                        y,
+                        x: [0.0; REGRESSOR_COUNT],
+                    },
+                },
+            );
+        }
+        for (offset, y) in [(3, 100.0), (4, 101.0), (5, 102.0)] {
+            push_grouped_observation(
+                &mut grouped,
+                Some("801020"),
+                RidgeObservation {
+                    offset,
+                    row: AbcfoRow {
+                        y,
+                        x: [0.0; REGRESSOR_COUNT],
+                    },
+                },
+            );
+        }
+
+        let residuals = grouped_ridge_residuals(&grouped)
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_close(*residuals.get(&0).expect("offset 0"), -1.0);
+        assert_close(*residuals.get(&1).expect("offset 1"), 0.0);
+        assert_close(*residuals.get(&2).expect("offset 2"), 1.0);
+        assert_close(*residuals.get(&3).expect("offset 3"), -1.0);
+        assert_close(*residuals.get(&4).expect("offset 4"), 0.0);
+        assert_close(*residuals.get(&5).expect("offset 5"), 1.0);
     }
 
     #[test]

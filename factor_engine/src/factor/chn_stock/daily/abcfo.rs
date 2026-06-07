@@ -114,6 +114,22 @@ impl Factor for StockDailyAbcfo {
         let specs = [self.spec()];
         let final_cache = &mut state.final_cache;
         let snapshot_cache = &mut state.snapshot_cache;
+        let cashflow = PitFinancialData::from_table(
+            data.daily(DatasetId::StockCashFlow)?,
+            &[CFO_COLUMN, EMPLOYEE_CASH_COLUMN, OTHER_OPERATE_CASH_COLUMN],
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let income = PitFinancialData::from_table(
+            data.daily(DatasetId::StockIncome)?,
+            &[REVENUE_COLUMN],
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let balance = PitFinancialData::from_table(
+            data.daily(DatasetId::StockBalanceSheet)?,
+            &[ASSET_COLUMN],
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?;
+        let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
         compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
@@ -122,8 +138,15 @@ impl Factor for StockDailyAbcfo {
             &schedule,
             &specs,
             |_, _, data| {
-                self.compute_with_snapshot_cache(data, snapshot_cache)
-                    .map(|series| vec![series])
+                self.compute_with_prepared_financials(
+                    data,
+                    &cashflow,
+                    &income,
+                    &balance,
+                    &list_dates,
+                    snapshot_cache,
+                )
+                .map(|series| vec![series])
             },
         )
     }
@@ -135,7 +158,6 @@ impl StockDailyAbcfo {
         data: &DataPool,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let cashflow = PitFinancialData::from_table(
             data.daily(DatasetId::StockCashFlow)?,
             &[CFO_COLUMN, EMPLOYEE_CASH_COLUMN, OTHER_OPERATE_CASH_COLUMN],
@@ -153,6 +175,26 @@ impl StockDailyAbcfo {
         )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
 
+        self.compute_with_prepared_financials(
+            data,
+            &cashflow,
+            &income,
+            &balance,
+            &list_dates,
+            snapshot_cache,
+        )
+    }
+
+    fn compute_with_prepared_financials(
+        &self,
+        data: &DataPool,
+        cashflow: &PitFinancialData,
+        income: &PitFinancialData,
+        balance: &PitFinancialData,
+        list_dates: &BTreeMap<String, i32>,
+        snapshot_cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
+    ) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let raw = abcfo_ridge_residual_column(
             &panel,
             &cashflow,

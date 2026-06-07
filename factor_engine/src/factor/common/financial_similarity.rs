@@ -263,24 +263,30 @@ pub fn compute_requested_stateful(
         &context.target_dates,
     );
     let event_trade_date_set = event_trade_dates.iter().copied().collect::<BTreeSet<_>>();
-    let standardized_metrics = if event_trade_dates.is_empty() {
+    let event_inputs = if event_trade_dates.is_empty() {
         None
     } else {
-        Some(financial_similarity_standardized_metrics(
-            data,
-            &mut state.snapshot_cache,
-        )?)
+        Some(financial_similarity_inputs(data)?)
     };
 
     let mut f_momentum_raw = want_f_momentum.then(|| vec![None; panel.shape_len()]);
     let mut link_values = Vec::new();
     for trade_date in context.target_dates.iter().copied() {
         if event_trade_date_set.contains(&trade_date) {
-            if let Some(metrics) = standardized_metrics.as_ref() {
+            if let Some(inputs) = event_inputs.as_ref() {
+                let points = financial_similarity_points_for_trade_date(
+                    inputs.panel,
+                    &inputs.income,
+                    &inputs.balance,
+                    &inputs.total_mv,
+                    &inputs.dividends,
+                    &mut state.snapshot_cache,
+                    trade_date,
+                )?;
                 update_financial_similarity_event_state(
                     &mut state.peer_state,
                     &mut state.final_cache,
-                    metrics,
+                    &points,
                     &panel,
                     data,
                     trade_date,
@@ -333,10 +339,15 @@ pub fn compute_requested_stateful(
     Ok(output)
 }
 
-fn financial_similarity_standardized_metrics(
-    data: &DataPool,
-    snapshot_cache: &mut InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
-) -> Result<Vec<PanelColumn>> {
+struct FinancialSimilarityInputs<'a> {
+    panel: &'a DailyPanel,
+    total_mv: PanelColumn,
+    income: PitFinancialData,
+    balance: PitFinancialData,
+    dividends: Vec<DividendRecord>,
+}
+
+fn financial_similarity_inputs(data: &DataPool) -> Result<FinancialSimilarityInputs<'_>> {
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
     let income = PitFinancialData::from_table(
@@ -350,26 +361,19 @@ fn financial_similarity_standardized_metrics(
         ReportTypePreference::balance_sheet_consolidated(),
     )?;
     let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
-    financial_metric_columns(
-        &panel,
-        &income,
-        &balance,
-        &total_mv,
-        &dividends,
-        snapshot_cache,
-    )?
-    .into_iter()
-    .map(|column| {
-        let ranked = column.cs(|values| cs_pctrank(values, true))?;
-        fill_present_non_bj_missing_ranks_with_zero(&ranked, &panel)
+    Ok(FinancialSimilarityInputs {
+        panel,
+        total_mv,
+        income,
+        balance,
+        dividends,
     })
-    .collect::<Result<Vec<_>>>()
 }
 
 fn update_financial_similarity_event_state(
     peer_state: &mut FinancialSimilarityPeerState,
     final_cache: &mut EventDrivenCrossSectionCache,
-    standardized_metrics: &[PanelColumn],
+    points: &[FinancialPoint],
     panel: &DailyPanel,
     data: &DataPool,
     trade_date: i32,
@@ -381,13 +385,11 @@ fn update_financial_similarity_event_state(
         return Ok(());
     };
     let offset = date_idx * instrument_count;
-    let points =
-        financial_points_for_date(standardized_metrics, None, panel, offset, instrument_count);
     if want_f_momentum {
-        peer_state.top_peers = financial_top_peer_links(&points, instrument_count);
+        peer_state.top_peers = financial_top_peer_links(points, instrument_count);
     }
     if want_link_new {
-        let day_link = link_new_from_vector_sum(&points, instrument_count);
+        let day_link = link_new_from_vector_sum(points, instrument_count);
         let mut raw_values = vec![None; panel.shape_len()];
         for instrument_idx in 0..instrument_count {
             raw_values[offset + instrument_idx] = day_link[instrument_idx];
@@ -622,6 +624,90 @@ fn financial_metric_columns(
         .into_iter()
         .map(|values| panel.column_from_values(values))
         .collect()
+}
+
+fn financial_similarity_points_for_trade_date(
+    panel: &DailyPanel,
+    income: &PitFinancialData,
+    balance: &PitFinancialData,
+    total_mv: &PanelColumn,
+    dividends: &[DividendRecord],
+    cache: &mut InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
+    trade_date: i32,
+) -> Result<Vec<FinancialPoint>> {
+    let Some(date_idx) = panel.dates().iter().position(|date| *date == trade_date) else {
+        return Ok(Vec::new());
+    };
+    let instrument_count = panel.instruments().len();
+    let date_offset = date_idx * instrument_count;
+    let dividend_sums = dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date);
+    let snapshots = cached_financial_stock_snapshots_for_date(
+        panel,
+        trade_date,
+        cache,
+        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+        |trade_date, ts_code, _| {
+            let cash_dividend = dividend_sums.get(ts_code).copied().unwrap_or(0.0);
+            financial_metric_marker(ts_code, trade_date, income, balance, cash_dividend)
+        },
+        |trade_date, ts_code, offset| {
+            let cash_dividend = dividend_sums.get(ts_code).copied().unwrap_or(0.0);
+            let total_mv_value = clean(total_mv.values()[offset]).filter(|value| *value > 0.0);
+            financial_metrics_slow_for_stock(
+                ts_code,
+                trade_date,
+                income,
+                balance,
+                cash_dividend,
+                total_mv_value,
+            )
+        },
+    );
+    let mut metric_values = vec![vec![None; instrument_count]; METRIC_DIM];
+    for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        let mut metrics = snapshot.metrics;
+        metrics[6] = safe_div_opt(Some(snapshot.cash_dividend_ltm), snapshot.total_mv_snapshot);
+        for metric_idx in 0..METRIC_DIM {
+            metric_values[metric_idx][instrument_idx] = metrics[metric_idx];
+        }
+    }
+
+    let mut ranked_metrics = Vec::with_capacity(METRIC_DIM);
+    for values in metric_values {
+        let mut ranked = cs_pctrank(&values, true);
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let panel_idx = date_offset + instrument_idx;
+            if panel.is_present_offset(panel_idx)
+                && !is_bj_stock(ts_code)
+                && ranked[instrument_idx].is_none()
+            {
+                ranked[instrument_idx] = Some(0.0);
+            }
+        }
+        ranked_metrics.push(ranked);
+    }
+
+    let mut points = Vec::new();
+    for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+        let panel_idx = date_offset + instrument_idx;
+        if is_bj_stock(ts_code) || !panel.is_present_offset(panel_idx) {
+            continue;
+        }
+        let Some(values) =
+            financial_unit_vector_from_cross_section(&ranked_metrics, instrument_idx)
+        else {
+            continue;
+        };
+        points.push(FinancialPoint {
+            instrument_idx,
+            values,
+            ret20: None,
+        });
+    }
+    Ok(points)
 }
 
 fn financial_metric_marker(
@@ -926,6 +1012,30 @@ fn financial_unit_vector_at(
     let mut norm_sq = 0.0;
     for dim in 0..METRIC_DIM {
         let value = clean(metric_columns[dim].values()[panel_idx])?;
+        values[dim] = value;
+        norm_sq += value * value;
+    }
+    if norm_sq <= f64::EPSILON {
+        return None;
+    }
+    let norm = norm_sq.sqrt();
+    for value in &mut values {
+        *value /= norm;
+    }
+    Some(values)
+}
+
+fn financial_unit_vector_from_cross_section(
+    metric_values: &[Vec<Option<f64>>],
+    instrument_idx: usize,
+) -> Option<[f64; METRIC_DIM]> {
+    if metric_values.len() != METRIC_DIM {
+        return None;
+    }
+    let mut values = [0.0; METRIC_DIM];
+    let mut norm_sq = 0.0;
+    for dim in 0..METRIC_DIM {
+        let value = clean(*metric_values.get(dim)?.get(instrument_idx)?)?;
         values[dim] = value;
         norm_sq += value * value;
     }

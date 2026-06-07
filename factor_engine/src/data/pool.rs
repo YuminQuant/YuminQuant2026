@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use crate::core::{DataRequest, DatasetId, FactorContext, Frequency};
 use crate::data::loader::{DisclosureTableCache, MarketDataLoader};
@@ -8,12 +9,12 @@ use crate::factor::common::DailyPanel;
 
 #[derive(Clone, Debug, Default)]
 pub struct DataPool {
-    daily: HashMap<DatasetId, Table>,
+    daily: HashMap<DatasetId, Arc<Table>>,
     daily_panels: HashMap<DatasetId, DailyPanel>,
-    index_daily: HashMap<String, Table>,
+    index_daily: HashMap<String, Arc<Table>>,
     index_daily_panels: HashMap<String, DailyPanel>,
-    minute: HashMap<(DatasetId, Option<usize>, i32), Table>,
-    intraday_daily_raw: Option<Table>,
+    minute: HashMap<(DatasetId, Option<usize>, i32), Arc<Table>>,
+    intraday_daily_raw: Option<Arc<Table>>,
     intraday_daily_raw_panel: Option<DailyPanel>,
 }
 
@@ -60,7 +61,7 @@ impl DataPool {
                     loader.load_index_daily_by_dates(&ts_code, &columns, &context.load_dates)?;
                 let panel = DailyPanel::from_table(&table, context)?;
                 pool.index_daily_panels.insert(ts_code.clone(), panel);
-                pool.index_daily.insert(ts_code, table);
+                pool.index_daily.insert(ts_code, Arc::new(table));
                 continue;
             }
             if dataset == DatasetId::StockSwClassification {
@@ -69,7 +70,7 @@ impl DataPool {
                     context.load_start_date,
                     context.end_date,
                 )?;
-                pool.daily.insert(dataset, table);
+                pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
             if dataset == DatasetId::StockCiClassification {
@@ -78,12 +79,12 @@ impl DataPool {
                     context.load_start_date,
                     context.end_date,
                 )?;
-                pool.daily.insert(dataset, table);
+                pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
             if dataset == DatasetId::StockBasic {
                 let table = loader.load_stock_basic(&columns)?;
-                pool.daily.insert(dataset, table);
+                pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
             if dataset == DatasetId::StockBarraDaily {
@@ -95,7 +96,7 @@ impl DataPool {
                 )?;
                 let panel = DailyPanel::from_table(&table, context)?;
                 pool.daily_panels.insert(dataset, panel);
-                pool.daily.insert(dataset, table);
+                pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
             if matches!(
@@ -110,7 +111,7 @@ impl DataPool {
                     financial_quarters.unwrap_or(0),
                     disclosure_cache,
                 )?;
-                pool.daily.insert(dataset, table);
+                pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
             if dataset == DatasetId::StockDividend {
@@ -119,7 +120,7 @@ impl DataPool {
                     context.load_start_date,
                     context.end_date,
                 )?;
-                pool.daily.insert(dataset, table);
+                pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
             if dataset == DatasetId::StockAnalystReport {
@@ -129,7 +130,7 @@ impl DataPool {
                     context.end_date,
                     disclosure_cache,
                 )?;
-                pool.daily.insert(dataset, table);
+                pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
             match dataset.frequency() {
@@ -140,7 +141,7 @@ impl DataPool {
                         let panel = DailyPanel::from_table(&table, context)?;
                         pool.daily_panels.insert(dataset, panel);
                     }
-                    pool.daily.insert(dataset, table);
+                    pool.daily.insert(dataset, Arc::new(table));
                 }
                 Frequency::Minute1 => {
                     let target_dates = if context.frequency == Frequency::Daily {
@@ -156,7 +157,8 @@ impl DataPool {
                         loader.load_minute_by_date(dataset, &columns, target_dates)?
                     };
                     for (date, table) in tables {
-                        pool.minute.insert((dataset, bar_size, date), table);
+                        pool.minute
+                            .insert((dataset, bar_size, date), Arc::new(table));
                     }
                 }
             }
@@ -165,27 +167,32 @@ impl DataPool {
     }
 
     pub fn with_target_dates(&self, target_dates: &[i32]) -> Self {
-        let mut retargeted = self.clone();
-        retargeted.daily_panels = self
-            .daily_panels
-            .iter()
-            .map(|(dataset, panel)| (*dataset, panel.with_target_dates(target_dates)))
-            .collect();
-        retargeted.index_daily_panels = self
-            .index_daily_panels
-            .iter()
-            .map(|(ts_code, panel)| (ts_code.clone(), panel.with_target_dates(target_dates)))
-            .collect();
-        retargeted.intraday_daily_raw_panel = self
-            .intraday_daily_raw_panel
-            .as_ref()
-            .map(|panel| panel.with_target_dates(target_dates));
-        retargeted
+        Self {
+            daily: self.daily.clone(),
+            daily_panels: self
+                .daily_panels
+                .iter()
+                .map(|(dataset, panel)| (*dataset, panel.with_target_dates(target_dates)))
+                .collect(),
+            index_daily: self.index_daily.clone(),
+            index_daily_panels: self
+                .index_daily_panels
+                .iter()
+                .map(|(ts_code, panel)| (ts_code.clone(), panel.with_target_dates(target_dates)))
+                .collect(),
+            minute: self.minute.clone(),
+            intraday_daily_raw: self.intraday_daily_raw.clone(),
+            intraday_daily_raw_panel: self
+                .intraday_daily_raw_panel
+                .as_ref()
+                .map(|panel| panel.with_target_dates(target_dates)),
+        }
     }
 
     pub fn daily(&self, dataset: DatasetId) -> Result<&Table> {
         self.daily
             .get(&dataset)
+            .map(Arc::as_ref)
             .ok_or_else(|| err(format!("daily dataset not loaded: {}", dataset.as_str())))
     }
 
@@ -202,12 +209,15 @@ impl DataPool {
     }
 
     pub fn minute(&self, dataset: DatasetId, trade_date: i32) -> Option<&Table> {
-        self.minute.get(&(dataset, None, trade_date))
+        self.minute
+            .get(&(dataset, None, trade_date))
+            .map(Arc::as_ref)
     }
 
     pub fn derived_bar(&self, bar_size: usize, trade_date: i32) -> Option<&Table> {
         self.minute
             .get(&(DatasetId::StockDerivedBar, Some(bar_size), trade_date))
+            .map(Arc::as_ref)
     }
 
     #[cfg(test)]
@@ -218,7 +228,8 @@ impl DataPool {
         trade_date: i32,
         table: Table,
     ) {
-        self.minute.insert((dataset, bar_size, trade_date), table);
+        self.minute
+            .insert((dataset, bar_size, trade_date), Arc::new(table));
     }
 
     pub fn extend(&mut self, other: Self) {
@@ -237,7 +248,7 @@ impl DataPool {
 
     pub fn set_intraday_daily_raw(&mut self, table: Table, context: &FactorContext) -> Result<()> {
         let panel = DailyPanel::from_table(&table, context)?;
-        self.intraday_daily_raw = Some(table);
+        self.intraday_daily_raw = Some(Arc::new(table));
         self.intraday_daily_raw_panel = Some(panel);
         Ok(())
     }
@@ -252,7 +263,7 @@ impl DataPool {
                 "intraday daily raw cache column not loaded: {raw_id}"
             )));
         }
-        Ok(table)
+        Ok(table.as_ref())
     }
 
     pub fn intraday_daily_raw_panel(&self, raw_id: &str) -> Result<&DailyPanel> {
@@ -277,7 +288,7 @@ impl DataPool {
             index_daily_panels: HashMap::new(),
             minute: minute
                 .into_iter()
-                .map(|((dataset, date), table)| ((dataset, None, date), table))
+                .map(|((dataset, date), table)| ((dataset, None, date), Arc::new(table)))
                 .collect(),
             intraday_daily_raw: None,
             intraday_daily_raw_panel: None,
@@ -296,7 +307,10 @@ impl DataPool {
             }
         }
         Ok(Self {
-            daily,
+            daily: daily
+                .into_iter()
+                .map(|(dataset, table)| (dataset, Arc::new(table)))
+                .collect(),
             daily_panels,
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),
@@ -369,7 +383,7 @@ mod tests {
         let table = sample_daily_table();
         let expected = DailyPanel::from_table(&table, &context).expect("panel");
         let pool = DataPool {
-            daily: HashMap::from([(DatasetId::StockDailyPv, table)]),
+            daily: HashMap::from([(DatasetId::StockDailyPv, Arc::new(table))]),
             daily_panels: HashMap::from([(DatasetId::StockDailyPv, expected.clone())]),
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),

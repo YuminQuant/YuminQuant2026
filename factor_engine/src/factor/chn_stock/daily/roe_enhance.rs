@@ -111,6 +111,16 @@ impl Factor for StockDailyRoeEnhance {
         let specs = [self.spec()];
         let final_cache = &mut state.final_cache;
         let snapshot_cache = &mut state.snapshot_cache;
+        let income = PitFinancialData::from_table(
+            data.daily(DatasetId::StockIncome)?,
+            &[INCOME_COLUMN],
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let balance = PitFinancialData::from_table(
+            data.daily(DatasetId::StockBalanceSheet)?,
+            &[EQUITY_COLUMN],
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?;
         compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
@@ -119,7 +129,7 @@ impl Factor for StockDailyRoeEnhance {
             &schedule,
             &specs,
             |_, _, data| {
-                self.compute_with_snapshot_cache(data, snapshot_cache)
+                self.compute_with_prepared_financials(data, &income, &balance, snapshot_cache)
                     .map(|series| vec![series])
             },
         )
@@ -132,7 +142,6 @@ impl StockDailyRoeEnhance {
         data: &DataPool,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let income = PitFinancialData::from_table(
             data.daily(DatasetId::StockIncome)?,
             &[INCOME_COLUMN],
@@ -144,6 +153,17 @@ impl StockDailyRoeEnhance {
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
 
+        self.compute_with_prepared_financials(data, &income, &balance, snapshot_cache)
+    }
+
+    fn compute_with_prepared_financials(
+        &self,
+        data: &DataPool,
+        income: &PitFinancialData,
+        balance: &PitFinancialData,
+        snapshot_cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
+    ) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let components = roe_component_columns(&panel, &income, &balance, snapshot_cache)?;
         let r_yoy = neutralize_rank_fill_present_non_bj(&components.yoy, &panel, data)?;
         let r_stb = neutralize_rank_fill_present_non_bj(&components.stb, &panel, data)?;

@@ -186,6 +186,7 @@ impl Factor for GaussianFinancialFactor {
             ));
         }
         let schedule = FinancialEventSchedule::from_tables(&event_tables)?;
+        let prepared = GaussianFinancialPrepared::from_data(data, needs)?;
         let specs = requested.iter().copied().map(spec).collect::<Vec<_>>();
         let final_cache = &mut state.final_cache;
         let snapshot_cache = &mut state.snapshot_cache;
@@ -197,7 +198,13 @@ impl Factor for GaussianFinancialFactor {
             &schedule,
             &specs,
             |requested_ids, context, data| {
-                compute_requested_with_snapshot_cache(requested_ids, context, data, snapshot_cache)
+                compute_requested_with_prepared_financials(
+                    requested_ids,
+                    context,
+                    data,
+                    &prepared,
+                    snapshot_cache,
+                )
             },
         )
     }
@@ -266,7 +273,7 @@ pub fn compute_requested(
 
 fn compute_requested_with_snapshot_cache(
     requested_ids: &[String],
-    _context: &FactorContext,
+    context: &FactorContext,
     data: &DataPool,
     snapshot_cache: &mut InstrumentAlignedSnapshotCache<FinancialSnapshot>,
 ) -> Result<Vec<FactorSeries>> {
@@ -280,48 +287,42 @@ fn compute_requested_with_snapshot_cache(
         return Ok(Vec::new());
     }
     let needs = FinancialNeeds::from_outputs(&requested);
+    let prepared = GaussianFinancialPrepared::from_data(data, needs)?;
+    compute_requested_with_prepared_financials(
+        requested_ids,
+        context,
+        data,
+        &prepared,
+        snapshot_cache,
+    )
+}
 
+fn compute_requested_with_prepared_financials(
+    requested_ids: &[String],
+    _context: &FactorContext,
+    data: &DataPool,
+    prepared: &GaussianFinancialPrepared,
+    snapshot_cache: &mut InstrumentAlignedSnapshotCache<FinancialSnapshot>,
+) -> Result<Vec<FactorSeries>> {
+    let mut requested = requested_ids
+        .iter()
+        .filter_map(|id| GaussianFinancialOutput::from_id(id))
+        .collect::<Vec<_>>();
+    requested.sort();
+    requested.dedup();
+    if requested.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needs = FinancialNeeds::from_outputs(&requested);
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
-    let income = if needs.uses_income() {
-        PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &INCOME_COLUMNS,
-            ReportTypePreference::income_single_quarter(),
-        )?
-    } else {
-        PitFinancialData::empty(ReportTypePreference::income_single_quarter())
-    };
-    let balance = if needs.uses_balance() {
-        PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &BALANCE_COLUMNS,
-            ReportTypePreference::balance_sheet_consolidated(),
-        )?
-    } else {
-        PitFinancialData::empty(ReportTypePreference::balance_sheet_consolidated())
-    };
-    let cashflow = if needs.uses_cashflow() {
-        PitFinancialData::from_table(
-            data.daily(DatasetId::StockCashFlow)?,
-            &CASHFLOW_COLUMNS,
-            ReportTypePreference::income_single_quarter(),
-        )?
-    } else {
-        PitFinancialData::empty(ReportTypePreference::income_single_quarter())
-    };
-    let dividends = if needs.uses_dividend() {
-        parse_dividend_records(data.daily(DatasetId::StockDividend)?)?
-    } else {
-        Vec::new()
-    };
     let columns = financial_snapshot_columns(
         &panel,
         &total_mv,
-        &income,
-        &balance,
-        &cashflow,
-        &dividends,
+        &prepared.income,
+        &prepared.balance,
+        &prepared.cashflow,
+        &prepared.dividends,
         needs,
         snapshot_cache,
     )?;
@@ -367,6 +368,56 @@ fn compute_requested_with_snapshot_cache(
         output.push(mask_bj(&factor, &panel)?.to_factor_series(spec(kind)));
     }
     Ok(output)
+}
+
+struct GaussianFinancialPrepared {
+    income: PitFinancialData,
+    balance: PitFinancialData,
+    cashflow: PitFinancialData,
+    dividends: Vec<DividendRecord>,
+}
+
+impl GaussianFinancialPrepared {
+    fn from_data(data: &DataPool, needs: FinancialNeeds) -> Result<Self> {
+        let income = if needs.uses_income() {
+            PitFinancialData::from_table(
+                data.daily(DatasetId::StockIncome)?,
+                &INCOME_COLUMNS,
+                ReportTypePreference::income_single_quarter(),
+            )?
+        } else {
+            PitFinancialData::empty(ReportTypePreference::income_single_quarter())
+        };
+        let balance = if needs.uses_balance() {
+            PitFinancialData::from_table(
+                data.daily(DatasetId::StockBalanceSheet)?,
+                &BALANCE_COLUMNS,
+                ReportTypePreference::balance_sheet_consolidated(),
+            )?
+        } else {
+            PitFinancialData::empty(ReportTypePreference::balance_sheet_consolidated())
+        };
+        let cashflow = if needs.uses_cashflow() {
+            PitFinancialData::from_table(
+                data.daily(DatasetId::StockCashFlow)?,
+                &CASHFLOW_COLUMNS,
+                ReportTypePreference::income_single_quarter(),
+            )?
+        } else {
+            PitFinancialData::empty(ReportTypePreference::income_single_quarter())
+        };
+        let dividends = if needs.uses_dividend() {
+            parse_dividend_records(data.daily(DatasetId::StockDividend)?)?
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
+            income,
+            balance,
+            cashflow,
+            dividends,
+        })
+    }
 }
 
 fn tags(kind: GaussianFinancialOutput) -> Vec<String> {

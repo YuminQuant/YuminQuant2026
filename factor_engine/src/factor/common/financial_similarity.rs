@@ -1,11 +1,11 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, FactorValue,
     Frequency, Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{
@@ -14,8 +14,8 @@ use crate::factor::common::stock_daily_ops::{
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, factor_series_to_panel_column,
-    financial_event_trade_dates, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
-    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable, FinancialPitReader,
+    financial_event_trade_dates, DailyPanel, DividendReader, EventDrivenCrossSectionCache,
+    FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
 use crate::operators::{cs_pctrank, cs_regression_residual};
@@ -30,7 +30,6 @@ const LOOKBACK: usize = 252;
 const METRIC_DIM: usize = 10;
 const FINANCIAL_QUARTERS: usize = 8;
 const TOP_PEER_RETAIN_RATIO: f64 = 0.20;
-const IMPLEMENTED_DIV_PROC: &str = "\u{5b9e}\u{65bd}";
 
 const INCOME_COLUMNS: [&str; 2] = ["revenue", "n_income_attr_p"];
 const BALANCE_COLUMNS: [&str; 6] = [
@@ -190,7 +189,7 @@ pub fn compute_requested(
         DatasetId::StockBalanceSheet,
         ReportTypePreference::balance_sheet_consolidated(),
     )?;
-    let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
+    let dividends = data.dividend_reader()?;
     let ret20 = if want_f_momentum {
         Some(adjusted_20d_return(data, &panel)?)
     } else {
@@ -271,9 +270,10 @@ pub fn compute_requested_stateful(
     )?;
     let mut schedule =
         FinancialEventSchedule::from_pit_readers(&[income_reader.clone(), balance_reader.clone()]);
-    schedule.merge(FinancialEventSchedule::from_tables(&[
-        FinancialEventTable::dividend_ltm(data.daily(DatasetId::StockDividend)?),
-    ])?);
+    let dividend_reader = data.dividend_reader()?;
+    schedule.merge(FinancialEventSchedule::from_dividend_reader(
+        &dividend_reader,
+    ));
     let ret20 = if want_f_momentum {
         Some(adjusted_20d_return(data, &panel)?)
     } else {
@@ -372,7 +372,7 @@ struct FinancialSimilarityInputs<'a> {
     total_mv: PanelColumn,
     income: FinancialPitReader<'a>,
     balance: FinancialPitReader<'a>,
-    dividends: Vec<DividendRecord>,
+    dividends: DividendReader<'a>,
 }
 
 fn financial_similarity_inputs(data: &DataPool) -> Result<FinancialSimilarityInputs<'_>> {
@@ -386,7 +386,7 @@ fn financial_similarity_inputs(data: &DataPool) -> Result<FinancialSimilarityInp
         DatasetId::StockBalanceSheet,
         ReportTypePreference::balance_sheet_consolidated(),
     )?;
-    let dividends = parse_dividend_records(data.daily(DatasetId::StockDividend)?)?;
+    let dividends = data.dividend_reader()?;
     Ok(FinancialSimilarityInputs {
         panel,
         total_mv,
@@ -575,7 +575,7 @@ fn financial_metric_columns(
     income: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
     total_mv: &PanelColumn,
-    dividends: &[DividendRecord],
+    dividends: &DividendReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
 ) -> Result<Vec<PanelColumn>> {
     let mut metric_values = vec![vec![None; panel.shape_len()]; METRIC_DIM];
@@ -587,7 +587,7 @@ fn financial_metric_columns(
         .map(|trade_date| {
             (
                 trade_date,
-                dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date),
+                dividends.implemented_ltm_sum_by_stock(add_months(trade_date, -12), trade_date),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -649,7 +649,7 @@ fn financial_similarity_points_for_trade_date(
     income: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
     total_mv: &PanelColumn,
-    dividends: &[DividendRecord],
+    dividends: &DividendReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<FinancialMetricSlowSnapshot>,
     trade_date: i32,
 ) -> Result<Vec<FinancialPoint>> {
@@ -658,7 +658,8 @@ fn financial_similarity_points_for_trade_date(
     };
     let instrument_count = panel.instruments().len();
     let date_offset = date_idx * instrument_count;
-    let dividend_sums = dividend_sum_by_stock(dividends, add_months(trade_date, -12), trade_date);
+    let dividend_sums =
+        dividends.implemented_ltm_sum_by_stock(add_months(trade_date, -12), trade_date);
     let snapshots = cached_financial_stock_snapshots_for_date(
         panel,
         trade_date,
@@ -1231,69 +1232,6 @@ fn weighted_top_peer_returns(heaps: Vec<BinaryHeap<Reverse<PeerCandidate>>>) -> 
         .collect()
 }
 
-#[derive(Clone, Debug)]
-struct DividendRecord {
-    ts_code: String,
-    ann_date: i32,
-    ex_date: i32,
-    cash_div_tax: f64,
-    base_share: f64,
-    implemented: bool,
-}
-
-fn parse_dividend_records(table: &Table) -> Result<Vec<DividendRecord>> {
-    let ts_codes = table.required_utf8("ts_code")?;
-    let ann_dates = table.required_i32_date_cast("ann_date")?;
-    let div_proc = table.required_utf8("div_proc")?;
-    let cash_div_tax = table.required_f64_cast("cash_div_tax")?;
-    let ex_dates = table.required_i32_date_cast("ex_date")?;
-    let base_share = table.required_f64_cast("base_share")?;
-
-    let mut records = Vec::new();
-    for idx in 0..table.len {
-        let (Some(ts_code), Some(ann_date), Some(ex_date), Some(cash_div_tax), Some(base_share)) = (
-            ts_codes[idx].clone(),
-            ann_dates[idx],
-            ex_dates[idx],
-            clean(cash_div_tax[idx]),
-            clean(base_share[idx]).filter(|value| *value > 0.0),
-        ) else {
-            continue;
-        };
-        records.push(DividendRecord {
-            ts_code,
-            ann_date,
-            ex_date,
-            cash_div_tax,
-            base_share,
-            implemented: div_proc[idx]
-                .as_deref()
-                .is_some_and(|value| value.trim() == IMPLEMENTED_DIV_PROC),
-        });
-    }
-    Ok(records)
-}
-
-fn dividend_sum_by_stock(
-    records: &[DividendRecord],
-    start_date: i32,
-    trade_date: i32,
-) -> HashMap<&str, f64> {
-    let mut sums = HashMap::new();
-    for record in records {
-        if !record.implemented
-            || record.ann_date > trade_date
-            || record.ex_date > trade_date
-            || record.ex_date < start_date
-        {
-            continue;
-        }
-        *sums.entry(record.ts_code.as_str()).or_default() +=
-            record.cash_div_tax * record.base_share;
-    }
-    sums
-}
-
 fn add_months(date: i32, months_delta: i32) -> i32 {
     let (year, month, day) = ymd(date);
     let month_index = year * 12 + month as i32 - 1 + months_delta;
@@ -1332,7 +1270,7 @@ mod tests {
 
     use crate::core::{AssetClass, FactorContext, Frequency};
     use crate::data::{ColumnData, Table};
-    use crate::factor::common::FinancialPitIndex;
+    use crate::factor::common::{DividendIndex, FinancialPitIndex};
 
     use super::*;
 
@@ -1377,6 +1315,44 @@ mod tests {
         .expect("valid table");
         let dates = rows.iter().map(|(date, _)| *date).collect::<Vec<_>>();
         DailyPanel::from_table(&table, &test_context(dates)).expect("panel")
+    }
+
+    fn dividend_table(rows: &[(&str, i32, &str, f64, i32, f64)]) -> Table {
+        Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(
+                    rows.iter()
+                        .map(|row| Some(row.0.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(rows.iter().map(|row| Some(row.1)).collect()),
+            ),
+            (
+                "div_proc".to_string(),
+                ColumnData::Utf8(
+                    rows.iter()
+                        .map(|row| Some(row.2.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "cash_div_tax".to_string(),
+                ColumnData::F64(rows.iter().map(|row| Some(row.3)).collect()),
+            ),
+            (
+                "ex_date".to_string(),
+                ColumnData::I32(rows.iter().map(|row| Some(row.4)).collect()),
+            ),
+            (
+                "base_share".to_string(),
+                ColumnData::F64(rows.iter().map(|row| Some(row.5)).collect()),
+            ),
+        ]))
+        .expect("valid dividend table")
     }
 
     fn financial_similarity_income_table(ts_codes: &[&str]) -> Table {
@@ -1508,8 +1484,10 @@ mod tests {
             .unwrap();
 
         let mut cache = InstrumentAlignedSnapshotCache::default();
+        let dividend_index = DividendIndex::from_table(Arc::new(dividend_table(&[]))).unwrap();
+        let dividends = dividend_index.reader();
         let metric_columns =
-            financial_metric_columns(&panel, &income, &balance, &total_mv, &[], &mut cache)
+            financial_metric_columns(&panel, &income, &balance, &total_mv, &dividends, &mut cache)
                 .unwrap();
 
         assert_eq!(metric_columns[0].values()[2], Some(2.0));
@@ -1619,33 +1597,35 @@ mod tests {
 
     #[test]
     fn financial_similarity_dtop_uses_only_implemented_visible_records() {
-        let records = vec![
-            DividendRecord {
-                ts_code: "000001.SZ".to_string(),
-                ann_date: 20260101,
-                ex_date: 20260301,
-                cash_div_tax: 0.2,
-                base_share: 100.0,
-                implemented: true,
-            },
-            DividendRecord {
-                ts_code: "000001.SZ".to_string(),
-                ann_date: 20260101,
-                ex_date: 20260302,
-                cash_div_tax: 0.3,
-                base_share: 100.0,
-                implemented: false,
-            },
-            DividendRecord {
-                ts_code: "000001.SZ".to_string(),
-                ann_date: 20270101,
-                ex_date: 20260301,
-                cash_div_tax: 0.4,
-                base_share: 100.0,
-                implemented: true,
-            },
-        ];
-        let sums = dividend_sum_by_stock(&records, 20250424, 20260424);
+        let index = DividendIndex::from_table(Arc::new(dividend_table(&[
+            (
+                "000001.SZ",
+                20260101,
+                "\u{5b9e}\u{65bd}",
+                0.2,
+                20260301,
+                100.0,
+            ),
+            (
+                "000001.SZ",
+                20260101,
+                "\u{9884}\u{6848}",
+                0.3,
+                20260302,
+                100.0,
+            ),
+            (
+                "000001.SZ",
+                20270101,
+                "\u{5b9e}\u{65bd}",
+                0.4,
+                20260301,
+                100.0,
+            ),
+        ])))
+        .unwrap();
+        let reader = index.reader();
+        let sums = reader.implemented_ltm_sum_by_stock(20250424, 20260424);
 
         assert_close(*sums.get("000001.SZ").unwrap(), 20.0);
     }

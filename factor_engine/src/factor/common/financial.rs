@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::core::{DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue};
@@ -14,6 +14,8 @@ pub enum FinancialStatementDataset {
     BalanceSheet,
     CashFlow,
 }
+
+const IMPLEMENTED_DIV_PROC: &str = "\u{5b9e}\u{65bd}";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FinancialRecordMarker {
@@ -61,37 +63,24 @@ pub struct FinancialSyntheticMarker {
     pub value: i64,
 }
 
-#[derive(Clone, Debug)]
-pub struct FinancialEventTable<'a> {
-    table: &'a Table,
-}
-
-impl<'a> FinancialEventTable<'a> {
-    pub fn dividend_ltm(table: &'a Table) -> Self {
-        Self { table }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct FinancialEventSchedule {
     event_dates: BTreeSet<i32>,
 }
 
 impl FinancialEventSchedule {
-    pub fn from_tables(tables: &[FinancialEventTable<'_>]) -> Result<Self> {
-        let mut event_dates = BTreeSet::new();
-        for event_table in tables {
-            collect_dividend_ltm_event_dates(event_table.table, &mut event_dates)?;
-        }
-        Ok(Self { event_dates })
-    }
-
     pub fn from_pit_readers(readers: &[FinancialPitReader<'_>]) -> Self {
         let mut event_dates = BTreeSet::new();
         for reader in readers {
             collect_pit_reader_event_dates(reader, &mut event_dates);
         }
         Self { event_dates }
+    }
+
+    pub fn from_dividend_reader(reader: &DividendReader<'_>) -> Self {
+        Self {
+            event_dates: reader.index.event_dates.clone(),
+        }
     }
 
     pub fn merge(&mut self, other: Self) {
@@ -322,22 +311,112 @@ pub fn financial_event_trade_dates(
     event_trade_dates
 }
 
-fn collect_dividend_ltm_event_dates(table: &Table, event_dates: &mut BTreeSet<i32>) -> Result<()> {
-    if table.len == 0 {
-        return Ok(());
-    }
-    let ann_dates = table.required_i32_date_cast("ann_date")?;
-    let ex_dates = table.required_i32_date_cast("ex_date")?;
-    for idx in 0..table.len {
-        if let Some(date) = ann_dates[idx] {
-            event_dates.insert(date);
+#[derive(Clone, Debug)]
+pub struct DividendIndex {
+    records: Vec<DividendIndexedRecord>,
+    event_dates: BTreeSet<i32>,
+}
+
+#[derive(Clone, Debug)]
+struct DividendIndexedRecord {
+    ts_code: String,
+    ann_date: i32,
+    ex_date: i32,
+    cash_amount: f64,
+}
+
+impl DividendIndex {
+    pub fn from_table(table: Arc<Table>) -> Result<Self> {
+        let ts_codes = table.required_utf8("ts_code")?;
+        let ann_dates = table.required_i32_date_cast("ann_date")?;
+        let div_proc = table.required_utf8("div_proc")?;
+        let cash_div_tax = table.required_f64_cast("cash_div_tax")?;
+        let ex_dates = table.required_i32_date_cast("ex_date")?;
+        let base_share = table.required_f64_cast("base_share")?;
+
+        let mut records = Vec::new();
+        let mut event_dates = BTreeSet::new();
+        for idx in 0..table.len {
+            if !div_proc[idx]
+                .as_deref()
+                .is_some_and(|value| value.trim() == IMPLEMENTED_DIV_PROC)
+            {
+                continue;
+            }
+            let (
+                Some(ts_code),
+                Some(ann_date),
+                Some(ex_date),
+                Some(cash_div_tax),
+                Some(base_share),
+            ) = (
+                ts_codes[idx].clone(),
+                ann_dates[idx],
+                ex_dates[idx],
+                clean_f64(cash_div_tax[idx]),
+                clean_f64(base_share[idx]).filter(|value| *value > 0.0),
+            )
+            else {
+                continue;
+            };
+            records.push(DividendIndexedRecord {
+                ts_code,
+                ann_date,
+                ex_date,
+                cash_amount: cash_div_tax * base_share,
+            });
+            event_dates.insert(ann_date);
+            event_dates.insert(ex_date);
+            event_dates.insert(add_days(add_months(ex_date, 12), 1));
         }
-        if let Some(date) = ex_dates[idx] {
-            event_dates.insert(date);
-            event_dates.insert(add_days(add_months(date, 12), 1));
-        }
+        Ok(Self {
+            records,
+            event_dates,
+        })
     }
-    Ok(())
+
+    pub fn reader(&self) -> DividendReader<'_> {
+        DividendReader { index: self }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DividendReader<'a> {
+    index: &'a DividendIndex,
+}
+
+impl<'a> DividendReader<'a> {
+    pub fn implemented_ltm_sum(&self, ts_code: &str, start_date: i32, trade_date: i32) -> f64 {
+        self.index
+            .records
+            .iter()
+            .filter(|record| {
+                record.ts_code == ts_code
+                    && record.ann_date <= trade_date
+                    && record.ex_date <= trade_date
+                    && record.ex_date >= start_date
+            })
+            .map(|record| record.cash_amount)
+            .sum()
+    }
+
+    pub fn implemented_ltm_sum_by_stock(
+        &self,
+        start_date: i32,
+        trade_date: i32,
+    ) -> HashMap<&'a str, f64> {
+        let mut sums = HashMap::new();
+        for record in &self.index.records {
+            if record.ann_date > trade_date
+                || record.ex_date > trade_date
+                || record.ex_date < start_date
+            {
+                continue;
+            }
+            *sums.entry(record.ts_code.as_str()).or_default() += record.cash_amount;
+        }
+        sums
+    }
 }
 
 fn multi_target_context(context: &FactorContext, target_dates: &[i32]) -> FactorContext {
@@ -478,6 +557,18 @@ impl FinancialEventMarkerBuilder {
             self.include_reader_record_for_end_date(dataset, data, ts_code, trade_date, end_date);
             year -= 1;
         }
+        self
+    }
+
+    pub fn include_dividend_ltm(
+        &mut self,
+        reader: &DividendReader<'_>,
+        ts_code: &str,
+        start_date: i32,
+        trade_date: i32,
+    ) -> &mut Self {
+        let cash = reader.implemented_ltm_sum(ts_code, start_date, trade_date);
+        self.include_synthetic("dividend_ltm", f64_marker_value(cash));
         self
     }
 
@@ -1043,6 +1134,14 @@ fn add_days(date: i32, days_delta: i32) -> i32 {
     year * 10_000 + month as i32 * 100 + day as i32
 }
 
+fn clean_f64(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite())
+}
+
+fn f64_marker_value(value: f64) -> i64 {
+    i64::from_ne_bytes(value.to_bits().to_ne_bytes())
+}
+
 fn ymd(date: i32) -> (i32, u32, u32) {
     (
         date / 10_000,
@@ -1078,8 +1177,8 @@ mod tests {
 
     use super::{
         cached_financial_stock_snapshots, cached_financial_stock_snapshots_for_date,
-        compute_financial_event_snapshot_streaming, DailyPanel, EventDrivenCrossSectionCache,
-        FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialEventTable,
+        compute_financial_event_snapshot_streaming, DailyPanel, DividendIndex,
+        EventDrivenCrossSectionCache, FinancialEventMarkerBuilder, FinancialEventSchedule,
         FinancialPitIndex, FinancialStatementDataset, FinancialStockSnapshotCache,
         InstrumentAlignedSnapshotCache, ReportTypePreference,
     };
@@ -1221,6 +1320,44 @@ mod tests {
         .expect("valid table")
     }
 
+    fn dividend_table(rows: &[(&str, i32, &str, f64, i32, f64)]) -> Table {
+        Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(
+                    rows.iter()
+                        .map(|row| Some(row.0.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(rows.iter().map(|row| Some(row.1)).collect()),
+            ),
+            (
+                "div_proc".to_string(),
+                ColumnData::Utf8(
+                    rows.iter()
+                        .map(|row| Some(row.2.to_string()))
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "cash_div_tax".to_string(),
+                ColumnData::F64(rows.iter().map(|row| Some(row.3)).collect()),
+            ),
+            (
+                "ex_date".to_string(),
+                ColumnData::I32(rows.iter().map(|row| Some(row.4)).collect()),
+            ),
+            (
+                "base_share".to_string(),
+                ColumnData::F64(rows.iter().map(|row| Some(row.5)).collect()),
+            ),
+        ]))
+        .expect("valid dividend table")
+    }
+
     fn event_spec(id: &str) -> FactorSpec {
         FactorSpec {
             id: id.to_string(),
@@ -1276,21 +1413,21 @@ mod tests {
     fn financial_event_schedule_maps_statement_and_dividend_dates() {
         let statement = financial_table(&[(20251231, 20260103, 1, 0, 1.0)]);
         let statement_index = FinancialPitIndex::from_table(Arc::new(statement)).expect("index");
-        let dividend = Table::new(BTreeMap::from([
-            (
-                "ann_date".to_string(),
-                ColumnData::I32(vec![Some(20250115)]),
-            ),
-            ("ex_date".to_string(), ColumnData::I32(vec![Some(20250131)])),
-        ]))
-        .expect("valid dividend table");
+        let dividend_index = DividendIndex::from_table(Arc::new(dividend_table(&[(
+            "000001.SZ",
+            20250115,
+            "\u{5b9e}\u{65bd}",
+            0.1,
+            20250131,
+            100.0,
+        )])))
+        .expect("dividend index");
         let mut schedule = FinancialEventSchedule::from_pit_readers(&[
             statement_index.reader(ReportTypePreference::consolidated())
         ]);
-        schedule.merge(
-            FinancialEventSchedule::from_tables(&[FinancialEventTable::dividend_ltm(&dividend)])
-                .expect("schedule"),
-        );
+        schedule.merge(FinancialEventSchedule::from_dividend_reader(
+            &dividend_index.reader(),
+        ));
 
         assert!(schedule.has_event_after_until(Some(20260102), 20260105));
         assert!(!schedule.has_event_after_until(Some(20260105), 20260106));

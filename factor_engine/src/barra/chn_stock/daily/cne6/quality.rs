@@ -6,7 +6,7 @@ use crate::barra::common::{
     slope_over_time, sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
     zscore_panel_weighted_filled_zero,
 };
-use crate::barra::BarraExposure;
+use crate::barra::{BarraExposure, BarraSharedCache};
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
@@ -90,16 +90,18 @@ impl BarraExposure for StockDailyBarraCne6Quality {
         context: &FactorContext,
         data: &DataPool,
         state: &mut (dyn Any + Send),
+        shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let state = state
             .downcast_mut::<QualityComputeState>()
             .expect("QUALITY compute state type");
-        self.compute_with_caches(context, data, &mut state.caches)
+        self.compute_with_caches(context, data, &mut state.caches, shared_cache)
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let mut caches = QualityFinancialCaches::default();
-        self.compute_with_caches(context, data, &mut caches)
+        let shared_cache = BarraSharedCache::default();
+        self.compute_with_caches(context, data, &mut caches, &shared_cache)
     }
 }
 
@@ -109,6 +111,7 @@ impl StockDailyBarraCne6Quality {
         _context: &FactorContext,
         data: &DataPool,
         caches: &mut QualityFinancialCaches,
+        shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let basic_table = data.daily(DatasetId::StockDailyBasic)?;
@@ -116,45 +119,24 @@ impl StockDailyBarraCne6Quality {
         let close = panel.column("close")?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &[
-                "total_assets",
-                "total_liab",
-                "total_hldr_eqy_exc_min_int",
-                "money_cap",
-                "total_ncl",
-                "st_borr",
-                "lt_borr",
-                "bond_payable",
-                "non_cur_liab_due_1y",
-                "total_share",
-            ],
+        let balance = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &["revenue", "oper_cost", "n_income_attr_p"],
+        let income = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let income_annual = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &["revenue", "oper_cost", "n_income_attr_p"],
+        let income_annual = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockIncome,
             ReportTypePreference::consolidated(),
         )?;
-        let cashflow_annual = PitFinancialData::from_table(
-            data.daily(DatasetId::StockCashFlow)?,
-            &[
-                "n_cashflow_act",
-                "n_cashflow_inv_act",
-                "n_incr_cash_cash_equ",
-                "c_pay_acq_const_fiolta",
-                "net_profit",
-                "prov_depr_assets",
-                "depr_fa_coga_dpba",
-                "amort_intang_assets",
-                "lt_amort_deferred_exp",
-            ],
+        let cashflow_annual = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockCashFlow,
             ReportTypePreference::consolidated(),
         )?;
         let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;

@@ -6,7 +6,7 @@ use crate::barra::common::{
     fy1_quarter, log_return, panel_from_target_stock_map, safe_div, sqrt_circ_mv_weights,
     standardize_panel_industry_filled_weighted, zscore_panel_weighted_filled_zero,
 };
-use crate::barra::BarraExposure;
+use crate::barra::{BarraExposure, BarraSharedCache};
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
@@ -114,6 +114,7 @@ impl BarraExposure for StockDailyBarraCne6Value {
         context: &FactorContext,
         data: &DataPool,
         state: &mut (dyn Any + Send),
+        shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let state = state
             .downcast_mut::<ValueComputeState>()
@@ -123,13 +124,21 @@ impl BarraExposure for StockDailyBarraCne6Value {
             data,
             &mut state.cash_ep_cache,
             &mut state.ebit_ev_cache,
+            shared_cache,
         )
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let mut cash_ep_cache = InstrumentAlignedSnapshotCache::default();
         let mut ebit_ev_cache = InstrumentAlignedSnapshotCache::default();
-        self.compute_with_cache(context, data, &mut cash_ep_cache, &mut ebit_ev_cache)
+        let shared_cache = BarraSharedCache::default();
+        self.compute_with_cache(
+            context,
+            data,
+            &mut cash_ep_cache,
+            &mut ebit_ev_cache,
+            &shared_cache,
+        )
     }
 }
 
@@ -140,6 +149,7 @@ impl StockDailyBarraCne6Value {
         data: &DataPool,
         cash_ep_cache: &mut InstrumentAlignedSnapshotCache<CashEpSlowSnapshot>,
         ebit_ev_cache: &mut InstrumentAlignedSnapshotCache<EbitEvSlowSnapshot>,
+        shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let index_panel = data.index_daily_panel(MARKET_INDEX)?;
@@ -165,22 +175,22 @@ impl StockDailyBarraCne6Value {
         let analyst_ep =
             standardize_panel_industry_filled_weighted(&analyst_ep_raw, &weights, data)?;
 
-        let cashflow = PitFinancialData::from_table(
-            data.daily(DatasetId::StockCashFlow)?,
-            &["n_cashflow_act"],
+        let cashflow = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockCashFlow,
             ReportTypePreference::income_single_quarter(),
         )?;
         let cash_ep_raw = cash_ep_raw_column(panel, &total_mv, &cashflow, cash_ep_cache)?;
         let cash_ep = standardize_panel_industry_filled_weighted(&cash_ep_raw, &weights, data)?;
 
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &["ebit"],
+        let income = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockIncome,
             ReportTypePreference::consolidated(),
         )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &["total_liab", "money_cap"],
+        let balance = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let ebit_ev_raw = ebit_ev_raw_column(panel, &total_mv, &income, &balance, ebit_ev_cache)?;

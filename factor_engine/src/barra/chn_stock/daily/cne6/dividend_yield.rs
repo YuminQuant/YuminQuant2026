@@ -5,7 +5,7 @@ use crate::barra::common::{
     sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
     zscore_panel_weighted_filled_zero,
 };
-use crate::barra::BarraExposure;
+use crate::barra::{BarraExposure, BarraSharedCache};
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
@@ -69,6 +69,7 @@ impl BarraExposure for StockDailyBarraCne6DividendYield {
         context: &FactorContext,
         data: &DataPool,
         state: &mut (dyn Any + Send),
+        _shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let state = state
             .downcast_mut::<DividendYieldComputeState>()

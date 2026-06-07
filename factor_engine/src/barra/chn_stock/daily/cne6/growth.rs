@@ -6,7 +6,7 @@ use crate::barra::common::{
     slope_over_time, sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
     zscore_panel_weighted_filled_zero,
 };
-use crate::barra::BarraExposure;
+use crate::barra::{BarraExposure, BarraSharedCache};
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
@@ -59,16 +59,18 @@ impl BarraExposure for StockDailyBarraCne6Growth {
         context: &FactorContext,
         data: &DataPool,
         state: &mut (dyn Any + Send),
+        shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let state = state
             .downcast_mut::<GrowthComputeState>()
             .expect("GROWTH compute state type");
-        self.compute_with_cache(context, data, &mut state.slow_cache)
+        self.compute_with_cache(context, data, &mut state.slow_cache, shared_cache)
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let mut cache = InstrumentAlignedSnapshotCache::default();
-        self.compute_with_cache(context, data, &mut cache)
+        let shared_cache = BarraSharedCache::default();
+        self.compute_with_cache(context, data, &mut cache, &shared_cache)
     }
 }
 
@@ -78,16 +80,17 @@ impl StockDailyBarraCne6Growth {
         _context: &FactorContext,
         data: &DataPool,
         slow_cache: &mut InstrumentAlignedSnapshotCache<GrowthSlowSnapshot>,
+        shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let income = PitFinancialData::from_table(
-            data.daily(DatasetId::StockIncome)?,
-            &["basic_eps", "revenue"],
+        let income = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockIncome,
             ReportTypePreference::consolidated(),
         )?;
-        let balance = PitFinancialData::from_table(
-            data.daily(DatasetId::StockBalanceSheet)?,
-            &["total_share"],
+        let balance = shared_cache.pit_financial_data(
+            data,
+            DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
         let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;

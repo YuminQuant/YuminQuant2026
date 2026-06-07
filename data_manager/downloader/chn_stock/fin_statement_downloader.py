@@ -12,6 +12,55 @@ QUARTER_SUFFIXES = ("0331", "0630", "0930", "1231")
 REPORT_TYPES = tuple(range(1, 13))
 
 
+def _nullable_concat_dtype(dtype):
+    if pd.api.types.is_integer_dtype(dtype):
+        return pd.Int32Dtype() if str(dtype) == "int32" else pd.Int64Dtype()
+    if pd.api.types.is_bool_dtype(dtype):
+        return pd.BooleanDtype()
+    return dtype
+
+
+def _concat_preserve_schema(frames):
+    frames = [df for df in frames if df is not None and not df.empty]
+    if not frames:
+        return pd.DataFrame()
+
+    columns = []
+    seen = set()
+    for df in frames:
+        for col in df.columns:
+            if col not in seen:
+                columns.append(col)
+                seen.add(col)
+
+    dtypes = {}
+    for col in columns:
+        dtype = None
+        for df in frames:
+            if col in df.columns and df[col].notna().any():
+                dtype = df[col].dtype
+                break
+        dtypes[col] = _nullable_concat_dtype(dtype) if dtype is not None else object
+
+    aligned = []
+    for df in frames:
+        current = df.copy()
+        for col in columns:
+            if col not in current.columns:
+                current[col] = pd.Series(pd.NA, index=current.index, dtype=dtypes[col])
+        current = current.reindex(columns=columns)
+        for col, dtype in dtypes.items():
+            if current[col].dtype == dtype:
+                continue
+            try:
+                current[col] = current[col].astype(dtype)
+            except (TypeError, ValueError):
+                current[col] = current[col].astype(object)
+        aligned.append(current)
+
+    return pd.concat(aligned, ignore_index=True)
+
+
 def is_financial_statement_period(value: str) -> bool:
     value = str(value)
     return len(value) == 8 and value[:4].isdigit() and value[4:] in QUARTER_SUFFIXES
@@ -66,7 +115,6 @@ class BaseFinancialStatementDownloader(BaseDownloader):
 
             if "report_type" not in df.columns:
                 df["report_type"] = report_type
-            df = df.dropna(axis=1, how="all")
             all_chunks.append(df)
 
             if len(df) < self.page_limit:
@@ -76,7 +124,7 @@ class BaseFinancialStatementDownloader(BaseDownloader):
 
         if not all_chunks:
             return pd.DataFrame()
-        return pd.concat(all_chunks, ignore_index=True)
+        return _concat_preserve_schema(all_chunks)
 
     def _fetch_period(self, period):
         if not is_financial_statement_period(period):
@@ -95,7 +143,7 @@ class BaseFinancialStatementDownloader(BaseDownloader):
 
         if not period_chunks:
             return pd.DataFrame()
-        return pd.concat(period_chunks, ignore_index=True)
+        return _concat_preserve_schema(period_chunks)
 
     def _process_and_save(self, df_chunk):
         if df_chunk is None or df_chunk.empty:
@@ -149,7 +197,7 @@ class BaseFinancialStatementDownloader(BaseDownloader):
             df_save = df_year.drop(columns=["ann_year"])
             if os.path.exists(file_path):
                 df_old = pd.read_parquet(file_path)
-                df_save = pd.concat([df_old, df_save.dropna(axis=1, how="all")], ignore_index=True)
+                df_save = _concat_preserve_schema([df_old, df_save])
 
             subset_cols = [
                 col
@@ -256,13 +304,13 @@ class _LegacyVipPeriodDownloader(BaseDownloader):
                 df = api_func(period=period, limit=self.page_limit, offset=offset)
                 if df is None or df.empty:
                     break
-                chunks.append(df.dropna(axis=1, how="all"))
+                chunks.append(df)
                 if len(df) < self.page_limit:
                     break
                 offset += self.page_limit
                 self.safe_sleep()
             if chunks:
-                self._save_legacy(pd.concat(chunks, ignore_index=True))
+                self._save_legacy(_concat_preserve_schema(chunks))
 
     def _save_legacy(self, df_chunk):
         if "ann_date" not in df_chunk.columns:
@@ -273,7 +321,7 @@ class _LegacyVipPeriodDownloader(BaseDownloader):
             file_path = os.path.join(self.save_dir, f"{year}.parquet")
             df_save = df_year.drop(columns=["ann_year"])
             if os.path.exists(file_path):
-                df_save = pd.concat([pd.read_parquet(file_path), df_save], ignore_index=True)
+                df_save = _concat_preserve_schema([pd.read_parquet(file_path), df_save])
             df_save.drop_duplicates(keep="last", inplace=True)
             df_save.to_parquet(file_path, index=False)
 

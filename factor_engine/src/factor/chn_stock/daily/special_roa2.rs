@@ -8,7 +8,9 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_only};
+use crate::factor::common::stock_daily_ops::{
+    is_bj_stock, neutralize_size_only, neutralize_size_sector_with_inputs,
+};
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
@@ -19,6 +21,7 @@ use crate::factor::common::{
 use crate::factor::{Factor, FactorUpdatePolicy};
 
 const VERSION: &str = "0.1.0";
+const SPECIAL_ROA1_RAW_ID: &str = "__special_roa1_residual_raw";
 const SPECIAL_ROA2_RAW_ID: &str = "__special_roa2_residual_raw";
 const FINANCIAL_QUARTERS: usize = 5;
 const REGRESSOR_COUNT: usize = 7;
@@ -36,6 +39,13 @@ const INTAN_ASSETS_COLUMN: &str = "intan_assets";
 const INVENTORIES_COLUMN: &str = "inventories";
 const PB_COLUMN: &str = "pb";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegressionMode {
+    BySector,
+    WithIndustryDummies,
+}
+
+pub struct StockDailySpecialRoa1;
 pub struct StockDailySpecialRoa2;
 
 #[derive(Default)]
@@ -48,20 +58,20 @@ pub fn create() -> Box<dyn Factor> {
     Box::new(StockDailySpecialRoa2)
 }
 
-impl Factor for StockDailySpecialRoa2 {
+impl Factor for StockDailySpecialRoa1 {
     fn spec(&self) -> FactorSpec {
         FactorSpec {
-            id: "special_roa2".to_string(),
+            id: "special_roa1".to_string(),
             aliases: vec![
-                "Special ROA 2".to_string(),
-                "Idiosyncratic Profitability 2".to_string(),
+                "Special ROA 1".to_string(),
+                "Idiosyncratic Profitability 1".to_string(),
             ],
-            name: "special_roa2".to_string(),
+            name: "special_roa1".to_string(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
-            tags: tags(),
-            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses annual operating cost for inventory turnover, standardizes ROA and seven explanatory variables within SW level-1 industries, fills missing standardized explanatory variables with zero, then takes cross-sectional ridge residuals with SW level-2 industry fixed effects and neutralizes the residual against Barra SIZE. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
+            tags: tags_roa1(),
+            description: "DBZQ special ROA 1 factor. It builds PIT single-quarter ROA from net profit, uses annual operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry. The ridge lambda is 1 and the intercept is unpenalized. The residual is neutralized against Barra SIZE and CITIC level-1 sector.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -85,7 +95,216 @@ impl Factor for StockDailySpecialRoa2 {
                 DataRequest::new(DatasetId::StockDailyBasic, &[PB_COLUMN]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
                 DataRequest::new(DatasetId::StockBasic, &["list_date"]),
-                DataRequest::new(DatasetId::StockSwClassification, &["l1_code", "l2_code"]),
+                DataRequest::new(DatasetId::StockCiClassification, &["l1_code", "l2_code"]),
+            ],
+            intraday_raw_dependencies: Vec::new(),
+            lookback: Lookback { trading_days: 0 },
+        }
+    }
+
+    fn update_policy(&self) -> FactorUpdatePolicy {
+        FactorUpdatePolicy::FinancialEventSnapshot
+    }
+
+    fn initial_compute_state(&self, _requested_ids: &[String]) -> Box<dyn Any + Send> {
+        Box::new(SpecialRoa2ComputeState::default())
+    }
+
+    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let mut snapshot_cache = InstrumentAlignedSnapshotCache::default();
+        self.compute_with_snapshot_cache(data, &mut snapshot_cache)
+    }
+
+    fn compute_many_stateful(
+        &self,
+        requested_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+        state: &mut (dyn Any + Send),
+    ) -> Result<Vec<FactorSeries>> {
+        if requested_ids.iter().all(|id| id != "special_roa1") {
+            return Ok(Vec::new());
+        }
+        let state = state
+            .downcast_mut::<SpecialRoa2ComputeState>()
+            .ok_or_else(|| err("special_roa1 received incompatible event cache state"))?;
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let income_annual =
+            data.financial_reader(DatasetId::StockIncome, ReportTypePreference::consolidated())?;
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?;
+        let schedule = FinancialEventSchedule::from_pit_readers(&[
+            income.clone(),
+            income_annual.clone(),
+            balance.clone(),
+        ]);
+        let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
+        let sector_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockCiClassification)?,
+            ClassificationLevel::Sector,
+        )?;
+        let industry_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockCiClassification)?,
+            ClassificationLevel::Industry,
+        )?;
+        let raw_specs = [raw_spec(SPECIAL_ROA1_RAW_ID)];
+        let raw_series = compute_financial_event_snapshot_streaming(
+            requested_ids,
+            context,
+            data,
+            &mut state.raw_cache,
+            &schedule,
+            &raw_specs,
+            |_, _, data| {
+                self.compute_raw_with_prepared_inputs(
+                    data,
+                    &income,
+                    &income_annual,
+                    &balance,
+                    &list_dates,
+                    &sector_map,
+                    &industry_map,
+                    &mut state.snapshot_cache,
+                )
+                .map(|series| vec![series])
+            },
+        )?;
+        self.finalize_raw_series(data, raw_series)
+            .map(|series| vec![series])
+    }
+}
+
+impl StockDailySpecialRoa1 {
+    fn compute_with_snapshot_cache(
+        &self,
+        data: &DataPool,
+        snapshot_cache: &mut InstrumentAlignedSnapshotCache<SpecialRoa2Snapshot>,
+    ) -> Result<FactorSeries> {
+        let income = data.financial_reader(
+            DatasetId::StockIncome,
+            ReportTypePreference::income_single_quarter(),
+        )?;
+        let income_annual =
+            data.financial_reader(DatasetId::StockIncome, ReportTypePreference::consolidated())?;
+        let balance = data.financial_reader(
+            DatasetId::StockBalanceSheet,
+            ReportTypePreference::balance_sheet_consolidated(),
+        )?;
+        let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
+        let sector_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockCiClassification)?,
+            ClassificationLevel::Sector,
+        )?;
+        let industry_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockCiClassification)?,
+            ClassificationLevel::Industry,
+        )?;
+        let raw_series = vec![self.compute_raw_with_prepared_inputs(
+            data,
+            &income,
+            &income_annual,
+            &balance,
+            &list_dates,
+            &sector_map,
+            &industry_map,
+            snapshot_cache,
+        )?];
+        self.finalize_raw_series(data, raw_series)
+    }
+
+    fn compute_raw_with_prepared_inputs(
+        &self,
+        data: &DataPool,
+        income: &FinancialPitReader<'_>,
+        income_annual: &FinancialPitReader<'_>,
+        balance: &FinancialPitReader<'_>,
+        list_dates: &BTreeMap<String, i32>,
+        sector_map: &ClassificationMap,
+        industry_map: &ClassificationMap,
+        snapshot_cache: &mut InstrumentAlignedSnapshotCache<SpecialRoa2Snapshot>,
+    ) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let daily_basic = data.daily(DatasetId::StockDailyBasic)?;
+        let pb = panel.column_from_table(daily_basic, PB_COLUMN)?;
+        let raw = special_roa2_raw_column(
+            &panel,
+            &pb,
+            income,
+            income_annual,
+            balance,
+            list_dates,
+            sector_map,
+            industry_map,
+            snapshot_cache,
+            RegressionMode::BySector,
+        )?;
+        Ok(raw.to_factor_series(raw_spec(SPECIAL_ROA1_RAW_ID)))
+    }
+
+    fn finalize_raw_series(
+        &self,
+        data: &DataPool,
+        raw_series: Vec<FactorSeries>,
+    ) -> Result<FactorSeries> {
+        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let series = raw_series
+            .into_iter()
+            .find(|series| series.spec.id == SPECIAL_ROA1_RAW_ID)
+            .ok_or_else(|| err("missing special_roa1 raw series"))?;
+        let raw = factor_series_to_panel_column(&panel, &series)?;
+        let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+        let sector_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockCiClassification)?,
+            ClassificationLevel::Sector,
+        )?;
+        let neutralized = neutralize_size_sector_with_inputs(&raw, &panel, &size, &sector_map)?;
+        Ok(neutralized.to_factor_series(self.spec()))
+    }
+}
+
+impl Factor for StockDailySpecialRoa2 {
+    fn spec(&self) -> FactorSpec {
+        FactorSpec {
+            id: "special_roa2".to_string(),
+            aliases: vec![
+                "Special ROA 2".to_string(),
+                "Idiosyncratic Profitability 2".to_string(),
+            ],
+            name: "special_roa2".to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: VERSION.to_string(),
+            tags: tags(),
+            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses annual operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then takes cross-sectional ridge residuals with CITIC level-2 industry fixed effects and neutralizes the residual against Barra SIZE. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
+            dependencies: vec![
+                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+                DataRequest::financial_quarters(
+                    DatasetId::StockIncome,
+                    &[PROFIT_COLUMN, OPER_COST_COLUMN],
+                    FINANCIAL_QUARTERS,
+                ),
+                DataRequest::financial_quarters(
+                    DatasetId::StockBalanceSheet,
+                    &[
+                        TOTAL_ASSETS_COLUMN,
+                        TOTAL_LIAB_COLUMN,
+                        EQUITY_COLUMN,
+                        CUR_ASSETS_COLUMN,
+                        CUR_LIAB_COLUMN,
+                        INTAN_ASSETS_COLUMN,
+                        INVENTORIES_COLUMN,
+                    ],
+                    FINANCIAL_QUARTERS,
+                ),
+                DataRequest::new(DatasetId::StockDailyBasic, &[PB_COLUMN]),
+                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+                DataRequest::new(DatasetId::StockBasic, &["list_date"]),
+                DataRequest::new(DatasetId::StockCiClassification, &["l1_code", "l2_code"]),
             ],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 0 },
@@ -135,14 +354,14 @@ impl Factor for StockDailySpecialRoa2 {
         ]);
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
         let sector_map = ClassificationMap::from_table(
-            data.daily(DatasetId::StockSwClassification)?,
+            data.daily(DatasetId::StockCiClassification)?,
             ClassificationLevel::Sector,
         )?;
         let industry_map = ClassificationMap::from_table(
-            data.daily(DatasetId::StockSwClassification)?,
+            data.daily(DatasetId::StockCiClassification)?,
             ClassificationLevel::Industry,
         )?;
-        let raw_specs = [raw_spec()];
+        let raw_specs = [raw_spec(SPECIAL_ROA2_RAW_ID)];
         let raw_series = compute_financial_event_snapshot_streaming(
             requested_ids,
             context,
@@ -187,11 +406,11 @@ impl StockDailySpecialRoa2 {
         )?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
         let sector_map = ClassificationMap::from_table(
-            data.daily(DatasetId::StockSwClassification)?,
+            data.daily(DatasetId::StockCiClassification)?,
             ClassificationLevel::Sector,
         )?;
         let industry_map = ClassificationMap::from_table(
-            data.daily(DatasetId::StockSwClassification)?,
+            data.daily(DatasetId::StockCiClassification)?,
             ClassificationLevel::Industry,
         )?;
         let raw_series = vec![self.compute_raw_with_prepared_inputs(
@@ -231,8 +450,9 @@ impl StockDailySpecialRoa2 {
             sector_map,
             industry_map,
             snapshot_cache,
+            RegressionMode::WithIndustryDummies,
         )?;
-        Ok(raw.to_factor_series(raw_spec()))
+        Ok(raw.to_factor_series(raw_spec(SPECIAL_ROA2_RAW_ID)))
     }
 
     fn finalize_raw_series(
@@ -273,6 +493,7 @@ struct RawObservation {
 #[derive(Clone, Debug, PartialEq)]
 struct RidgeObservation {
     offset: usize,
+    sector: String,
     industry: String,
     y: f64,
     x: [f64; REGRESSOR_COUNT],
@@ -288,6 +509,7 @@ fn special_roa2_raw_column(
     sector_map: &ClassificationMap,
     industry_map: &ClassificationMap,
     cache: &mut InstrumentAlignedSnapshotCache<SpecialRoa2Snapshot>,
+    regression_mode: RegressionMode,
 ) -> Result<PanelColumn> {
     let instrument_count = panel.instruments().len();
     let mut values = vec![None; panel.shape_len()];
@@ -342,7 +564,13 @@ fn special_roa2_raw_column(
             }
         }
         let standardized = standardize_observations_by_sector(&raw_observations);
-        for (offset, residual) in ridge_residuals_with_industry_dummies(&standardized) {
+        let residuals = match regression_mode {
+            RegressionMode::BySector => ridge_residuals_by_sector(&standardized),
+            RegressionMode::WithIndustryDummies => {
+                ridge_residuals_with_industry_dummies(&standardized)
+            }
+        };
+        for (offset, residual) in residuals {
             values[offset] = Some(residual);
         }
     }
@@ -573,6 +801,7 @@ fn standardize_observations_by_sector(observations: &[RawObservation]) -> Vec<Ri
             if y.is_finite() && has_signal && x.iter().all(|value| value.is_finite()) {
                 output.push(RidgeObservation {
                     offset: observation.offset,
+                    sector: observation.sector.clone(),
                     industry: observation.industry.clone(),
                     y,
                     x,
@@ -644,6 +873,59 @@ fn ridge_residuals_with_industry_dummies(observations: &[RidgeObservation]) -> V
                 .then_some((observation.offset, residual))
         })
         .collect()
+}
+
+fn ridge_residuals_by_sector(observations: &[RidgeObservation]) -> Vec<(usize, f64)> {
+    let mut grouped = BTreeMap::<&str, Vec<&RidgeObservation>>::new();
+    for observation in observations {
+        grouped
+            .entry(observation.sector.as_str())
+            .or_default()
+            .push(observation);
+    }
+    let param_count = 1 + REGRESSOR_COUNT;
+    let min_obs = 20.max(param_count + 1);
+    let mut output = Vec::new();
+    for group in grouped.values() {
+        if group.len() < min_obs {
+            continue;
+        }
+        let Some(beta) = ridge_beta_continuous(group) else {
+            continue;
+        };
+        for observation in group {
+            let mut fitted = beta[0];
+            for idx in 0..REGRESSOR_COUNT {
+                fitted += beta[idx + 1] * observation.x[idx];
+            }
+            let residual = observation.y - fitted;
+            if residual.is_finite() {
+                output.push((observation.offset, residual));
+            }
+        }
+    }
+    output
+}
+
+fn ridge_beta_continuous(observations: &[&RidgeObservation]) -> Option<Vec<f64>> {
+    let param_count = 1 + REGRESSOR_COUNT;
+    let mut xtx = vec![vec![0.0; param_count]; param_count];
+    let mut xty = vec![0.0; param_count];
+    for observation in observations {
+        let mut row = [0.0; REGRESSOR_COUNT + 1];
+        row[0] = 1.0;
+        row[1..].copy_from_slice(&observation.x);
+        for i in 0..param_count {
+            xty[i] += row[i] * observation.y;
+            for j in 0..param_count {
+                xtx[i][j] += row[i] * row[j];
+            }
+        }
+    }
+    for idx in 1..=REGRESSOR_COUNT {
+        xtx[idx][idx] += RIDGE_LAMBDA;
+    }
+    solve_linear_system(xtx, xty)
 }
 
 fn ridge_beta(
@@ -777,16 +1059,16 @@ fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
 }
 
-fn raw_spec() -> FactorSpec {
+fn raw_spec(raw_id: &str) -> FactorSpec {
     FactorSpec {
-        id: SPECIAL_ROA2_RAW_ID.to_string(),
+        id: raw_id.to_string(),
         aliases: Vec::new(),
-        name: SPECIAL_ROA2_RAW_ID.to_string(),
+        name: raw_id.to_string(),
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
         tags: vec!["internal".to_string(), "financial_raw".to_string()],
-        description: "Internal special_roa2 ridge residual raw series.".to_string(),
+        description: "Internal special ROA ridge residual raw series.".to_string(),
         dependencies: Vec::new(),
         intraday_raw_dependencies: Vec::new(),
         lookback: Lookback { trading_days: 0 },
@@ -804,9 +1086,32 @@ fn tags() -> Vec<String> {
         "ridge",
         "residual",
         "industry_dummy",
+        "citic",
         "neutralize",
         "barra",
         "size",
+        "daily",
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .collect()
+}
+
+fn tags_roa1() -> Vec<String> {
+    [
+        "DBZQ",
+        "financial",
+        "fundamental",
+        "pit",
+        "profitability",
+        "roa",
+        "ridge",
+        "residual",
+        "citic",
+        "neutralize",
+        "barra",
+        "size",
+        "sector",
         "daily",
     ]
     .iter()
@@ -963,6 +1268,7 @@ mod tests {
         for idx in 0..10 {
             rows.push(RidgeObservation {
                 offset: idx,
+                sector: "S".to_string(),
                 industry: "A".to_string(),
                 y: 1.0,
                 x: [0.0; REGRESSOR_COUNT],
@@ -971,6 +1277,7 @@ mod tests {
         for idx in 10..20 {
             rows.push(RidgeObservation {
                 offset: idx,
+                sector: "S".to_string(),
                 industry: "B".to_string(),
                 y: 3.0,
                 x: [0.0; REGRESSOR_COUNT],
@@ -981,6 +1288,45 @@ mod tests {
         for (_, residual) in residuals {
             assert!(residual.abs() < 1e-9, "residual={residual}");
         }
+    }
+
+    #[test]
+    fn ridge_residuals_by_sector_fit_each_sector_independently() {
+        let mut rows = Vec::new();
+        for idx in 0..20 {
+            rows.push(RidgeObservation {
+                offset: idx,
+                sector: "S1".to_string(),
+                industry: "A".to_string(),
+                y: 1.0,
+                x: [0.0; REGRESSOR_COUNT],
+            });
+        }
+        for idx in 20..40 {
+            rows.push(RidgeObservation {
+                offset: idx,
+                sector: "S2".to_string(),
+                industry: "B".to_string(),
+                y: 5.0,
+                x: [0.0; REGRESSOR_COUNT],
+            });
+        }
+        let residuals = ridge_residuals_by_sector(&rows);
+        assert_eq!(residuals.len(), 40);
+        for (_, residual) in residuals {
+            assert!(residual.abs() < 1e-9, "residual={residual}");
+        }
+    }
+
+    #[test]
+    fn special_roa1_spec_has_expected_metadata() {
+        let spec = StockDailySpecialRoa1.spec();
+        assert_eq!(spec.id, "special_roa1");
+        assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
+        assert!(spec.tags.iter().any(|tag| tag == "sector"));
+        assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
+        assert!(!spec.tags.iter().any(|tag| tag == "industry_dummy"));
+        assert_eq!(spec.lookback.trading_days, 0);
     }
 
     #[test]

@@ -8,8 +8,7 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::is_bj_stock;
-use crate::factor::common::stock_daily_ops::neutralize_size_only;
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_only};
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
@@ -26,7 +25,7 @@ const REGRESSOR_COUNT: usize = 7;
 const RIDGE_LAMBDA: f64 = 1.0;
 const EPS: f64 = 1e-12;
 
-const PROFIT_COLUMN: &str = "n_income_attr_p";
+const PROFIT_COLUMN: &str = "n_income";
 const OPER_COST_COLUMN: &str = "oper_cost";
 const TOTAL_ASSETS_COLUMN: &str = "total_assets";
 const TOTAL_LIAB_COLUMN: &str = "total_liab";
@@ -62,7 +61,7 @@ impl Factor for StockDailySpecialRoa2 {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from attributable net profit, standardizes ROA and seven explanatory variables within SW level-1 industries, then takes cross-sectional ridge residuals with SW level-2 industry fixed effects and neutralizes the residual against Barra SIZE. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
+            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses annual operating cost for inventory turnover, standardizes ROA and seven explanatory variables within SW level-1 industries, fills missing standardized explanatory variables with zero, then takes cross-sectional ridge residuals with SW level-2 industry fixed effects and neutralizes the residual against Barra SIZE. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -123,11 +122,17 @@ impl Factor for StockDailySpecialRoa2 {
             DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
+        let income_annual =
+            data.financial_reader(DatasetId::StockIncome, ReportTypePreference::consolidated())?;
         let balance = data.financial_reader(
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let schedule = FinancialEventSchedule::from_pit_readers(&[income.clone(), balance.clone()]);
+        let schedule = FinancialEventSchedule::from_pit_readers(&[
+            income.clone(),
+            income_annual.clone(),
+            balance.clone(),
+        ]);
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockSwClassification)?,
@@ -149,6 +154,7 @@ impl Factor for StockDailySpecialRoa2 {
                 self.compute_raw_with_prepared_inputs(
                     data,
                     &income,
+                    &income_annual,
                     &balance,
                     &list_dates,
                     &sector_map,
@@ -173,6 +179,8 @@ impl StockDailySpecialRoa2 {
             DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
+        let income_annual =
+            data.financial_reader(DatasetId::StockIncome, ReportTypePreference::consolidated())?;
         let balance = data.financial_reader(
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
@@ -189,6 +197,7 @@ impl StockDailySpecialRoa2 {
         let raw_series = vec![self.compute_raw_with_prepared_inputs(
             data,
             &income,
+            &income_annual,
             &balance,
             &list_dates,
             &sector_map,
@@ -202,6 +211,7 @@ impl StockDailySpecialRoa2 {
         &self,
         data: &DataPool,
         income: &FinancialPitReader<'_>,
+        income_annual: &FinancialPitReader<'_>,
         balance: &FinancialPitReader<'_>,
         list_dates: &BTreeMap<String, i32>,
         sector_map: &ClassificationMap,
@@ -215,6 +225,7 @@ impl StockDailySpecialRoa2 {
             &panel,
             &pb,
             income,
+            income_annual,
             balance,
             list_dates,
             sector_map,
@@ -243,11 +254,11 @@ impl StockDailySpecialRoa2 {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SpecialRoa2Snapshot {
     roa: f64,
-    debt_to_assets: f64,
-    na_yoy: f64,
-    working_assets_to_assets: f64,
-    intan_to_assets: f64,
-    inventory_turnover: f64,
+    debt_to_assets: Option<f64>,
+    na_yoy: Option<f64>,
+    working_assets_to_assets: Option<f64>,
+    intan_to_assets: Option<f64>,
+    inventory_turnover: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -256,7 +267,7 @@ struct RawObservation {
     sector: String,
     industry: String,
     y: f64,
-    x: [f64; REGRESSOR_COUNT],
+    x: [Option<f64>; REGRESSOR_COUNT],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -271,6 +282,7 @@ fn special_roa2_raw_column(
     panel: &DailyPanel,
     pb: &PanelColumn,
     income: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
     list_dates: &BTreeMap<String, i32>,
     sector_map: &ClassificationMap,
@@ -291,13 +303,14 @@ fn special_roa2_raw_column(
             |_, ts_code, offset| {
                 is_bj_stock(ts_code)
                     || !panel.is_present_offset(offset)
-                    || !list_dates.contains_key(ts_code)
                     || sector_map.group_for(trade_date, ts_code).is_none()
                     || industry_map.group_for(trade_date, ts_code).is_none()
             },
-            |trade_date, ts_code, _| special_roa2_marker(ts_code, trade_date, income, balance),
             |trade_date, ts_code, _| {
-                special_roa2_snapshot_for_stock(ts_code, trade_date, income, balance)
+                special_roa2_marker(ts_code, trade_date, income, income_annual, balance)
+            },
+            |trade_date, ts_code, _| {
+                special_roa2_snapshot_for_stock(ts_code, trade_date, income, income_annual, balance)
             },
         );
         let date_offset = date_idx * instrument_count;
@@ -310,15 +323,11 @@ fn special_roa2_raw_column(
             let Some(snapshot) = snapshots[instrument_idx] else {
                 continue;
             };
-            let Some(list_date) = list_dates.get(ts_code).copied() else {
-                continue;
-            };
-            let Some(age_log) = listing_age_log(trade_date, list_date) else {
-                continue;
-            };
-            let Some(pb_value) = clean(pb.values()[offset]) else {
-                continue;
-            };
+            let age_log = list_dates
+                .get(ts_code)
+                .copied()
+                .and_then(|list_date| listing_age_log(trade_date, list_date));
+            let pb_value = clean(pb.values()[offset]);
             let (Some(sector), Some(industry)) = (
                 sector_map.group_for(trade_date, ts_code),
                 industry_map.group_for(trade_date, ts_code),
@@ -346,8 +355,8 @@ fn raw_observation_from_snapshot(
     sector: &str,
     industry: &str,
     snapshot: SpecialRoa2Snapshot,
-    pb: f64,
-    age_log: f64,
+    pb: Option<f64>,
+    age_log: Option<f64>,
 ) -> Option<RawObservation> {
     let y = snapshot.roa;
     let x = [
@@ -359,7 +368,7 @@ fn raw_observation_from_snapshot(
         snapshot.inventory_turnover,
         age_log,
     ];
-    if !y.is_finite() || x.iter().any(|value| !value.is_finite()) {
+    if !y.is_finite() || x.iter().flatten().any(|value| !value.is_finite()) {
         return None;
     }
     Some(RawObservation {
@@ -375,6 +384,7 @@ fn special_roa2_marker(
     ts_code: &str,
     trade_date: i32,
     income: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let end_t = income.latest_quarter_end_date(ts_code, trade_date)?;
@@ -387,6 +397,12 @@ fn special_roa2_marker(
         ts_code,
         trade_date,
         end_t,
+    );
+    builder.include_reader_latest_annual(
+        FinancialStatementDataset::Income,
+        income_annual,
+        ts_code,
+        trade_date,
     );
     for end_date in [end_t, end_t1, end_t4] {
         builder.include_reader_record_for_end_date(
@@ -404,66 +420,66 @@ fn special_roa2_snapshot_for_stock(
     ts_code: &str,
     trade_date: i32,
     income: &FinancialPitReader<'_>,
+    income_annual: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
 ) -> Option<SpecialRoa2Snapshot> {
     let end_t = income.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
     let end_t4 = quarter_lag(end_t, 4)?;
     let income_t = income.record_for_end_date(ts_code, trade_date, end_t)?;
+    let annual_oper_cost = income_annual.latest_annual_value(ts_code, trade_date, OPER_COST_COLUMN);
     let balance_t = balance.record_for_end_date(ts_code, trade_date, end_t)?;
     let balance_t1 = balance.record_for_end_date(ts_code, trade_date, end_t1)?;
     let balance_t4 = balance.record_for_end_date(ts_code, trade_date, end_t4)?;
-    special_roa2_snapshot_from_records(income_t, balance_t, balance_t1, balance_t4)
+    special_roa2_snapshot_from_records(
+        income_t,
+        annual_oper_cost,
+        balance_t,
+        balance_t1,
+        balance_t4,
+    )
 }
 
 fn special_roa2_snapshot_from_records(
     income_t: PitFinancialRecordView<'_>,
+    annual_oper_cost: Option<f64>,
     balance_t: PitFinancialRecordView<'_>,
     balance_t1: PitFinancialRecordView<'_>,
     balance_t4: PitFinancialRecordView<'_>,
 ) -> Option<SpecialRoa2Snapshot> {
     let profit = clean(income_t.column(PROFIT_COLUMN))?;
-    let oper_cost = clean(income_t.column(OPER_COST_COLUMN))?;
     let assets_t = clean(balance_t.column(TOTAL_ASSETS_COLUMN)).filter(|value| *value > EPS)?;
     let assets_t1 = clean(balance_t1.column(TOTAL_ASSETS_COLUMN)).filter(|value| *value > EPS)?;
-    let total_liab = clean(balance_t.column(TOTAL_LIAB_COLUMN))?;
-    let equity_t = clean(balance_t.column(EQUITY_COLUMN))?;
-    let equity_t4 = clean(balance_t4.column(EQUITY_COLUMN))?;
-    let cur_assets = clean(balance_t.column(CUR_ASSETS_COLUMN))?;
-    let cur_liab = clean(balance_t.column(CUR_LIAB_COLUMN))?;
-    let intan_assets = clean(balance_t.column(INTAN_ASSETS_COLUMN)).unwrap_or(0.0);
-    let inventories_t = clean(balance_t.column(INVENTORIES_COLUMN)).unwrap_or(0.0);
-    let inventories_t1 = clean(balance_t1.column(INVENTORIES_COLUMN)).unwrap_or(0.0);
     special_roa2_snapshot_from_values(SpecialRoa2Inputs {
         profit,
-        oper_cost,
+        oper_cost: clean(annual_oper_cost),
         assets_t,
         assets_t1,
-        total_liab,
-        equity_t,
-        equity_t4,
-        cur_assets,
-        cur_liab,
-        intan_assets,
-        inventories_t,
-        inventories_t1,
+        total_liab: clean(balance_t.column(TOTAL_LIAB_COLUMN)),
+        equity_t: clean(balance_t.column(EQUITY_COLUMN)),
+        equity_t4: clean(balance_t4.column(EQUITY_COLUMN)),
+        cur_assets: clean(balance_t.column(CUR_ASSETS_COLUMN)),
+        cur_liab: clean(balance_t.column(CUR_LIAB_COLUMN)),
+        intan_assets: clean(balance_t.column(INTAN_ASSETS_COLUMN)),
+        inventories_t: clean(balance_t.column(INVENTORIES_COLUMN)),
+        inventories_t1: clean(balance_t1.column(INVENTORIES_COLUMN)),
     })
 }
 
 #[derive(Clone, Copy, Debug)]
 struct SpecialRoa2Inputs {
     profit: f64,
-    oper_cost: f64,
+    oper_cost: Option<f64>,
     assets_t: f64,
     assets_t1: f64,
-    total_liab: f64,
-    equity_t: f64,
-    equity_t4: f64,
-    cur_assets: f64,
-    cur_liab: f64,
-    intan_assets: f64,
-    inventories_t: f64,
-    inventories_t1: f64,
+    total_liab: Option<f64>,
+    equity_t: Option<f64>,
+    equity_t4: Option<f64>,
+    cur_assets: Option<f64>,
+    cur_liab: Option<f64>,
+    intan_assets: Option<f64>,
+    inventories_t: Option<f64>,
+    inventories_t1: Option<f64>,
 }
 
 fn special_roa2_snapshot_from_values(input: SpecialRoa2Inputs) -> Option<SpecialRoa2Snapshot> {
@@ -471,27 +487,57 @@ fn special_roa2_snapshot_from_values(input: SpecialRoa2Inputs) -> Option<Special
         return None;
     }
     let avg_assets = input.assets_t + input.assets_t1;
-    if avg_assets <= EPS || input.equity_t4.abs() <= EPS {
+    if avg_assets <= EPS {
         return None;
     }
-    let inventory_base = input.inventories_t + input.inventories_t1;
-    if inventory_base <= EPS {
-        return None;
-    }
+    let debt_to_assets = input
+        .total_liab
+        .map(|total_liab| total_liab / input.assets_t);
+    let na_yoy = input
+        .equity_t
+        .zip(input.equity_t4)
+        .and_then(|(equity_t, equity_t4)| {
+            (equity_t4.abs() > EPS).then_some((equity_t - equity_t4) / equity_t4.abs())
+        });
+    let working_assets_to_assets = input
+        .cur_assets
+        .zip(input.cur_liab)
+        .map(|(cur_assets, cur_liab)| (cur_assets - cur_liab) / input.assets_t);
+    let intan_to_assets = input
+        .intan_assets
+        .map(|intan_assets| intan_assets / input.assets_t);
+    let inventory_turnover = input
+        .oper_cost
+        .zip(input.inventories_t.zip(input.inventories_t1))
+        .and_then(|(oper_cost, (inventories_t, inventories_t1))| {
+            let inventory_base = inventories_t + inventories_t1;
+            if inventory_base < -EPS {
+                None
+            } else if inventory_base.abs() <= EPS {
+                Some(0.0)
+            } else {
+                Some(2.0 * oper_cost / inventory_base)
+            }
+        });
     let snapshot = SpecialRoa2Snapshot {
         roa: 2.0 * input.profit / avg_assets,
-        debt_to_assets: input.total_liab / input.assets_t,
-        na_yoy: (input.equity_t - input.equity_t4) / input.equity_t4.abs(),
-        working_assets_to_assets: (input.cur_assets - input.cur_liab) / input.assets_t,
-        intan_to_assets: input.intan_assets / input.assets_t,
-        inventory_turnover: 2.0 * input.oper_cost / inventory_base,
+        debt_to_assets,
+        na_yoy,
+        working_assets_to_assets,
+        intan_to_assets,
+        inventory_turnover,
     };
     (snapshot.roa.is_finite()
-        && snapshot.debt_to_assets.is_finite()
-        && snapshot.na_yoy.is_finite()
-        && snapshot.working_assets_to_assets.is_finite()
-        && snapshot.intan_to_assets.is_finite()
-        && snapshot.inventory_turnover.is_finite())
+        && [
+            snapshot.debt_to_assets,
+            snapshot.na_yoy,
+            snapshot.working_assets_to_assets,
+            snapshot.intan_to_assets,
+            snapshot.inventory_turnover,
+        ]
+        .into_iter()
+        .flatten()
+        .all(|value| value.is_finite()))
     .then_some(snapshot)
 }
 
@@ -509,24 +555,22 @@ fn standardize_observations_by_sector(observations: &[RawObservation]) -> Vec<Ri
             continue;
         };
         let mut x_stats = Vec::with_capacity(REGRESSOR_COUNT);
-        let mut valid = true;
         for idx in 0..REGRESSOR_COUNT {
-            let Some(stats) = mean_std(group.iter().map(|observation| observation.x[idx])) else {
-                valid = false;
-                break;
-            };
-            x_stats.push(stats);
-        }
-        if !valid {
-            continue;
+            x_stats.push(mean_std(
+                group.iter().filter_map(|observation| observation.x[idx]),
+            ));
         }
         for observation in group {
             let y = (observation.y - y_stats.0) / y_stats.1;
             let mut x = [0.0; REGRESSOR_COUNT];
             for idx in 0..REGRESSOR_COUNT {
-                x[idx] = (observation.x[idx] - x_stats[idx].0) / x_stats[idx].1;
+                x[idx] = match (observation.x[idx], x_stats[idx]) {
+                    (Some(value), Some(stats)) => (value - stats.0) / stats.1,
+                    _ => 0.0,
+                };
             }
-            if y.is_finite() && x.iter().all(|value| value.is_finite()) {
+            let has_signal = x.iter().any(|value| value.abs() > EPS);
+            if y.is_finite() && has_signal && x.iter().all(|value| value.is_finite()) {
                 output.push(RidgeObservation {
                     offset: observation.offset,
                     industry: observation.industry.clone(),
@@ -783,62 +827,67 @@ mod tests {
     }
 
     #[test]
-    fn special_roa2_formula_uses_attributable_profit_and_expected_ratios() {
+    fn special_roa2_formula_uses_net_profit_and_expected_ratios() {
         let snapshot = special_roa2_snapshot_from_values(SpecialRoa2Inputs {
             profit: 20.0,
-            oper_cost: 60.0,
+            oper_cost: Some(60.0),
             assets_t: 120.0,
             assets_t1: 80.0,
-            total_liab: 30.0,
-            equity_t: 50.0,
-            equity_t4: 40.0,
-            cur_assets: 70.0,
-            cur_liab: 20.0,
-            intan_assets: 6.0,
-            inventories_t: 10.0,
-            inventories_t1: 20.0,
+            total_liab: Some(30.0),
+            equity_t: Some(50.0),
+            equity_t4: Some(40.0),
+            cur_assets: Some(70.0),
+            cur_liab: Some(20.0),
+            intan_assets: Some(6.0),
+            inventories_t: Some(10.0),
+            inventories_t1: Some(20.0),
         })
         .expect("snapshot");
         assert_close(snapshot.roa, 0.2);
-        assert_close(snapshot.debt_to_assets, 0.25);
-        assert_close(snapshot.na_yoy, 0.25);
-        assert_close(snapshot.working_assets_to_assets, 50.0 / 120.0);
-        assert_close(snapshot.intan_to_assets, 0.05);
-        assert_close(snapshot.inventory_turnover, 4.0);
+        assert_close(snapshot.debt_to_assets.unwrap(), 0.25);
+        assert_close(snapshot.na_yoy.unwrap(), 0.25);
+        assert_close(snapshot.working_assets_to_assets.unwrap(), 50.0 / 120.0);
+        assert_close(snapshot.intan_to_assets.unwrap(), 0.05);
+        assert_close(snapshot.inventory_turnover.unwrap(), 4.0);
     }
 
     #[test]
     fn special_roa2_rejects_invalid_denominators() {
         assert!(special_roa2_snapshot_from_values(SpecialRoa2Inputs {
             profit: 20.0,
-            oper_cost: 60.0,
+            oper_cost: Some(60.0),
             assets_t: 0.0,
             assets_t1: 80.0,
-            total_liab: 30.0,
-            equity_t: 50.0,
-            equity_t4: 40.0,
-            cur_assets: 70.0,
-            cur_liab: 20.0,
-            intan_assets: 6.0,
-            inventories_t: 10.0,
-            inventories_t1: 20.0,
+            total_liab: Some(30.0),
+            equity_t: Some(50.0),
+            equity_t4: Some(40.0),
+            cur_assets: Some(70.0),
+            cur_liab: Some(20.0),
+            intan_assets: Some(6.0),
+            inventories_t: Some(10.0),
+            inventories_t1: Some(20.0),
         })
         .is_none());
-        assert!(special_roa2_snapshot_from_values(SpecialRoa2Inputs {
+    }
+
+    #[test]
+    fn special_roa2_zero_inventory_sets_turnover_to_zero() {
+        let snapshot = special_roa2_snapshot_from_values(SpecialRoa2Inputs {
             profit: 20.0,
-            oper_cost: 60.0,
+            oper_cost: Some(60.0),
             assets_t: 120.0,
             assets_t1: 80.0,
-            total_liab: 30.0,
-            equity_t: 50.0,
-            equity_t4: 0.0,
-            cur_assets: 70.0,
-            cur_liab: 20.0,
-            intan_assets: 6.0,
-            inventories_t: 0.0,
-            inventories_t1: 0.0,
+            total_liab: Some(30.0),
+            equity_t: Some(50.0),
+            equity_t4: Some(40.0),
+            cur_assets: Some(70.0),
+            cur_liab: Some(20.0),
+            intan_assets: Some(6.0),
+            inventories_t: Some(0.0),
+            inventories_t1: Some(0.0),
         })
-        .is_none());
+        .expect("snapshot");
+        assert_close(snapshot.inventory_turnover.unwrap(), 0.0);
     }
 
     #[test]
@@ -849,21 +898,60 @@ mod tests {
     }
 
     #[test]
-    fn sector_standardization_requires_nonzero_variable_dispersion() {
+    fn sector_standardization_fills_missing_explanatory_values_after_zscore() {
         let rows = vec![
             RawObservation {
                 offset: 0,
                 sector: "A".to_string(),
                 industry: "A1".to_string(),
                 y: 1.0,
-                x: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+                x: [
+                    Some(1.0),
+                    None,
+                    Some(3.0),
+                    Some(4.0),
+                    Some(5.0),
+                    Some(6.0),
+                    Some(7.0),
+                ],
             },
             RawObservation {
                 offset: 1,
                 sector: "A".to_string(),
                 industry: "A2".to_string(),
                 y: 2.0,
-                x: [1.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                x: [
+                    Some(2.0),
+                    Some(3.0),
+                    Some(4.0),
+                    Some(5.0),
+                    Some(6.0),
+                    Some(7.0),
+                    Some(8.0),
+                ],
+            },
+        ];
+        let standardized = standardize_observations_by_sector(&rows);
+        assert_eq!(standardized.len(), 2);
+        assert_close(standardized[0].x[1], 0.0);
+    }
+
+    #[test]
+    fn sector_standardization_skips_all_zero_explanatory_vector() {
+        let rows = vec![
+            RawObservation {
+                offset: 0,
+                sector: "A".to_string(),
+                industry: "A1".to_string(),
+                y: 1.0,
+                x: [None; REGRESSOR_COUNT],
+            },
+            RawObservation {
+                offset: 1,
+                sector: "A".to_string(),
+                industry: "A2".to_string(),
+                y: 2.0,
+                x: [None; REGRESSOR_COUNT],
             },
         ];
         assert!(standardize_observations_by_sector(&rows).is_empty());

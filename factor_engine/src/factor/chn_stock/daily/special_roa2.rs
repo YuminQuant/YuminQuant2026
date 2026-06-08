@@ -42,7 +42,7 @@ const PB_COLUMN: &str = "pb";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RegressionMode {
     BySector,
-    WithIndustryDummies,
+    BySectorWithIndustryDummies,
 }
 
 pub struct StockDailySpecialRoa1;
@@ -71,7 +71,7 @@ impl Factor for StockDailySpecialRoa1 {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags_roa1(),
-            description: "DBZQ special ROA 1 factor. It builds PIT single-quarter ROA from net profit, uses annual operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry. The ridge lambda is 1 and the intercept is unpenalized. The residual is neutralized against Barra SIZE and CITIC level-1 sector.".to_string(),
+            description: "Deprecated DBZQ special ROA 1 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry. The ridge lambda is 1 and the intercept is unpenalized. The residual is neutralized against Barra SIZE and CITIC level-1 sector.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -132,17 +132,11 @@ impl Factor for StockDailySpecialRoa1 {
             DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let income_annual =
-            data.financial_reader(DatasetId::StockIncome, ReportTypePreference::consolidated())?;
         let balance = data.financial_reader(
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let schedule = FinancialEventSchedule::from_pit_readers(&[
-            income.clone(),
-            income_annual.clone(),
-            balance.clone(),
-        ]);
+        let schedule = FinancialEventSchedule::from_pit_readers(&[income.clone(), balance.clone()]);
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockCiClassification)?,
@@ -164,7 +158,6 @@ impl Factor for StockDailySpecialRoa1 {
                 self.compute_raw_with_prepared_inputs(
                     data,
                     &income,
-                    &income_annual,
                     &balance,
                     &list_dates,
                     &sector_map,
@@ -189,8 +182,6 @@ impl StockDailySpecialRoa1 {
             DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let income_annual =
-            data.financial_reader(DatasetId::StockIncome, ReportTypePreference::consolidated())?;
         let balance = data.financial_reader(
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
@@ -207,7 +198,6 @@ impl StockDailySpecialRoa1 {
         let raw_series = vec![self.compute_raw_with_prepared_inputs(
             data,
             &income,
-            &income_annual,
             &balance,
             &list_dates,
             &sector_map,
@@ -221,7 +211,6 @@ impl StockDailySpecialRoa1 {
         &self,
         data: &DataPool,
         income: &FinancialPitReader<'_>,
-        income_annual: &FinancialPitReader<'_>,
         balance: &FinancialPitReader<'_>,
         list_dates: &BTreeMap<String, i32>,
         sector_map: &ClassificationMap,
@@ -235,7 +224,6 @@ impl StockDailySpecialRoa1 {
             &panel,
             &pb,
             income,
-            income_annual,
             balance,
             list_dates,
             sector_map,
@@ -280,7 +268,7 @@ impl Factor for StockDailySpecialRoa2 {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses annual operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then takes cross-sectional ridge residuals with CITIC level-2 industry fixed effects and neutralizes the residual against Barra SIZE. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
+            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry with that sector's CITIC level-2 industry fixed effects. The residual is neutralized against Barra SIZE. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -341,17 +329,11 @@ impl Factor for StockDailySpecialRoa2 {
             DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let income_annual =
-            data.financial_reader(DatasetId::StockIncome, ReportTypePreference::consolidated())?;
         let balance = data.financial_reader(
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let schedule = FinancialEventSchedule::from_pit_readers(&[
-            income.clone(),
-            income_annual.clone(),
-            balance.clone(),
-        ]);
+        let schedule = FinancialEventSchedule::from_pit_readers(&[income.clone(), balance.clone()]);
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockCiClassification)?,
@@ -373,7 +355,6 @@ impl Factor for StockDailySpecialRoa2 {
                 self.compute_raw_with_prepared_inputs(
                     data,
                     &income,
-                    &income_annual,
                     &balance,
                     &list_dates,
                     &sector_map,
@@ -398,8 +379,6 @@ impl StockDailySpecialRoa2 {
             DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
         )?;
-        let income_annual =
-            data.financial_reader(DatasetId::StockIncome, ReportTypePreference::consolidated())?;
         let balance = data.financial_reader(
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
@@ -416,7 +395,6 @@ impl StockDailySpecialRoa2 {
         let raw_series = vec![self.compute_raw_with_prepared_inputs(
             data,
             &income,
-            &income_annual,
             &balance,
             &list_dates,
             &sector_map,
@@ -430,7 +408,6 @@ impl StockDailySpecialRoa2 {
         &self,
         data: &DataPool,
         income: &FinancialPitReader<'_>,
-        income_annual: &FinancialPitReader<'_>,
         balance: &FinancialPitReader<'_>,
         list_dates: &BTreeMap<String, i32>,
         sector_map: &ClassificationMap,
@@ -444,13 +421,12 @@ impl StockDailySpecialRoa2 {
             &panel,
             &pb,
             income,
-            income_annual,
             balance,
             list_dates,
             sector_map,
             industry_map,
             snapshot_cache,
-            RegressionMode::WithIndustryDummies,
+            RegressionMode::BySectorWithIndustryDummies,
         )?;
         Ok(raw.to_factor_series(raw_spec(SPECIAL_ROA2_RAW_ID)))
     }
@@ -503,7 +479,6 @@ fn special_roa2_raw_column(
     panel: &DailyPanel,
     pb: &PanelColumn,
     income: &FinancialPitReader<'_>,
-    income_annual: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
     list_dates: &BTreeMap<String, i32>,
     sector_map: &ClassificationMap,
@@ -528,11 +503,9 @@ fn special_roa2_raw_column(
                     || sector_map.group_for(trade_date, ts_code).is_none()
                     || industry_map.group_for(trade_date, ts_code).is_none()
             },
+            |trade_date, ts_code, _| special_roa2_marker(ts_code, trade_date, income, balance),
             |trade_date, ts_code, _| {
-                special_roa2_marker(ts_code, trade_date, income, income_annual, balance)
-            },
-            |trade_date, ts_code, _| {
-                special_roa2_snapshot_for_stock(ts_code, trade_date, income, income_annual, balance)
+                special_roa2_snapshot_for_stock(ts_code, trade_date, income, balance)
             },
         );
         let date_offset = date_idx * instrument_count;
@@ -566,7 +539,7 @@ fn special_roa2_raw_column(
         let standardized = standardize_observations_by_sector(&raw_observations);
         let residuals = match regression_mode {
             RegressionMode::BySector => ridge_residuals_by_sector(&standardized),
-            RegressionMode::WithIndustryDummies => {
+            RegressionMode::BySectorWithIndustryDummies => {
                 ridge_residuals_with_industry_dummies(&standardized)
             }
         };
@@ -612,7 +585,6 @@ fn special_roa2_marker(
     ts_code: &str,
     trade_date: i32,
     income: &FinancialPitReader<'_>,
-    income_annual: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let end_t = income.latest_quarter_end_date(ts_code, trade_date)?;
@@ -625,12 +597,6 @@ fn special_roa2_marker(
         ts_code,
         trade_date,
         end_t,
-    );
-    builder.include_reader_latest_annual(
-        FinancialStatementDataset::Income,
-        income_annual,
-        ts_code,
-        trade_date,
     );
     for end_date in [end_t, end_t1, end_t4] {
         builder.include_reader_record_for_end_date(
@@ -648,29 +614,20 @@ fn special_roa2_snapshot_for_stock(
     ts_code: &str,
     trade_date: i32,
     income: &FinancialPitReader<'_>,
-    income_annual: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
 ) -> Option<SpecialRoa2Snapshot> {
     let end_t = income.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
     let end_t4 = quarter_lag(end_t, 4)?;
     let income_t = income.record_for_end_date(ts_code, trade_date, end_t)?;
-    let annual_oper_cost = income_annual.latest_annual_value(ts_code, trade_date, OPER_COST_COLUMN);
     let balance_t = balance.record_for_end_date(ts_code, trade_date, end_t)?;
     let balance_t1 = balance.record_for_end_date(ts_code, trade_date, end_t1)?;
     let balance_t4 = balance.record_for_end_date(ts_code, trade_date, end_t4)?;
-    special_roa2_snapshot_from_records(
-        income_t,
-        annual_oper_cost,
-        balance_t,
-        balance_t1,
-        balance_t4,
-    )
+    special_roa2_snapshot_from_records(income_t, balance_t, balance_t1, balance_t4)
 }
 
 fn special_roa2_snapshot_from_records(
     income_t: PitFinancialRecordView<'_>,
-    annual_oper_cost: Option<f64>,
     balance_t: PitFinancialRecordView<'_>,
     balance_t1: PitFinancialRecordView<'_>,
     balance_t4: PitFinancialRecordView<'_>,
@@ -680,7 +637,7 @@ fn special_roa2_snapshot_from_records(
     let assets_t1 = clean(balance_t1.column(TOTAL_ASSETS_COLUMN)).filter(|value| *value > EPS)?;
     special_roa2_snapshot_from_values(SpecialRoa2Inputs {
         profit,
-        oper_cost: clean(annual_oper_cost),
+        oper_cost: clean(income_t.column(OPER_COST_COLUMN)),
         assets_t,
         assets_t1,
         total_liab: clean(balance_t.column(TOTAL_LIAB_COLUMN)),
@@ -837,29 +794,38 @@ fn ridge_residuals_with_industry_dummies(observations: &[RidgeObservation]) -> V
     if observations.is_empty() {
         return Vec::new();
     }
-    let levels = observations
-        .iter()
-        .map(|observation| observation.industry.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let dummy_count = levels.len().saturating_sub(1);
-    let param_count = 1 + REGRESSOR_COUNT + dummy_count;
-    if observations.len() < 20.max(param_count + 1) {
-        return Vec::new();
+    let mut grouped = BTreeMap::<&str, Vec<&RidgeObservation>>::new();
+    for observation in observations {
+        grouped
+            .entry(observation.sector.as_str())
+            .or_default()
+            .push(observation);
     }
-    let dummy_offsets = levels
-        .iter()
-        .skip(1)
-        .enumerate()
-        .map(|(idx, level)| (level.as_str(), 1 + REGRESSOR_COUNT + idx))
-        .collect::<BTreeMap<_, _>>();
-    let Some(beta) = ridge_beta(observations, param_count, &dummy_offsets) else {
-        return Vec::new();
-    };
-    observations
-        .iter()
-        .filter_map(|observation| {
+
+    let mut output = Vec::new();
+    for group in grouped.values() {
+        let levels = group
+            .iter()
+            .map(|observation| observation.industry.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let dummy_count = levels.len().saturating_sub(1);
+        let param_count = 1 + REGRESSOR_COUNT + dummy_count;
+        if group.len() < 20.max(param_count + 1) {
+            continue;
+        }
+        let dummy_offsets = levels
+            .iter()
+            .skip(1)
+            .enumerate()
+            .map(|(idx, level)| (level.as_str(), 1 + REGRESSOR_COUNT + idx))
+            .collect::<BTreeMap<_, _>>();
+        let Some(beta) = ridge_beta_with_industry_dummies(group, param_count, &dummy_offsets)
+        else {
+            continue;
+        };
+        for observation in group {
             let mut fitted = beta[0];
             for idx in 0..REGRESSOR_COUNT {
                 fitted += beta[idx + 1] * observation.x[idx];
@@ -868,11 +834,12 @@ fn ridge_residuals_with_industry_dummies(observations: &[RidgeObservation]) -> V
                 fitted += beta[*dummy_idx];
             }
             let residual = observation.y - fitted;
-            residual
-                .is_finite()
-                .then_some((observation.offset, residual))
-        })
-        .collect()
+            if residual.is_finite() {
+                output.push((observation.offset, residual));
+            }
+        }
+    }
+    output
 }
 
 fn ridge_residuals_by_sector(observations: &[RidgeObservation]) -> Vec<(usize, f64)> {
@@ -928,8 +895,8 @@ fn ridge_beta_continuous(observations: &[&RidgeObservation]) -> Option<Vec<f64>>
     solve_linear_system(xtx, xty)
 }
 
-fn ridge_beta(
-    observations: &[RidgeObservation],
+fn ridge_beta_with_industry_dummies(
+    observations: &[&RidgeObservation],
     param_count: usize,
     dummy_offsets: &BTreeMap<&str, usize>,
 ) -> Option<Vec<f64>> {
@@ -1100,6 +1067,7 @@ fn tags() -> Vec<String> {
 fn tags_roa1() -> Vec<String> {
     [
         "DBZQ",
+        "deprecated",
         "financial",
         "fundamental",
         "pit",
@@ -1291,6 +1259,36 @@ mod tests {
     }
 
     #[test]
+    fn ridge_residuals_with_industry_dummies_remove_continuous_signal() {
+        let mut rows = Vec::new();
+        for idx in 0..40 {
+            let x0 = idx as f64 - 20.0;
+            let industry_effect = if idx % 2 == 0 { 0.0 } else { 5.0 };
+            let mut x = [0.0; REGRESSOR_COUNT];
+            x[0] = x0;
+            rows.push(RidgeObservation {
+                offset: idx,
+                sector: "S".to_string(),
+                industry: if idx % 2 == 0 { "A" } else { "B" }.to_string(),
+                y: 2.0 * x0 + industry_effect,
+                x,
+            });
+        }
+        let residuals = ridge_residuals_with_industry_dummies(&rows);
+        assert_eq!(residuals.len(), 40);
+        let residual_std = mean_std(residuals.iter().map(|(_, value)| *value))
+            .map(|(_, std)| std)
+            .unwrap();
+        let y_std = mean_std(rows.iter().map(|row| row.y))
+            .map(|(_, std)| std)
+            .unwrap();
+        assert!(
+            residual_std < y_std * 0.05,
+            "residual_std={residual_std}, y_std={y_std}"
+        );
+    }
+
+    #[test]
     fn ridge_residuals_by_sector_fit_each_sector_independently() {
         let mut rows = Vec::new();
         for idx in 0..20 {
@@ -1323,6 +1321,7 @@ mod tests {
         let spec = StockDailySpecialRoa1.spec();
         assert_eq!(spec.id, "special_roa1");
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
+        assert!(spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.tags.iter().any(|tag| tag == "sector"));
         assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
         assert!(!spec.tags.iter().any(|tag| tag == "industry_dummy"));
@@ -1334,6 +1333,7 @@ mod tests {
         let spec = StockDailySpecialRoa2.spec();
         assert_eq!(spec.id, "special_roa2");
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
+        assert!(!spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.tags.iter().any(|tag| tag == "industry_dummy"));
         assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
         assert!(spec.tags.iter().any(|tag| tag == "size"));

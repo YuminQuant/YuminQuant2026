@@ -60,6 +60,15 @@ pub fn neutralize_size_sector(
     neutralize_size_sector_with_inputs(values, panel, &size, &sector_map)
 }
 
+pub fn neutralize_size_only(
+    values: &PanelColumn,
+    panel: &DailyPanel,
+    data: &DataPool,
+) -> Result<PanelColumn> {
+    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    values.cs_neutralize_regression(&[&size], None)
+}
+
 pub fn neutralize_size_sector_with_inputs(
     values: &PanelColumn,
     _panel: &DailyPanel,

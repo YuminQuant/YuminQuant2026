@@ -9,6 +9,7 @@ use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::is_bj_stock;
+use crate::factor::common::stock_daily_ops::neutralize_size_only;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
@@ -61,7 +62,7 @@ impl Factor for StockDailySpecialRoa2 {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from attributable net profit, standardizes ROA and seven explanatory variables within SW level-1 industries, then takes cross-sectional ridge residuals with SW level-2 industry fixed effects. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
+            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from attributable net profit, standardizes ROA and seven explanatory variables within SW level-1 industries, then takes cross-sectional ridge residuals with SW level-2 industry fixed effects and neutralizes the residual against Barra SIZE. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -83,6 +84,7 @@ impl Factor for StockDailySpecialRoa2 {
                     FINANCIAL_QUARTERS,
                 ),
                 DataRequest::new(DatasetId::StockDailyBasic, &[PB_COLUMN]),
+                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
                 DataRequest::new(DatasetId::StockBasic, &["list_date"]),
                 DataRequest::new(DatasetId::StockSwClassification, &["l1_code", "l2_code"]),
             ],
@@ -233,7 +235,8 @@ impl StockDailySpecialRoa2 {
             .find(|series| series.spec.id == SPECIAL_ROA2_RAW_ID)
             .ok_or_else(|| err("missing special_roa2 raw series"))?;
         let raw = factor_series_to_panel_column(&panel, &series)?;
-        Ok(raw.to_factor_series(self.spec()))
+        let neutralized = neutralize_size_only(&raw, &panel, data)?;
+        Ok(neutralized.to_factor_series(self.spec()))
     }
 }
 
@@ -757,6 +760,9 @@ fn tags() -> Vec<String> {
         "ridge",
         "residual",
         "industry_dummy",
+        "neutralize",
+        "barra",
+        "size",
         "daily",
     ]
     .iter()
@@ -895,6 +901,8 @@ mod tests {
         assert_eq!(spec.id, "special_roa2");
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
         assert!(spec.tags.iter().any(|tag| tag == "industry_dummy"));
+        assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
+        assert!(spec.tags.iter().any(|tag| tag == "size"));
         assert_eq!(spec.lookback.trading_days, 0);
     }
 }

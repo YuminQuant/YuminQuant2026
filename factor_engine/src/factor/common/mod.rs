@@ -3,6 +3,7 @@ pub mod cross_section;
 pub mod daily;
 pub mod dbzq_5min_risk;
 pub mod dbzq_coskewness;
+pub mod dbzq_financial_efficiency;
 pub mod dbzq_intraday_volume_distribution;
 pub mod financial;
 pub mod financial_similarity;

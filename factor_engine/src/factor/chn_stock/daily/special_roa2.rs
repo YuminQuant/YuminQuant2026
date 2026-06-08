@@ -266,7 +266,7 @@ impl Factor for StockDailySpecialRoa2 {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry with that sector's CITIC level-2 industry fixed effects. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized. The ridge residual is output directly without SIZE neutralization.".to_string(),
+            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry with that sector's CITIC level-2 industry fixed effects. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized. The residual is neutralized against Barra SIZE and CITIC level-1 sector.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -288,6 +288,7 @@ impl Factor for StockDailySpecialRoa2 {
                     FINANCIAL_QUARTERS,
                 ),
                 DataRequest::new(DatasetId::StockDailyBasic, &[PB_COLUMN]),
+                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
                 DataRequest::new(DatasetId::StockBasic, &["list_date"]),
                 DataRequest::new(DatasetId::StockCiClassification, &["l1_code", "l2_code"]),
             ],
@@ -439,7 +440,13 @@ impl StockDailySpecialRoa2 {
             .find(|series| series.spec.id == SPECIAL_ROA2_RAW_ID)
             .ok_or_else(|| err("missing special_roa2 raw series"))?;
         let raw = factor_series_to_panel_column(&panel, &series)?;
-        Ok(raw.to_factor_series(self.spec()))
+        let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+        let sector_map = ClassificationMap::from_table(
+            data.daily(DatasetId::StockCiClassification)?,
+            ClassificationLevel::Sector,
+        )?;
+        let neutralized = neutralize_size_sector_with_inputs(&raw, &panel, &size, &sector_map)?;
+        Ok(neutralized.to_factor_series(self.spec()))
     }
 }
 
@@ -1050,6 +1057,10 @@ fn tags() -> Vec<String> {
         "residual",
         "industry_dummy",
         "citic",
+        "neutralize",
+        "barra",
+        "size",
+        "sector",
         "daily",
     ]
     .iter()
@@ -1328,8 +1339,9 @@ mod tests {
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
         assert!(!spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.tags.iter().any(|tag| tag == "industry_dummy"));
-        assert!(!spec.tags.iter().any(|tag| tag == "neutralize"));
-        assert!(!spec.tags.iter().any(|tag| tag == "size"));
+        assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
+        assert!(spec.tags.iter().any(|tag| tag == "size"));
+        assert!(spec.tags.iter().any(|tag| tag == "sector"));
         assert_eq!(spec.lookback.trading_days, 0);
     }
 }

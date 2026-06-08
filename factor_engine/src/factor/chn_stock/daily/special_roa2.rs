@@ -8,9 +8,7 @@ use crate::core::{
 use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::{
-    is_bj_stock, neutralize_size_only, neutralize_size_sector_with_inputs,
-};
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
@@ -268,7 +266,7 @@ impl Factor for StockDailySpecialRoa2 {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry with that sector's CITIC level-2 industry fixed effects. The residual is neutralized against Barra SIZE. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized.".to_string(),
+            description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry with that sector's CITIC level-2 industry fixed effects. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized. The ridge residual is output directly without SIZE neutralization.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -290,7 +288,6 @@ impl Factor for StockDailySpecialRoa2 {
                     FINANCIAL_QUARTERS,
                 ),
                 DataRequest::new(DatasetId::StockDailyBasic, &[PB_COLUMN]),
-                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
                 DataRequest::new(DatasetId::StockBasic, &["list_date"]),
                 DataRequest::new(DatasetId::StockCiClassification, &["l1_code", "l2_code"]),
             ],
@@ -442,8 +439,7 @@ impl StockDailySpecialRoa2 {
             .find(|series| series.spec.id == SPECIAL_ROA2_RAW_ID)
             .ok_or_else(|| err("missing special_roa2 raw series"))?;
         let raw = factor_series_to_panel_column(&panel, &series)?;
-        let neutralized = neutralize_size_only(&raw, &panel, data)?;
-        Ok(neutralized.to_factor_series(self.spec()))
+        Ok(raw.to_factor_series(self.spec()))
     }
 }
 
@@ -1054,9 +1050,6 @@ fn tags() -> Vec<String> {
         "residual",
         "industry_dummy",
         "citic",
-        "neutralize",
-        "barra",
-        "size",
         "daily",
     ]
     .iter()
@@ -1335,8 +1328,8 @@ mod tests {
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
         assert!(!spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.tags.iter().any(|tag| tag == "industry_dummy"));
-        assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
-        assert!(spec.tags.iter().any(|tag| tag == "size"));
+        assert!(!spec.tags.iter().any(|tag| tag == "neutralize"));
+        assert!(!spec.tags.iter().any(|tag| tag == "size"));
         assert_eq!(spec.lookback.trading_days, 0);
     }
 }

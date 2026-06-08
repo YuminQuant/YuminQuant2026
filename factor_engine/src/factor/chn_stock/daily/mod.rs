@@ -224,6 +224,7 @@ pub mod significant_up_volume_return_distribution;
 pub mod small_order_residual_flow_strength;
 pub mod snr;
 pub mod sp_sq_gauss_resid;
+pub mod special_roa1;
 pub mod special_roa2;
 pub mod sps;
 pub mod sps_turbo;
@@ -603,6 +604,7 @@ pub use significant_up_volume_return_distribution::StockDailySignificantUpVolume
 pub use small_order_residual_flow_strength::StockDailySmallOrderResidualFlowStrength;
 pub use snr::StockDailySnr;
 pub use sp_sq_gauss_resid::StockDailySpSqGaussResid;
+pub use special_roa1::StockDailySpecialRoa1;
 pub use special_roa2::StockDailySpecialRoa2;
 pub use sps::StockDailySps;
 pub use sps_turbo::StockDailySpsTurbo;

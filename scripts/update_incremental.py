@@ -28,6 +28,7 @@ from data_manager import (
     HKBasicDownloader,
     HKCalendarDownloader,
     IncomeDownloader,
+    MainBusinessDownloader,
     CIMemberDownloader,
     CIDailyDownloader,
     IndexDailyDownloader,
@@ -86,10 +87,25 @@ def iter_calendar_dates(start_date, end_date):
 
 
 FINANCIAL_STATEMENT_SUFFIXES = {"0331", "0630", "0930", "1231"}
+MAINBZ_CHECKPOINT_SUFFIXES = {"0430", "0831", "1031"}
 
 
 def is_financial_statement_period(date):
     return len(date) == 8 and date[4:] in FINANCIAL_STATEMENT_SUFFIXES
+
+
+def mainbz_periods_for_check_date(date):
+    if len(date) != 8 or date[4:] not in MAINBZ_CHECKPOINT_SUFFIXES:
+        return []
+    year = int(date[:4])
+    suffix = date[4:]
+    if suffix == "0430":
+        return [f"{year - 1}1231", f"{year}0331"]
+    if suffix == "0831":
+        return [f"{year}0630"]
+    if suffix == "1031":
+        return [f"{year}0930"]
+    return []
 
 
 def run_task(logger, name, fn):
@@ -341,6 +357,24 @@ def update_stock_financial(args, logger):
             )
 
 
+def update_stock_mainbz(args, logger):
+    start_date = args.start_date or bj_today()
+    end_date = args.end_date or bj_today()
+
+    for date in iter_calendar_dates(start_date, end_date):
+        periods = mainbz_periods_for_check_date(date)
+        if not periods:
+            continue
+        for period in periods:
+            run_task(
+                logger,
+                f"MainBusinessDownloader_incremental_{date}_{period}",
+                lambda p=period: MainBusinessDownloader().sync(
+                    mode="incremental", target_date=p
+                ),
+            )
+
+
 def update_stock_dividend(args, logger):
     start_date = args.start_date or DEFAULT_START_DATES["stock"]
     end_date = args.end_date or bj_today()
@@ -433,6 +467,7 @@ GROUPS = {
     "stock_minute": update_stock_minute,
     "stock_derived_bar": update_stock_derived_bar,
     "stock_financial": update_stock_financial,
+    "stock_mainbz": update_stock_mainbz,
     "stock_dividend": update_stock_dividend,
     "stock_alt": update_stock_alt,
     "future_static": lambda args, logger: update_future_static(logger),

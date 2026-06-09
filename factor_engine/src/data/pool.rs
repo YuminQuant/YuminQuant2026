@@ -42,7 +42,7 @@ impl DataPool {
     ) -> Result<Self> {
         let mut grouped: HashMap<
             (DatasetId, Option<String>, Option<usize>),
-            (BTreeSet<String>, Option<usize>),
+            (BTreeSet<String>, Option<usize>, BTreeSet<i32>),
         > = HashMap::new();
         for request in requests {
             let entry = grouped
@@ -54,17 +54,18 @@ impl DataPool {
                 (None, Some(right)) => Some(right),
                 (left, None) => left,
             };
+            entry.2.extend(request.resolved_dates(context));
         }
 
         let mut pool = Self::default();
-        for ((dataset, entity_id, bar_size), (columns, financial_quarters)) in grouped {
+        for ((dataset, entity_id, bar_size), (columns, financial_quarters, load_dates)) in grouped {
             let columns = columns.into_iter().collect::<Vec<_>>();
+            let load_dates = load_dates.into_iter().collect::<Vec<_>>();
             if dataset == DatasetId::IndexDaily {
                 let ts_code = entity_id.ok_or_else(|| {
                     err("index.daily request requires entity_id; use DataRequest::index_daily")
                 })?;
-                let table =
-                    loader.load_index_daily_by_dates(&ts_code, &columns, &context.load_dates)?;
+                let table = loader.load_index_daily_by_dates(&ts_code, &columns, &load_dates)?;
                 let panel = DailyPanel::from_table(&table, context)?;
                 pool.index_daily_panels.insert(ts_code.clone(), panel);
                 pool.index_daily.insert(ts_code, Arc::new(table));
@@ -94,12 +95,8 @@ impl DataPool {
                 continue;
             }
             if dataset == DatasetId::StockBarraDaily {
-                let table = loader.load_barra_daily(
-                    context.asset_class,
-                    "CNE6",
-                    &columns,
-                    &context.load_dates,
-                )?;
+                let table =
+                    loader.load_barra_daily(context.asset_class, "CNE6", &columns, &load_dates)?;
                 let panel = DailyPanel::from_table(&table, context)?;
                 pool.daily_panels.insert(dataset, panel);
                 pool.daily.insert(dataset, Arc::new(table));
@@ -161,8 +158,7 @@ impl DataPool {
             }
             match dataset.frequency() {
                 Frequency::Daily => {
-                    let table =
-                        loader.load_daily_by_dates(dataset, &columns, &context.load_dates)?;
+                    let table = loader.load_daily_by_dates(dataset, &columns, &load_dates)?;
                     if should_build_daily_panel(dataset) {
                         let panel = DailyPanel::from_table(&table, context)?;
                         pool.daily_panels.insert(dataset, panel);

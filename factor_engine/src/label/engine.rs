@@ -585,6 +585,7 @@ fn materialize_label_intraday_raw_table(
             bar_size: None,
             columns,
             financial_quarters: None,
+            date_policy: Default::default(),
         }];
         let load_started = Instant::now();
         let raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
@@ -774,7 +775,12 @@ where
 {
     let mut grouped: HashMap<_, BTreeSet<String>> = HashMap::new();
     for request in requests {
-        let key = (request.dataset, request.entity_id.clone(), request.bar_size);
+        let key = (
+            request.dataset,
+            request.entity_id.clone(),
+            request.bar_size,
+            request.date_policy.clone(),
+        );
         grouped
             .entry(key)
             .or_default()
@@ -782,19 +788,23 @@ where
     }
     let mut merged = grouped
         .into_iter()
-        .map(|((dataset, entity_id, bar_size), columns)| DataRequest {
-            dataset,
-            entity_id,
-            bar_size,
-            columns: columns.into_iter().collect(),
-            financial_quarters: None,
-        })
+        .map(
+            |((dataset, entity_id, bar_size, date_policy), columns)| DataRequest {
+                dataset,
+                entity_id,
+                bar_size,
+                columns: columns.into_iter().collect(),
+                financial_quarters: None,
+                date_policy,
+            },
+        )
         .collect::<Vec<_>>();
     merged.sort_by(|left, right| {
         left.dataset
             .cmp(&right.dataset)
             .then_with(|| left.entity_id.cmp(&right.entity_id))
             .then_with(|| left.bar_size.cmp(&right.bar_size))
+            .then_with(|| left.date_policy.cmp(&right.date_policy))
     });
     merged
 }

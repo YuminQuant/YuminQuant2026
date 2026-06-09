@@ -205,7 +205,7 @@ impl BarraEngine {
             .collect::<Vec<_>>();
         let max_lookback = specs
             .iter()
-            .map(|spec| spec.lookback.trading_days)
+            .map(spec_calendar_lookback_days)
             .max()
             .unwrap_or(0);
         let calendar_exchange = match request.asset_class {
@@ -510,7 +510,12 @@ where
 {
     let mut grouped: HashMap<_, (BTreeSet<String>, Option<usize>)> = HashMap::new();
     for request in requests {
-        let key = (request.dataset, request.entity_id.clone(), request.bar_size);
+        let key = (
+            request.dataset,
+            request.entity_id.clone(),
+            request.bar_size,
+            request.date_policy.clone(),
+        );
         let entry = grouped.entry(key).or_default();
         entry.0.extend(request.columns.into_iter());
         entry.1 = match (entry.1, request.financial_quarters) {
@@ -522,12 +527,15 @@ where
     let mut merged = grouped
         .into_iter()
         .map(
-            |((dataset, entity_id, bar_size), (columns, financial_quarters))| DataRequest {
-                dataset,
-                entity_id,
-                bar_size,
-                columns: columns.into_iter().collect(),
-                financial_quarters,
+            |((dataset, entity_id, bar_size, date_policy), (columns, financial_quarters))| {
+                DataRequest {
+                    dataset,
+                    entity_id,
+                    bar_size,
+                    columns: columns.into_iter().collect(),
+                    financial_quarters,
+                    date_policy,
+                }
             },
         )
         .collect::<Vec<_>>();
@@ -536,8 +544,18 @@ where
             .cmp(&right.dataset)
             .then_with(|| left.entity_id.cmp(&right.entity_id))
             .then_with(|| left.bar_size.cmp(&right.bar_size))
+            .then_with(|| left.date_policy.cmp(&right.date_policy))
     });
     merged
+}
+
+fn spec_calendar_lookback_days(spec: &crate::core::BarraSpec) -> usize {
+    spec.dependencies
+        .iter()
+        .map(DataRequest::calendar_lookback_days)
+        .max()
+        .unwrap_or(0)
+        .max(spec.lookback.trading_days)
 }
 
 fn financial_years_for_requests(

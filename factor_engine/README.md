@@ -309,6 +309,33 @@ Engine compatibility:
 - `compute_many()` must be requested-aware: compute only branches needed by the current `requested_ids`. Shared setup is allowed, but expensive sibling-factor metric branches must not be computed opportunistically.
 - Deprecated factors do not enter selected factors and therefore do not enter provider `requested_ids`; deprecated-only branches should not run unless an active factor still shares the same required output or setup.
 
+### Sparse DataRequest Date Policy / ????????
+
+?????
+
+- `DataRequest::new(...)` ????????????????? factor ? context ????????
+- ??????????????? `requirements_for_context(context)` ??? `Vec<i32>`???? `DataRequest::explicit_dates(...)`?
+- ??????????????????????????????????????????
+- ?? dataset ??????? `DataPool` ???????? union?
+- ? batch ??????? lookback ???????????????????????? factor ????? context ?????
+
+English rules:
+
+- `DataRequest::new(...)` keeps the old meaning, but before loading it is resolved into explicit dates using the current factor's context.
+- If a factor only needs a selected set of dates, compute a `Vec<i32>` in `requirements_for_context(context)` and pass it to `DataRequest::explicit_dates(...)`.
+- Week ends, month ends, quarter ends, fixed checkpoints, and event dates do not need dedicated constructors; they are just different date generators.
+- Multiple requests for the same dataset are merged by columns and date union in `DataPool`.
+- A long lookback from one factor in the same batch does not force other factors' ordinary dependencies to read the same long window; each factor resolves dependencies against its own context first.
+
+?? / Example:
+
+```rust
+fn requirements_for_context(&self, context: &FactorContext) -> Vec<DataRequest> {
+    let dates = custom_event_or_sample_dates(context);
+    vec![DataRequest::explicit_dates(DatasetId::StockDailyPv, &["close"], dates)]
+}
+```
+
 ### Financial Factor Update Policy / 财务因子更新策略
 
 财务因子不能仅凭 `fundamental` tag 自动切换更新频率，必须由 factor/provider 显式声明 `update_policy()`。

@@ -139,6 +139,12 @@ def _group_color_map(group_names: list[str], cmap) -> dict[str, object]:
     }
 
 
+def _group_plot_order(group_names: list[str]) -> list[str]:
+    if len(group_names) <= 2:
+        return group_names
+    return group_names[1:-1] + [group_names[0], group_names[-1]]
+
+
 def _barra_color_map(colors: list[object]) -> dict[str, object]:
     if not colors:
         raise ValueError("Barra color list cannot be empty")
@@ -156,12 +162,21 @@ def _plot_group_curves(
     color_map: dict[str, object],
 ) -> list[float]:
     values: list[float] = []
-    for name in group_names:
+    end_groups = {group_names[0], group_names[-1]} if group_names else set()
+    for name in _group_plot_order(group_names):
         series = _series_by_portfolio(returns, name, value_col)
         curve = cumulative_curve(series)
         if curve.empty:
             continue
-        ax.plot(curve.index, curve.values, color=color_map[name], linewidth=1.1, alpha=0.9, label=name)
+        ax.plot(
+            curve.index,
+            curve.values,
+            color=color_map[name],
+            linewidth=1.25 if name in end_groups else 1.1,
+            alpha=0.95 if name in end_groups else 0.85,
+            label=name,
+            zorder=3 if name in end_groups else 2,
+        )
         values.extend(curve.values.tolist())
     return values
 

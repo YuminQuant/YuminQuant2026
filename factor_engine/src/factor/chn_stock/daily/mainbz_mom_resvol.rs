@@ -7,7 +7,6 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, mask_bj};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     cached_financial_stock_snapshots_for_date, ClassificationLevel, ClassificationMap, DailyPanel,
@@ -15,9 +14,10 @@ use crate::factor::common::{
     InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
-use crate::operators::{cs_zscore, ts_mean};
+use crate::operators::{cs_zscore, ts_sum};
 
-const FACTOR_ID: &str = "mainbz_mom_resvol";
+pub const MAINBZ_MOM_RESVOL_ID: &str = "mainbz_mom_resvol";
+pub const PROVIDER_KEY: &str = "stock|daily|mainbz_mom_resvol";
 const MOM_WINDOW: usize = 20;
 const MOM_MIN_PERIODS: usize = 10;
 const RESVOL_WINDOW: usize = 20;
@@ -31,67 +31,72 @@ struct BusinessSnapshot {
 }
 
 #[derive(Default)]
-struct MainbzMomResvolState {
+pub struct MainbzMomResvolState {
     snapshot_cache: InstrumentAlignedSnapshotCache<BusinessSnapshot>,
     current_instruments: Vec<String>,
     current_snapshots: Vec<Option<BusinessSnapshot>>,
     last_processed_trade_date: Option<i32>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct StockDailyMainbzMomResvol;
 
 pub fn create() -> Box<dyn Factor> {
     Box::new(StockDailyMainbzMomResvol)
 }
 
+pub fn spec_for() -> FactorSpec {
+    let dependencies = vec![
+        DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]),
+        DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+        DataRequest::financial_quarters(DatasetId::StockBalanceSheet, &["total_assets"], 8),
+        DataRequest::financial_quarters(
+            DatasetId::StockMainBusiness,
+            &["bz_type", "bz_item", "bz_sales", "update_flag"],
+            8,
+        ),
+        DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+        DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
+    ];
+    FactorSpec {
+        id: MAINBZ_MOM_RESVOL_ID.to_string(),
+        aliases: vec!["product_mom_resvol".to_string()],
+        name: MAINBZ_MOM_RESVOL_ID.to_string(),
+        asset_class: AssetClass::Stock,
+        frequency: Frequency::Daily,
+        version: "0.1.0".to_string(),
+        tags: vec![
+            "DBZQ",
+            "financial",
+            "fundamental",
+            "mainbz",
+            "business_momentum",
+            "residual_volatility",
+            "neutralize",
+            "barra",
+            "size",
+            "sector",
+            "daily",
+        ]
+        .into_iter()
+        .map(|tag| tag.to_string())
+        .collect(),
+        description: "DBZQ main business composite factor. It uses positive-sales fina_mainbz type=I update_flag=0 rows gated by balance-sheet PIT announcements, builds business item returns, combines 20-day business excess momentum with residual volatility, and neutralizes SIZE plus SW sector.".to_string(),
+        dependencies,
+        intraday_raw_dependencies: Vec::new(),
+        lookback: Lookback {
+            trading_days: RESVOL_WINDOW - 1,
+        },
+    }
+}
+
 impl Factor for StockDailyMainbzMomResvol {
     fn spec(&self) -> FactorSpec {
-        FactorSpec {
-            id: FACTOR_ID.to_string(),
-            aliases: vec!["product_mom_resvol".to_string()],
-            name: FACTOR_ID.to_string(),
-            asset_class: AssetClass::Stock,
-            frequency: Frequency::Daily,
-            version: "0.1.0".to_string(),
-            tags: [
-                "DBZQ",
-                "financial",
-                "fundamental",
-                "mainbz",
-                "business_momentum",
-                "residual_volatility",
-                "neutralize",
-                "barra",
-                "size",
-                "sector",
-                "daily",
-            ]
-            .iter()
-            .map(|tag| (*tag).to_string())
-            .collect(),
-            description: "DBZQ main business momentum/residual volatility factor. It uses fina_mainbz type=I update_flag=0 rows gated by balance-sheet PIT announcements, builds business weighted returns, combines 20-day business excess momentum with residual volatility, and neutralizes SIZE, SW sector, Barra MOMENTUM and Barra VOLATILITY.".to_string(),
-            dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]),
-                DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
-                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE", "MOMENTUM", "VOLATILITY"]),
-                DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
-                DataRequest::financial_quarters(
-                    DatasetId::StockBalanceSheet,
-                    &["total_assets"],
-                    8,
-                ),
-                DataRequest::financial_quarters(
-                    DatasetId::StockMainBusiness,
-                    &["bz_type", "bz_item", "bz_sales", "update_flag"],
-                    8,
-                ),
-            ],
-            intraday_raw_dependencies: Vec::new(),
-            lookback: Lookback {
-                trading_days: RESVOL_WINDOW - 1,
-            },
-        }
+        spec_for()
+    }
+
+    fn compute_provider_key(&self) -> String {
+        PROVIDER_KEY.to_string()
     }
 
     fn update_policy(&self) -> FactorUpdatePolicy {
@@ -114,24 +119,39 @@ impl Factor for StockDailyMainbzMomResvol {
         data: &DataPool,
         state: &mut (dyn Any + Send),
     ) -> Result<Vec<FactorSeries>> {
-        if !requested_ids.iter().any(|id| id == FACTOR_ID) {
+        if !requested_ids.iter().any(|id| id == MAINBZ_MOM_RESVOL_ID) {
             return Ok(Vec::new());
         }
         let state = state
             .downcast_mut::<MainbzMomResvolState>()
             .expect("mainbz_mom_resvol state type");
-        Ok(vec![self.compute_with_state(context, data, state)?])
+        self.compute_requested_with_state(requested_ids, context, data, state)
     }
 }
 
 impl StockDailyMainbzMomResvol {
     fn compute_with_state(
         &self,
-        _context: &FactorContext,
+        context: &FactorContext,
         data: &DataPool,
         state: &mut MainbzMomResvolState,
     ) -> Result<FactorSeries> {
-        let spec = self.spec();
+        let requested = [self.spec().id];
+        self.compute_requested_with_state(&requested, context, data, state)
+            .map(|mut series| series.remove(0))
+    }
+
+    fn compute_requested_with_state(
+        &self,
+        requested_ids: &[String],
+        _context: &FactorContext,
+        data: &DataPool,
+        state: &mut MainbzMomResvolState,
+    ) -> Result<Vec<FactorSeries>> {
+        let want_composite = requested_ids.iter().any(|id| id == MAINBZ_MOM_RESVOL_ID);
+        if !want_composite {
+            return Ok(Vec::new());
+        }
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let balance = data.financial_reader(
             DatasetId::StockBalanceSheet,
@@ -147,16 +167,15 @@ impl StockDailyMainbzMomResvol {
             panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "circ_mv")?;
         let stock_ret = close.zip_binary(&pre_close, simple_return)?;
 
-        let product_abs_mom = business_weighted_return_panel(
+        let (product_abs_mom, product_mom_daily) = business_weighted_return_panels(
             panel, &stock_ret, &circ_mv, &balance, &mainbz, &schedule, state,
         )?;
-        let product_mom_daily = product_abs_mom.zip_binary(&stock_ret, subtract_pair)?;
         let product_mom_20d =
-            product_mom_daily.ts(|values| ts_mean(values, MOM_WINDOW, MOM_MIN_PERIODS))?;
+            product_mom_daily.ts(|values| ts_sum(values, MOM_WINDOW, MOM_MIN_PERIODS))?;
         let product_resvol = stock_ret.ts_binary(&product_abs_mom, residual_std_rolling)?;
 
-        let product_mom_20d = mask_bj(&product_mom_20d, panel)?;
-        let product_resvol = mask_bj(&product_resvol, panel)?;
+        let product_mom_20d = mask_non_standard_sh_sz(&product_mom_20d, panel)?;
+        let product_resvol = mask_non_standard_sh_sz(&product_resvol, panel)?;
         let z_mom = product_mom_20d.cs(cs_zscore)?;
         let z_resvol = product_resvol.cs(cs_zscore)?;
         let composite =
@@ -167,23 +186,43 @@ impl StockDailyMainbzMomResvol {
 
         let barra = data.daily(DatasetId::StockBarraDaily)?;
         let size = panel.column_from_table(barra, "SIZE")?;
-        let momentum = panel.column_from_table(barra, "MOMENTUM")?;
-        let volatility = panel.column_from_table(barra, "VOLATILITY")?;
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockSwClassification)?,
             ClassificationLevel::Sector,
         )?;
         let neutralized = composite.cs_neutralize_regression_by_group(
-            &[&size, &momentum, &volatility],
+            &[&size],
             None,
             |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),
         )?;
-        let neutralized = mask_bj(&neutralized, panel)?;
-        Ok(neutralized.to_factor_series(spec))
+        let neutralized = mask_non_standard_sh_sz(&neutralized, panel)?;
+        Ok(vec![neutralized.to_factor_series(spec_for())])
     }
 }
 
-fn business_weighted_return_panel(
+fn is_standard_sh_sz_stock(ts_code: &str) -> bool {
+    let bytes = ts_code.as_bytes();
+    bytes.len() == 9
+        && bytes[..6].iter().all(u8::is_ascii_digit)
+        && bytes[6] == b'.'
+        && matches!(&bytes[7..], b"SH" | b"SZ")
+}
+
+fn mask_non_standard_sh_sz(column: &PanelColumn, panel: &DailyPanel) -> Result<PanelColumn> {
+    let instrument_count = panel.instruments().len();
+    let mut values = column.values().to_vec();
+    for date_idx in 0..panel.dates().len() {
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            if !is_standard_sh_sz_stock(ts_code) {
+                values[date_offset + instrument_idx] = None;
+            }
+        }
+    }
+    panel.column_from_values(values)
+}
+
+fn business_weighted_return_panels(
     panel: &DailyPanel,
     stock_ret: &PanelColumn,
     circ_mv: &PanelColumn,
@@ -191,9 +230,10 @@ fn business_weighted_return_panel(
     mainbz: &crate::factor::common::MainBusinessReader<'_>,
     schedule: &FinancialEventSchedule,
     state: &mut MainbzMomResvolState,
-) -> Result<PanelColumn> {
+) -> Result<(PanelColumn, PanelColumn)> {
     let instrument_count = panel.instruments().len();
-    let mut output = vec![None; panel.shape_len()];
+    let mut abs_output = vec![None; panel.shape_len()];
+    let mut excess_output = vec![None; panel.shape_len()];
     let instruments_changed = state.current_instruments.as_slice() != panel.instruments();
     if instruments_changed {
         state.current_instruments = panel.instruments().to_vec();
@@ -227,7 +267,7 @@ fn business_weighted_return_panel(
             if !panel.is_present_offset(offset) {
                 continue;
             }
-            if is_bj_stock(&panel.instruments()[instrument_idx]) {
+            if !is_standard_sh_sz_stock(&panel.instruments()[instrument_idx]) {
                 continue;
             }
             let Some(snapshot) = state
@@ -237,15 +277,23 @@ fn business_weighted_return_panel(
             else {
                 continue;
             };
-            let mut value = 0.0;
-            for (item, ratio) in &snapshot.ratios {
-                value += ratio * product_returns.get(item).copied().unwrap_or(0.0);
-            }
-            output[offset] = value.is_finite().then_some(value);
+            let Some(ret) = clean(stock_ret.values()[offset]) else {
+                continue;
+            };
+            let Some((abs_value, excess_value)) =
+                business_weighted_values(snapshot, &product_returns, ret)
+            else {
+                continue;
+            };
+            abs_output[offset] = Some(abs_value);
+            excess_output[offset] = Some(excess_value);
         }
         state.last_processed_trade_date = Some(trade_date);
     }
-    panel.column_from_values(output)
+    Ok((
+        panel.column_from_values(abs_output)?,
+        panel.column_from_values(excess_output)?,
+    ))
 }
 
 fn update_business_snapshots_for_date(
@@ -259,7 +307,7 @@ fn update_business_snapshots_for_date(
         panel,
         trade_date,
         cache,
-        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
+        |_, ts_code, offset| !is_standard_sh_sz_stock(ts_code) || !panel.is_present_offset(offset),
         |trade_date, ts_code, _| {
             let balance_end_date = balance.latest_quarter_end_date(ts_code, trade_date)?;
             let mainbz_end_date =
@@ -303,7 +351,7 @@ fn business_snapshot(
         if item.is_empty() {
             continue;
         }
-        let Some(sales) = clean(record.bz_sales()) else {
+        let Some(sales) = clean(record.bz_sales()).filter(|value| *value > 0.0) else {
             continue;
         };
         *by_item.entry(item.to_string()).or_default() += sales;
@@ -312,12 +360,17 @@ fn business_snapshot(
 }
 
 fn business_snapshot_from_item_sales(by_item: &BTreeMap<String, f64>) -> Option<BusinessSnapshot> {
-    let total: f64 = by_item.values().copied().sum();
+    let positive_items = by_item
+        .iter()
+        .filter(|(_, sales)| sales.is_finite() && **sales > 0.0)
+        .collect::<Vec<_>>();
+    let total: f64 = positive_items.iter().map(|(_, sales)| **sales).sum();
     if !total.is_finite() || total <= 0.0 {
         return None;
     }
     let other_sales: f64 = by_item
         .iter()
+        .filter(|(_, sales)| sales.is_finite() && **sales > 0.0)
         .filter(|(item, _)| is_other_or_internal(item))
         .map(|(_, sales)| *sales)
         .sum();
@@ -326,6 +379,7 @@ fn business_snapshot_from_item_sales(by_item: &BTreeMap<String, f64>) -> Option<
     }
     let clean_total: f64 = by_item
         .iter()
+        .filter(|(_, sales)| sales.is_finite() && **sales > 0.0)
         .filter(|(item, _)| !is_other_or_internal(item))
         .map(|(_, sales)| *sales)
         .sum();
@@ -334,6 +388,7 @@ fn business_snapshot_from_item_sales(by_item: &BTreeMap<String, f64>) -> Option<
     }
     let ratios = by_item
         .iter()
+        .filter(|(_, sales)| sales.is_finite() && **sales > 0.0)
         .filter(|(item, _)| !is_other_or_internal(item))
         .filter_map(|(item, sales)| {
             let ratio = *sales / clean_total;
@@ -341,6 +396,33 @@ fn business_snapshot_from_item_sales(by_item: &BTreeMap<String, f64>) -> Option<
         })
         .collect::<Vec<_>>();
     (!ratios.is_empty()).then_some(BusinessSnapshot { ratios })
+}
+
+fn business_weighted_values(
+    snapshot: &BusinessSnapshot,
+    product_returns: &BTreeMap<String, f64>,
+    stock_ret: f64,
+) -> Option<(f64, f64)> {
+    let available_weight = snapshot
+        .ratios
+        .iter()
+        .filter(|(item, _)| product_returns.contains_key(item))
+        .map(|(_, ratio)| *ratio)
+        .sum::<f64>();
+    if !available_weight.is_finite() || available_weight <= 0.0 {
+        return None;
+    }
+    let mut abs_value = 0.0;
+    let mut excess_value = 0.0;
+    for (item, ratio) in &snapshot.ratios {
+        let Some(product_ret) = product_returns.get(item).copied() else {
+            continue;
+        };
+        let normalized_ratio = ratio / available_weight;
+        abs_value += normalized_ratio * product_ret;
+        excess_value += normalized_ratio * (product_ret - stock_ret);
+    }
+    (abs_value.is_finite() && excess_value.is_finite()).then_some((abs_value, excess_value))
 }
 
 fn is_other_or_internal(item: &str) -> bool {
@@ -361,7 +443,9 @@ fn product_returns_for_date(
     let mut sums = BTreeMap::<String, (f64, f64)>::new();
     for (instrument_idx, snapshot) in snapshots.iter().enumerate() {
         let offset = date_offset + instrument_idx;
-        if !panel.is_present_offset(offset) || is_bj_stock(&panel.instruments()[instrument_idx]) {
+        if !panel.is_present_offset(offset)
+            || !is_standard_sh_sz_stock(&panel.instruments()[instrument_idx])
+        {
             continue;
         }
         let (Some(ret), Some(weight), Some(snapshot)) = (
@@ -445,13 +529,6 @@ fn simple_return(close: Option<f64>, pre_close: Option<f64>) -> Option<f64> {
     }
 }
 
-fn subtract_pair(left: Option<f64>, right: Option<f64>) -> Option<f64> {
-    match (clean(left), clean(right)) {
-        (Some(left), Some(right)) => Some(left - right),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +584,8 @@ mod tests {
         let by_item = BTreeMap::from([
             ("bank".to_string(), 60.0),
             ("insurance".to_string(), 20.0),
+            ("zero".to_string(), 0.0),
+            ("negative".to_string(), -10.0),
             ("\u{5176}\u{4ed6}".to_string(), 10.0),
         ]);
         let snapshot = business_snapshot_from_item_sales(&by_item).expect("snapshot");
@@ -524,7 +603,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_product_return_contributes_zero_without_reweighting() {
+    fn standard_sh_sz_filter_rejects_non_six_digit_codes() {
+        assert!(is_standard_sh_sz_stock("000001.SZ"));
+        assert!(is_standard_sh_sz_stock("600000.SH"));
+        assert!(!is_standard_sh_sz_stock("A26018.SZ"));
+        assert!(!is_standard_sh_sz_stock("000001.BJ"));
+        assert!(!is_standard_sh_sz_stock("000001.sz"));
+    }
+
+    #[test]
+    fn missing_product_return_reweights_available_business_items() {
         let panel = panel_for_one_date();
         let snapshots = vec![
             Some(BusinessSnapshot {
@@ -539,14 +627,11 @@ mod tests {
         let product_returns = product_returns_for_date(&panel, 0, &snapshots, &stock_ret, &circ_mv);
         assert_close(product_returns.get("A").copied(), 0.15);
         assert_eq!(product_returns.get("B"), None);
-        let value = snapshots[0]
-            .as_ref()
-            .unwrap()
-            .ratios
-            .iter()
-            .map(|(item, ratio)| ratio * product_returns.get(item).copied().unwrap_or(0.0))
-            .sum::<f64>();
-        assert!((value - 0.09).abs() < 1e-10);
+        let (abs_value, excess_value) =
+            business_weighted_values(snapshots[0].as_ref().unwrap(), &product_returns, 0.10)
+                .expect("weighted values");
+        assert!((abs_value - 0.15).abs() < 1e-10);
+        assert!((excess_value - 0.05).abs() < 1e-10);
     }
 
     #[test]

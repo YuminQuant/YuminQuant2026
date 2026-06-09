@@ -1048,6 +1048,7 @@ fn raw_spec(raw_id: &str) -> FactorSpec {
 fn tags() -> Vec<String> {
     [
         "DBZQ",
+        "deprecated",
         "financial",
         "fundamental",
         "pit",
@@ -1337,7 +1338,7 @@ mod tests {
         let spec = StockDailySpecialRoa2.spec();
         assert_eq!(spec.id, "special_roa2");
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
-        assert!(!spec.tags.iter().any(|tag| tag == "deprecated"));
+        assert!(spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.tags.iter().any(|tag| tag == "industry_dummy"));
         assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
         assert!(spec.tags.iter().any(|tag| tag == "size"));

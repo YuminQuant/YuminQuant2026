@@ -57,7 +57,8 @@ pub use financial::{
     FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitIndex,
     FinancialPitReader, FinancialRecordMarker, FinancialStatementDataset,
     FinancialStockSnapshotCache, FinancialSyntheticMarker, InstrumentAlignedSnapshotCache,
-    PitFinancialRecordView, ReportTypePreference,
+    MainBusinessIndex, MainBusinessReader, MainBusinessRecordView, PitFinancialRecordView,
+    ReportTypePreference,
 };
 pub use intraday_daily::{
     intraday_time_in_range, IntradayDailyPanel, IntradaySeries, IntradayWindow,

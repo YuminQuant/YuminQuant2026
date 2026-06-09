@@ -322,6 +322,49 @@ impl MarketDataLoader {
         Ok(table)
     }
 
+    pub fn load_stock_main_business_cached(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+        quarters: usize,
+        cache: &mut DisclosureTableCache,
+    ) -> Result<Table> {
+        let columns = with_required_columns(
+            requested_columns,
+            &[
+                "ts_code",
+                "end_date",
+                "bz_type",
+                "bz_item",
+                "bz_sales",
+                "update_flag",
+            ],
+        );
+        let years = financial_disclosure_years_for_range(start_date, end_date, quarters);
+        let file_start_year = years.iter().next().copied().unwrap_or(end_date / 10_000);
+        let end_year = years
+            .iter()
+            .next_back()
+            .copied()
+            .unwrap_or(end_date / 10_000);
+        let files = self.catalog.daily_year_files(
+            DatasetId::StockMainBusiness,
+            file_start_year * 10_000 + 101,
+            end_year * 10_000 + 12_31,
+        );
+        let mut table = Table::empty();
+        for file in files {
+            let yearly = cache.load_year(DatasetId::StockMainBusiness, file, &columns)?;
+            let filtered = filter_main_business_range(yearly, end_date)?;
+            table.append(&filtered)?;
+        }
+        if table.columns.is_empty() {
+            return empty_disclosure_table(&columns);
+        }
+        Ok(table)
+    }
+
     pub fn load_stock_analyst_report(
         &self,
         requested_columns: &[String],
@@ -479,7 +522,8 @@ fn empty_disclosure_table(columns: &[String]) -> Result<Table> {
     let mut values = BTreeMap::new();
     for column in columns {
         let data = match column.as_str() {
-            "ts_code" | "quarter" | "div_proc" => ColumnData::Utf8(Vec::new()),
+            "ts_code" | "quarter" | "div_proc" | "bz_type" | "bz_item" | "bz_code"
+            | "curr_type" => ColumnData::Utf8(Vec::new()),
             "ann_date" | "f_ann_date" | "end_date" | "report_date" | "ex_date" | "base_date" => {
                 ColumnData::I32(Vec::new())
             }
@@ -580,7 +624,10 @@ fn previous_mandatory_disclosure_mmdd(date: i32) -> i32 {
 fn is_financial_statement_dataset(dataset: DatasetId) -> bool {
     matches!(
         dataset,
-        DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow
+        DatasetId::StockIncome
+            | DatasetId::StockBalanceSheet
+            | DatasetId::StockCashFlow
+            | DatasetId::StockMainBusiness
     )
 }
 
@@ -612,6 +659,14 @@ fn filter_dividend_range(table: &Table, end_date: i32) -> Result<Table> {
             ann_dates[*idx].is_some_and(|date| date <= end_date)
                 || ex_dates[*idx].is_some_and(|date| date <= end_date)
         })
+        .collect::<Vec<_>>();
+    table.take(&indices)
+}
+
+fn filter_main_business_range(table: &Table, end_date: i32) -> Result<Table> {
+    let end_dates = table.required_i32_date_cast("end_date")?;
+    let indices = (0..table.len)
+        .filter(|idx| end_dates[*idx].is_some_and(|date| date <= end_date))
         .collect::<Vec<_>>();
     table.take(&indices)
 }

@@ -7,7 +7,7 @@ use crate::data::table::Table;
 use crate::error::{err, Result};
 use crate::factor::common::{
     DailyPanel, DividendIndex, DividendReader, FinancialPitIndex, FinancialPitReader,
-    ReportTypePreference,
+    MainBusinessIndex, MainBusinessReader, ReportTypePreference,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -16,6 +16,7 @@ pub struct DataPool {
     daily_panels: HashMap<DatasetId, DailyPanel>,
     financial_pit_indexes: HashMap<DatasetId, Arc<FinancialPitIndex>>,
     dividend_index: Option<Arc<DividendIndex>>,
+    main_business_index: Option<Arc<MainBusinessIndex>>,
     index_daily: HashMap<String, Arc<Table>>,
     index_daily_panels: HashMap<String, DailyPanel>,
     minute: HashMap<(DatasetId, Option<usize>, i32), Arc<Table>>,
@@ -134,6 +135,20 @@ impl DataPool {
                 pool.daily.insert(dataset, table);
                 continue;
             }
+            if dataset == DatasetId::StockMainBusiness {
+                let table = loader.load_stock_main_business_cached(
+                    &columns,
+                    context.start_date,
+                    context.end_date,
+                    financial_quarters.unwrap_or(8),
+                    disclosure_cache,
+                )?;
+                let table = Arc::new(table);
+                let index = MainBusinessIndex::from_table(Arc::clone(&table))?;
+                pool.main_business_index = Some(Arc::new(index));
+                pool.daily.insert(dataset, table);
+                continue;
+            }
             if dataset == DatasetId::StockAnalystReport {
                 let table = loader.load_stock_analyst_report_cached(
                     &columns,
@@ -187,6 +202,7 @@ impl DataPool {
                 .collect(),
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
+            main_business_index: self.main_business_index.clone(),
             index_daily: self.index_daily.clone(),
             index_daily_panels: self
                 .index_daily_panels
@@ -212,6 +228,7 @@ impl DataPool {
                 .collect(),
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
+            main_business_index: self.main_business_index.clone(),
             index_daily: self.index_daily.clone(),
             index_daily_panels: self
                 .index_daily_panels
@@ -263,6 +280,13 @@ impl DataPool {
             .ok_or_else(|| err("dividend index not loaded"))
     }
 
+    pub fn main_business_reader(&self) -> Result<MainBusinessReader<'_>> {
+        self.main_business_index
+            .as_ref()
+            .map(|index| index.reader())
+            .ok_or_else(|| err("main business index not loaded"))
+    }
+
     pub fn index_daily_panel(&self, ts_code: &str) -> Result<&DailyPanel> {
         self.index_daily_panels
             .get(ts_code)
@@ -300,6 +324,9 @@ impl DataPool {
             .extend(other.financial_pit_indexes);
         if other.dividend_index.is_some() {
             self.dividend_index = other.dividend_index;
+        }
+        if other.main_business_index.is_some() {
+            self.main_business_index = other.main_business_index;
         }
         self.index_daily.extend(other.index_daily);
         self.index_daily_panels.extend(other.index_daily_panels);
@@ -352,6 +379,7 @@ impl DataPool {
             daily_panels: HashMap::new(),
             financial_pit_indexes: HashMap::new(),
             dividend_index: None,
+            main_business_index: None,
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),
             minute: minute
@@ -377,6 +405,7 @@ impl DataPool {
         let mut daily_arc = HashMap::new();
         let mut financial_pit_indexes = HashMap::new();
         let mut dividend_index = None;
+        let mut main_business_index = None;
         for (dataset, table) in daily {
             let table = Arc::new(table);
             if matches!(
@@ -391,6 +420,10 @@ impl DataPool {
             if dataset == DatasetId::StockDividend {
                 dividend_index = Some(Arc::new(DividendIndex::from_table(Arc::clone(&table))?));
             }
+            if dataset == DatasetId::StockMainBusiness {
+                main_business_index =
+                    Some(Arc::new(MainBusinessIndex::from_table(Arc::clone(&table))?));
+            }
             daily_arc.insert(dataset, table);
         }
         Ok(Self {
@@ -398,6 +431,7 @@ impl DataPool {
             daily_panels,
             financial_pit_indexes,
             dividend_index,
+            main_business_index,
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),
             minute: HashMap::new(),
@@ -473,6 +507,7 @@ mod tests {
             daily_panels: HashMap::from([(DatasetId::StockDailyPv, expected.clone())]),
             financial_pit_indexes: HashMap::new(),
             dividend_index: None,
+            main_business_index: None,
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),
             minute: HashMap::new(),

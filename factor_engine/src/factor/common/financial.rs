@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::core::{DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue};
@@ -419,6 +420,194 @@ impl<'a> DividendReader<'a> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct MainBusinessIndex {
+    rows: Vec<MainBusinessIndexedRow>,
+    by_ts_end: BTreeMap<String, BTreeMap<i32, Vec<usize>>>,
+    bz_types: Vec<Option<String>>,
+    bz_items: Vec<Option<String>>,
+    bz_sales: Vec<Option<f64>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MainBusinessIndexedRow {
+    row_idx: usize,
+    end_date: i32,
+    update_flag: i64,
+}
+
+impl MainBusinessIndex {
+    pub fn from_table(table: Arc<Table>) -> Result<Self> {
+        let ts_codes = table.required_utf8("ts_code")?;
+        let end_dates = table.required_i32_date_cast("end_date")?;
+        let update_flags = table.required_i64_cast("update_flag")?;
+        let bz_types = table.required_utf8("bz_type")?.clone();
+        let bz_items = table.required_utf8("bz_item")?.clone();
+        let bz_sales = table.required_f64_cast("bz_sales")?;
+        let mut rows = Vec::new();
+        let mut by_ts_end = BTreeMap::<String, BTreeMap<i32, Vec<usize>>>::new();
+        for idx in 0..table.len {
+            let (Some(ts_code), Some(end_date), Some(update_flag)) =
+                (ts_codes[idx].as_deref(), end_dates[idx], update_flags[idx])
+            else {
+                continue;
+            };
+            let row_pos = rows.len();
+            rows.push(MainBusinessIndexedRow {
+                row_idx: idx,
+                end_date,
+                update_flag,
+            });
+            by_ts_end
+                .entry(ts_code.to_string())
+                .or_default()
+                .entry(end_date)
+                .or_default()
+                .push(row_pos);
+        }
+        Ok(Self {
+            rows,
+            by_ts_end,
+            bz_types,
+            bz_items,
+            bz_sales,
+        })
+    }
+
+    pub fn reader(&self) -> MainBusinessReader<'_> {
+        MainBusinessReader { index: self }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MainBusinessRecordView<'a> {
+    index: &'a MainBusinessIndex,
+    row_pos: usize,
+}
+
+impl<'a> MainBusinessRecordView<'a> {
+    pub fn end_date(&self) -> i32 {
+        self.index.rows[self.row_pos].end_date
+    }
+
+    pub fn update_flag(&self) -> i64 {
+        self.index.rows[self.row_pos].update_flag
+    }
+
+    pub fn bz_type(&self) -> Option<&'a str> {
+        self.index
+            .bz_types
+            .get(self.index.rows[self.row_pos].row_idx)
+            .and_then(|value| value.as_deref())
+    }
+
+    pub fn bz_item(&self) -> Option<&'a str> {
+        self.index
+            .bz_items
+            .get(self.index.rows[self.row_pos].row_idx)
+            .and_then(|value| value.as_deref())
+    }
+
+    pub fn bz_sales(&self) -> Option<f64> {
+        self.index
+            .bz_sales
+            .get(self.index.rows[self.row_pos].row_idx)
+            .copied()
+            .flatten()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MainBusinessReader<'a> {
+    index: &'a MainBusinessIndex,
+}
+
+impl<'a> MainBusinessReader<'a> {
+    pub fn latest_industry_update0_end_date(
+        &self,
+        ts_code: &str,
+        max_end_date: i32,
+    ) -> Option<i32> {
+        self.index
+            .by_ts_end
+            .get(ts_code)?
+            .range(..=max_end_date)
+            .rev()
+            .find_map(|(end_date, row_positions)| {
+                let has_valid_kind = row_positions.iter().copied().any(|row_pos| {
+                    let record = MainBusinessRecordView {
+                        index: self.index,
+                        row_pos,
+                    };
+                    record.update_flag() == 0
+                        && record
+                            .bz_type()
+                            .is_some_and(|value| value.eq_ignore_ascii_case("I"))
+                });
+                has_valid_kind.then_some(*end_date)
+            })
+    }
+
+    pub fn records_for_end_date(
+        &self,
+        ts_code: &str,
+        end_date: i32,
+    ) -> Vec<MainBusinessRecordView<'a>> {
+        let Some(row_positions) = self
+            .index
+            .by_ts_end
+            .get(ts_code)
+            .and_then(|by_end| by_end.get(&end_date))
+        else {
+            return Vec::new();
+        };
+        row_positions
+            .iter()
+            .copied()
+            .map(|row_pos| MainBusinessRecordView {
+                index: self.index,
+                row_pos,
+            })
+            .collect()
+    }
+
+    pub fn industry_update0_records(
+        &self,
+        ts_code: &str,
+        end_date: i32,
+    ) -> Vec<MainBusinessRecordView<'a>> {
+        self.records_for_end_date(ts_code, end_date)
+            .into_iter()
+            .filter(|record| {
+                record.update_flag() == 0
+                    && record
+                        .bz_type()
+                        .is_some_and(|value| value.eq_ignore_ascii_case("I"))
+            })
+            .collect()
+    }
+
+    pub fn industry_update0_fingerprint(&self, ts_code: &str, end_date: i32) -> Option<i64> {
+        let mut rows = self
+            .industry_update0_records(ts_code, end_date)
+            .into_iter()
+            .filter_map(|record| {
+                let item = record.bz_item()?.to_string();
+                let sales = record.bz_sales()?;
+                Some((item, sales.to_bits(), record.update_flag()))
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return None;
+        }
+        rows.sort();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        end_date.hash(&mut hasher);
+        rows.hash(&mut hasher);
+        Some(i64::from_ne_bytes(hasher.finish().to_ne_bytes()))
+    }
+}
+
 fn multi_target_context(context: &FactorContext, target_dates: &[i32]) -> FactorContext {
     let start_date = target_dates.first().copied().unwrap_or(context.start_date);
     let end_date = target_dates.last().copied().unwrap_or(context.end_date);
@@ -569,6 +758,18 @@ impl FinancialEventMarkerBuilder {
     ) -> &mut Self {
         let cash = reader.implemented_ltm_sum(ts_code, start_date, trade_date);
         self.include_synthetic("dividend_ltm", f64_marker_value(cash));
+        self
+    }
+
+    pub fn include_main_business_end_date(
+        &mut self,
+        reader: &MainBusinessReader<'_>,
+        ts_code: &str,
+        end_date: i32,
+    ) -> &mut Self {
+        if let Some(marker) = reader.industry_update0_fingerprint(ts_code, end_date) {
+            self.include_synthetic("main_business", marker);
+        }
         self
     }
 

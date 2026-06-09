@@ -6,6 +6,7 @@ pub mod dbzq_coskewness;
 pub mod dbzq_financial_efficiency;
 pub mod dbzq_intraday_volume_distribution;
 pub mod dbzq_profit_skew;
+pub mod dbzq_roic_wacc;
 pub mod financial;
 pub mod financial_similarity;
 pub mod gaussian_financial;

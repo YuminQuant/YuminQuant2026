@@ -44,6 +44,16 @@ pub trait Factor: Send + Sync {
         self.spec().dependencies
     }
 
+    fn requirements_for_context(&self, context: &FactorContext) -> Vec<DataRequest> {
+        self.requirements()
+            .into_iter()
+            .map(|request| {
+                let dates = request.resolved_dates(context);
+                request.with_explicit_dates(dates)
+            })
+            .collect()
+    }
+
     fn intraday_raw_specs(&self) -> Vec<IntradayDailyRawSpec> {
         Vec::new()
     }

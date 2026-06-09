@@ -158,6 +158,38 @@ impl DatasetId {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub enum DateLoadPolicy {
+    ContextLoadDates,
+    ExplicitDates(Vec<i32>),
+}
+
+impl Default for DateLoadPolicy {
+    fn default() -> Self {
+        Self::ContextLoadDates
+    }
+}
+
+impl DateLoadPolicy {
+    pub fn calendar_lookback_days(&self) -> usize {
+        0
+    }
+
+    pub fn resolve_dates(&self, context: &FactorContext) -> Vec<i32> {
+        use std::collections::BTreeSet;
+
+        match self {
+            Self::ContextLoadDates => context.load_dates.clone(),
+            Self::ExplicitDates(dates) => dates
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DataRequest {
     pub dataset: DatasetId,
@@ -165,6 +197,7 @@ pub struct DataRequest {
     pub bar_size: Option<usize>,
     pub columns: Vec<String>,
     pub financial_quarters: Option<usize>,
+    pub date_policy: DateLoadPolicy,
 }
 
 impl DataRequest {
@@ -175,6 +208,7 @@ impl DataRequest {
             bar_size: None,
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
+            date_policy: DateLoadPolicy::ContextLoadDates,
         }
     }
 
@@ -185,6 +219,7 @@ impl DataRequest {
             bar_size: Some(bar_size),
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
+            date_policy: DateLoadPolicy::ContextLoadDates,
         }
     }
 
@@ -195,6 +230,7 @@ impl DataRequest {
             bar_size: None,
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
+            date_policy: DateLoadPolicy::ContextLoadDates,
         }
     }
 
@@ -205,7 +241,30 @@ impl DataRequest {
             bar_size: None,
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: Some(quarters),
+            date_policy: DateLoadPolicy::ContextLoadDates,
         }
+    }
+
+    fn with_date_policy(mut self, date_policy: DateLoadPolicy) -> Self {
+        self.date_policy = date_policy;
+        self
+    }
+
+    pub fn explicit_dates(dataset: DatasetId, columns: &[&str], dates: Vec<i32>) -> Self {
+        Self::new(dataset, columns).with_date_policy(DateLoadPolicy::ExplicitDates(dates))
+    }
+
+    pub fn with_explicit_dates(mut self, dates: Vec<i32>) -> Self {
+        self.date_policy = DateLoadPolicy::ExplicitDates(dates);
+        self
+    }
+
+    pub fn calendar_lookback_days(&self) -> usize {
+        self.date_policy.calendar_lookback_days()
+    }
+
+    pub fn resolved_dates(&self, context: &FactorContext) -> Vec<i32> {
+        self.date_policy.resolve_dates(context)
     }
 }
 
@@ -268,6 +327,32 @@ mod tests {
         assert_eq!(request.columns, vec!["close", "volume"]);
         assert_eq!(request.dataset.frequency(), Frequency::Minute1);
         assert_eq!(request.dataset.asset_class(), AssetClass::Stock);
+    }
+
+    fn context(load_dates: Vec<i32>, target_dates: Vec<i32>) -> FactorContext {
+        FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: *target_dates.first().unwrap(),
+            end_date: *target_dates.last().unwrap(),
+            load_start_date: *load_dates.first().unwrap(),
+            load_dates,
+            target_dates,
+        }
+    }
+
+    #[test]
+    fn data_request_explicit_dates_are_sorted_and_deduplicated() {
+        let context = context(vec![20260102, 20260105, 20260106], vec![20260105, 20260106]);
+        let request = DataRequest::explicit_dates(
+            DatasetId::StockDailyPv,
+            &["close"],
+            vec![20260106, 20260102, 20260102],
+        );
+
+        let dates = request.resolved_dates(&context);
+
+        assert_eq!(dates, vec![20260102, 20260106]);
     }
 }
 

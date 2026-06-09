@@ -507,8 +507,8 @@ impl<'a> GaussianFinancialPrepared<'a> {
     }
 }
 
-fn tags(kind: GaussianFinancialOutput) -> Vec<String> {
-    let mut tags = [
+fn tags(_kind: GaussianFinancialOutput) -> Vec<String> {
+    [
         "DFZQ",
         "DBZQ",
         "financial",
@@ -524,17 +524,7 @@ fn tags(kind: GaussianFinancialOutput) -> Vec<String> {
     ]
     .iter()
     .map(|value| value.to_string())
-    .collect::<Vec<_>>();
-    if kind.is_deprecated() {
-        tags.push("deprecated".to_string());
-    }
-    tags
-}
-
-impl GaussianFinancialOutput {
-    fn is_deprecated(self) -> bool {
-        matches!(self, Self::CfpSq | Self::DeltaRoe | Self::ProfitYoySq)
-    }
+    .collect::<Vec<_>>()
 }
 
 #[derive(Clone, Copy, Debug, Default)]

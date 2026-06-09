@@ -69,7 +69,7 @@ impl Factor for StockDailySpecialRoa1 {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags_roa1(),
-            description: "Deprecated DBZQ special ROA 1 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry. The ridge lambda is 1 and the intercept is unpenalized. The residual is neutralized against Barra SIZE and CITIC level-1 sector.".to_string(),
+            description: "DBZQ special ROA 1 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry. The ridge lambda is 1 and the intercept is unpenalized. The residual is neutralized against Barra SIZE and CITIC level-1 sector.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
@@ -1048,7 +1048,6 @@ fn raw_spec(raw_id: &str) -> FactorSpec {
 fn tags() -> Vec<String> {
     [
         "DBZQ",
-        "deprecated",
         "financial",
         "fundamental",
         "pit",
@@ -1072,7 +1071,6 @@ fn tags() -> Vec<String> {
 fn tags_roa1() -> Vec<String> {
     [
         "DBZQ",
-        "deprecated",
         "financial",
         "fundamental",
         "pit",
@@ -1326,7 +1324,7 @@ mod tests {
         let spec = StockDailySpecialRoa1.spec();
         assert_eq!(spec.id, "special_roa1");
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
-        assert!(spec.tags.iter().any(|tag| tag == "deprecated"));
+        assert!(!spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.tags.iter().any(|tag| tag == "sector"));
         assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
         assert!(!spec.tags.iter().any(|tag| tag == "industry_dummy"));
@@ -1338,7 +1336,7 @@ mod tests {
         let spec = StockDailySpecialRoa2.spec();
         assert_eq!(spec.id, "special_roa2");
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
-        assert!(spec.tags.iter().any(|tag| tag == "deprecated"));
+        assert!(!spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.tags.iter().any(|tag| tag == "industry_dummy"));
         assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
         assert!(spec.tags.iter().any(|tag| tag == "size"));

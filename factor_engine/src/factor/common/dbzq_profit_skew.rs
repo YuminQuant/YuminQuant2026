@@ -356,8 +356,8 @@ fn dependencies(include_daily_basic: bool) -> Vec<DataRequest> {
     requests
 }
 
-fn tags(output: ProfitSkewOutput) -> Vec<String> {
-    let mut tags = [
+fn tags(_output: ProfitSkewOutput) -> Vec<String> {
+    [
         "DBZQ",
         "financial",
         "fundamental",
@@ -373,11 +373,7 @@ fn tags(output: ProfitSkewOutput) -> Vec<String> {
     ]
     .iter()
     .map(|tag| (*tag).to_string())
-    .collect::<Vec<_>>();
-    if output == ProfitSkewOutput::PopSkew {
-        tags.push("deprecated".to_string());
-    }
-    tags
+    .collect::<Vec<_>>()
 }
 
 fn clean(value: Option<f64>) -> Option<f64> {

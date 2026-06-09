@@ -114,8 +114,15 @@ fn collect_pit_reader_event_dates(
 
 #[derive(Clone, Debug, Default)]
 pub struct EventDrivenCrossSectionCache {
-    latest_values: BTreeMap<String, Vec<Option<f64>>>,
+    latest_values: BTreeMap<String, CachedCrossSection>,
     last_processed_trade_date: Option<i32>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CachedCrossSection {
+    instruments: Vec<String>,
+    values: Vec<Option<f64>>,
+    lookup: BTreeMap<String, usize>,
 }
 
 impl EventDrivenCrossSectionCache {
@@ -132,22 +139,38 @@ impl EventDrivenCrossSectionCache {
             .enumerate()
             .map(|(idx, ts_code)| (ts_code.as_str(), idx))
             .collect::<BTreeMap<_, _>>();
-        let values = self
+        let cached = self
             .latest_values
             .entry(series.spec.id.clone())
-            .or_default();
-        if values.len() != instrument_count {
-            values.clear();
-            values.resize(instrument_count, None);
+            .or_insert_with(|| CachedCrossSection {
+                instruments: panel.instruments().to_vec(),
+                values: vec![None; instrument_count],
+                lookup: panel
+                    .instruments()
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, ts_code)| (ts_code.clone(), idx))
+                    .collect(),
+            });
+        if cached.instruments != panel.instruments() {
+            cached.instruments = panel.instruments().to_vec();
+            cached.lookup = cached
+                .instruments
+                .iter()
+                .enumerate()
+                .map(|(idx, ts_code)| (ts_code.clone(), idx))
+                .collect();
+            cached.values.clear();
+            cached.values.resize(instrument_count, None);
         } else {
-            values.fill(None);
+            cached.values.fill(None);
         }
         for item in &series.values {
             let FactorRowKey::Daily { ts_code, .. } = &item.key else {
                 continue;
             };
             if let Some(instrument_idx) = instrument_lookup.get(ts_code.as_str()).copied() {
-                values[instrument_idx] = item.value;
+                cached.values[instrument_idx] = item.value;
             }
         }
     }
@@ -173,12 +196,21 @@ impl EventDrivenCrossSectionCache {
                 if !panel.is_present_offset(panel_idx) {
                     continue;
                 }
+                let value = cached.and_then(|cached| {
+                    if cached.instruments.get(instrument_idx) == Some(ts_code) {
+                        cached.values.get(instrument_idx).copied().flatten()
+                    } else {
+                        cached.lookup.get(ts_code).and_then(|cached_idx| {
+                            cached.values.get(*cached_idx).copied().flatten()
+                        })
+                    }
+                });
                 values.push(FactorValue {
                     key: FactorRowKey::Daily {
                         trade_date,
                         ts_code: ts_code.clone(),
                     },
-                    value: cached.and_then(|values| values.get(instrument_idx).copied().flatten()),
+                    value,
                 });
             }
         }
@@ -1463,6 +1495,34 @@ mod tests {
         crate::factor::common::DailyPanel::from_table(&table, &context).expect("panel")
     }
 
+    fn panel_for_codes(date: i32, codes: &[&str]) -> crate::factor::common::DailyPanel {
+        let table = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(codes.iter().map(|_| Some(date)).collect()),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(codes.iter().map(|code| Some((*code).to_string())).collect()),
+            ),
+            (
+                "dummy".to_string(),
+                ColumnData::F64(codes.iter().map(|_| Some(1.0)).collect()),
+            ),
+        ]))
+        .expect("valid table");
+        let context = FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: date,
+            end_date: date,
+            load_start_date: date,
+            load_dates: vec![date],
+            target_dates: vec![date],
+        };
+        crate::factor::common::DailyPanel::from_table(&table, &context).expect("panel")
+    }
+
     fn financial_table_with_codes(rows: &[(&str, i32, i32, i64, i64, f64)]) -> Table {
         Table::new(BTreeMap::from([
             (
@@ -1668,6 +1728,50 @@ mod tests {
     }
 
     #[test]
+    fn event_driven_cross_section_cache_replays_by_code_when_panel_changes() {
+        let old_panel = panel_for_codes(20260105, &["000002.SZ", "000004.SZ"]);
+        let new_panel = panel_for_codes(20260106, &["000001.SZ", "000002.SZ", "000004.SZ"]);
+        let spec = event_spec("slow_factor");
+        let mut cache = EventDrivenCrossSectionCache::default();
+        cache.update_series(
+            &FactorSeries {
+                spec: spec.clone(),
+                values: vec![
+                    FactorValue {
+                        key: FactorRowKey::Daily {
+                            trade_date: 20260105,
+                            ts_code: "000002.SZ".to_string(),
+                        },
+                        value: Some(2.0),
+                    },
+                    FactorValue {
+                        key: FactorRowKey::Daily {
+                            trade_date: 20260105,
+                            ts_code: "000004.SZ".to_string(),
+                        },
+                        value: Some(4.0),
+                    },
+                ],
+            },
+            &old_panel,
+        );
+
+        let replay = cache.replay_series(spec, &new_panel, 20260106);
+        let values = replay
+            .values
+            .iter()
+            .map(|item| match &item.key {
+                FactorRowKey::Daily { ts_code, .. } => (ts_code.as_str(), item.value),
+                _ => unreachable!(),
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(values.get("000001.SZ"), Some(&None));
+        assert_eq!(values.get("000002.SZ"), Some(&Some(2.0)));
+        assert_eq!(values.get("000004.SZ"), Some(&Some(4.0)));
+    }
+
+    #[test]
     fn financial_event_snapshot_streams_event_dates_and_replays_cache() {
         let dates = vec![20260102, 20260105, 20260106, 20260107, 20260108];
         let context = factor_context(&dates);
@@ -1823,6 +1927,31 @@ mod tests {
             data.record_for_end_date("000001.SZ", 20250501, 20241231)
                 .and_then(|record| record.column("value")),
             Some(12.0)
+        );
+    }
+
+    #[test]
+    fn financial_pit_reader_keeps_year_end_and_q1_when_disclosed_together() {
+        let table = financial_table(&[
+            (20241231, 20250430, 3, 0, 12.0),
+            (20250331, 20250430, 3, 0, 3.0),
+        ]);
+        let index = FinancialPitIndex::from_table(Arc::new(table)).expect("index");
+        let data = index.reader(ReportTypePreference::income_single_quarter());
+
+        assert_eq!(
+            data.latest_quarter_end_date("000001.SZ", 20250430),
+            Some(20250331)
+        );
+        assert_eq!(
+            data.record_for_end_date("000001.SZ", 20250430, 20241231)
+                .and_then(|record| record.column("value")),
+            Some(12.0)
+        );
+        assert_eq!(
+            data.record_for_end_date("000001.SZ", 20250430, 20250331)
+                .and_then(|record| record.column("value")),
+            Some(3.0)
         );
     }
 

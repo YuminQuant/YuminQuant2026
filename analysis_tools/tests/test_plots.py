@@ -22,6 +22,19 @@ def _sample_returns() -> pd.DataFrame:
     )
 
 
+def _sample_returns_three_groups() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "trade_date": [20250102, 20250103] * 3,
+            "factor_id": ["sample"] * 6,
+            "portfolio": ["group_1", "group_1", "group_2", "group_2", "group_3", "group_3"],
+            "return": [0.01, 0.01, 0.02, 0.02, -0.01, -0.01],
+            "excess_return": [0.005, 0.005, 0.01, 0.01, -0.005, -0.005],
+            "turnover": [0.2, 0.1, 0.3, 0.2, 0.4, 0.3],
+        }
+    )
+
+
 def _sample_barra_exposure() -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -76,6 +89,18 @@ def test_plot_return_summary_returns_figure() -> None:
 
     fig = plot_return_summary(_sample_returns(), groups=2, save=False)
     assert isinstance(fig, Figure)
+
+
+def test_plot_return_summary_draws_end_groups_on_top() -> None:
+    pytest.importorskip("matplotlib")
+
+    from yq_analysis.plots import plot_return_summary
+
+    fig = plot_return_summary(_sample_returns_three_groups(), groups=3, save=False)
+    cumulative_axis = next(axis for axis in fig.axes if axis.get_title() == "Cumulative returns")
+    line_labels = [line.get_label() for line in cumulative_axis.lines if line.get_label().startswith("group_")]
+
+    assert line_labels[-2:] == ["group_1", "group_3"]
 
 
 def test_plot_return_summary_can_save_jpg(tmp_path: Path) -> None:

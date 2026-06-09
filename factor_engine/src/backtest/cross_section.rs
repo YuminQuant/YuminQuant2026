@@ -229,9 +229,16 @@ fn update_factor_cross_section_state(
             continue;
         };
         let raw = input.panel.cross_section(&factor.output_column, date_idx)?;
+        let factor_presence = input
+            .panel
+            .cross_section_presence(&factor.output_column, date_idx)?;
         let universe_mask = input.universe.mask_for(*date);
         let trade_filter_mask = input.trade_filter.mask_for(*date);
-        let eligible_mask = combined_mask(universe_mask, trade_filter_mask);
+        let eligible_mask = combined_masks(&[
+            Some(factor_presence.as_slice()),
+            universe_mask,
+            trade_filter_mask,
+        ]);
         let eligible_mask_ref = eligible_mask.as_deref();
         let masked_raw = apply_universe_mask(&raw, eligible_mask_ref);
         let stats = coverage_stats_with_universe(&raw, eligible_mask_ref);
@@ -429,17 +436,19 @@ fn apply_universe_mask(values: &[Option<f64>], universe: Option<&[bool]>) -> Vec
         .collect()
 }
 
-fn combined_mask(left: Option<&[bool]>, right: Option<&[bool]>) -> Option<Vec<bool>> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(
-            left.iter()
-                .enumerate()
-                .map(|(idx, value)| *value && right.get(idx).copied().unwrap_or(false))
-                .collect(),
-        ),
-        (Some(values), None) | (None, Some(values)) => Some(values.to_vec()),
-        (None, None) => None,
+fn combined_masks(masks: &[Option<&[bool]>]) -> Option<Vec<bool>> {
+    let mut output: Option<Vec<bool>> = None;
+    for mask in masks.iter().flatten() {
+        match &mut output {
+            Some(values) => {
+                for (idx, value) in values.iter_mut().enumerate() {
+                    *value = *value && mask.get(idx).copied().unwrap_or(false);
+                }
+            }
+            None => output = Some(mask.to_vec()),
+        }
     }
+    output
 }
 
 fn benchmark_return(
@@ -1035,9 +1044,10 @@ pub fn ensure_backtest_inputs(request: &BacktestRunRequest) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        finalize_factor_returns, pearson_corr_with_count, record_barra_group_exposure,
-        record_industry_weights, weighted_exposure_mean, CrossSectionBacktestState,
-        BARRA_IC_MEAN_METRIC, BARRA_IC_METRIC, LONG_GROUP_EXPOSURE_METRIC,
+        combined_masks, finalize_factor_returns, pearson_corr_with_count,
+        record_barra_group_exposure, record_industry_weights, weighted_exposure_mean,
+        CrossSectionBacktestState, BARRA_IC_MEAN_METRIC, BARRA_IC_METRIC,
+        LONG_GROUP_EXPOSURE_METRIC,
     };
     use crate::backtest::ic::IcObservation;
     use crate::backtest::metrics::{
@@ -1086,6 +1096,18 @@ mod tests {
         assert_eq!(state.returns[1].excess_return, Some(-0.025));
         assert_eq!(state.returns[2].excess_return, None);
         assert_eq!(state.returns[2].return_value, Some(-0.03));
+    }
+
+    #[test]
+    fn combined_masks_intersects_factor_presence_universe_and_trade_filter() {
+        let factor_presence = [true, false, true, true];
+        let universe = [true, true, false, true];
+        let trade_filter = [true, true, true, false];
+
+        let mask = combined_masks(&[Some(&factor_presence), Some(&universe), Some(&trade_filter)])
+            .expect("combined mask");
+
+        assert_eq!(mask, vec![true, false, false, false]);
     }
 
     #[test]

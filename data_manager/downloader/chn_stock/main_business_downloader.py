@@ -14,6 +14,7 @@ from data_manager.downloader.chn_stock.fin_statement_downloader import (
 
 
 MAINBZ_TYPES = ("P", "D", "I")
+MAINBZ_VIP_PAGE_LIMIT = 10000
 MAINBZ_FIELDS = (
     "ts_code,end_date,bz_item,bz_code,bz_sales,bz_profit,bz_cost,"
     "curr_type,update_flag"
@@ -30,7 +31,10 @@ class MainBusinessDownloader(BaseDownloader):
         super().__init__(
             rate_limit=rate_limits.get("mainbz", rate_limits.get("financial_vip", 200))
         )
-        self.page_limit = min(int(page_limits.get("mainbz", 100)), 100)
+        self.page_limit = min(
+            int(page_limits.get("mainbz", MAINBZ_VIP_PAGE_LIMIT)),
+            MAINBZ_VIP_PAGE_LIMIT,
+        )
         self.save_dir = self.get_full_path_and_ensure_dir("fin_mainbz_dir")
         self.task_name = "main business"
         self.fields = MAINBZ_FIELDS

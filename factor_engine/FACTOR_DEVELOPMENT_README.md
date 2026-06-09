@@ -86,12 +86,12 @@ DatasetId::StockCiClassification  l1_code, l2_code, l3_code
 DataRequest::index_daily(...)     index close/pre_close etc.
 ```
 
-### 2.1 ?????? / Sparse Date Loading
+### 2.1 稀疏日期读取 / Sparse Date Loading
 
-??????`DataRequest::new(...)` ??? factor ????? `context.load_dates`???????????????????/??/???????????? `requirements_for_context(context)` ????????????????? `DataRequest::explicit_dates(...)`?
-By default, `DataRequest::new(...)` reads the factor's own dense `context.load_dates`. For event-driven factors or factors that need month-end, week-end, or any custom sample dates, compute those dates inside `requirements_for_context(context)` and pass them directly to `DataRequest::explicit_dates(...)`.
+默认情况下，`DataRequest::new(...)` 读取当前因子自己的 dense `context.load_dates`。事件驱动因子，或者需要月末、周末、固定检查日等自定义样本日期的因子，应在 `requirements_for_context(context)` 内计算这些日期，并直接传给 `DataRequest::explicit_dates(...)`。
+By default, `DataRequest::new(...)` reads the factor's own dense `context.load_dates`. For event-driven factors or factors that need month-end, week-end, fixed-checkpoint, or any custom sample dates, compute those dates inside `requirements_for_context(context)` and pass them directly to `DataRequest::explicit_dates(...)`.
 
-???? / Recommended pattern:
+推荐写法 / Recommended pattern:
 
 ```rust
 impl Factor for MyFactor {
@@ -106,18 +106,20 @@ impl Factor for MyFactor {
 }
 ```
 
-ROIC-WACC ?????? provider ???? `target_dates + recent week-end dates`?????????? `explicit_dates`??????????????????????? `target_and_month_ends` ????? API?????? `my_custom_dates(context)` ????????
+ROIC-WACC 这类因子由 provider 自己计算 `target_dates + recent week-end dates`，然后传给 `explicit_dates`。如果未来因子需要月末、季末或其他事件日期，不要新增 `target_and_month_ends` 这类硬编码 API，直接替换本地 `my_custom_dates(context)` 日期生成函数。
 For ROIC-WACC-style factors, the provider computes `target_dates + recent week-end dates` and passes that vector to `explicit_dates`. If a future factor needs month ends, quarter ends, or other event dates, do not add a new constructor; just change the local date generator.
 
-???? / Notes:
+注意事项 / Notes:
 
-- `explicit_dates` ???????????????????? `context.target_dates` ???????
-- ?? dataset ??????? `DataPool` ???????? union?
-- `FactorSpec.lookback.trading_days` ?????? factor ?????????????????????????????
-- ?? `requirements_for_context()` ?????????? factor ??????????? batch ??????? lookback ???????????
+- `explicit_dates` 会排序并去重；如果因子仍要逐日输出，日期向量必须包含 `context.target_dates`。
+- 同一 dataset 的多个请求在物理 IO 层会按列和日期做 union。
+- compute 层会按 provider 自己声明的请求创建隔离视图；其他因子的稀疏/长窗口日期不会出现在本因子的 `DailyPanel` 或日频 raw table 中。
+- `FactorSpec.lookback.trading_days` 仍用于构造 factor-local context；它不再代表每个依赖都必须读取整个窗口。
+- 默认 `requirements_for_context()` 会把普通依赖解析为该因子自己的显式日期，因此同 batch 内其他因子的 lookback 不会污染本因子。
 
 - `explicit_dates` sorts and deduplicates dates. If the factor must output daily rows, include `context.target_dates` in the vector.
-- Requests for the same dataset are merged by columns and date union in `DataPool`.
+- Requests for the same dataset are merged by columns and date union at the physical IO layer.
+- At compute time, each provider receives a request-scoped `DataPool` view; dates requested by other providers do not appear in this provider's `DailyPanel` or daily raw table.
 - `FactorSpec.lookback.trading_days` still builds the factor-local context window; it no longer means every dependency must be read over the whole window.
 - The default `requirements_for_context()` resolves ordinary dependencies into explicit dates for that factor, so another factor's long lookback does not pollute this factor's read window.
 

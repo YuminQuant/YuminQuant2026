@@ -169,7 +169,7 @@ impl Engine {
         let raw_requirements = resolve_intraday_raw_requirements(&specs, &raw_providers)?;
         let max_lookback = specs
             .iter()
-            .map(|spec| spec.lookback.trading_days)
+            .map(spec_calendar_lookback_days)
             .max()
             .unwrap_or(0);
         let calendar_exchange = match request.asset_class {
@@ -271,6 +271,7 @@ impl Engine {
                     bar_size: spec.source_bar_size,
                     columns: spec.columns.clone(),
                     financial_quarters: None,
+                    date_policy: Default::default(),
                 }))
                 .chain(
                     raw_auxiliary_requests_for_report
@@ -331,7 +332,7 @@ impl Engine {
             );
             let group_max_lookback = group_specs
                 .iter()
-                .map(|spec| spec.lookback.trading_days)
+                .map(spec_calendar_lookback_days)
                 .max()
                 .unwrap_or(0);
             let date_batches =
@@ -369,11 +370,12 @@ impl Engine {
                         .iter()
                         .map(|idx| factors[*idx].as_ref())
                         .collect::<Vec<_>>();
-                    let batch_requests = merge_requests(
-                        batch_specs
-                            .iter()
-                            .flat_map(|spec| spec.dependencies.clone()),
-                    );
+                    let batch_requests = merge_requests(contextual_requirements_for_factor_batch(
+                        &batch_factors,
+                        &batch_specs,
+                        &context,
+                        &calendar,
+                    ));
                     let load_started = Instant::now();
                     let mut pool = DataPool::load_with_disclosure_cache(
                         &loader,
@@ -704,6 +706,7 @@ fn materialize_intraday_raw_table(
                 bar_size: source_bar_size,
                 columns: columns.clone(),
                 financial_quarters: None,
+                date_policy: Default::default(),
             }];
 
             let load_started = Instant::now();
@@ -922,6 +925,7 @@ fn materialize_intraday_raw_table(
             bar_size: source_bar_size,
             columns,
             financial_quarters: None,
+            date_policy: Default::default(),
         }];
 
         let mut grouped_jobs = BTreeMap::<
@@ -1406,7 +1410,12 @@ where
 
     let mut grouped: HashMap<_, (BTreeSet<String>, Option<usize>)> = HashMap::new();
     for request in requests {
-        let key = (request.dataset, request.entity_id.clone(), request.bar_size);
+        let key = (
+            request.dataset,
+            request.entity_id.clone(),
+            request.bar_size,
+            request.date_policy.clone(),
+        );
         let entry = grouped.entry(key).or_default();
         entry.0.extend(request.columns.into_iter());
         entry.1 = match (entry.1, request.financial_quarters) {
@@ -1418,12 +1427,15 @@ where
     let mut merged = grouped
         .into_iter()
         .map(
-            |((dataset, entity_id, bar_size), (columns, financial_quarters))| DataRequest {
-                dataset,
-                entity_id,
-                bar_size,
-                columns: columns.into_iter().collect(),
-                financial_quarters,
+            |((dataset, entity_id, bar_size, date_policy), (columns, financial_quarters))| {
+                DataRequest {
+                    dataset,
+                    entity_id,
+                    bar_size,
+                    columns: columns.into_iter().collect(),
+                    financial_quarters,
+                    date_policy,
+                }
             },
         )
         .collect::<Vec<_>>();
@@ -1432,8 +1444,44 @@ where
             .cmp(&right.dataset)
             .then_with(|| left.entity_id.cmp(&right.entity_id))
             .then_with(|| left.bar_size.cmp(&right.bar_size))
+            .then_with(|| left.date_policy.cmp(&right.date_policy))
     });
     merged
+}
+
+fn spec_calendar_lookback_days(spec: &crate::core::FactorSpec) -> usize {
+    spec.dependencies
+        .iter()
+        .map(DataRequest::calendar_lookback_days)
+        .max()
+        .unwrap_or(0)
+        .max(spec.lookback.trading_days)
+}
+
+fn contextual_requirements_for_factor_batch<'a>(
+    factors: &[&'a dyn Factor],
+    specs: &[FactorSpec],
+    context: &FactorContext,
+    calendar: &TradingCalendar,
+) -> Vec<DataRequest> {
+    factors
+        .iter()
+        .zip(specs.iter())
+        .flat_map(|(factor, spec)| {
+            let lookback = spec_calendar_lookback_days(spec);
+            let load_start_date = calendar.warmup_start(context.start_date, lookback);
+            let factor_context = FactorContext {
+                asset_class: context.asset_class,
+                frequency: context.frequency,
+                start_date: context.start_date,
+                end_date: context.end_date,
+                load_start_date,
+                load_dates: calendar.open_dates_between(load_start_date, context.end_date),
+                target_dates: context.target_dates.clone(),
+            };
+            factor.requirements_for_context(&factor_context)
+        })
+        .collect()
 }
 
 fn financial_years_for_requests(
@@ -1745,8 +1793,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::core::{
-        AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
-        IntradayDailyRawSpec, Lookback,
+        AssetClass, DataRequest, DatasetId, DateLoadPolicy, FactorContext, FactorSeries,
+        FactorSpec, Frequency, IntradayDailyRawSpec, Lookback,
     };
     use crate::data::table::Table;
     use crate::data::DataPool;
@@ -1821,6 +1869,25 @@ mod tests {
         assert_eq!(merged[0].columns, vec!["close", "volume"]);
         assert_eq!(merged[1].bar_size, Some(15));
         assert_eq!(merged[1].columns, vec!["close"]);
+    }
+
+    #[test]
+    fn merge_requests_keeps_explicit_date_policies_separate() {
+        let merged = super::merge_requests(vec![
+            DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+            DataRequest::explicit_dates(DatasetId::StockDailyPv, &["close"], vec![20260102]),
+            DataRequest::explicit_dates(DatasetId::StockDailyPv, &["pre_close"], vec![20260102]),
+        ]);
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged
+            .iter()
+            .any(|request| request.date_policy == DateLoadPolicy::ContextLoadDates));
+        let sparse = merged
+            .iter()
+            .find(|request| request.date_policy == DateLoadPolicy::ExplicitDates(vec![20260102]))
+            .expect("sparse request");
+        assert_eq!(sparse.columns, vec!["close", "pre_close"]);
     }
 
     #[test]

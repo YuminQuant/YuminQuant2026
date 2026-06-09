@@ -215,8 +215,20 @@ impl DataPool {
     }
 
     pub fn slice_dates(&self, selected_dates: &[i32]) -> Self {
+        let selected = selected_dates.iter().copied().collect::<BTreeSet<_>>();
         Self {
-            daily: self.daily.clone(),
+            daily: self
+                .daily
+                .iter()
+                .map(|(dataset, table)| {
+                    let table = if should_build_daily_panel(*dataset) {
+                        table_slice_dates_or_clone(table, &selected)
+                    } else {
+                        Arc::clone(table)
+                    };
+                    (*dataset, table)
+                })
+                .collect(),
             daily_panels: self
                 .daily_panels
                 .iter()
@@ -225,7 +237,14 @@ impl DataPool {
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
-            index_daily: self.index_daily.clone(),
+            index_daily: self
+                .index_daily
+                .iter()
+                .map(|(ts_code, table)| {
+                    let table = table_slice_dates_or_clone(table, &selected);
+                    (ts_code.clone(), table)
+                })
+                .collect(),
             index_daily_panels: self
                 .index_daily_panels
                 .iter()
@@ -237,6 +256,91 @@ impl DataPool {
                 .intraday_daily_raw_panel
                 .as_ref()
                 .map(|panel| panel.slice_dates(selected_dates)),
+        }
+    }
+
+    pub fn view_for_requests(&self, requests: &[DataRequest], context: &FactorContext) -> Self {
+        let mut daily_panel_dates = HashMap::<DatasetId, BTreeSet<i32>>::new();
+        let mut index_panel_dates = HashMap::<String, BTreeSet<i32>>::new();
+        for request in requests {
+            let dates = request.resolved_dates(context);
+            if dates.is_empty() {
+                continue;
+            }
+            if request.dataset == DatasetId::IndexDaily {
+                if let Some(entity_id) = &request.entity_id {
+                    index_panel_dates
+                        .entry(entity_id.clone())
+                        .or_default()
+                        .extend(dates);
+                }
+                continue;
+            }
+            if should_build_daily_panel(request.dataset) {
+                daily_panel_dates
+                    .entry(request.dataset)
+                    .or_default()
+                    .extend(dates);
+            }
+        }
+
+        Self {
+            daily: self
+                .daily
+                .iter()
+                .map(|(dataset, table)| {
+                    let table = daily_panel_dates
+                        .get(dataset)
+                        .map(|dates| table_slice_dates_or_clone(table, dates))
+                        .unwrap_or_else(|| Arc::clone(table));
+                    (*dataset, table)
+                })
+                .collect(),
+            daily_panels: self
+                .daily_panels
+                .iter()
+                .map(|(dataset, panel)| {
+                    let panel = daily_panel_dates
+                        .get(dataset)
+                        .map(|dates| {
+                            let dates = dates.iter().copied().collect::<Vec<_>>();
+                            panel.slice_dates(&dates)
+                        })
+                        .unwrap_or_else(|| panel.clone());
+                    (*dataset, panel)
+                })
+                .collect(),
+            financial_pit_indexes: self.financial_pit_indexes.clone(),
+            dividend_index: self.dividend_index.clone(),
+            main_business_index: self.main_business_index.clone(),
+            index_daily: self
+                .index_daily
+                .iter()
+                .map(|(ts_code, table)| {
+                    let table = index_panel_dates
+                        .get(ts_code)
+                        .map(|dates| table_slice_dates_or_clone(table, dates))
+                        .unwrap_or_else(|| Arc::clone(table));
+                    (ts_code.clone(), table)
+                })
+                .collect(),
+            index_daily_panels: self
+                .index_daily_panels
+                .iter()
+                .map(|(ts_code, panel)| {
+                    let panel = index_panel_dates
+                        .get(ts_code)
+                        .map(|dates| {
+                            let dates = dates.iter().copied().collect::<Vec<_>>();
+                            panel.slice_dates(&dates)
+                        })
+                        .unwrap_or_else(|| panel.clone());
+                    (ts_code.clone(), panel)
+                })
+                .collect(),
+            minute: self.minute.clone(),
+            intraday_daily_raw: self.intraday_daily_raw.clone(),
+            intraday_daily_raw_panel: self.intraday_daily_raw_panel.clone(),
         }
     }
 
@@ -437,6 +541,24 @@ impl DataPool {
     }
 }
 
+fn table_slice_dates_or_clone(table: &Arc<Table>, selected_dates: &BTreeSet<i32>) -> Arc<Table> {
+    let Ok(trade_dates) = table.required_i32("trade_date") else {
+        return Arc::clone(table);
+    };
+    let indices = trade_dates
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, date)| {
+            date.and_then(|date| selected_dates.contains(&date).then_some(idx))
+        })
+        .collect::<Vec<_>>();
+    Arc::new(
+        table
+            .take(&indices)
+            .expect("date-filtered table keeps all columns at equal length"),
+    )
+}
+
 fn should_build_daily_panel(dataset: DatasetId) -> bool {
     matches!(
         dataset,
@@ -537,5 +659,66 @@ mod tests {
             &[Some(10.0), Some(11.0)]
         );
         assert!(pool.intraday_daily_raw_panel("missing").is_err());
+    }
+
+    #[test]
+    fn view_for_requests_slices_only_requested_daily_panels() {
+        let context = context();
+        let pv_table = sample_daily_table();
+        let basic_table = Table::new(BTreeMap::from([
+            (
+                "trade_date".to_string(),
+                ColumnData::I32(vec![Some(20260101), Some(20260102)]),
+            ),
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000001.SZ".to_string()),
+                ]),
+            ),
+            (
+                "total_mv".to_string(),
+                ColumnData::F64(vec![Some(100.0), Some(101.0)]),
+            ),
+        ]))
+        .expect("valid basic table");
+        let pool = DataPool::from_daily_tables_for_test(
+            HashMap::from([
+                (DatasetId::StockDailyPv, pv_table),
+                (DatasetId::StockDailyBasic, basic_table),
+            ]),
+            &context,
+        )
+        .expect("pool");
+
+        let view = pool.view_for_requests(
+            &[DataRequest::explicit_dates(
+                DatasetId::StockDailyPv,
+                &["close"],
+                vec![20260102],
+            )],
+            &context,
+        );
+
+        assert_eq!(
+            view.daily_panel(DatasetId::StockDailyPv)
+                .expect("pv")
+                .dates(),
+            &[20260102]
+        );
+        assert_eq!(
+            view.daily(DatasetId::StockDailyPv)
+                .expect("pv table")
+                .required_i32("trade_date")
+                .expect("trade_date"),
+            &vec![Some(20260102)]
+        );
+        assert_eq!(
+            view.daily_panel(DatasetId::StockDailyBasic)
+                .expect("basic")
+                .dates(),
+            &[20260101, 20260102]
+        );
     }
 }

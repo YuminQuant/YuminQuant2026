@@ -370,12 +370,13 @@ impl Engine {
                         .iter()
                         .map(|idx| factors[*idx].as_ref())
                         .collect::<Vec<_>>();
-                    let batch_requests = merge_requests(contextual_requirements_for_factor_batch(
+                    let contextual_requirements = contextual_requirements_for_factor_batch(
                         &batch_factors,
                         &batch_specs,
                         &context,
                         &calendar,
-                    ));
+                    );
+                    let batch_requests = merge_requests(contextual_requirements.all.clone());
                     let load_started = Instant::now();
                     let mut pool = DataPool::load_with_disclosure_cache(
                         &loader,
@@ -409,6 +410,7 @@ impl Engine {
                         &batch_factors,
                         &context,
                         &pool,
+                        &contextual_requirements.by_provider,
                         &mut compute_states,
                         thread_pool.as_ref(),
                     )?;
@@ -1458,30 +1460,40 @@ fn spec_calendar_lookback_days(spec: &crate::core::FactorSpec) -> usize {
         .max(spec.lookback.trading_days)
 }
 
+#[derive(Clone, Debug, Default)]
+struct ContextualRequirements {
+    all: Vec<DataRequest>,
+    by_provider: BTreeMap<String, Vec<DataRequest>>,
+}
+
 fn contextual_requirements_for_factor_batch<'a>(
     factors: &[&'a dyn Factor],
     specs: &[FactorSpec],
     context: &FactorContext,
     calendar: &TradingCalendar,
-) -> Vec<DataRequest> {
-    factors
-        .iter()
-        .zip(specs.iter())
-        .flat_map(|(factor, spec)| {
-            let lookback = spec_calendar_lookback_days(spec);
-            let load_start_date = calendar.warmup_start(context.start_date, lookback);
-            let factor_context = FactorContext {
-                asset_class: context.asset_class,
-                frequency: context.frequency,
-                start_date: context.start_date,
-                end_date: context.end_date,
-                load_start_date,
-                load_dates: calendar.open_dates_between(load_start_date, context.end_date),
-                target_dates: context.target_dates.clone(),
-            };
-            factor.requirements_for_context(&factor_context)
-        })
-        .collect()
+) -> ContextualRequirements {
+    let mut output = ContextualRequirements::default();
+    for (factor, spec) in factors.iter().zip(specs.iter()) {
+        let lookback = spec_calendar_lookback_days(spec);
+        let load_start_date = calendar.warmup_start(context.start_date, lookback);
+        let factor_context = FactorContext {
+            asset_class: context.asset_class,
+            frequency: context.frequency,
+            start_date: context.start_date,
+            end_date: context.end_date,
+            load_start_date,
+            load_dates: calendar.open_dates_between(load_start_date, context.end_date),
+            target_dates: context.target_dates.clone(),
+        };
+        let requirements = factor.requirements_for_context(&factor_context);
+        output
+            .by_provider
+            .entry(factor.compute_provider_key())
+            .or_default()
+            .extend(requirements.iter().cloned());
+        output.all.extend(requirements);
+    }
+    output
 }
 
 fn financial_years_for_requests(
@@ -1674,10 +1686,54 @@ fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>
     }
 }
 
+fn request_has_daily_panel_dates(request: &DataRequest) -> bool {
+    matches!(
+        request.dataset,
+        DatasetId::StockDailyPv
+            | DatasetId::StockDailyBasic
+            | DatasetId::StockDailyLimit
+            | DatasetId::StockAdjFactor
+            | DatasetId::StockMoneyflow
+            | DatasetId::StockBarraDaily
+            | DatasetId::IndexDaily
+            | DatasetId::FutureDaily
+    )
+}
+
+fn context_for_provider_requests(
+    context: &FactorContext,
+    requirements: &[DataRequest],
+) -> FactorContext {
+    let mut dates = BTreeSet::new();
+    for request in requirements {
+        if request_has_daily_panel_dates(request) {
+            dates.extend(request.resolved_dates(context));
+        }
+    }
+    let load_dates = if dates.is_empty() {
+        context.load_dates.clone()
+    } else {
+        dates.into_iter().collect::<Vec<_>>()
+    };
+    FactorContext {
+        asset_class: context.asset_class,
+        frequency: context.frequency,
+        start_date: context.start_date,
+        end_date: context.end_date,
+        load_start_date: load_dates
+            .first()
+            .copied()
+            .unwrap_or(context.load_start_date),
+        load_dates,
+        target_dates: context.target_dates.clone(),
+    }
+}
+
 fn compute_factor_batch(
     factors: &[&dyn Factor],
     context: &FactorContext,
     pool: &DataPool,
+    provider_requirements: &BTreeMap<String, Vec<DataRequest>>,
     states: &mut BTreeMap<String, Box<dyn Any + Send>>,
     thread_pool: Option<&rayon::ThreadPool>,
 ) -> Result<Vec<FactorSeries>> {
@@ -1687,10 +1743,13 @@ fn compute_factor_batch(
         let spec = factor.spec();
         requested_order.insert(spec.id.clone(), idx);
         let key = factor.compute_provider_key();
-        let group = groups.entry(key).or_insert_with(|| ComputeProviderGroup {
-            factor: *factor,
-            requested_ids: Vec::new(),
-        });
+        let group = groups
+            .entry(key.clone())
+            .or_insert_with(|| ComputeProviderGroup {
+                factor: *factor,
+                requested_ids: Vec::new(),
+                requirements: provider_requirements.get(&key).cloned().unwrap_or_default(),
+            });
         if !group.requested_ids.iter().any(|id| id == &spec.id) {
             group.requested_ids.push(spec.id);
         }
@@ -1706,6 +1765,7 @@ fn compute_factor_batch(
                 key,
                 factor: group.factor,
                 requested_ids: group.requested_ids,
+                requirements: group.requirements,
                 state,
             }
         })
@@ -1713,10 +1773,12 @@ fn compute_factor_batch(
     let compute = || {
         jobs.into_par_iter()
             .map(|mut job| {
+                let provider_context = context_for_provider_requests(context, &job.requirements);
+                let provider_pool = pool.view_for_requests(&job.requirements, &provider_context);
                 let result = job.factor.compute_many_stateful(
                     &job.requested_ids,
-                    context,
-                    pool,
+                    &provider_context,
+                    &provider_pool,
                     job.state.as_mut(),
                 );
                 (job.key, job.state, result)
@@ -1777,12 +1839,14 @@ pub fn available_specs() -> Vec<FactorSpec> {
 struct ComputeProviderGroup<'a> {
     factor: &'a dyn Factor,
     requested_ids: Vec<String>,
+    requirements: Vec<DataRequest>,
 }
 
 struct ComputeProviderJob<'a> {
     key: String,
     factor: &'a dyn Factor,
     requested_ids: Vec<String>,
+    requirements: Vec<DataRequest>,
     state: Box<dyn Any + Send>,
 }
 
@@ -2112,6 +2176,7 @@ mod tests {
             &factors,
             &context,
             &DataPool::default(),
+            &BTreeMap::new(),
             &mut states,
             None,
         )

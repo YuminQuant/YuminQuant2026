@@ -309,25 +309,25 @@ Engine compatibility:
 - `compute_many()` must be requested-aware: compute only branches needed by the current `requested_ids`. Shared setup is allowed, but expensive sibling-factor metric branches must not be computed opportunistically.
 - Deprecated factors do not enter selected factors and therefore do not enter provider `requested_ids`; deprecated-only branches should not run unless an active factor still shares the same required output or setup.
 
-### Sparse DataRequest Date Policy / ????????
+### Sparse DataRequest Date Policy / 稀疏日期读取策略
 
-?????
+中文规则：
 
-- `DataRequest::new(...)` ????????????????? factor ? context ????????
-- ??????????????? `requirements_for_context(context)` ??? `Vec<i32>`???? `DataRequest::explicit_dates(...)`?
-- ??????????????????????????????????????????
-- ?? dataset ??????? `DataPool` ???????? union?
-- ? batch ??????? lookback ???????????????????????? factor ????? context ?????
+- `DataRequest::new(...)` 保持旧语义，但在加载前会按当前因子自己的 context 解析成显式日期。
+- 如果因子只需要一组特定日期，在 `requirements_for_context(context)` 内计算 `Vec<i32>`，再传给 `DataRequest::explicit_dates(...)`。
+- 周末点、月末点、季末点、固定检查日、事件日都不需要新增专用构造器；它们只是不同的本地日期生成函数。
+- 同一 dataset 的多个请求在物理 IO 层会按列和日期做 union，避免重复读取。
+- compute 层会按 provider 自己声明的请求创建隔离视图；一个因子的稀疏/长窗口日期不会污染另一个因子的 `DailyPanel` 或日频 raw table。
 
 English rules:
 
 - `DataRequest::new(...)` keeps the old meaning, but before loading it is resolved into explicit dates using the current factor's context.
 - If a factor only needs a selected set of dates, compute a `Vec<i32>` in `requirements_for_context(context)` and pass it to `DataRequest::explicit_dates(...)`.
-- Week ends, month ends, quarter ends, fixed checkpoints, and event dates do not need dedicated constructors; they are just different date generators.
-- Multiple requests for the same dataset are merged by columns and date union in `DataPool`.
-- A long lookback from one factor in the same batch does not force other factors' ordinary dependencies to read the same long window; each factor resolves dependencies against its own context first.
+- Week ends, month ends, quarter ends, fixed checkpoints, and event dates do not need dedicated constructors; they are just different local date generators.
+- Multiple requests for the same dataset are merged by columns and date union at the physical IO layer.
+- At compute time, each provider receives a request-scoped `DataPool` view, so one factor's sparse or long-window dates do not pollute another factor's `DailyPanel` or daily raw table.
 
-?? / Example:
+示例 / Example:
 
 ```rust
 fn requirements_for_context(&self, context: &FactorContext) -> Vec<DataRequest> {

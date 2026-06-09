@@ -93,6 +93,11 @@ impl DataCatalog {
                     .join("stock_data")
                     .join("dividend")
                     .join(format!("{}.parquet", year)),
+                DatasetId::StockMainBusiness => self
+                    .data_root
+                    .join("stock_data")
+                    .join("mainbz")
+                    .join(format!("{}.parquet", year)),
                 DatasetId::StockAnalystReport => self
                     .data_root
                     .join("stock_data")

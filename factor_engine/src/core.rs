@@ -69,6 +69,7 @@ pub enum DatasetId {
     StockBalanceSheet,
     StockCashFlow,
     StockDividend,
+    StockMainBusiness,
     StockAnalystReport,
     StockBasic,
     StockMinute1m,
@@ -93,6 +94,7 @@ impl DatasetId {
             | Self::StockBalanceSheet
             | Self::StockCashFlow
             | Self::StockDividend
+            | Self::StockMainBusiness
             | Self::StockAnalystReport
             | Self::StockBasic
             | Self::StockMinute1m
@@ -116,6 +118,7 @@ impl DatasetId {
             | Self::StockBalanceSheet
             | Self::StockCashFlow
             | Self::StockDividend
+            | Self::StockMainBusiness
             | Self::StockAnalystReport
             | Self::StockBasic
             | Self::StockSwClassification
@@ -140,6 +143,7 @@ impl DatasetId {
             Self::StockBalanceSheet => "stock.balancesheet",
             Self::StockCashFlow => "stock.cashflow",
             Self::StockDividend => "stock.dividend",
+            Self::StockMainBusiness => "stock.main_business",
             Self::StockAnalystReport => "stock.analyst_report",
             Self::StockBasic => "stock.basic",
             Self::StockMinute1m => "stock.minute.1m",

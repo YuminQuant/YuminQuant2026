@@ -13,8 +13,8 @@ use crate::core::{
     IntradayDailyRawSpec,
 };
 use crate::data::{
-    financial_disclosure_years_for_range, DataCatalog, DataPool, DisclosureTableCache,
-    MarketDataLoader,
+    financial_disclosure_years_for_range, DataCatalog, DataPool, DisclosureCacheProfile,
+    DisclosureTableCache, MarketDataLoader,
 };
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
@@ -73,6 +73,11 @@ pub struct BatchProfile {
     pub load_ms: u128,
     pub compute_ms: u128,
     pub write_ms: u128,
+    pub provider_count: usize,
+    pub loaded_table_rows: usize,
+    pub indexed_rows: usize,
+    pub result_rows: usize,
+    pub disclosure_cache: Vec<DisclosureCacheProfile>,
     pub factors: Vec<FactorProfile>,
 }
 
@@ -325,11 +330,11 @@ impl Engine {
                 .iter()
                 .map(|idx| specs[*idx].clone())
                 .collect::<Vec<_>>();
-            let group_requests = merge_requests(
-                group_specs
-                    .iter()
-                    .flat_map(|spec| spec.dependencies.clone()),
-            );
+            let group_factors = group
+                .factor_indices
+                .iter()
+                .map(|idx| factors[*idx].as_ref())
+                .collect::<Vec<_>>();
             let group_max_lookback = group_specs
                 .iter()
                 .map(spec_calendar_lookback_days)
@@ -360,6 +365,13 @@ impl Engine {
                     load_dates,
                     target_dates: date_batch.clone(),
                 };
+                let group_contextual_requirements = contextual_requirements_for_factor_batch(
+                    &group_factors,
+                    &group_specs,
+                    &context,
+                    &calendar,
+                );
+                let group_requests = merge_requests(group_contextual_requirements.all.clone());
 
                 for (factor_batch_index, batch_indices) in provider_batches.iter().enumerate() {
                     let batch_specs = batch_indices
@@ -432,6 +444,9 @@ impl Engine {
                     let write_ms = write_started.elapsed().as_millis();
                     output_paths.extend(written_paths);
                     if request.profile {
+                        let provider_count = provider_count_for_factors(&batch_factors);
+                        let result_rows = results.iter().map(|series| series.values.len()).sum();
+                        let disclosure_cache = disclosure_cache.profiles();
                         profiles.push(BatchProfile {
                             stage: stage_name.clone(),
                             date_batch_index: date_batch_index + 1,
@@ -442,6 +457,11 @@ impl Engine {
                             load_ms,
                             compute_ms,
                             write_ms,
+                            provider_count,
+                            loaded_table_rows: pool.loaded_table_row_count(),
+                            indexed_rows: pool.indexed_row_count(),
+                            result_rows,
+                            disclosure_cache,
                             factors: factor_profiles,
                         });
                     }
@@ -452,11 +472,13 @@ impl Engine {
                         batch_specs.len()
                     ));
                 }
-                let keep_years =
-                    financial_years_for_requests(&group_requests, batch_start_date, batch_end_date);
-                if !keep_years.is_empty() {
-                    disclosure_cache.retain_financial_years(&keep_years);
-                }
+                let disclosure_windows = disclosure_windows_for_requests(
+                    &group_requests,
+                    batch_start_date,
+                    batch_load_start_date,
+                    batch_end_date,
+                );
+                disclosure_cache.retain_disclosure_windows(&disclosure_windows);
             }
         }
         progress.finish();
@@ -896,6 +918,11 @@ fn materialize_intraday_raw_table(
                     load_ms,
                     compute_ms,
                     write_ms,
+                    provider_count: raw_profiles.len(),
+                    loaded_table_rows: 0,
+                    indexed_rows: 0,
+                    result_rows: chunk_series.iter().map(|series| series.values.len()).sum(),
+                    disclosure_cache: Vec::new(),
                     factors: raw_profiles,
                 });
             }
@@ -1101,6 +1128,7 @@ fn materialize_intraday_raw_table(
             }
 
             if request.profile && !raw_profiles.is_empty() {
+                let result_rows = raw_profiles.values().map(|(row_count, _)| *row_count).sum();
                 profiles.push(BatchProfile {
                     stage: stage_name,
                     date_batch_index,
@@ -1111,6 +1139,11 @@ fn materialize_intraday_raw_table(
                     load_ms: total_load_ms,
                     compute_ms: total_compute_ms,
                     write_ms: total_write_ms,
+                    provider_count: raw_profiles.len(),
+                    loaded_table_rows: 0,
+                    indexed_rows: 0,
+                    result_rows,
+                    disclosure_cache: Vec::new(),
                     factors: raw_profiles
                         .into_iter()
                         .map(|(factor_id, (row_count, non_null_count))| FactorProfile {
@@ -1496,26 +1529,57 @@ fn contextual_requirements_for_factor_batch<'a>(
     output
 }
 
-fn financial_years_for_requests(
+fn disclosure_windows_for_requests(
     requests: &[DataRequest],
     start_date: i32,
+    load_start_date: i32,
     end_date: i32,
-) -> BTreeSet<i32> {
-    let mut years = BTreeSet::new();
+) -> HashMap<DatasetId, BTreeSet<i32>> {
+    let mut windows = HashMap::<DatasetId, BTreeSet<i32>>::new();
     for request in requests {
-        if !matches!(
-            request.dataset,
-            DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow
-        ) {
-            continue;
+        match request.dataset {
+            DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow => {
+                windows.entry(request.dataset).or_default().extend(
+                    financial_disclosure_years_for_range(
+                        start_date,
+                        end_date,
+                        request.financial_quarters.unwrap_or(0),
+                    ),
+                );
+            }
+            DatasetId::StockMainBusiness => {
+                windows.entry(request.dataset).or_default().extend(
+                    financial_disclosure_years_for_range(
+                        start_date,
+                        end_date,
+                        request.financial_quarters.unwrap_or(8),
+                    ),
+                );
+            }
+            DatasetId::StockAnalystReport => {
+                windows
+                    .entry(request.dataset)
+                    .or_default()
+                    .extend(analyst_report_years_for_range(load_start_date, end_date));
+            }
+            _ => {}
         }
-        years.extend(financial_disclosure_years_for_range(
-            start_date,
-            end_date,
-            request.financial_quarters.unwrap_or(0),
-        ));
     }
-    years
+    windows
+}
+
+fn analyst_report_years_for_range(start_date: i32, end_date: i32) -> BTreeSet<i32> {
+    let start_year = (start_date / 10_000 - 1).max(0);
+    let end_year = end_date / 10_000;
+    (start_year..=end_year).collect()
+}
+
+fn provider_count_for_factors(factors: &[&dyn Factor]) -> usize {
+    factors
+        .iter()
+        .map(|factor| factor.compute_provider_key())
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 fn validate_date_value(date: i32, name: &str) -> Result<()> {
@@ -1852,7 +1916,7 @@ struct ComputeProviderJob<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -1867,10 +1931,49 @@ mod tests {
     use crate::storage::FactorMetadata;
 
     use super::{
-        date_batches_for_stage, execution_groups_for_specs, provider_factor_batches,
-        select_metadata, split_dates_by_chunk, validate_date_value, ExecutionStage,
-        IntradayRawRequirement, RawProvider, RunRequest, SelectionResult, DEFAULT_DATE_BATCH_SIZE,
+        date_batches_for_stage, disclosure_windows_for_requests, execution_groups_for_specs,
+        provider_factor_batches, select_metadata, split_dates_by_chunk, validate_date_value,
+        ExecutionStage, IntradayRawRequirement, RawProvider, RunRequest, SelectionResult,
+        DEFAULT_DATE_BATCH_SIZE,
     };
+
+    #[test]
+    fn disclosure_windows_cover_main_business_and_analyst_requests() {
+        let mainbz =
+            DataRequest::financial_quarters(DatasetId::StockMainBusiness, &["bz_sales"], 8);
+        let analyst = DataRequest::new(DatasetId::StockAnalystReport, &["eps"]);
+
+        let windows =
+            disclosure_windows_for_requests(&[mainbz, analyst], 20260105, 20251215, 20260424);
+
+        assert_eq!(
+            windows.get(&DatasetId::StockMainBusiness),
+            Some(&BTreeSet::from([2023, 2024, 2025, 2026]))
+        );
+        assert_eq!(
+            windows.get(&DatasetId::StockAnalystReport),
+            Some(&BTreeSet::from([2024, 2025, 2026]))
+        );
+    }
+
+    #[test]
+    fn disclosure_windows_keep_statement_quarter_rules_per_dataset() {
+        let income = DataRequest::financial_quarters(DatasetId::StockIncome, &["revenue"], 24);
+        let balance =
+            DataRequest::financial_quarters(DatasetId::StockBalanceSheet, &["total_assets"], 8);
+
+        let windows =
+            disclosure_windows_for_requests(&[income, balance], 20260105, 20260105, 20260105);
+
+        assert_eq!(
+            windows.get(&DatasetId::StockIncome),
+            Some(&BTreeSet::from([2020, 2021, 2022, 2023, 2024, 2025, 2026]))
+        );
+        assert_eq!(
+            windows.get(&DatasetId::StockBalanceSheet),
+            Some(&BTreeSet::from([2023, 2024, 2025, 2026]))
+        );
+    }
 
     #[test]
     fn validates_eight_digit_dates() {

@@ -359,6 +359,7 @@ impl LabelEngine {
                             indexed_rows: pool.indexed_row_count(),
                             result_rows,
                             disclosure_cache: Vec::new(),
+                            financial_context: None,
                             factors: label_profiles,
                         });
                     }
@@ -688,6 +689,7 @@ fn materialize_label_intraday_raw_table(
                 indexed_rows: 0,
                 result_rows,
                 disclosure_cache: Vec::new(),
+                financial_context: None,
                 factors: raw_profiles,
             });
         }

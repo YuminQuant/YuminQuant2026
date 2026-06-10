@@ -372,6 +372,8 @@ impl BarraEngine {
                 output_paths.extend(written_paths);
                 let stage_name = batch_stage_name(&batch_providers);
                 if request.profile {
+                    let result_rows = results.iter().map(|series| series.values.len()).sum();
+                    let disclosure_cache = disclosure_cache.profiles();
                     profiles.push(BatchProfile {
                         stage: stage_name.clone(),
                         date_batch_index: date_batch_index + 1,
@@ -382,6 +384,11 @@ impl BarraEngine {
                         load_ms,
                         compute_ms,
                         write_ms,
+                        provider_count: batch_providers.len(),
+                        loaded_table_rows: pool.loaded_table_row_count(),
+                        indexed_rows: pool.indexed_row_count(),
+                        result_rows,
+                        disclosure_cache,
                         factors: exposure_profiles,
                     });
                 }
@@ -393,11 +400,9 @@ impl BarraEngine {
                     batch_specs.len()
                 ));
             }
-            let keep_years =
-                financial_years_for_requests(&loaded_requests, batch_start_date, batch_end_date);
-            if !keep_years.is_empty() {
-                disclosure_cache.retain_financial_years(&keep_years);
-            }
+            let disclosure_windows =
+                disclosure_windows_for_requests(&loaded_requests, batch_start_date, batch_end_date);
+            disclosure_cache.retain_disclosure_windows(&disclosure_windows);
         }
         progress.finish();
 
@@ -558,28 +563,50 @@ fn spec_calendar_lookback_days(spec: &crate::core::BarraSpec) -> usize {
         .max(spec.lookback.trading_days)
 }
 
-fn financial_years_for_requests(
+fn disclosure_windows_for_requests(
     requests: &[DataRequest],
     start_date: i32,
     end_date: i32,
-) -> BTreeSet<i32> {
-    let mut years = BTreeSet::new();
+) -> HashMap<crate::core::DatasetId, BTreeSet<i32>> {
+    let mut windows = HashMap::<crate::core::DatasetId, BTreeSet<i32>>::new();
     for request in requests {
-        if !matches!(
-            request.dataset,
+        match request.dataset {
             crate::core::DatasetId::StockIncome
-                | crate::core::DatasetId::StockBalanceSheet
-                | crate::core::DatasetId::StockCashFlow
-        ) {
-            continue;
+            | crate::core::DatasetId::StockBalanceSheet
+            | crate::core::DatasetId::StockCashFlow => {
+                windows.entry(request.dataset).or_default().extend(
+                    financial_disclosure_years_for_range(
+                        start_date,
+                        end_date,
+                        request.financial_quarters.unwrap_or(0),
+                    ),
+                );
+            }
+            crate::core::DatasetId::StockMainBusiness => {
+                windows.entry(request.dataset).or_default().extend(
+                    financial_disclosure_years_for_range(
+                        start_date,
+                        end_date,
+                        request.financial_quarters.unwrap_or(8),
+                    ),
+                );
+            }
+            crate::core::DatasetId::StockAnalystReport => {
+                windows
+                    .entry(request.dataset)
+                    .or_default()
+                    .extend(analyst_report_years_for_range(start_date, end_date));
+            }
+            _ => {}
         }
-        years.extend(financial_disclosure_years_for_range(
-            start_date,
-            end_date,
-            request.financial_quarters.unwrap_or(0),
-        ));
     }
-    years
+    windows
+}
+
+fn analyst_report_years_for_range(start_date: i32, end_date: i32) -> BTreeSet<i32> {
+    let start_year = (start_date / 10_000 - 1).max(0);
+    let end_year = end_date / 10_000;
+    (start_year..=end_year).collect()
 }
 
 fn validate_date_value(date: i32, name: &str) -> Result<()> {

@@ -411,6 +411,10 @@ impl DividendIndex {
     pub fn reader(&self) -> DividendReader<'_> {
         DividendReader { index: self }
     }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -508,6 +512,10 @@ impl MainBusinessIndex {
 
     pub fn reader(&self) -> MainBusinessReader<'_> {
         MainBusinessReader { index: self }
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
     }
 }
 
@@ -1084,6 +1092,10 @@ impl FinancialPitIndex {
             index: self,
             preference,
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
     }
 
     fn iter_records(&self) -> impl Iterator<Item = &FinancialIndexedRecord> {

@@ -34,13 +34,12 @@ const INCOME_COLUMNS: [&str; 7] = [
     "n_income",
     "int_exp",
 ];
-const BALANCE_COLUMNS: [&str; 6] = [
+const BALANCE_COLUMNS: [&str; 5] = [
     "total_hldr_eqy_exc_min_int",
     "st_borr",
     "non_cur_liab_due_1y",
     "lt_borr",
     "bond_payable",
-    "lease_liab",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -443,16 +442,10 @@ fn quarter_prelim(
 }
 
 fn interest_bearing_debt(record: &crate::factor::common::PitFinancialRecordView<'_>) -> f64 {
-    [
-        "st_borr",
-        "non_cur_liab_due_1y",
-        "lt_borr",
-        "bond_payable",
-        "lease_liab",
-    ]
-    .iter()
-    .map(|column| clean(record.column(column)).unwrap_or(0.0))
-    .sum::<f64>()
+    ["st_borr", "non_cur_liab_due_1y", "lt_borr", "bond_payable"]
+        .iter()
+        .map(|column| clean(record.column(column)).unwrap_or(0.0))
+        .sum::<f64>()
 }
 
 fn tax_rate(income_tax: Option<f64>, n_income: Option<f64>) -> f64 {

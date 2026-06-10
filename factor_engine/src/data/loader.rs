@@ -14,7 +14,15 @@ pub struct MarketDataLoader {
 
 #[derive(Clone, Debug, Default)]
 pub struct DisclosureTableCache {
-    yearly_tables: HashMap<DisclosureCacheKey, Table>,
+    yearly_tables: HashMap<DisclosureCacheKey, DisclosureCacheEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisclosureCacheProfile {
+    pub dataset: DatasetId,
+    pub year: Option<i32>,
+    pub loaded_columns: usize,
+    pub row_count: usize,
 }
 
 impl DisclosureTableCache {
@@ -22,12 +30,32 @@ impl DisclosureTableCache {
         self.yearly_tables.len()
     }
 
-    pub fn retain_financial_years(&mut self, years: &BTreeSet<i32>) {
+    pub fn profiles(&self) -> Vec<DisclosureCacheProfile> {
+        let mut profiles = self
+            .yearly_tables
+            .iter()
+            .map(|(key, entry)| DisclosureCacheProfile {
+                dataset: key.dataset,
+                year: file_stem_year(&key.file),
+                loaded_columns: entry.loaded_columns.len(),
+                row_count: entry.table.len,
+            })
+            .collect::<Vec<_>>();
+        profiles.sort_by_key(|profile| (profile.dataset.as_str().to_string(), profile.year));
+        profiles
+    }
+
+    pub fn retain_disclosure_windows(&mut self, windows: &HashMap<DatasetId, BTreeSet<i32>>) {
         self.yearly_tables.retain(|key, _| {
-            if !is_financial_statement_dataset(key.dataset) {
+            if !is_cached_disclosure_dataset(key.dataset) {
                 return true;
             }
-            file_stem_year(&key.file).is_none_or(|year| years.contains(&year))
+            let Some(year) = file_stem_year(&key.file) else {
+                return true;
+            };
+            windows
+                .get(&key.dataset)
+                .is_some_and(|years| years.contains(&year))
         });
     }
 
@@ -36,19 +64,39 @@ impl DisclosureTableCache {
         dataset: DatasetId,
         file: PathBuf,
         columns: &[String],
-    ) -> Result<&Table> {
-        let key = DisclosureCacheKey {
-            dataset,
-            file,
-            columns: columns.to_vec(),
-        };
-        if !self.yearly_tables.contains_key(&key) {
-            let table = read_parquet(&key.file, Some(columns))?;
-            self.yearly_tables.insert(key.clone(), table);
-        }
-        self.yearly_tables
+    ) -> Result<Table> {
+        let key = DisclosureCacheKey { dataset, file };
+        let requested = columns.iter().cloned().collect::<BTreeSet<_>>();
+        let should_reload = self
+            .yearly_tables
             .get(&key)
-            .ok_or_else(|| err("disclosure cache entry disappeared unexpectedly"))
+            .is_none_or(|entry| !requested.is_subset(&entry.loaded_columns));
+        if should_reload {
+            let merged_columns = self
+                .yearly_tables
+                .get(&key)
+                .map(|entry| {
+                    entry
+                        .loaded_columns
+                        .union(&requested)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| columns.to_vec());
+            let table = read_parquet(&key.file, Some(&merged_columns))?;
+            self.yearly_tables.insert(
+                key.clone(),
+                DisclosureCacheEntry {
+                    table,
+                    loaded_columns: merged_columns.into_iter().collect(),
+                },
+            );
+        }
+        let entry = self
+            .yearly_tables
+            .get(&key)
+            .ok_or_else(|| err("disclosure cache entry disappeared unexpectedly"))?;
+        project_table_columns(&entry.table, columns)
     }
 }
 
@@ -56,7 +104,12 @@ impl DisclosureTableCache {
 struct DisclosureCacheKey {
     dataset: DatasetId,
     file: PathBuf,
-    columns: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct DisclosureCacheEntry {
+    table: Table,
+    loaded_columns: BTreeSet<String>,
 }
 
 impl MarketDataLoader {
@@ -277,7 +330,7 @@ impl MarketDataLoader {
         let mut table = Table::empty();
         for file in files {
             let yearly = cache.load_year(dataset, file, &columns)?;
-            let filtered = filter_financial_disclosure_range(yearly, end_date)?;
+            let filtered = filter_financial_disclosure_range(&yearly, end_date)?;
             table.append(&filtered)?;
         }
         if table.columns.is_empty() {
@@ -356,7 +409,7 @@ impl MarketDataLoader {
         let mut table = Table::empty();
         for file in files {
             let yearly = cache.load_year(DatasetId::StockMainBusiness, file, &columns)?;
-            let filtered = filter_main_business_range(yearly, end_date)?;
+            let filtered = filter_main_business_range(&yearly, end_date)?;
             table.append(&filtered)?;
         }
         if table.columns.is_empty() {
@@ -394,7 +447,7 @@ impl MarketDataLoader {
         let mut table = Table::empty();
         for file in files {
             let yearly = cache.load_year(DatasetId::StockAnalystReport, file, &columns)?;
-            let filtered = filter_analyst_report_range(yearly, end_date)?;
+            let filtered = filter_analyst_report_range(&yearly, end_date)?;
             table.append(&filtered)?;
         }
         if table.columns.is_empty() {
@@ -521,18 +574,35 @@ fn empty_static_keyed_table(columns: &[String]) -> Result<Table> {
 fn empty_disclosure_table(columns: &[String]) -> Result<Table> {
     let mut values = BTreeMap::new();
     for column in columns {
-        let data = match column.as_str() {
-            "ts_code" | "quarter" | "div_proc" | "bz_type" | "bz_item" | "bz_code"
-            | "curr_type" => ColumnData::Utf8(Vec::new()),
-            "ann_date" | "f_ann_date" | "end_date" | "report_date" | "ex_date" | "base_date" => {
-                ColumnData::I32(Vec::new())
-            }
-            "report_type" | "update_flag" => ColumnData::I64(Vec::new()),
-            _ => ColumnData::F64(Vec::new()),
-        };
-        values.insert(column.clone(), data);
+        values.insert(column.clone(), empty_disclosure_column(column, 0));
     }
     Table::new(values)
+}
+
+fn project_table_columns(table: &Table, columns: &[String]) -> Result<Table> {
+    let mut projected = BTreeMap::new();
+    for column in columns {
+        let data = table
+            .columns
+            .get(column)
+            .cloned()
+            .ok_or_else(|| err(format!("missing cached disclosure column {column}")))?;
+        projected.insert(column.clone(), data);
+    }
+    Table::new(projected)
+}
+
+fn empty_disclosure_column(column: &str, len: usize) -> ColumnData {
+    match column {
+        "ts_code" | "quarter" | "div_proc" | "bz_type" | "bz_item" | "bz_code" | "curr_type" => {
+            ColumnData::Utf8(vec![None; len])
+        }
+        "ann_date" | "f_ann_date" | "end_date" | "report_date" | "ex_date" | "base_date" => {
+            ColumnData::I32(vec![None; len])
+        }
+        "report_type" | "update_flag" => ColumnData::I64(vec![None; len]),
+        _ => ColumnData::F64(vec![None; len]),
+    }
 }
 
 fn filter_classification_range(table: &Table, start_date: i32, end_date: i32) -> Result<Table> {
@@ -631,6 +701,10 @@ fn is_financial_statement_dataset(dataset: DatasetId) -> bool {
     )
 }
 
+fn is_cached_disclosure_dataset(dataset: DatasetId) -> bool {
+    is_financial_statement_dataset(dataset) || dataset == DatasetId::StockAnalystReport
+}
+
 fn file_stem_year(path: &std::path::Path) -> Option<i32> {
     path.file_stem()?.to_str()?.parse::<i32>().ok()
 }
@@ -692,7 +766,7 @@ fn with_required_columns(requested: &[String], required: &[&str]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -885,7 +959,75 @@ mod tests {
     }
 
     #[test]
-    fn disclosure_cache_prunes_financial_years_only() {
+    fn disclosure_cache_upgrades_to_superset_without_duplicate_entry() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_financial_cache_superset_test_{unique}"));
+        let path = root.join("stock_data").join("income").join("2020.parquet");
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(vec![Some(20200115)]),
+            ),
+            (
+                "f_ann_date".to_string(),
+                ColumnData::I32(vec![Some(20200115)]),
+            ),
+            (
+                "end_date".to_string(),
+                ColumnData::I32(vec![Some(20191231)]),
+            ),
+            ("report_type".to_string(), ColumnData::I64(vec![Some(1)])),
+            ("update_flag".to_string(), ColumnData::I64(vec![Some(0)])),
+            ("ebit".to_string(), ColumnData::F64(vec![Some(10.0)])),
+            ("revenue".to_string(), ColumnData::F64(vec![Some(100.0)])),
+        ]))
+        .expect("financial table");
+        write_parquet(&path, &table).expect("write financial table");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let mut cache = DisclosureTableCache::default();
+        let ebit = loader
+            .load_financial_cached(
+                DatasetId::StockIncome,
+                &["ebit".to_string()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .expect("load ebit");
+        let revenue = loader
+            .load_financial_cached(
+                DatasetId::StockIncome,
+                &["revenue".to_string()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .expect("load revenue");
+
+        assert_eq!(cache.len(), 1);
+        assert!(ebit.columns.contains_key("ebit"));
+        assert!(!ebit.columns.contains_key("revenue"));
+        assert!(revenue.columns.contains_key("revenue"));
+        assert!(!revenue.columns.contains_key("ebit"));
+        let profiles = cache.profiles();
+        assert_eq!(profiles.len(), 1);
+        assert!(profiles[0].loaded_columns >= 8);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn disclosure_cache_prunes_requested_disclosure_windows() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time")
@@ -897,6 +1039,7 @@ mod tests {
             .join("stock_data")
             .join("analyst_report")
             .join("2023.parquet");
+        let mainbz_2023 = root.join("stock_data").join("mainbz").join("2023.parquet");
         let financial = Table::new(BTreeMap::from([
             (
                 "ts_code".to_string(),
@@ -935,9 +1078,31 @@ mod tests {
             ("rd".to_string(), ColumnData::F64(vec![Some(1.0)])),
         ]))
         .expect("analyst table");
+        let mainbz = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            (
+                "end_date".to_string(),
+                ColumnData::I32(vec![Some(20231231)]),
+            ),
+            (
+                "bz_type".to_string(),
+                ColumnData::Utf8(vec![Some("I".to_string())]),
+            ),
+            (
+                "bz_item".to_string(),
+                ColumnData::Utf8(vec![Some("Banking".to_string())]),
+            ),
+            ("bz_sales".to_string(), ColumnData::F64(vec![Some(100.0)])),
+            ("update_flag".to_string(), ColumnData::I64(vec![Some(0)])),
+        ]))
+        .expect("mainbz table");
         write_parquet(&income_2023, &financial).expect("write 2023 income");
         write_parquet(&income_2024, &financial).expect("write 2024 income");
         write_parquet(&analyst_2023, &analyst).expect("write analyst");
+        write_parquet(&mainbz_2023, &mainbz).expect("write mainbz");
 
         let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
         let mut cache = DisclosureTableCache::default();
@@ -954,10 +1119,34 @@ mod tests {
         loader
             .load_stock_analyst_report_cached(&["rd".to_string()], 20230101, 20231231, &mut cache)
             .expect("load analyst");
+        loader
+            .load_stock_main_business_cached(
+                &["bz_sales".to_string()],
+                20230101,
+                20241231,
+                8,
+                &mut cache,
+            )
+            .expect("load main business");
 
-        assert_eq!(cache.len(), 3);
-        cache.retain_financial_years(&BTreeSet::from([2024]));
+        assert_eq!(cache.len(), 4);
+        cache.retain_disclosure_windows(&HashMap::from([
+            (DatasetId::StockIncome, BTreeSet::from([2024])),
+            (DatasetId::StockAnalystReport, BTreeSet::from([2023])),
+        ]));
         assert_eq!(cache.len(), 2);
+        let retained = cache
+            .profiles()
+            .into_iter()
+            .map(|profile| (profile.dataset, profile.year))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            retained,
+            BTreeSet::from([
+                (DatasetId::StockAnalystReport, Some(2023)),
+                (DatasetId::StockIncome, Some(2024)),
+            ])
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }

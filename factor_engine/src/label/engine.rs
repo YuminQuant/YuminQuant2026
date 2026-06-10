@@ -343,6 +343,7 @@ impl LabelEngine {
                     let write_ms = write_started.elapsed().as_millis();
                     output_paths.extend(written_paths);
                     if request.profile {
+                        let result_rows = results.iter().map(|series| series.values.len()).sum();
                         profiles.push(BatchProfile {
                             stage: stage.name.to_string(),
                             date_batch_index: date_batch_index + 1,
@@ -353,6 +354,11 @@ impl LabelEngine {
                             load_ms,
                             compute_ms,
                             write_ms,
+                            provider_count: batch_specs.len(),
+                            loaded_table_rows: pool.loaded_table_row_count(),
+                            indexed_rows: pool.indexed_row_count(),
+                            result_rows,
+                            disclosure_cache: Vec::new(),
                             factors: label_profiles,
                         });
                     }
@@ -666,6 +672,7 @@ fn materialize_label_intraday_raw_table(
         materialized_specs.extend(chunk_series.iter().map(|series| series.spec.clone()));
         let write_ms = write_started.elapsed().as_millis();
         if request.profile && !raw_profiles.is_empty() {
+            let result_rows = chunk_series.iter().map(|series| series.values.len()).sum();
             profiles.push(BatchProfile {
                 stage: "label_intraday_raw_materialize_window_1".to_string(),
                 date_batch_index,
@@ -676,6 +683,11 @@ fn materialize_label_intraday_raw_table(
                 load_ms,
                 compute_ms,
                 write_ms,
+                provider_count: raw_profiles.len(),
+                loaded_table_rows: 0,
+                indexed_rows: 0,
+                result_rows,
+                disclosure_cache: Vec::new(),
                 factors: raw_profiles,
             });
         }

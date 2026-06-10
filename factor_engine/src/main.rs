@@ -902,17 +902,42 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
         println!("profile:");
         for batch in &report.profiles {
             println!(
-                "  stage={} date_batch={} factor_batch={} dates={}..{} factors={} load_ms={} compute_ms={} write_ms={}",
+                "  stage={} date_batch={} factor_batch={} dates={}..{} factors={} providers={} load_ms={} compute_ms={} write_ms={} loaded_rows={} indexed_rows={} result_rows={}",
                 batch.stage,
                 batch.date_batch_index,
                 batch.factor_batch_index,
                 batch.start_date,
                 batch.end_date,
                 batch.factor_count,
+                batch.provider_count,
                 batch.load_ms,
                 batch.compute_ms,
-                batch.write_ms
+                batch.write_ms,
+                batch.loaded_table_rows,
+                batch.indexed_rows,
+                batch.result_rows
             );
+            if !batch.disclosure_cache.is_empty() {
+                let summary = batch
+                    .disclosure_cache
+                    .iter()
+                    .map(|entry| {
+                        let year = entry
+                            .year
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        format!(
+                            "{}:{} cols={} rows={}",
+                            entry.dataset.as_str(),
+                            year,
+                            entry.loaded_columns,
+                            entry.row_count
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                println!("    disclosure_cache {summary}");
+            }
             for factor in &batch.factors {
                 println!(
                     "    {} rows={} non_null={}",

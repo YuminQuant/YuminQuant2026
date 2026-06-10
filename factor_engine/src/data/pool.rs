@@ -387,6 +387,35 @@ impl DataPool {
             .ok_or_else(|| err("main business index not loaded"))
     }
 
+    pub fn loaded_table_row_count(&self) -> usize {
+        let daily_rows = self.daily.values().map(|table| table.len).sum::<usize>();
+        let index_rows = self
+            .index_daily
+            .values()
+            .map(|table| table.len)
+            .sum::<usize>();
+        let minute_rows = self.minute.values().map(|table| table.len).sum::<usize>();
+        let raw_rows = self
+            .intraday_daily_raw
+            .as_ref()
+            .map_or(0, |table| table.len);
+        daily_rows + index_rows + minute_rows + raw_rows
+    }
+
+    pub fn indexed_row_count(&self) -> usize {
+        let financial_rows = self
+            .financial_pit_indexes
+            .values()
+            .map(|index| index.len())
+            .sum::<usize>();
+        let dividend_rows = self.dividend_index.as_ref().map_or(0, |index| index.len());
+        let main_business_rows = self
+            .main_business_index
+            .as_ref()
+            .map_or(0, |index| index.len());
+        financial_rows + dividend_rows + main_business_rows
+    }
+
     pub fn index_daily_panel(&self, ts_code: &str) -> Result<&DailyPanel> {
         self.index_daily_panels
             .get(ts_code)

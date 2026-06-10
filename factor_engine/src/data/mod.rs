@@ -9,5 +9,5 @@ pub use loader::{
     financial_disclosure_years_for_range, DisclosureCacheProfile, DisclosureTableCache,
     MarketDataLoader,
 };
-pub use pool::DataPool;
+pub use pool::{DataPool, FinancialBatchContext, FinancialBatchProfile};
 pub use table::{ColumnData, Table};

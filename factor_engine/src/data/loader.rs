@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::core::{AssetClass, DatasetId};
 use crate::data::catalog::DataCatalog;
@@ -59,12 +60,52 @@ impl DisclosureTableCache {
         });
     }
 
-    fn load_year(
+    pub fn retain_disclosure_windows_and_columns(
+        &mut self,
+        windows: &HashMap<DatasetId, BTreeSet<i32>>,
+        columns: &HashMap<DatasetId, BTreeSet<String>>,
+    ) -> Result<()> {
+        self.yearly_tables.retain(|key, _| {
+            if !is_cached_disclosure_dataset(key.dataset) {
+                return true;
+            }
+            let Some(year) = file_stem_year(&key.file) else {
+                return true;
+            };
+            windows
+                .get(&key.dataset)
+                .is_some_and(|years| years.contains(&year))
+                && columns.contains_key(&key.dataset)
+        });
+
+        for (key, entry) in &mut self.yearly_tables {
+            if !is_cached_disclosure_dataset(key.dataset) {
+                continue;
+            }
+            let Some(needed_columns) = columns.get(&key.dataset) else {
+                continue;
+            };
+            if entry.loaded_columns.is_subset(needed_columns) {
+                continue;
+            }
+            let kept_columns = entry
+                .loaded_columns
+                .intersection(needed_columns)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let ordered_columns = kept_columns.iter().cloned().collect::<Vec<_>>();
+            entry.table = Arc::new(project_table_columns(&entry.table, &ordered_columns)?);
+            entry.loaded_columns = kept_columns;
+        }
+        Ok(())
+    }
+
+    fn ensure_year_loaded(
         &mut self,
         dataset: DatasetId,
         file: PathBuf,
         columns: &[String],
-    ) -> Result<Table> {
+    ) -> Result<DisclosureCacheKey> {
         let key = DisclosureCacheKey { dataset, file };
         let requested = columns.iter().cloned().collect::<BTreeSet<_>>();
         let should_reload = self
@@ -87,16 +128,39 @@ impl DisclosureTableCache {
             self.yearly_tables.insert(
                 key.clone(),
                 DisclosureCacheEntry {
-                    table,
+                    table: Arc::new(table),
                     loaded_columns: merged_columns.into_iter().collect(),
                 },
             );
         }
+        Ok(key)
+    }
+
+    fn load_year(
+        &mut self,
+        dataset: DatasetId,
+        file: PathBuf,
+        columns: &[String],
+    ) -> Result<Table> {
+        let key = self.ensure_year_loaded(dataset, file, columns)?;
         let entry = self
             .yearly_tables
             .get(&key)
             .ok_or_else(|| err("disclosure cache entry disappeared unexpectedly"))?;
         project_table_columns(&entry.table, columns)
+    }
+
+    fn load_year_source(
+        &mut self,
+        dataset: DatasetId,
+        file: PathBuf,
+        columns: &[String],
+    ) -> Result<Arc<Table>> {
+        let key = self.ensure_year_loaded(dataset, file, columns)?;
+        self.yearly_tables
+            .get(&key)
+            .map(|entry| Arc::clone(&entry.table))
+            .ok_or_else(|| err("disclosure cache entry disappeared unexpectedly"))
     }
 }
 
@@ -108,7 +172,7 @@ struct DisclosureCacheKey {
 
 #[derive(Clone, Debug)]
 struct DisclosureCacheEntry {
-    table: Table,
+    table: Arc<Table>,
     loaded_columns: BTreeSet<String>,
 }
 
@@ -337,6 +401,44 @@ impl MarketDataLoader {
             return empty_disclosure_table(&columns);
         }
         Ok(table)
+    }
+
+    pub fn load_financial_sources_cached(
+        &self,
+        dataset: DatasetId,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+        quarters: usize,
+        cache: &mut DisclosureTableCache,
+    ) -> Result<Vec<Arc<Table>>> {
+        let columns = with_required_columns(
+            requested_columns,
+            &[
+                "ts_code",
+                "ann_date",
+                "f_ann_date",
+                "end_date",
+                "report_type",
+                "update_flag",
+            ],
+        );
+        let years = financial_disclosure_years_for_range(start_date, end_date, quarters);
+        let file_start_year = years.iter().next().copied().unwrap_or(end_date / 10_000);
+        let end_year = years
+            .iter()
+            .next_back()
+            .copied()
+            .unwrap_or(end_date / 10_000);
+        let files = self.catalog.daily_year_files(
+            dataset,
+            file_start_year * 10_000 + 101,
+            end_year * 10_000 + 12_31,
+        );
+        files
+            .into_iter()
+            .map(|file| cache.load_year_source(dataset, file, &columns))
+            .collect()
     }
 
     pub fn load_stock_dividend(
@@ -1022,6 +1124,25 @@ mod tests {
         let profiles = cache.profiles();
         assert_eq!(profiles.len(), 1);
         assert!(profiles[0].loaded_columns >= 8);
+        cache
+            .retain_disclosure_windows_and_columns(
+                &HashMap::from([(DatasetId::StockIncome, BTreeSet::from([2020]))]),
+                &HashMap::from([(
+                    DatasetId::StockIncome,
+                    BTreeSet::from([
+                        "ts_code".to_string(),
+                        "ann_date".to_string(),
+                        "f_ann_date".to_string(),
+                        "end_date".to_string(),
+                        "report_type".to_string(),
+                        "update_flag".to_string(),
+                        "ebit".to_string(),
+                    ]),
+                )]),
+            )
+            .expect("prune disclosure cache columns");
+        let profiles = cache.profiles();
+        assert_eq!(profiles[0].loaded_columns, 7);
 
         fs::remove_dir_all(root).expect("cleanup");
     }

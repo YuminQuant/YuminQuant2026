@@ -15,7 +15,7 @@ use crate::core::{
 };
 use crate::data::{
     financial_disclosure_years_for_range, DataCatalog, DataPool, DisclosureTableCache,
-    MarketDataLoader,
+    FinancialBatchContext, MarketDataLoader,
 };
 use crate::engine::{BatchProfile, FactorProfile};
 use crate::error::{err, Result};
@@ -309,6 +309,17 @@ impl BarraEngine {
                 load_dates,
                 target_dates: date_batch.clone(),
             };
+            let disclosure_windows =
+                disclosure_windows_for_requests(&loaded_requests, batch_start_date, batch_end_date);
+            let disclosure_columns = disclosure_columns_for_requests(&loaded_requests);
+            disclosure_cache
+                .retain_disclosure_windows_and_columns(&disclosure_windows, &disclosure_columns)?;
+            let financial_context = FinancialBatchContext::build(
+                &loader,
+                &loaded_requests,
+                &context,
+                &mut disclosure_cache,
+            )?;
 
             for (exposure_batch_index, range) in exposure_ranges.iter().enumerate() {
                 let batch_entries = &selected_provider_entries[range.clone()];
@@ -337,11 +348,12 @@ impl BarraEngine {
                         .flat_map(|spec| spec.dependencies.clone()),
                 );
                 let load_started = Instant::now();
-                let pool = DataPool::load_with_disclosure_cache(
+                let pool = DataPool::load_with_financial_context(
                     &loader,
                     &batch_requests,
                     &context,
                     &mut disclosure_cache,
+                    financial_context.clone(),
                 )?;
                 let load_ms = load_started.elapsed().as_millis();
                 let compute_started = Instant::now();
@@ -374,6 +386,11 @@ impl BarraEngine {
                 if request.profile {
                     let result_rows = results.iter().map(|series| series.values.len()).sum();
                     let disclosure_cache = disclosure_cache.profiles();
+                    let financial_context_profile = if exposure_batch_index == 0 {
+                        pool.financial_context_profile()
+                    } else {
+                        None
+                    };
                     profiles.push(BatchProfile {
                         stage: stage_name.clone(),
                         date_batch_index: date_batch_index + 1,
@@ -389,6 +406,7 @@ impl BarraEngine {
                         indexed_rows: pool.indexed_row_count(),
                         result_rows,
                         disclosure_cache,
+                        financial_context: financial_context_profile,
                         factors: exposure_profiles,
                     });
                 }
@@ -400,8 +418,6 @@ impl BarraEngine {
                     batch_specs.len()
                 ));
             }
-            let disclosure_windows =
-                disclosure_windows_for_requests(&loaded_requests, batch_start_date, batch_end_date);
             disclosure_cache.retain_disclosure_windows(&disclosure_windows);
         }
         progress.finish();
@@ -607,6 +623,61 @@ fn analyst_report_years_for_range(start_date: i32, end_date: i32) -> BTreeSet<i3
     let start_year = (start_date / 10_000 - 1).max(0);
     let end_year = end_date / 10_000;
     (start_year..=end_year).collect()
+}
+
+fn disclosure_columns_for_requests(
+    requests: &[DataRequest],
+) -> HashMap<crate::core::DatasetId, BTreeSet<String>> {
+    let mut columns = HashMap::<crate::core::DatasetId, BTreeSet<String>>::new();
+    for request in requests {
+        match request.dataset {
+            crate::core::DatasetId::StockIncome
+            | crate::core::DatasetId::StockBalanceSheet
+            | crate::core::DatasetId::StockCashFlow => {
+                let entry = columns.entry(request.dataset).or_default();
+                entry.extend(
+                    [
+                        "ts_code",
+                        "ann_date",
+                        "f_ann_date",
+                        "end_date",
+                        "report_type",
+                        "update_flag",
+                    ]
+                    .into_iter()
+                    .map(str::to_string),
+                );
+                entry.extend(request.columns.iter().cloned());
+            }
+            crate::core::DatasetId::StockMainBusiness => {
+                let entry = columns.entry(request.dataset).or_default();
+                entry.extend(
+                    [
+                        "ts_code",
+                        "end_date",
+                        "bz_type",
+                        "bz_item",
+                        "bz_sales",
+                        "update_flag",
+                    ]
+                    .into_iter()
+                    .map(str::to_string),
+                );
+                entry.extend(request.columns.iter().cloned());
+            }
+            crate::core::DatasetId::StockAnalystReport => {
+                let entry = columns.entry(request.dataset).or_default();
+                entry.extend(
+                    ["ts_code", "report_date", "quarter", "rd"]
+                        .into_iter()
+                        .map(str::to_string),
+                );
+                entry.extend(request.columns.iter().cloned());
+            }
+            _ => {}
+        }
+    }
+    columns
 }
 
 fn validate_date_value(date: i32, name: &str) -> Result<()> {

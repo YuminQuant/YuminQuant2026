@@ -938,6 +938,18 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
                     .join("; ");
                 println!("    disclosure_cache {summary}");
             }
+            if let Some(financial) = &batch.financial_context {
+                println!(
+                    "    financial_context builds={} source_rows={} source_cols={} pit_records={} mainbz_records={} dividend_records={} analyst_records={}",
+                    financial.builds,
+                    financial.source_rows,
+                    financial.source_columns,
+                    financial.pit_records,
+                    financial.main_business_records,
+                    financial.dividend_records,
+                    financial.analyst_records
+                );
+            }
             for factor in &batch.factors {
                 println!(
                     "    {} rows={} non_null={}",
@@ -1066,6 +1078,18 @@ fn print_barra_report(label: &str, report: &yq_factor_engine::BarraRunReport) {
                 batch.compute_ms,
                 batch.write_ms
             );
+            if let Some(financial) = &batch.financial_context {
+                println!(
+                    "    financial_context builds={} source_rows={} source_cols={} pit_records={} mainbz_records={} dividend_records={} analyst_records={}",
+                    financial.builds,
+                    financial.source_rows,
+                    financial.source_columns,
+                    financial.pit_records,
+                    financial.main_business_records,
+                    financial.dividend_records,
+                    financial.analyst_records
+                );
+            }
             for exposure in &batch.factors {
                 println!(
                     "    {} rows={} non_null={}",

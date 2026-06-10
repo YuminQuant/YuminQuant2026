@@ -14,7 +14,7 @@ use crate::core::{
 };
 use crate::data::{
     financial_disclosure_years_for_range, DataCatalog, DataPool, DisclosureCacheProfile,
-    DisclosureTableCache, MarketDataLoader,
+    DisclosureTableCache, FinancialBatchContext, FinancialBatchProfile, MarketDataLoader,
 };
 use crate::error::{err, Result};
 use crate::factor::registry::{all_factors, factor_map};
@@ -78,6 +78,7 @@ pub struct BatchProfile {
     pub indexed_rows: usize,
     pub result_rows: usize,
     pub disclosure_cache: Vec<DisclosureCacheProfile>,
+    pub financial_context: Option<FinancialBatchProfile>,
     pub factors: Vec<FactorProfile>,
 }
 
@@ -372,6 +373,23 @@ impl Engine {
                     &calendar,
                 );
                 let group_requests = merge_requests(group_contextual_requirements.all.clone());
+                let group_disclosure_windows = disclosure_windows_for_requests(
+                    &group_requests,
+                    batch_start_date,
+                    batch_load_start_date,
+                    batch_end_date,
+                );
+                let group_disclosure_columns = disclosure_columns_for_requests(&group_requests);
+                disclosure_cache.retain_disclosure_windows_and_columns(
+                    &group_disclosure_windows,
+                    &group_disclosure_columns,
+                )?;
+                let financial_context = FinancialBatchContext::build(
+                    &loader,
+                    &group_requests,
+                    &context,
+                    &mut disclosure_cache,
+                )?;
 
                 for (factor_batch_index, batch_indices) in provider_batches.iter().enumerate() {
                     let batch_specs = batch_indices
@@ -390,11 +408,12 @@ impl Engine {
                     );
                     let batch_requests = merge_requests(contextual_requirements.all.clone());
                     let load_started = Instant::now();
-                    let mut pool = DataPool::load_with_disclosure_cache(
+                    let mut pool = DataPool::load_with_financial_context(
                         &loader,
                         &batch_requests,
                         &context,
                         &mut disclosure_cache,
+                        financial_context.clone(),
                     )?;
                     let load_ms = load_started.elapsed().as_millis();
                     let raw_ids = raw_ids_for_specs(&batch_specs);
@@ -447,6 +466,11 @@ impl Engine {
                         let provider_count = provider_count_for_factors(&batch_factors);
                         let result_rows = results.iter().map(|series| series.values.len()).sum();
                         let disclosure_cache = disclosure_cache.profiles();
+                        let financial_context_profile = if factor_batch_index == 0 {
+                            pool.financial_context_profile()
+                        } else {
+                            None
+                        };
                         profiles.push(BatchProfile {
                             stage: stage_name.clone(),
                             date_batch_index: date_batch_index + 1,
@@ -462,6 +486,7 @@ impl Engine {
                             indexed_rows: pool.indexed_row_count(),
                             result_rows,
                             disclosure_cache,
+                            financial_context: financial_context_profile,
                             factors: factor_profiles,
                         });
                     }
@@ -472,13 +497,7 @@ impl Engine {
                         batch_specs.len()
                     ));
                 }
-                let disclosure_windows = disclosure_windows_for_requests(
-                    &group_requests,
-                    batch_start_date,
-                    batch_load_start_date,
-                    batch_end_date,
-                );
-                disclosure_cache.retain_disclosure_windows(&disclosure_windows);
+                disclosure_cache.retain_disclosure_windows(&group_disclosure_windows);
             }
         }
         progress.finish();
@@ -923,6 +942,7 @@ fn materialize_intraday_raw_table(
                     indexed_rows: 0,
                     result_rows: chunk_series.iter().map(|series| series.values.len()).sum(),
                     disclosure_cache: Vec::new(),
+                    financial_context: None,
                     factors: raw_profiles,
                 });
             }
@@ -1144,6 +1164,7 @@ fn materialize_intraday_raw_table(
                     indexed_rows: 0,
                     result_rows,
                     disclosure_cache: Vec::new(),
+                    financial_context: None,
                     factors: raw_profiles
                         .into_iter()
                         .map(|(factor_id, (row_count, non_null_count))| FactorProfile {
@@ -1572,6 +1593,59 @@ fn analyst_report_years_for_range(start_date: i32, end_date: i32) -> BTreeSet<i3
     let start_year = (start_date / 10_000 - 1).max(0);
     let end_year = end_date / 10_000;
     (start_year..=end_year).collect()
+}
+
+fn disclosure_columns_for_requests(
+    requests: &[DataRequest],
+) -> HashMap<DatasetId, BTreeSet<String>> {
+    let mut columns = HashMap::<DatasetId, BTreeSet<String>>::new();
+    for request in requests {
+        match request.dataset {
+            DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow => {
+                let entry = columns.entry(request.dataset).or_default();
+                entry.extend(
+                    [
+                        "ts_code",
+                        "ann_date",
+                        "f_ann_date",
+                        "end_date",
+                        "report_type",
+                        "update_flag",
+                    ]
+                    .into_iter()
+                    .map(str::to_string),
+                );
+                entry.extend(request.columns.iter().cloned());
+            }
+            DatasetId::StockMainBusiness => {
+                let entry = columns.entry(request.dataset).or_default();
+                entry.extend(
+                    [
+                        "ts_code",
+                        "end_date",
+                        "bz_type",
+                        "bz_item",
+                        "bz_sales",
+                        "update_flag",
+                    ]
+                    .into_iter()
+                    .map(str::to_string),
+                );
+                entry.extend(request.columns.iter().cloned());
+            }
+            DatasetId::StockAnalystReport => {
+                let entry = columns.entry(request.dataset).or_default();
+                entry.extend(
+                    ["ts_code", "report_date", "quarter", "rd"]
+                        .into_iter()
+                        .map(str::to_string),
+                );
+                entry.extend(request.columns.iter().cloned());
+            }
+            _ => {}
+        }
+    }
+    columns
 }
 
 fn provider_count_for_factors(factors: &[&dyn Factor]) -> usize {

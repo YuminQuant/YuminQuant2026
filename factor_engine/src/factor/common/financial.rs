@@ -1009,13 +1009,14 @@ impl ReportTypePreference {
 
 #[derive(Clone, Debug)]
 pub struct FinancialPitIndex {
-    table: Arc<Table>,
+    sources: Vec<Arc<Table>>,
     records: Vec<FinancialIndexedRecord>,
     by_ts_code: BTreeMap<String, BTreeMap<i32, BTreeMap<i64, Vec<usize>>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct FinancialIndexedRecord {
+    source_idx: usize,
     row_idx: usize,
     end_date: i32,
     disclosure_date: i32,
@@ -1025,44 +1026,56 @@ struct FinancialIndexedRecord {
 
 impl FinancialPitIndex {
     pub fn from_table(table: Arc<Table>) -> Result<Self> {
-        let ts_codes = table.required_utf8("ts_code")?;
-        let ann_dates = table.required_i32_date_cast("ann_date")?;
-        let f_ann_dates = table.required_i32_date_cast("f_ann_date")?;
-        let end_dates = table.required_i32_date_cast("end_date")?;
-        let update_flags = table.required_i64_cast("update_flag")?;
-        let report_types = if table.columns.contains_key("report_type") {
-            table.required_i64_cast("report_type")?
-        } else {
-            vec![Some(1); table.len]
-        };
+        Self::from_source_tables(vec![table], None)
+    }
 
+    pub fn from_source_tables(
+        sources: Vec<Arc<Table>>,
+        max_disclosure_date: Option<i32>,
+    ) -> Result<Self> {
         let mut records = Vec::new();
         let mut by_ts_code = BTreeMap::<String, BTreeMap<i32, BTreeMap<i64, Vec<usize>>>>::new();
-        for idx in 0..table.len {
-            let (Some(ts_code), Some(end_date), Some(disclosure_date), Some(report_type)) = (
-                ts_codes[idx].clone(),
-                end_dates[idx],
-                f_ann_dates[idx].or(ann_dates[idx]),
-                report_types[idx],
-            ) else {
-                continue;
+        for (source_idx, table) in sources.iter().enumerate() {
+            let ts_codes = table.required_utf8("ts_code")?;
+            let ann_dates = table.required_i32_date_cast("ann_date")?;
+            let f_ann_dates = table.required_i32_date_cast("f_ann_date")?;
+            let end_dates = table.required_i32_date_cast("end_date")?;
+            let update_flags = table.required_i64_cast("update_flag")?;
+            let report_types = if table.columns.contains_key("report_type") {
+                table.required_i64_cast("report_type")?
+            } else {
+                vec![Some(1); table.len]
             };
-            let record_idx = records.len();
-            records.push(FinancialIndexedRecord {
-                row_idx: idx,
-                end_date,
-                disclosure_date,
-                report_type,
-                update_flag: update_flags[idx].unwrap_or(0),
-            });
-            by_ts_code
-                .entry(ts_code)
-                .or_default()
-                .entry(end_date)
-                .or_default()
-                .entry(report_type)
-                .or_default()
-                .push(record_idx);
+            for idx in 0..table.len {
+                let (Some(ts_code), Some(end_date), Some(disclosure_date), Some(report_type)) = (
+                    ts_codes[idx].clone(),
+                    end_dates[idx],
+                    f_ann_dates[idx].or(ann_dates[idx]),
+                    report_types[idx],
+                ) else {
+                    continue;
+                };
+                if max_disclosure_date.is_some_and(|max_date| disclosure_date > max_date) {
+                    continue;
+                }
+                let record_idx = records.len();
+                records.push(FinancialIndexedRecord {
+                    source_idx,
+                    row_idx: idx,
+                    end_date,
+                    disclosure_date,
+                    report_type,
+                    update_flag: update_flags[idx].unwrap_or(0),
+                });
+                by_ts_code
+                    .entry(ts_code)
+                    .or_default()
+                    .entry(end_date)
+                    .or_default()
+                    .entry(report_type)
+                    .or_default()
+                    .push(record_idx);
+            }
         }
 
         for by_end_date in by_ts_code.values_mut() {
@@ -1081,7 +1094,7 @@ impl FinancialPitIndex {
         }
 
         Ok(Self {
-            table,
+            sources,
             records,
             by_ts_code,
         })
@@ -1127,7 +1140,7 @@ impl<'a> FinancialPitReader<'a> {
                 .find(|idx| self.index.records[*idx].disclosure_date <= trade_date)
             {
                 return Some(PitFinancialRecordView {
-                    table: self.index.table.as_ref(),
+                    table: self.index.sources[self.index.records[record_idx].source_idx].as_ref(),
                     record: &self.index.records[record_idx],
                 });
             }

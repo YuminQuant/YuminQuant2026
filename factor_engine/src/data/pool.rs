@@ -11,12 +11,180 @@ use crate::factor::common::{
 };
 
 #[derive(Clone, Debug, Default)]
+pub struct FinancialBatchProfile {
+    pub source_rows: usize,
+    pub source_columns: usize,
+    pub pit_records: usize,
+    pub main_business_records: usize,
+    pub dividend_records: usize,
+    pub analyst_records: usize,
+    pub builds: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FinancialBatchContext {
+    financial_pit_indexes: HashMap<DatasetId, Arc<FinancialPitIndex>>,
+    dividend_index: Option<Arc<DividendIndex>>,
+    main_business_index: Option<Arc<MainBusinessIndex>>,
+    analyst_report: Option<Arc<Table>>,
+    profile: FinancialBatchProfile,
+}
+
+impl FinancialBatchContext {
+    pub fn build(
+        loader: &MarketDataLoader,
+        requests: &[DataRequest],
+        context: &FactorContext,
+        disclosure_cache: &mut DisclosureTableCache,
+    ) -> Result<Option<Arc<Self>>> {
+        let mut grouped: HashMap<DatasetId, (BTreeSet<String>, Option<usize>)> = HashMap::new();
+        for request in requests {
+            if !is_financial_context_dataset(request.dataset) {
+                continue;
+            }
+            let entry = grouped.entry(request.dataset).or_default();
+            entry.0.extend(request.columns.iter().cloned());
+            entry.1 = match (entry.1, request.financial_quarters) {
+                (Some(left), Some(right)) => Some(left.max(right)),
+                (None, Some(right)) => Some(right),
+                (left, None) => left,
+            };
+        }
+        if grouped.is_empty() {
+            return Ok(None);
+        }
+
+        let mut financial_pit_indexes = HashMap::new();
+        let mut dividend_index = None;
+        let mut main_business_index = None;
+        let mut analyst_report = None;
+        let mut profile = FinancialBatchProfile {
+            builds: 1,
+            ..Default::default()
+        };
+
+        for (dataset, (columns, financial_quarters)) in grouped {
+            let columns = columns.into_iter().collect::<Vec<_>>();
+            match dataset {
+                DatasetId::StockIncome
+                | DatasetId::StockBalanceSheet
+                | DatasetId::StockCashFlow => {
+                    let sources = loader.load_financial_sources_cached(
+                        dataset,
+                        &columns,
+                        context.start_date,
+                        context.end_date,
+                        financial_quarters.unwrap_or(0),
+                        disclosure_cache,
+                    )?;
+                    profile.source_rows += sources.iter().map(|table| table.len).sum::<usize>();
+                    profile.source_columns += sources
+                        .iter()
+                        .map(|table| table.columns.len())
+                        .sum::<usize>();
+                    let index = Arc::new(FinancialPitIndex::from_source_tables(
+                        sources,
+                        Some(context.end_date),
+                    )?);
+                    profile.pit_records += index.len();
+                    financial_pit_indexes.insert(dataset, index);
+                }
+                DatasetId::StockDividend => {
+                    let table = loader.load_stock_dividend(
+                        &columns,
+                        context.load_start_date,
+                        context.end_date,
+                    )?;
+                    profile.source_rows += table.len;
+                    profile.source_columns += table.columns.len();
+                    let table = Arc::new(table);
+                    let index = Arc::new(DividendIndex::from_table(Arc::clone(&table))?);
+                    profile.dividend_records = index.len();
+                    dividend_index = Some(index);
+                }
+                DatasetId::StockMainBusiness => {
+                    let table = loader.load_stock_main_business_cached(
+                        &columns,
+                        context.start_date,
+                        context.end_date,
+                        financial_quarters.unwrap_or(8),
+                        disclosure_cache,
+                    )?;
+                    profile.source_rows += table.len;
+                    profile.source_columns += table.columns.len();
+                    let table = Arc::new(table);
+                    let index = Arc::new(MainBusinessIndex::from_table(Arc::clone(&table))?);
+                    profile.main_business_records = index.len();
+                    main_business_index = Some(index);
+                }
+                DatasetId::StockAnalystReport => {
+                    let table = loader.load_stock_analyst_report_cached(
+                        &columns,
+                        context.load_start_date,
+                        context.end_date,
+                        disclosure_cache,
+                    )?;
+                    profile.analyst_records = table.len;
+                    profile.source_rows += table.len;
+                    profile.source_columns += table.columns.len();
+                    analyst_report = Some(Arc::new(table));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Some(Arc::new(Self {
+            financial_pit_indexes,
+            dividend_index,
+            main_business_index,
+            analyst_report,
+            profile,
+        })))
+    }
+
+    pub fn financial_reader(
+        &self,
+        dataset: DatasetId,
+        preference: ReportTypePreference,
+    ) -> Option<FinancialPitReader<'_>> {
+        self.financial_pit_indexes
+            .get(&dataset)
+            .map(|index| index.reader(preference))
+    }
+
+    pub fn dividend_reader(&self) -> Option<DividendReader<'_>> {
+        self.dividend_index.as_ref().map(|index| index.reader())
+    }
+
+    pub fn main_business_reader(&self) -> Option<MainBusinessReader<'_>> {
+        self.main_business_index
+            .as_ref()
+            .map(|index| index.reader())
+    }
+
+    pub fn analyst_report(&self) -> Option<&Table> {
+        self.analyst_report.as_deref()
+    }
+
+    pub fn profile(&self) -> FinancialBatchProfile {
+        self.profile.clone()
+    }
+
+    pub fn indexed_row_count(&self) -> usize {
+        self.profile.pit_records
+            + self.profile.main_business_records
+            + self.profile.dividend_records
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct DataPool {
     daily: HashMap<DatasetId, Arc<Table>>,
     daily_panels: HashMap<DatasetId, DailyPanel>,
     financial_pit_indexes: HashMap<DatasetId, Arc<FinancialPitIndex>>,
     dividend_index: Option<Arc<DividendIndex>>,
     main_business_index: Option<Arc<MainBusinessIndex>>,
+    financial_context: Option<Arc<FinancialBatchContext>>,
     index_daily: HashMap<String, Arc<Table>>,
     index_daily_panels: HashMap<String, DailyPanel>,
     minute: HashMap<(DatasetId, Option<usize>, i32), Arc<Table>>,
@@ -40,6 +208,16 @@ impl DataPool {
         context: &FactorContext,
         disclosure_cache: &mut DisclosureTableCache,
     ) -> Result<Self> {
+        Self::load_with_financial_context(loader, requests, context, disclosure_cache, None)
+    }
+
+    pub fn load_with_financial_context(
+        loader: &MarketDataLoader,
+        requests: &[DataRequest],
+        context: &FactorContext,
+        disclosure_cache: &mut DisclosureTableCache,
+        financial_context: Option<Arc<FinancialBatchContext>>,
+    ) -> Result<Self> {
         let mut grouped: HashMap<
             (DatasetId, Option<String>, Option<usize>),
             (BTreeSet<String>, Option<usize>, BTreeSet<i32>),
@@ -58,9 +236,13 @@ impl DataPool {
         }
 
         let mut pool = Self::default();
+        pool.financial_context = financial_context;
         for ((dataset, entity_id, bar_size), (columns, financial_quarters, load_dates)) in grouped {
             let columns = columns.into_iter().collect::<Vec<_>>();
             let load_dates = load_dates.into_iter().collect::<Vec<_>>();
+            if pool.financial_context.is_some() && is_financial_context_dataset(dataset) {
+                continue;
+            }
             if dataset == DatasetId::IndexDaily {
                 let ts_code = entity_id.ok_or_else(|| {
                     err("index.daily request requires entity_id; use DataRequest::index_daily")
@@ -199,6 +381,7 @@ impl DataPool {
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
+            financial_context: self.financial_context.clone(),
             index_daily: self.index_daily.clone(),
             index_daily_panels: self
                 .index_daily_panels
@@ -237,6 +420,7 @@ impl DataPool {
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
+            financial_context: self.financial_context.clone(),
             index_daily: self
                 .index_daily
                 .iter()
@@ -313,6 +497,7 @@ impl DataPool {
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
+            financial_context: self.financial_context.clone(),
             index_daily: self
                 .index_daily
                 .iter()
@@ -345,6 +530,15 @@ impl DataPool {
     }
 
     pub fn daily(&self, dataset: DatasetId) -> Result<&Table> {
+        if dataset == DatasetId::StockAnalystReport {
+            if let Some(table) = self
+                .financial_context
+                .as_ref()
+                .and_then(|context| context.analyst_report())
+            {
+                return Ok(table);
+            }
+        }
         self.daily
             .get(&dataset)
             .map(Arc::as_ref)
@@ -362,6 +556,13 @@ impl DataPool {
         dataset: DatasetId,
         preference: ReportTypePreference,
     ) -> Result<FinancialPitReader<'_>> {
+        if let Some(reader) = self
+            .financial_context
+            .as_ref()
+            .and_then(|context| context.financial_reader(dataset, preference.clone()))
+        {
+            return Ok(reader);
+        }
         self.financial_pit_indexes
             .get(&dataset)
             .map(|index| index.reader(preference))
@@ -374,6 +575,13 @@ impl DataPool {
     }
 
     pub fn dividend_reader(&self) -> Result<DividendReader<'_>> {
+        if let Some(reader) = self
+            .financial_context
+            .as_ref()
+            .and_then(|context| context.dividend_reader())
+        {
+            return Ok(reader);
+        }
         self.dividend_index
             .as_ref()
             .map(|index| index.reader())
@@ -381,6 +589,13 @@ impl DataPool {
     }
 
     pub fn main_business_reader(&self) -> Result<MainBusinessReader<'_>> {
+        if let Some(reader) = self
+            .financial_context
+            .as_ref()
+            .and_then(|context| context.main_business_reader())
+        {
+            return Ok(reader);
+        }
         self.main_business_index
             .as_ref()
             .map(|index| index.reader())
@@ -413,7 +628,17 @@ impl DataPool {
             .main_business_index
             .as_ref()
             .map_or(0, |index| index.len());
-        financial_rows + dividend_rows + main_business_rows
+        let context_rows = self
+            .financial_context
+            .as_ref()
+            .map_or(0, |context| context.indexed_row_count());
+        financial_rows + dividend_rows + main_business_rows + context_rows
+    }
+
+    pub fn financial_context_profile(&self) -> Option<FinancialBatchProfile> {
+        self.financial_context
+            .as_ref()
+            .map(|context| context.profile())
     }
 
     pub fn index_daily_panel(&self, ts_code: &str) -> Result<&DailyPanel> {
@@ -456,6 +681,9 @@ impl DataPool {
         }
         if other.main_business_index.is_some() {
             self.main_business_index = other.main_business_index;
+        }
+        if other.financial_context.is_some() {
+            self.financial_context = other.financial_context;
         }
         self.index_daily.extend(other.index_daily);
         self.index_daily_panels.extend(other.index_daily_panels);
@@ -509,6 +737,7 @@ impl DataPool {
             financial_pit_indexes: HashMap::new(),
             dividend_index: None,
             main_business_index: None,
+            financial_context: None,
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),
             minute: minute
@@ -561,6 +790,7 @@ impl DataPool {
             financial_pit_indexes,
             dividend_index,
             main_business_index,
+            financial_context: None,
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),
             minute: HashMap::new(),
@@ -599,6 +829,18 @@ fn should_build_daily_panel(dataset: DatasetId) -> bool {
             | DatasetId::StockBarraDaily
             | DatasetId::IndexDaily
             | DatasetId::FutureDaily
+    )
+}
+
+fn is_financial_context_dataset(dataset: DatasetId) -> bool {
+    matches!(
+        dataset,
+        DatasetId::StockIncome
+            | DatasetId::StockBalanceSheet
+            | DatasetId::StockCashFlow
+            | DatasetId::StockDividend
+            | DatasetId::StockMainBusiness
+            | DatasetId::StockAnalystReport
     )
 }
 
@@ -644,6 +886,28 @@ mod tests {
         .expect("valid daily table")
     }
 
+    fn sample_income_table() -> Table {
+        Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![Some("000001.SZ".to_string())]),
+            ),
+            (
+                "ann_date".to_string(),
+                ColumnData::I32(vec![Some(20260430)]),
+            ),
+            ("f_ann_date".to_string(), ColumnData::I32(vec![None])),
+            (
+                "end_date".to_string(),
+                ColumnData::I32(vec![Some(20260331)]),
+            ),
+            ("report_type".to_string(), ColumnData::I64(vec![Some(2)])),
+            ("update_flag".to_string(), ColumnData::I64(vec![Some(0)])),
+            ("n_income".to_string(), ColumnData::F64(vec![Some(12.5)])),
+        ]))
+        .expect("valid income table")
+    }
+
     #[test]
     fn daily_panel_cache_exposes_prebuilt_panel() {
         let context = context();
@@ -655,6 +919,7 @@ mod tests {
             financial_pit_indexes: HashMap::new(),
             dividend_index: None,
             main_business_index: None,
+            financial_context: None,
             index_daily: HashMap::new(),
             index_daily_panels: HashMap::new(),
             minute: HashMap::new(),
@@ -670,6 +935,49 @@ mod tests {
         );
         assert!(pool.daily_panel(DatasetId::StockSwClassification).is_err());
         assert!(pool.daily_panel(DatasetId::StockCiClassification).is_err());
+    }
+
+    #[test]
+    fn financial_context_supplies_reader_without_daily_raw_table() {
+        let income_table = Arc::new(sample_income_table());
+        let index = Arc::new(FinancialPitIndex::from_table(income_table).expect("pit index"));
+        let context = Arc::new(FinancialBatchContext {
+            financial_pit_indexes: HashMap::from([(DatasetId::StockIncome, index)]),
+            dividend_index: None,
+            main_business_index: None,
+            analyst_report: None,
+            profile: FinancialBatchProfile {
+                pit_records: 1,
+                builds: 1,
+                ..Default::default()
+            },
+        });
+        let pool = DataPool {
+            daily: HashMap::new(),
+            daily_panels: HashMap::new(),
+            financial_pit_indexes: HashMap::new(),
+            dividend_index: None,
+            main_business_index: None,
+            financial_context: Some(context),
+            index_daily: HashMap::new(),
+            index_daily_panels: HashMap::new(),
+            minute: HashMap::new(),
+            intraday_daily_raw: None,
+            intraday_daily_raw_panel: None,
+        };
+
+        assert!(pool.daily(DatasetId::StockIncome).is_err());
+        let reader = pool
+            .financial_reader(
+                DatasetId::StockIncome,
+                ReportTypePreference::income_single_quarter(),
+            )
+            .expect("reader from shared context");
+        let record = reader
+            .record_for_end_date("000001.SZ", 20260501, 20260331)
+            .expect("visible PIT record");
+        assert_eq!(record.column("n_income"), Some(12.5));
+        assert_eq!(pool.indexed_row_count(), 1);
     }
 
     #[test]

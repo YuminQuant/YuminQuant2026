@@ -25,13 +25,14 @@ const HISTORY_KEEP_QUARTERS: usize = 13;
 const UNEXPECTED_HISTORY_QUARTERS: usize = 8;
 const EPS: f64 = 1e-12;
 
-const INCOME_COLUMNS: [&str; 7] = [
-    "operate_profit",
+const INCOME_COLUMNS: [&str; 8] = [
+    "revenue",
+    "oper_cost",
     "sell_exp",
     "admin_exp",
-    "fin_exp",
+    "rd_exp",
     "income_tax",
-    "n_income",
+    "total_profit",
     "int_exp",
 ];
 const BALANCE_COLUMNS: [&str; 5] = [
@@ -362,6 +363,8 @@ fn prelims_for_end_date(
     stock_indices: &[usize],
 ) -> Vec<Option<QuarterPrelim>> {
     let mut output = vec![None; panel.instruments().len()];
+    let fallback_interest_exp =
+        mean_available_interest_exp(trade_date, end_date, panel, income, stock_indices);
     for &instrument_idx in stock_indices {
         let ts_code = &panel.instruments()[instrument_idx];
         let offset = date_offset + instrument_idx;
@@ -372,9 +375,33 @@ fn prelims_for_end_date(
             income,
             balance,
             dv_ratio.values()[offset],
+            fallback_interest_exp,
         );
     }
     output
+}
+
+fn mean_available_interest_exp(
+    trade_date: i32,
+    end_date: i32,
+    panel: &DailyPanel,
+    income: &FinancialPitReader<'_>,
+    stock_indices: &[usize],
+) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for &instrument_idx in stock_indices {
+        let ts_code = &panel.instruments()[instrument_idx];
+        let Some(record) = income.record_for_end_date(ts_code, trade_date, end_date) else {
+            continue;
+        };
+        let Some(value) = clean(record.column("int_exp")) else {
+            continue;
+        };
+        sum += value.max(0.0);
+        count += 1;
+    }
+    (count > 0).then_some(sum / count as f64)
 }
 
 fn quarter_prelim(
@@ -384,18 +411,21 @@ fn quarter_prelim(
     income: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
     dv_ratio: Option<f64>,
+    fallback_interest_exp: Option<f64>,
 ) -> Option<QuarterPrelim> {
     let income_record = income.record_for_end_date(ts_code, trade_date, end_date)?;
     let balance_record = balance.record_for_end_date(ts_code, trade_date, end_date)?;
-    let operate_profit = clean(income_record.column("operate_profit"))?;
+    let revenue = clean(income_record.column("revenue"))?;
+    let oper_cost = clean(income_record.column("oper_cost")).unwrap_or(0.0);
     let sell_exp = clean(income_record.column("sell_exp")).unwrap_or(0.0);
     let admin_exp = clean(income_record.column("admin_exp")).unwrap_or(0.0);
-    let fin_exp = clean(income_record.column("fin_exp")).unwrap_or(0.0);
+    let rd_exp = clean(income_record.column("rd_exp")).unwrap_or(0.0);
     let tax = tax_rate(
         income_record.column("income_tax"),
-        income_record.column("n_income"),
+        income_record.column("total_profit"),
     );
-    let noplat = (operate_profit - sell_exp - admin_exp - fin_exp) * (1.0 - tax);
+    let gross_profit = revenue - oper_cost;
+    let noplat = (gross_profit - sell_exp - admin_exp - rd_exp) * (1.0 - tax);
     if !noplat.is_finite() {
         return None;
     }
@@ -419,9 +449,8 @@ fn quarter_prelim(
         if avg_debt <= EPS || !avg_debt.is_finite() {
             return None;
         }
-        let interest_exp = clean(income_record.column("int_exp"))
-            .unwrap_or(0.0)
-            .max(0.0);
+        let interest_exp =
+            interest_exp_or_fallback(income_record.column("int_exp"), fallback_interest_exp);
         4.0 * interest_exp / avg_debt
     };
     if !rd.is_finite() {
@@ -448,11 +477,15 @@ fn interest_bearing_debt(record: &crate::factor::common::PitFinancialRecordView<
         .sum::<f64>()
 }
 
-fn tax_rate(income_tax: Option<f64>, n_income: Option<f64>) -> f64 {
-    match (clean(income_tax), clean(n_income)) {
-        (Some(tax), Some(income)) if income.abs() > EPS => (tax / income).clamp(0.0, 0.25),
+fn tax_rate(income_tax: Option<f64>, total_profit: Option<f64>) -> f64 {
+    match (clean(income_tax), clean(total_profit)) {
+        (Some(tax), Some(profit)) if profit.abs() > EPS => (tax / profit).clamp(0.0, 0.25),
         _ => 0.0,
     }
+}
+
+fn interest_exp_or_fallback(raw: Option<f64>, fallback: Option<f64>) -> f64 {
+    clean(raw).or(fallback).unwrap_or(0.0).max(0.0)
 }
 
 fn accounting_re(dv_ratio: Option<f64>) -> Option<f64> {
@@ -1003,6 +1036,19 @@ mod tests {
         assert_close(Some(tax_rate(Some(10.0), Some(100.0))), Some(0.10));
         assert_close(Some(tax_rate(Some(50.0), Some(100.0))), Some(0.25));
         assert_close(Some(tax_rate(Some(1.0), Some(0.0))), Some(0.0));
+    }
+
+    #[test]
+    fn missing_interest_exp_uses_current_fallback_mean() {
+        assert_close(Some(interest_exp_or_fallback(None, Some(8.0))), Some(8.0));
+        assert_close(
+            Some(interest_exp_or_fallback(Some(3.0), Some(8.0))),
+            Some(3.0),
+        );
+        assert_close(
+            Some(interest_exp_or_fallback(Some(-1.0), Some(8.0))),
+            Some(0.0),
+        );
     }
 
     #[test]

@@ -510,7 +510,9 @@ impl DataPool {
                         .get(dataset)
                         .map(|dates| {
                             let dates = dates.iter().copied().collect::<Vec<_>>();
-                            panel.slice_dates(&dates)
+                            panel
+                                .slice_dates(&dates)
+                                .with_target_dates(&context.target_dates)
                         })
                         .unwrap_or_else(|| panel.clone());
                     (*dataset, panel)
@@ -553,7 +555,9 @@ impl DataPool {
                         .get(ts_code)
                         .map(|dates| {
                             let dates = dates.iter().copied().collect::<Vec<_>>();
-                            panel.slice_dates(&dates)
+                            panel
+                                .slice_dates(&dates)
+                                .with_target_dates(&context.target_dates)
                         })
                         .unwrap_or_else(|| panel.clone());
                     (ts_code.clone(), panel)
@@ -912,7 +916,7 @@ fn is_financial_context_dataset(dataset: DatasetId) -> bool {
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use crate::core::{AssetClass, FactorContext};
+    use crate::core::{AssetClass, FactorContext, FactorSpec, Lookback};
     use crate::data::ColumnData;
 
     use super::*;
@@ -992,6 +996,22 @@ mod tests {
             ),
         ]))
         .expect("valid stock basic table")
+    }
+
+    fn factor_spec(id: &str) -> FactorSpec {
+        FactorSpec {
+            id: id.to_string(),
+            aliases: Vec::new(),
+            name: id.to_string(),
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            version: "test".to_string(),
+            tags: Vec::new(),
+            description: id.to_string(),
+            dependencies: Vec::new(),
+            intraday_raw_dependencies: Vec::new(),
+            lookback: Lookback { trading_days: 0 },
+        }
     }
 
     #[test]
@@ -1204,5 +1224,35 @@ mod tests {
                 .dates(),
             &[20260101, 20260102]
         );
+    }
+
+    #[test]
+    fn view_for_requests_keeps_daily_panel_output_on_context_target_dates() {
+        let context = context();
+        let pool = DataPool::from_daily_tables_for_test(
+            HashMap::from([(DatasetId::StockDailyPv, sample_daily_table())]),
+            &context,
+        )
+        .expect("pool");
+
+        let view = pool.view_for_requests(
+            &[DataRequest::new(DatasetId::StockDailyPv, &["close"])],
+            &context,
+        );
+        let panel = view.daily_panel(DatasetId::StockDailyPv).expect("pv");
+        assert_eq!(panel.dates(), &[20260101, 20260102]);
+
+        let series = panel
+            .column("close")
+            .expect("close")
+            .to_factor_series(factor_spec("test_close_factor"));
+        let dates = series
+            .values
+            .iter()
+            .map(|value| value.key.trade_date())
+            .collect::<Vec<_>>();
+
+        assert_eq!(dates, vec![20260102]);
+        assert_eq!(series.values[0].value, Some(11.0));
     }
 }

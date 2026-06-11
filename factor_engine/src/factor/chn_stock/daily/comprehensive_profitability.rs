@@ -45,11 +45,11 @@ const FV_VALUE_CHG_GAIN_COLUMN: &str = "fv_value_chg_gain";
 
 const CFO_COLUMN: &str = "n_cashflow_act";
 const CAPEX_COLUMN: &str = "c_pay_acq_const_fiolta";
+const CASH_EQUIVALENTS_END_COLUMN: &str = "c_cash_equ_end_period";
 
 const EQUITY_COLUMN: &str = "total_hldr_eqy_exc_min_int";
 const TOTAL_ASSETS_COLUMN: &str = "total_assets";
 const TOTAL_LIAB_COLUMN: &str = "total_liab";
-const MONEY_CAP_COLUMN: &str = "money_cap";
 const SHORT_BORROW_COLUMN: &str = "st_borr";
 const NON_CURRENT_LIAB_DUE_1Y_COLUMN: &str = "non_cur_liab_due_1y";
 const LONG_BORROW_COLUMN: &str = "lt_borr";
@@ -99,7 +99,7 @@ impl Factor for StockDailyComprehensiveProfitability {
                 ),
                 DataRequest::financial_quarters(
                     DatasetId::StockCashFlow,
-                    &[CFO_COLUMN, CAPEX_COLUMN],
+                    &[CFO_COLUMN, CAPEX_COLUMN, CASH_EQUIVALENTS_END_COLUMN],
                     HISTORY_WINDOW,
                 ),
                 DataRequest::financial_quarters(
@@ -108,7 +108,6 @@ impl Factor for StockDailyComprehensiveProfitability {
                         EQUITY_COLUMN,
                         TOTAL_ASSETS_COLUMN,
                         TOTAL_LIAB_COLUMN,
-                        MONEY_CAP_COLUMN,
                         SHORT_BORROW_COLUMN,
                         NON_CURRENT_LIAB_DUE_1Y_COLUMN,
                         LONG_BORROW_COLUMN,
@@ -477,10 +476,12 @@ fn quarter_profitability(
     let equity_multiplier = balance.and_then(equity_multiplier_for_record);
     let roic = income
         .zip(balance)
-        .and_then(|(income, balance)| roic_for_records(income, balance));
+        .zip(cashflow)
+        .and_then(|((income, balance), cashflow)| roic_for_records(income, balance, cashflow));
     let ronoa = income
         .zip(balance)
-        .and_then(|(income, balance)| ronoa_for_records(income, balance));
+        .zip(cashflow)
+        .and_then(|((income, balance), cashflow)| ronoa_for_records(income, balance, cashflow));
     let fcffic = cashflow
         .zip(balance)
         .and_then(|(cashflow, balance)| fcffic_for_records(cashflow, balance));
@@ -514,22 +515,24 @@ fn equity_multiplier_for_record(balance: PitFinancialRecordView<'_>) -> Option<f
 fn roic_for_records(
     income: PitFinancialRecordView<'_>,
     balance: PitFinancialRecordView<'_>,
+    cashflow: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
     let ebit = derived_single_quarter_ebit(income)?;
     let tax = tax_rate(
         income.column(INCOME_TAX_COLUMN),
         income.column(TOTAL_PROFIT_COLUMN),
     );
-    let ic = invested_capital(balance)?;
+    let ic = invested_capital(balance, cashflow)?;
     safe_div(ebit * (1.0 - tax), ic)
 }
 
 fn ronoa_for_records(
     income: PitFinancialRecordView<'_>,
     balance: PitFinancialRecordView<'_>,
+    cashflow: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
     let operating_profit = operating_profit(income)?;
-    let noa = net_operating_assets(balance)?;
+    let noa = net_operating_assets(balance, cashflow)?;
     safe_div(operating_profit, noa)
 }
 
@@ -539,7 +542,7 @@ fn fcffic_for_records(
 ) -> Option<f64> {
     let cfo = clean_or_zero(cashflow.column(CFO_COLUMN));
     let capex = clean_or_zero(cashflow.column(CAPEX_COLUMN));
-    let ic = invested_capital(balance)?;
+    let ic = invested_capital(balance, cashflow)?;
     safe_div(cfo - capex, ic)
 }
 
@@ -580,11 +583,14 @@ fn tax_rate(income_tax: Option<f64>, total_profit: Option<f64>) -> f64 {
     }
 }
 
-fn invested_capital(balance: PitFinancialRecordView<'_>) -> Option<f64> {
+fn invested_capital(
+    balance: PitFinancialRecordView<'_>,
+    cashflow: PitFinancialRecordView<'_>,
+) -> Option<f64> {
     invested_capital_from_values(
         clean(balance.column(EQUITY_COLUMN))?,
         interest_bearing_debt(balance),
-        clean_or_zero(balance.column(MONEY_CAP_COLUMN)),
+        clean_or_zero(cashflow.column(CASH_EQUIVALENTS_END_COLUMN)),
     )
 }
 
@@ -593,10 +599,13 @@ fn invested_capital_from_values(equity: f64, debt: f64, cash: f64) -> Option<f64
     value.is_finite().then_some(value)
 }
 
-fn net_operating_assets(balance: PitFinancialRecordView<'_>) -> Option<f64> {
+fn net_operating_assets(
+    balance: PitFinancialRecordView<'_>,
+    cashflow: PitFinancialRecordView<'_>,
+) -> Option<f64> {
     net_operating_assets_from_values(
         clean(balance.column(TOTAL_ASSETS_COLUMN))?,
-        clean_or_zero(balance.column(MONEY_CAP_COLUMN)),
+        clean_or_zero(cashflow.column(CASH_EQUIVALENTS_END_COLUMN)),
         clean(balance.column(TOTAL_LIAB_COLUMN))?,
         interest_bearing_debt(balance),
     )
@@ -604,11 +613,11 @@ fn net_operating_assets(balance: PitFinancialRecordView<'_>) -> Option<f64> {
 
 fn net_operating_assets_from_values(
     total_assets: f64,
-    money_cap: f64,
+    cash_equivalents: f64,
     total_liab: f64,
     debt: f64,
 ) -> Option<f64> {
-    let value = (total_assets - money_cap) - (total_liab - debt);
+    let value = (total_assets - cash_equivalents) - (total_liab - debt);
     value.is_finite().then_some(value)
 }
 

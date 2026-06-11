@@ -226,7 +226,7 @@ impl HazqComparableValueOutput {
     }
 
     pub fn id(self) -> String {
-        format!("hazq_comp_{}_{}", self.base.id(), self.component.id())
+        format!("comp_{}_{}", self.base.id(), self.component.id())
     }
 }
 
@@ -1471,12 +1471,10 @@ mod tests {
     fn hazq_comparable_registers_88_outputs_with_required_tags() {
         let outputs = all_outputs();
         assert_eq!(outputs.len(), 88);
+        assert!(outputs.iter().any(|output| output.id() == "comp_ep_med"));
         assert!(outputs
             .iter()
-            .any(|output| output.id() == "hazq_comp_ep_med"));
-        assert!(outputs
-            .iter()
-            .any(|output| output.id() == "hazq_comp_bp_prm_zscore"));
+            .any(|output| output.id() == "comp_bp_prm_zscore"));
 
         let spec = spec(HazqComparableValueOutput::new(
             HazqComparableBase::Ep,
@@ -1656,8 +1654,8 @@ mod tests {
     #[test]
     fn hazq_comparable_requested_outputs_preserve_known_ids() {
         let requested = vec![
-            "hazq_comp_ep_med".to_string(),
-            "hazq_comp_bp_prm_zscore".to_string(),
+            "comp_ep_med".to_string(),
+            "comp_bp_prm_zscore".to_string(),
             "unknown".to_string(),
         ];
         let outputs = requested_outputs(&requested);
@@ -1667,8 +1665,8 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert_eq!(ids.len(), 2);
-        assert!(ids.contains("hazq_comp_ep_med"));
-        assert!(ids.contains("hazq_comp_bp_prm_zscore"));
+        assert!(ids.contains("comp_ep_med"));
+        assert!(ids.contains("comp_bp_prm_zscore"));
     }
 
     #[test]

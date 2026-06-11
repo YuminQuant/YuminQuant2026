@@ -102,7 +102,6 @@ pub fn spec(kind: FinancialSimilarityOutput) -> FactorSpec {
         ),
     };
     let mut dependencies = vec![
-        DataRequest::new(DatasetId::StockDailyPv, &["close"]),
         DataRequest::new(DatasetId::StockDailyBasic, &["total_mv"]),
         DataRequest::financial_quarters(
             DatasetId::StockIncome,
@@ -129,6 +128,7 @@ pub fn spec(kind: FinancialSimilarityOutput) -> FactorSpec {
         DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
     ];
     if kind == FinancialSimilarityOutput::FMomentum80Pec {
+        dependencies.insert(0, DataRequest::new(DatasetId::StockDailyPv, &["close"]));
         dependencies.insert(
             1,
             DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
@@ -179,7 +179,7 @@ pub fn compute_requested(
         return Ok(Vec::new());
     }
 
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let panel = data.stock_universe_panel()?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
     let income = data.financial_reader(
         DatasetId::StockIncome,
@@ -259,7 +259,7 @@ pub fn compute_requested_stateful(
         return Ok(Vec::new());
     }
 
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let panel = data.stock_universe_panel()?;
     let income_reader = data.financial_reader(
         DatasetId::StockIncome,
         ReportTypePreference::income_single_quarter(),
@@ -376,7 +376,7 @@ struct FinancialSimilarityInputs<'a> {
 }
 
 fn financial_similarity_inputs(data: &DataPool) -> Result<FinancialSimilarityInputs<'_>> {
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let panel = data.stock_universe_panel()?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
     let income = data.financial_reader(
         DatasetId::StockIncome,

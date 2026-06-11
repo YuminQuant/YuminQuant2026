@@ -10,7 +10,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
@@ -71,7 +71,6 @@ impl Factor for StockDailySpecialRoa1 {
             tags: tags_roa1(),
             description: "DBZQ special ROA 1 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry. The ridge lambda is 1 and the intercept is unpenalized. The residual is neutralized against Barra SIZE and CITIC level-1 sector.".to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
                     DatasetId::StockIncome,
                     &[PROFIT_COLUMN, OPER_COST_COLUMN],
@@ -145,10 +144,12 @@ impl Factor for StockDailySpecialRoa1 {
             ClassificationLevel::Industry,
         )?;
         let raw_specs = [raw_spec(SPECIAL_ROA1_RAW_ID)];
-        let raw_series = compute_financial_event_snapshot_streaming(
+        let panel = data.stock_universe_panel()?;
+        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
             requested_ids,
             context,
             data,
+            panel,
             &mut state.raw_cache,
             &schedule,
             &raw_specs,
@@ -215,7 +216,7 @@ impl StockDailySpecialRoa1 {
         industry_map: &ClassificationMap,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<SpecialRoa2Snapshot>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let daily_basic = data.daily(DatasetId::StockDailyBasic)?;
         let pb = panel.column_from_table(daily_basic, PB_COLUMN)?;
         let raw = special_roa2_raw_column(
@@ -237,7 +238,7 @@ impl StockDailySpecialRoa1 {
         data: &DataPool,
         raw_series: Vec<FactorSeries>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let series = raw_series
             .into_iter()
             .find(|series| series.spec.id == SPECIAL_ROA1_RAW_ID)
@@ -268,7 +269,6 @@ impl Factor for StockDailySpecialRoa2 {
             tags: tags(),
             description: "DBZQ special ROA 2 factor. It builds PIT single-quarter ROA from net profit, uses single-quarter operating cost for inventory turnover, standardizes ROA and seven explanatory variables within CITIC level-1 industries, fills missing standardized explanatory variables with zero, then runs ridge regression separately within each CITIC level-1 industry with that sector's CITIC level-2 industry fixed effects. The ridge lambda is 1 and only continuous variables are penalized; intercept and industry dummies are unpenalized. The residual is neutralized against Barra SIZE and CITIC level-1 sector.".to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
                     DatasetId::StockIncome,
                     &[PROFIT_COLUMN, OPER_COST_COLUMN],
@@ -342,10 +342,12 @@ impl Factor for StockDailySpecialRoa2 {
             ClassificationLevel::Industry,
         )?;
         let raw_specs = [raw_spec(SPECIAL_ROA2_RAW_ID)];
-        let raw_series = compute_financial_event_snapshot_streaming(
+        let panel = data.stock_universe_panel()?;
+        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
             requested_ids,
             context,
             data,
+            panel,
             &mut state.raw_cache,
             &schedule,
             &raw_specs,
@@ -412,7 +414,7 @@ impl StockDailySpecialRoa2 {
         industry_map: &ClassificationMap,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<SpecialRoa2Snapshot>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let daily_basic = data.daily(DatasetId::StockDailyBasic)?;
         let pb = panel.column_from_table(daily_basic, PB_COLUMN)?;
         let raw = special_roa2_raw_column(
@@ -434,7 +436,7 @@ impl StockDailySpecialRoa2 {
         data: &DataPool,
         raw_series: Vec<FactorSeries>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let series = raw_series
             .into_iter()
             .find(|series| series.spec.id == SPECIAL_ROA2_RAW_ID)

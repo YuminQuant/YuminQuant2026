@@ -10,7 +10,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::is_bj_stock;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
@@ -57,7 +57,6 @@ impl Factor for StockDailyAbcfo {
             tags: tags(),
             description: "DBZQ abnormal cashflow factor. It anchors on the latest PIT single-quarter cashflow report, builds scaled cashflow/revenue/employee-cash variables plus listing age, takes SW level-1 industry ridge residuals with lambda=10 and an unpenalized intercept, then standardizes residuals within SW level-1 industries. The final event-driven snapshot is recomputed on financial disclosure events and replayed on non-event trading days.".to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
                     DatasetId::StockCashFlow,
                     &[CFO_COLUMN, EMPLOYEE_CASH_COLUMN, OTHER_OPERATE_CASH_COLUMN],
@@ -127,15 +126,17 @@ impl Factor for StockDailyAbcfo {
         let raw_specs = [raw_spec()];
         let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
+        let panel = data.stock_universe_panel()?;
         let list_dates = stock_basic_list_dates(data.daily(DatasetId::StockBasic)?)?;
         let sector_map = ClassificationMap::from_table(
             data.daily(DatasetId::StockSwClassification)?,
             ClassificationLevel::Sector,
         )?;
-        let raw_series = compute_financial_event_snapshot_streaming(
+        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
             requested_ids,
             context,
             data,
+            panel,
             raw_cache,
             &schedule,
             &raw_specs,
@@ -203,7 +204,7 @@ impl StockDailyAbcfo {
         sector_map: &ClassificationMap,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<AbcfoSlowSnapshot>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let raw = abcfo_ridge_residual_column(
             &panel,
             &cashflow,
@@ -221,7 +222,7 @@ impl StockDailyAbcfo {
         data: &DataPool,
         raw_series: Vec<FactorSeries>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let series = raw_series
             .into_iter()
             .find(|series| series.spec.id == ABCFO_RAW_ID)

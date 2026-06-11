@@ -9,7 +9,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, DailyPanel, EventDrivenCrossSectionCache, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialRecordView,
@@ -55,7 +55,6 @@ impl Factor for StockDailySfli2 {
             tags: tags(),
             description: "DBZQ short-financing long-investment factor 2. It uses PIT single-quarter cashflow and consolidated balance-sheet reports to compute eight strict quarterly SFLI observations, forms mean/sample-std, replays raw values between financial events, and finally neutralizes by Barra SIZE and SW sector.".to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
                     DatasetId::StockCashFlow,
                     &[CPACF_COLUMN, CFO_COLUMN, CIDF_COLUMN],
@@ -111,10 +110,12 @@ impl Factor for StockDailySfli2 {
         let schedule =
             FinancialEventSchedule::from_pit_readers(&[cashflow.clone(), balance.clone()]);
         let raw_specs = [raw_spec()];
-        let raw_series = compute_financial_event_snapshot_streaming(
+        let panel = data.stock_universe_panel()?;
+        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
             requested_ids,
             context,
             data,
+            panel,
             &mut state.raw_cache,
             &schedule,
             &raw_specs,
@@ -163,7 +164,7 @@ impl StockDailySfli2 {
         balance: &FinancialPitReader<'_>,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<Sfli2Snapshot>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let raw = sfli2_raw_column(&panel, cashflow, balance, snapshot_cache)?;
         Ok(raw.to_factor_series(raw_spec()))
     }
@@ -173,7 +174,7 @@ impl StockDailySfli2 {
         data: &DataPool,
         raw_series: Vec<FactorSeries>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let series = raw_series
             .into_iter()
             .find(|series| series.spec.id == SFLI2_RAW_ID)

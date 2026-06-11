@@ -117,7 +117,7 @@ pub fn compute_requested_stateful(
     // the previous batch's future financial state.
     state.snapshot_cache = InstrumentAlignedSnapshotCache::default();
 
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let panel = data.stock_universe_panel()?;
     let income = data.financial_reader(
         DatasetId::StockIncome,
         ReportTypePreference::income_single_quarter(),
@@ -338,7 +338,6 @@ fn needs_from_requested(requested_ids: &[String]) -> ProfitSkewNeeds {
 
 fn dependencies(include_daily_basic: bool) -> Vec<DataRequest> {
     let mut requests = vec![
-        DataRequest::new(DatasetId::StockDailyPv, &["close"]),
         DataRequest::financial_quarters(
             DatasetId::StockIncome,
             &INCOME_COLUMNS,

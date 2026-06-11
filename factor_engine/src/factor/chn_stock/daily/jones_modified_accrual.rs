@@ -10,7 +10,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::is_bj_stock;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
@@ -70,7 +70,6 @@ impl Factor for StockDailyJonesModifiedAccrual {
             tags: tags(),
             description: "XYZQ modified Jones accrual factor. It computes PIT single-quarter accruals as operating profit minus operating cashflow, scales by average assets, runs CITIC level-1 industry OLS on 1/average-assets, revenue change/average-assets, and fixed assets/average-assets, excludes firms with negative current operating profit, replays raw residuals between financial events, and finally industry-neutralizes within CITIC level-1 industries.".to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
                     DatasetId::StockIncome,
                     &[OPERATE_PROFIT_COLUMN, REVENUE_COLUMN],
@@ -144,10 +143,12 @@ impl Factor for StockDailyJonesModifiedAccrual {
             balance.clone(),
         ]);
         let raw_specs = [raw_spec()];
-        let raw_series = compute_financial_event_snapshot_streaming(
+        let panel = data.stock_universe_panel()?;
+        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
             requested_ids,
             context,
             data,
+            panel,
             &mut state.raw_cache,
             &schedule,
             &raw_specs,
@@ -210,7 +211,7 @@ impl StockDailyJonesModifiedAccrual {
         sector_map: &ClassificationMap,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<JonesSnapshot>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let raw =
             jones_residual_column(panel, income, cashflow, balance, sector_map, snapshot_cache)?;
         Ok(raw.to_factor_series(raw_spec()))
@@ -221,7 +222,7 @@ impl StockDailyJonesModifiedAccrual {
         data: &DataPool,
         raw_series: Vec<FactorSeries>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let series = raw_series
             .into_iter()
             .find(|series| series.spec.id == RAW_ID)

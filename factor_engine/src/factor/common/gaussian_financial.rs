@@ -12,7 +12,7 @@ use crate::factor::common::stock_daily_ops::{
 };
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     DividendReader, EventDrivenCrossSectionCache, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
@@ -189,10 +189,12 @@ impl Factor for GaussianFinancialFactor {
         let raw_specs = raw_specs_for_requested(&requested);
         let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
-        let raw_series = compute_financial_event_snapshot_streaming(
+        let panel = data.stock_universe_panel()?;
+        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
             requested_ids,
             context,
             data,
+            panel,
             raw_cache,
             &schedule,
             &raw_specs,
@@ -213,7 +215,6 @@ impl Factor for GaussianFinancialFactor {
 
 pub fn spec(kind: GaussianFinancialOutput) -> FactorSpec {
     let mut dependencies = vec![
-        DataRequest::new(DatasetId::StockDailyPv, &["close"]),
         DataRequest::new(DatasetId::StockDailyBasic, &["total_mv"]),
         DataRequest::financial_quarters(
             DatasetId::StockIncome,
@@ -302,7 +303,7 @@ fn finalize_requested_from_raw(
     data: &DataPool,
     raw_series: Vec<FactorSeries>,
 ) -> Result<Vec<FactorSeries>> {
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let panel = data.stock_universe_panel()?;
     let raw_by_id = raw_series
         .into_iter()
         .map(|series| (series.spec.id.clone(), series))
@@ -400,7 +401,7 @@ fn compute_requested_raw_with_prepared_financials(
         return Ok(Vec::new());
     }
     let needs = FinancialNeeds::from_outputs(requested);
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let panel = data.stock_universe_panel()?;
     let total_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
     let columns = financial_snapshot_columns(
         &panel,

@@ -10,7 +10,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
@@ -58,7 +58,6 @@ impl Factor for StockDailyNol2 {
             tags: tags(),
             description: "DBZQ net operating liability factor 2. It uses PIT consolidated balance-sheet operating assets/liabilities and single-quarter revenue, runs SW level-1 industry OLS residuals for NOL on current and previous revenue scaled by assets, replays raw residuals between financial events, and finally neutralizes by Barra SIZE and SW sector.".to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
                     DatasetId::StockBalanceSheet,
                     &[
@@ -126,10 +125,12 @@ impl Factor for StockDailyNol2 {
             ClassificationLevel::Sector,
         )?;
         let raw_specs = [raw_spec()];
-        let raw_series = compute_financial_event_snapshot_streaming(
+        let panel = data.stock_universe_panel()?;
+        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
             requested_ids,
             context,
             data,
+            panel,
             &mut state.raw_cache,
             &schedule,
             &raw_specs,
@@ -185,7 +186,7 @@ impl StockDailyNol2 {
         sector_map: &ClassificationMap,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<Nol2Snapshot>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let raw = nol2_residual_column(&panel, balance, income, sector_map, snapshot_cache)?;
         Ok(raw.to_factor_series(raw_spec()))
     }
@@ -195,7 +196,7 @@ impl StockDailyNol2 {
         data: &DataPool,
         raw_series: Vec<FactorSeries>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let series = raw_series
             .into_iter()
             .find(|series| series.spec.id == NOL2_RAW_ID)

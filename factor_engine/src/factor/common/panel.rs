@@ -134,6 +134,57 @@ impl DailyPanel {
         })
     }
 
+    pub fn from_stock_basic(table: &Table, context: &FactorContext) -> Result<Self> {
+        let ts_codes = table.required_utf8("ts_code")?;
+        let list_dates = table.required_i32_date_cast("list_date")?;
+        let delist_dates = table.required_i32_date_cast("delist_date")?;
+
+        let mut instruments = Vec::new();
+        let mut listing_ranges = Vec::new();
+        for idx in 0..table.len {
+            let (Some(ts_code), Some(list_date)) = (ts_codes[idx].clone(), list_dates[idx]) else {
+                continue;
+            };
+            if !is_a_stock_code(&ts_code) {
+                continue;
+            }
+            instruments.push(ts_code);
+            listing_ranges.push((list_date, delist_dates[idx]));
+        }
+        let mut paired = instruments
+            .into_iter()
+            .zip(listing_ranges)
+            .collect::<Vec<_>>();
+        paired.sort_by(|left, right| left.0.cmp(&right.0));
+        paired.dedup_by(|left, right| left.0 == right.0);
+        let (instruments, listing_ranges): (Vec<_>, Vec<_>) = paired.into_iter().unzip();
+
+        let dates = if context.load_dates.is_empty() {
+            context.target_dates.clone()
+        } else {
+            context.load_dates.clone()
+        };
+        let mut dates = dates
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if dates.is_empty() {
+            dates.extend(context.target_dates.iter().copied());
+        }
+        let mut present = Vec::with_capacity(dates.len() * instruments.len());
+        for trade_date in &dates {
+            for (list_date, delist_date) in &listing_ranges {
+                present.push(
+                    *list_date <= *trade_date
+                        && delist_date.map_or(true, |delist_date| *trade_date <= delist_date),
+                );
+            }
+        }
+
+        Self::from_index(dates, instruments, &context.target_dates, present)
+    }
+
     pub fn with_target_dates(&self, target_dates: &[i32]) -> Self {
         Self {
             index: Arc::new(DailyPanelIndex {
@@ -272,6 +323,11 @@ impl DailyPanel {
             values: Arc::new(values),
         })
     }
+}
+
+fn is_a_stock_code(ts_code: &str) -> bool {
+    let upper = ts_code.to_ascii_uppercase();
+    upper.ends_with(".SH") || upper.ends_with(".SZ") || upper.ends_with(".BJ")
 }
 
 #[derive(Clone, Debug)]
@@ -854,6 +910,54 @@ mod tests {
         assert_eq!(close.values(), &[Some(4.0), Some(20.0)]);
         assert!(sliced.is_present_offset(0));
         assert!(sliced.is_present_offset(1));
+    }
+
+    #[test]
+    fn stock_basic_panel_filters_to_a_shares_and_tracks_listing_window() {
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("600000.SH".to_string()),
+                    Some("920001.BJ".to_string()),
+                    Some("AAPL.US".to_string()),
+                ]),
+            ),
+            (
+                "list_date".to_string(),
+                ColumnData::I32(vec![
+                    Some(20260102),
+                    Some(20260101),
+                    Some(20260101),
+                    Some(20260101),
+                ]),
+            ),
+            (
+                "delist_date".to_string(),
+                ColumnData::I32(vec![None, Some(20260102), None, None]),
+            ),
+        ]))
+        .expect("stock basic");
+        let panel =
+            DailyPanel::from_stock_basic(&table, &context(vec![20260101, 20260102, 20260103]))
+                .expect("stock universe panel");
+
+        assert_eq!(panel.dates(), &[20260101, 20260102, 20260103]);
+        assert_eq!(
+            panel.instruments(),
+            &[
+                "000001.SZ".to_string(),
+                "600000.SH".to_string(),
+                "920001.BJ".to_string()
+            ]
+        );
+        assert_eq!(
+            (0..panel.shape_len())
+                .map(|offset| panel.is_present_offset(offset))
+                .collect::<Vec<_>>(),
+            vec![false, true, true, true, true, true, true, false, true]
+        );
     }
 
     #[test]

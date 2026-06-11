@@ -11,7 +11,7 @@ use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming,
+    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
@@ -65,7 +65,6 @@ impl Factor for StockDailyRoeEnhance {
             tags: tags(),
             description: "DWZQ ROE enhancement factor. It builds quarterly ROE from PIT single-quarter attributable net profit over latest shareholder equity. Each ROE component is first neutralized by Barra SIZE and SW sector, then transformed with cross-sectional percentile rank with missing ranks filled to 0.5 for present non-BJ stocks. The components are combined through nested percentile-rank layers without final neutralization.".to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
                 DataRequest::financial_quarters(
                     DatasetId::StockIncome,
                     &[INCOME_COLUMN],
@@ -122,10 +121,12 @@ impl Factor for StockDailyRoeEnhance {
         let raw_specs = roe_raw_specs();
         let raw_cache = &mut state.raw_cache;
         let snapshot_cache = &mut state.snapshot_cache;
-        let raw_series = compute_financial_event_snapshot_streaming(
+        let panel = data.stock_universe_panel()?;
+        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
             requested_ids,
             context,
             data,
+            panel,
             raw_cache,
             &schedule,
             &raw_specs,
@@ -174,7 +175,7 @@ impl StockDailyRoeEnhance {
         balance: &FinancialPitReader<'_>,
         snapshot_cache: &mut InstrumentAlignedSnapshotCache<RoeSnapshot>,
     ) -> Result<Vec<FactorSeries>> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let components = roe_component_columns(&panel, &income, &balance, snapshot_cache)?;
         Ok(vec![
             components.yoy.to_factor_series(raw_spec(ROE_YOY_RAW_ID)),
@@ -191,7 +192,7 @@ impl StockDailyRoeEnhance {
         data: &DataPool,
         raw_series: Vec<FactorSeries>,
     ) -> Result<FactorSeries> {
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let raw_by_id = raw_series
             .into_iter()
             .map(|series| (series.spec.id.clone(), series))

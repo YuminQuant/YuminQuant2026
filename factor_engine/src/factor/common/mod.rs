@@ -15,6 +15,8 @@ pub mod gfzq_apl_beta;
 pub mod gfzq_behavioral;
 pub mod gfzq_hf_resid_std;
 pub mod gfzq_jump_vol_5min;
+pub mod hazq_comparable_value;
+pub mod hazq_equity_composition;
 pub mod intraday_daily;
 pub mod intraday_raw;
 pub mod kyzq_apm;
@@ -53,7 +55,7 @@ pub use cross_section::{
 pub use daily::{compute_daily_by_instrument, DailySeries};
 pub use financial::{
     cached_financial_stock_snapshots, cached_financial_stock_snapshots_for_date,
-    compute_financial_event_snapshot_streaming, factor_series_to_panel_column,
+    compute_financial_event_snapshot_streaming_on_panel, factor_series_to_panel_column,
     financial_event_trade_dates, DividendIndex, DividendReader, EventDrivenCrossSectionCache,
     FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitIndex,
     FinancialPitReader, FinancialRecordMarker, FinancialStatementDataset,

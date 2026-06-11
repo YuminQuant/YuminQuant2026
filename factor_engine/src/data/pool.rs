@@ -181,6 +181,7 @@ impl FinancialBatchContext {
 pub struct DataPool {
     daily: HashMap<DatasetId, Arc<Table>>,
     daily_panels: HashMap<DatasetId, DailyPanel>,
+    stock_universe_panel: Option<DailyPanel>,
     financial_pit_indexes: HashMap<DatasetId, Arc<FinancialPitIndex>>,
     dividend_index: Option<Arc<DividendIndex>>,
     main_business_index: Option<Arc<MainBusinessIndex>>,
@@ -237,6 +238,16 @@ impl DataPool {
 
         let mut pool = Self::default();
         pool.financial_context = financial_context;
+        if grouped
+            .keys()
+            .any(|(dataset, _, _)| is_financial_context_dataset(*dataset))
+        {
+            let table = loader.load_stock_basic(&stock_universe_columns())?;
+            pool.stock_universe_panel = Some(DailyPanel::from_stock_basic(&table, context)?);
+            pool.daily
+                .entry(DatasetId::StockBasic)
+                .or_insert_with(|| Arc::new(table));
+        }
         for ((dataset, entity_id, bar_size), (columns, financial_quarters, load_dates)) in grouped {
             let columns = columns.into_iter().collect::<Vec<_>>();
             let load_dates = load_dates.into_iter().collect::<Vec<_>>();
@@ -378,6 +389,10 @@ impl DataPool {
                 .iter()
                 .map(|(dataset, panel)| (*dataset, panel.with_target_dates(target_dates)))
                 .collect(),
+            stock_universe_panel: self
+                .stock_universe_panel
+                .as_ref()
+                .map(|panel| panel.with_target_dates(target_dates)),
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
@@ -417,6 +432,10 @@ impl DataPool {
                 .iter()
                 .map(|(dataset, panel)| (*dataset, panel.slice_dates(selected_dates)))
                 .collect(),
+            stock_universe_panel: self
+                .stock_universe_panel
+                .as_ref()
+                .map(|panel| panel.slice_dates(selected_dates)),
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
@@ -446,6 +465,9 @@ impl DataPool {
     pub fn view_for_requests(&self, requests: &[DataRequest], context: &FactorContext) -> Self {
         let mut daily_panel_dates = HashMap::<DatasetId, BTreeSet<i32>>::new();
         let mut index_panel_dates = HashMap::<String, BTreeSet<i32>>::new();
+        let needs_stock_universe_panel = requests
+            .iter()
+            .any(|request| is_financial_context_dataset(request.dataset));
         for request in requests {
             let dates = request.resolved_dates(context);
             if dates.is_empty() {
@@ -494,6 +516,20 @@ impl DataPool {
                     (*dataset, panel)
                 })
                 .collect(),
+            stock_universe_panel: self.stock_universe_panel.as_ref().map(|panel| {
+                if needs_stock_universe_panel {
+                    let dates = if context.load_dates.is_empty() {
+                        context.target_dates.clone()
+                    } else {
+                        context.load_dates.clone()
+                    };
+                    panel
+                        .slice_dates(&dates)
+                        .with_target_dates(&context.target_dates)
+                } else {
+                    panel.clone()
+                }
+            }),
             financial_pit_indexes: self.financial_pit_indexes.clone(),
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
@@ -549,6 +585,12 @@ impl DataPool {
         self.daily_panels
             .get(&dataset)
             .ok_or_else(|| err(format!("daily panel not loaded: {}", dataset.as_str())))
+    }
+
+    pub fn stock_universe_panel(&self) -> Result<&DailyPanel> {
+        self.stock_universe_panel
+            .as_ref()
+            .ok_or_else(|| err("stock universe panel not loaded"))
     }
 
     pub fn financial_reader(
@@ -674,6 +716,9 @@ impl DataPool {
     pub fn extend(&mut self, other: Self) {
         self.daily.extend(other.daily);
         self.daily_panels.extend(other.daily_panels);
+        if other.stock_universe_panel.is_some() {
+            self.stock_universe_panel = other.stock_universe_panel;
+        }
         self.financial_pit_indexes
             .extend(other.financial_pit_indexes);
         if other.dividend_index.is_some() {
@@ -734,6 +779,7 @@ impl DataPool {
         Self {
             daily: HashMap::new(),
             daily_panels: HashMap::new(),
+            stock_universe_panel: None,
             financial_pit_indexes: HashMap::new(),
             dividend_index: None,
             main_business_index: None,
@@ -755,6 +801,10 @@ impl DataPool {
         context: &FactorContext,
     ) -> Result<Self> {
         let mut daily_panels = HashMap::new();
+        let stock_universe_panel = daily
+            .get(&DatasetId::StockBasic)
+            .map(|table| DailyPanel::from_stock_basic(table, context))
+            .transpose()?;
         for (dataset, table) in &daily {
             if should_build_daily_panel(*dataset) {
                 daily_panels.insert(*dataset, DailyPanel::from_table(table, context)?);
@@ -787,6 +837,7 @@ impl DataPool {
         Ok(Self {
             daily: daily_arc,
             daily_panels,
+            stock_universe_panel,
             financial_pit_indexes,
             dividend_index,
             main_business_index,
@@ -816,6 +867,19 @@ fn table_slice_dates_or_clone(table: &Arc<Table>, selected_dates: &BTreeSet<i32>
             .take(&indices)
             .expect("date-filtered table keeps all columns at equal length"),
     )
+}
+
+fn stock_universe_columns() -> Vec<String> {
+    [
+        "list_status",
+        "list_date",
+        "delist_date",
+        "exchange",
+        "market",
+    ]
+    .iter()
+    .map(|column| column.to_string())
+    .collect()
 }
 
 fn should_build_daily_panel(dataset: DatasetId) -> bool {
@@ -908,6 +972,28 @@ mod tests {
         .expect("valid income table")
     }
 
+    fn sample_stock_basic_table() -> Table {
+        Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000002.SZ".to_string()),
+                    Some("AAPL.US".to_string()),
+                ]),
+            ),
+            (
+                "list_date".to_string(),
+                ColumnData::I32(vec![Some(20260102), Some(20260101), Some(20260101)]),
+            ),
+            (
+                "delist_date".to_string(),
+                ColumnData::I32(vec![None, Some(20260102), None]),
+            ),
+        ]))
+        .expect("valid stock basic table")
+    }
+
     #[test]
     fn daily_panel_cache_exposes_prebuilt_panel() {
         let context = context();
@@ -916,6 +1002,7 @@ mod tests {
         let pool = DataPool {
             daily: HashMap::from([(DatasetId::StockDailyPv, Arc::new(table))]),
             daily_panels: HashMap::from([(DatasetId::StockDailyPv, expected.clone())]),
+            stock_universe_panel: None,
             financial_pit_indexes: HashMap::new(),
             dividend_index: None,
             main_business_index: None,
@@ -955,6 +1042,7 @@ mod tests {
         let pool = DataPool {
             daily: HashMap::new(),
             daily_panels: HashMap::new(),
+            stock_universe_panel: None,
             financial_pit_indexes: HashMap::new(),
             dividend_index: None,
             main_business_index: None,
@@ -978,6 +1066,65 @@ mod tests {
             .expect("visible PIT record");
         assert_eq!(record.column("n_income"), Some(12.5));
         assert_eq!(pool.indexed_row_count(), 1);
+    }
+
+    #[test]
+    fn stock_universe_panel_is_built_from_stock_basic_in_tests() {
+        let mut context = context();
+        context.load_dates = vec![20260101, 20260102, 20260103];
+        let pool = DataPool::from_daily_tables_for_test(
+            HashMap::from([(DatasetId::StockBasic, sample_stock_basic_table())]),
+            &context,
+        )
+        .expect("pool");
+
+        let panel = pool.stock_universe_panel().expect("stock universe");
+
+        assert_eq!(panel.dates(), &[20260101, 20260102, 20260103]);
+        assert_eq!(
+            panel.instruments(),
+            &["000001.SZ".to_string(), "000002.SZ".to_string()]
+        );
+        assert_eq!(
+            (0..panel.shape_len())
+                .map(|offset| panel.is_present_offset(offset))
+                .collect::<Vec<_>>(),
+            vec![false, true, true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn financial_view_slices_stock_universe_panel_to_requested_context_dates() {
+        let mut base_context = context();
+        base_context.load_dates = vec![20260101, 20260102, 20260103];
+        let pool = DataPool::from_daily_tables_for_test(
+            HashMap::from([(DatasetId::StockBasic, sample_stock_basic_table())]),
+            &base_context,
+        )
+        .expect("pool");
+        let request_context = FactorContext {
+            load_dates: vec![20260102],
+            target_dates: vec![20260102],
+            ..base_context
+        };
+
+        let view = pool.view_for_requests(
+            &[DataRequest::financial_quarters(
+                DatasetId::StockIncome,
+                &["n_income"],
+                4,
+            )],
+            &request_context,
+        );
+        let panel = view.stock_universe_panel().expect("stock universe");
+
+        assert_eq!(panel.dates(), &[20260102]);
+        assert_eq!(
+            panel.instruments(),
+            &["000001.SZ".to_string(), "000002.SZ".to_string()]
+        );
+        assert!(panel.is_present_offset(0));
+        assert!(panel.is_present_offset(1));
     }
 
     #[test]

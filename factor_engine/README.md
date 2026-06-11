@@ -342,6 +342,13 @@ fn requirements_for_context(&self, context: &FactorContext) -> Vec<DataRequest> 
 
 Financial factor update frequency is never inferred from the `fundamental` tag. Each factor or provider must explicitly declare `update_policy()`.
 
+Current panel rule: financial, main-business, dividend, and analyst event
+factors use `data.stock_universe_panel()?` as the output grid. Do not request
+`DataRequest::new(DatasetId::StockDailyPv, &["close"])` only to obtain a panel.
+Only keep `StockDailyPv` dependencies when price/return data is a real formula
+input, then align those columns to the stock universe panel by
+`(trade_date, ts_code)`.
+
 可选策略 / Policies:
 
 - `Daily`：默认策略。估值、价格、收益率、市值、换手率等快变量每日计算；旧因子默认走这个路径。
@@ -365,16 +372,24 @@ Financial factor update frequency is never inferred from the `fundamental` tag. 
 5. Barra CNE6 的 `growth / quality / value / dividend_yield` 财报或分红 slow legs 使用同一规则；分析师 legs 仍按日频快分支处理。
 6. 多输出 provider 必须继续 requested-aware；同 provider 的 wrapper 共享 `compute_provider_key()`，并使用同一种 state 类型。
 
-1. Use `FinancialEventSnapshot` plus `EventDrivenCrossSectionCache` for pure slow statement factors.
+1. Use `FinancialEventSnapshot`, `EventDrivenCrossSectionCache`, and `compute_financial_event_snapshot_streaming_on_panel(...)` for pure slow statement factors.
 2. Use `FinancialEventStateDailyFast` for mixed factors: cache only slow state, recompute fast variables daily.
 3. Keep valuation, price/return, and other daily fast variables on `Daily`.
 4. Put financial statement lookups and stock-level slow formulas in provider state, for example `InstrumentAlignedSnapshotCache<T>` plus `cached_financial_stock_snapshots_for_date(...)`; do not keep them in one-shot local function caches.
-5. Barra CNE6 `growth / quality / value / dividend_yield` statement or dividend slow legs follow the same rule; analyst legs remain daily fast branches.
-6. Multi-output providers must remain requested-aware; wrappers sharing a provider key must use the same state type.
+5. Use `data.stock_universe_panel()?` for financial/event output grids; there is no PV-anchor replay compatibility API.
+6. Barra CNE6 `growth / quality / value / dividend_yield` statement or dividend slow legs follow the same PIT/cache rule; analyst legs remain daily fast branches.
+7. Multi-output providers must remain requested-aware; wrappers sharing a provider key must use the same state type.
 
-股票级财报慢指标应优先使用 `cached_financial_stock_snapshots(...)`。`skip_fn` 负责剔除 `.BJ`、非在市或不在股票池的股票；`marker_fn` 声明会影响 snapshot 的 PIT 记录链和 synthetic marker；`compute_fn` 只写股票级慢指标公式。截面 rank、OLS/ridge、网络降维和中性化仍放在事件日或每日的后续步骤中。
+股票级财报慢指标应优先使用 provider-state 的 `InstrumentAlignedSnapshotCache<T>` + `cached_financial_stock_snapshots_for_date(...)`。`skip_fn` 负责剔除 `.BJ`、非在市或不在股票池的股票；`marker_fn` 声明会影响 snapshot 的 PIT 记录链和 synthetic marker；`compute_fn` 只写股票级慢指标公式。截面 rank、OLS/ridge、网络降维和中性化仍放在事件日或每日的后续步骤中。
 
-For stock-level slow financial metrics, prefer `cached_financial_stock_snapshots(...)`. `skip_fn` handles `.BJ`, non-present, or out-of-universe stocks; `marker_fn` declares PIT record chains and synthetic markers that can change the snapshot; `compute_fn` contains only the stock-level slow formula. Cross-sectional rank, OLS/ridge, network reductions, and neutralization stay in the event-date or daily post-processing stage.
+For stock-level slow financial metrics, prefer provider-state
+`InstrumentAlignedSnapshotCache<T>` plus
+`cached_financial_stock_snapshots_for_date(...)`. `skip_fn` handles `.BJ`,
+non-present, or out-of-universe stocks; `marker_fn` declares PIT record chains
+and synthetic markers that can change the snapshot; `compute_fn` contains only
+the stock-level slow formula. Cross-sectional rank, OLS/ridge, network
+reductions, and neutralization stay in the event-date or daily post-processing
+stage.
 
 完整开发范式见 / Full development pattern: [FINANCIAL_FACTOR_DEVELOPMENT_README.md](FINANCIAL_FACTOR_DEVELOPMENT_README.md).
 

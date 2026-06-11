@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::core::{DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue};
+use crate::core::{FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue};
 use crate::data::DataPool;
 use crate::data::{ColumnData, Table};
 use crate::error::Result;
@@ -222,10 +222,11 @@ impl EventDrivenCrossSectionCache {
     }
 }
 
-pub fn compute_financial_event_snapshot_streaming<F>(
+pub fn compute_financial_event_snapshot_streaming_on_panel<F>(
     requested_ids: &[String],
     context: &FactorContext,
     data: &DataPool,
+    panel: &DailyPanel,
     state: &mut EventDrivenCrossSectionCache,
     schedule: &FinancialEventSchedule,
     specs: &[FactorSpec],
@@ -234,7 +235,6 @@ pub fn compute_financial_event_snapshot_streaming<F>(
 where
     F: FnMut(&[String], &FactorContext, &DataPool) -> Result<Vec<FactorSeries>>,
 {
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let mut output_by_factor = specs
         .iter()
         .map(|spec| {
@@ -1424,18 +1424,18 @@ fn is_leap_year(year: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use crate::core::{
-        AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+        AssetClass, DataRequest, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
         FactorValue, Frequency, Lookback,
     };
     use crate::data::{ColumnData, DataPool, Table};
 
     use super::{
         cached_financial_stock_snapshots, cached_financial_stock_snapshots_for_date,
-        compute_financial_event_snapshot_streaming, DailyPanel, DividendIndex,
+        compute_financial_event_snapshot_streaming_on_panel, DailyPanel, DividendIndex,
         EventDrivenCrossSectionCache, FinancialEventMarkerBuilder, FinancialEventSchedule,
         FinancialPitIndex, FinancialStatementDataset, FinancialStockSnapshotCache,
         InstrumentAlignedSnapshotCache, ReportTypePreference,
@@ -1672,29 +1672,6 @@ mod tests {
         }
     }
 
-    fn daily_pv_table(dates: &[i32]) -> Table {
-        Table::new(BTreeMap::from([
-            (
-                "trade_date".to_string(),
-                ColumnData::I32(dates.iter().map(|date| Some(*date)).collect()),
-            ),
-            (
-                "ts_code".to_string(),
-                ColumnData::Utf8(
-                    dates
-                        .iter()
-                        .map(|_| Some("000001.SZ".to_string()))
-                        .collect(),
-                ),
-            ),
-            (
-                "close".to_string(),
-                ColumnData::F64(dates.iter().map(|_| Some(1.0)).collect()),
-            ),
-        ]))
-        .expect("valid daily pv table")
-    }
-
     #[test]
     fn financial_event_schedule_maps_statement_and_dividend_dates() {
         let statement = financial_table(&[(20251231, 20260103, 1, 0, 1.0)]);
@@ -1800,11 +1777,8 @@ mod tests {
     fn financial_event_snapshot_streams_event_dates_and_replays_cache() {
         let dates = vec![20260102, 20260105, 20260106, 20260107, 20260108];
         let context = factor_context(&dates);
-        let data = DataPool::from_daily_tables_for_test(
-            HashMap::from([(DatasetId::StockDailyPv, daily_pv_table(&dates))]),
-            &context,
-        )
-        .expect("data pool");
+        let data = DataPool::default();
+        let panel = panel(&dates);
         let statement = financial_table(&[
             (20251231, 20260104, 1, 0, 1.0),
             (20260331, 20260107, 1, 0, 2.0),
@@ -1817,10 +1791,11 @@ mod tests {
         let mut state = EventDrivenCrossSectionCache::default();
         let mut call_count = 0usize;
         let mut seen_event_dates = Vec::new();
-        let output = compute_financial_event_snapshot_streaming(
+        let output = compute_financial_event_snapshot_streaming_on_panel(
             &[spec.id.clone()],
             &context,
             &data,
+            &panel,
             &mut state,
             &schedule,
             &[spec.clone()],
@@ -1865,6 +1840,54 @@ mod tests {
         assert_eq!(by_date.get(&20260106), Some(&Some(20260105.0)));
         assert_eq!(by_date.get(&20260107), Some(&Some(20260107.0)));
         assert_eq!(by_date.get(&20260108), Some(&Some(20260107.0)));
+    }
+
+    #[test]
+    fn financial_event_snapshot_on_panel_does_not_require_pv_panel() {
+        let dates = vec![20260102, 20260105];
+        let context = factor_context(&dates);
+        let panel = panel(&dates);
+        let data = DataPool::default();
+        let statement = financial_table(&[(20251231, 20260104, 1, 0, 1.0)]);
+        let statement_index = FinancialPitIndex::from_table(Arc::new(statement)).expect("index");
+        let schedule = FinancialEventSchedule::from_pit_readers(&[
+            statement_index.reader(ReportTypePreference::consolidated())
+        ]);
+        let spec = event_spec("slow_factor");
+        let mut state = EventDrivenCrossSectionCache::default();
+
+        let output = compute_financial_event_snapshot_streaming_on_panel(
+            &[spec.id.clone()],
+            &context,
+            &data,
+            &panel,
+            &mut state,
+            &schedule,
+            &[spec.clone()],
+            |_, event_context, _| {
+                Ok(vec![FactorSeries {
+                    spec: spec.clone(),
+                    values: event_context
+                        .target_dates
+                        .iter()
+                        .map(|trade_date| FactorValue {
+                            key: FactorRowKey::Daily {
+                                trade_date: *trade_date,
+                                ts_code: "000001.SZ".to_string(),
+                            },
+                            value: Some(*trade_date as f64),
+                        })
+                        .collect(),
+                }])
+            },
+        )
+        .expect("event snapshot without pv panel");
+
+        assert_eq!(output[0].values.len(), dates.len());
+        assert!(output[0].values.iter().all(|value| matches!(
+            &value.key,
+            FactorRowKey::Daily { ts_code, .. } if ts_code == "000001.SZ"
+        )));
     }
 
     #[test]

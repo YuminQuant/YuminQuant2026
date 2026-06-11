@@ -152,7 +152,7 @@ impl StockDailyMainbzMomResvol {
         if !want_composite {
             return Ok(Vec::new());
         }
-        let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+        let panel = data.stock_universe_panel()?;
         let balance = data.financial_reader(
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),

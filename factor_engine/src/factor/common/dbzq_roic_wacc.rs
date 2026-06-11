@@ -156,7 +156,7 @@ pub fn compute_requested_stateful(
         return Ok(Vec::new());
     }
 
-    let panel = data.daily_panel(DatasetId::StockDailyPv)?;
+    let panel = data.stock_universe_panel()?;
     let income = data.financial_reader(
         DatasetId::StockIncome,
         ReportTypePreference::income_single_quarter(),

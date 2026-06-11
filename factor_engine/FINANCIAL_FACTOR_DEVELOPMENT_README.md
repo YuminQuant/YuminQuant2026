@@ -1,95 +1,137 @@
 # Financial Factor Development / 财务因子开发说明
 
-This document defines the point-in-time financial statement workflow used by
-`factor_engine`. It applies to normal stock factors and Barra exposure
-generation.
+This document defines the current point-in-time financial, main-business,
+dividend, and analyst event workflow used by `factor_engine`.
 
-本文档定义 `factor_engine` 的 PIT 财报取数与财务因子开发流程。该规则同时适用于普通股票因子和 Barra 暴露生成。
+本文档定义 `factor_engine` 当前的 PIT 财报、主营业务、分红和分析师事件型因子开发规则。
 
-## Unified PIT Framework / 统一 PIT 框架
+## Core Rule / 核心规则
 
-All financial statement consumers must use `PitFinancialData` with
-`ReportTypePreference`. Do not add new factor-specific statement maps or use the
-removed Barra `StatementData` style.
+Financial/event-style stock factors must not use `StockDailyPv` as an output
+panel anchor. Each data family owns its own grid:
 
-所有财报消费方都必须使用 `PitFinancialData` 和 `ReportTypePreference`。不要新增因子私有的财报 map，也不要恢复已经移除的 Barra `StatementData` 写法。
+- PV factors use the PV panel.
+- Minute and intraday factors use their own raw/minute panels.
+- Financial, main-business, dividend, and analyst event factors use the stock
+  universe panel built from `data/stock_data/info/stock_basic.parquet`.
 
-Recommended pattern / 推荐写法：
+财务/事件型股票因子不得用 `StockDailyPv` 作为输出网格锚点。各类数据自己建立网格：
+
+- PV 因子使用 PV panel。
+- 分钟和日内因子使用自己的 raw/minute panel。
+- 财报、主营业务、分红、分析师事件型因子使用 `stock_basic.parquet` 构建的 stock universe panel。
+
+Never add `DataRequest::new(DatasetId::StockDailyPv, &["close"])` only to get a
+daily panel. If a formula genuinely needs prices, returns, turnover, market
+value, or other fast data, request the exact dataset and columns and align them
+onto the stock universe panel by `(trade_date, ts_code)`.
+
+不要为了拿日频 panel 而声明 `StockDailyPv.close`。如果公式确实需要价格、收益、换手、市值等快变量，只请求真实需要的字段，再按 `(trade_date, ts_code)` 映射到 stock universe panel。
+
+## Output Panel / 输出网格
+
+Use:
 
 ```rust
-let income = PitFinancialData::from_table(
-    data.daily(DatasetId::StockIncome)?,
-    &["revenue", "n_income_attr_p"],
+let panel = data.stock_universe_panel()?;
+```
+
+The panel is built from `stock_basic.parquet` with at least these fields:
+`ts_code`, `list_status`, `list_date`, `delist_date`, `exchange`, and `market`.
+The current implementation keeps A-share style codes ending in `.SH`, `.SZ`, or
+`.BJ`, sorts them by `ts_code`, and marks a row present when:
+
+```text
+list_date <= trade_date && (delist_date is null || trade_date <= delist_date)
+```
+
+该 panel 从 `stock_basic.parquet` 构建，至少读取 `ts_code`、`list_status`、`list_date`、`delist_date`、`exchange`、`market`。当前实现保留 `.SH`、`.SZ`、`.BJ` A 股代码，并按 `ts_code` 排序；当满足以下条件时该股票在该交易日 present：
+
+```text
+list_date <= trade_date && (delist_date 为空 || trade_date <= delist_date)
+```
+
+Records whose `ts_code` is not in `stock_basic` do not create output rows.
+Legal stocks with missing financial statements, missing SIZE, missing industry,
+or missing PV data remain in the output grid and produce `None` unless the
+factor explicitly fills missing values.
+
+不在 `stock_basic` 中的财报、主营业务、分红或分析师记录不会产生输出行。合法股票即使缺财报、缺 SIZE、缺行业、缺行情，也保留在输出网格中，因子值为 `None`，除非因子自身有明确填缺失逻辑。
+
+## PIT Readers / PIT 读取
+
+Financial statement consumers should use `DataPool::financial_reader(...)`.
+Do not build factor-specific statement maps.
+
+财报消费者应使用 `DataPool::financial_reader(...)`，不要新增因子私有的财报 map。
+
+Example:
+
+```rust
+let income = data.financial_reader(
+    DatasetId::StockIncome,
     ReportTypePreference::income_single_quarter(),
 )?;
-
-let balance = PitFinancialData::from_table(
-    data.daily(DatasetId::StockBalanceSheet)?,
-    &["total_cur_assets", "total_cur_liab"],
+let balance = data.financial_reader(
+    DatasetId::StockBalanceSheet,
     ReportTypePreference::balance_sheet_consolidated(),
+)?;
+let cashflow = data.financial_reader(
+    DatasetId::StockCashFlow,
+    ReportTypePreference::income_single_quarter(),
 )?;
 ```
 
-Useful helpers / 常用接口：
+Useful reader helpers:
 
-- `record_for_end_date(ts_code, trade_date, end_date)`: PIT-safe row for a report period. / 指定报告期的 PIT 安全记录。
-- `latest_quarter_end_date(ts_code, trade_date)`: latest disclosed quarter. / 当前交易日可见的最新季度。
-- `ttm_sum(ts_code, trade_date, column)`: latest available four-quarter sum. / 最新可得四季度 TTM 汇总。
-- `ttm_sum_for_end_date(ts_code, trade_date, end_date, column)`: four-quarter sum anchored at a report period. / 以指定报告期为锚点的 TTM 汇总。
-- `latest_annual_value(...)`, `latest_annual_end_date(...)`, `annual_value_for_end_date(...)`, `annual_values(...)`: annual helpers used by Barra and financial factors. / Barra 和财务因子共用的年度数据接口。
+- `record_for_end_date(ts_code, trade_date, end_date)`: PIT-safe row for a report period.
+- `latest_quarter_end_date(ts_code, trade_date)`: latest visible quarter end.
+- `ttm_sum(ts_code, trade_date, column)`: latest available four-quarter sum.
+- `ttm_sum_for_end_date(ts_code, trade_date, end_date, column)`: TTM sum anchored at a report period.
+- `latest_annual_value(...)`, `latest_annual_end_date(...)`, `annual_value_for_end_date(...)`, `annual_values(...)`: annual helpers.
+
+常用接口：
+
+- `record_for_end_date(ts_code, trade_date, end_date)`：指定报告期的 PIT 安全记录。
+- `latest_quarter_end_date(ts_code, trade_date)`：当前交易日可见的最新季度。
+- `ttm_sum(ts_code, trade_date, column)`：最新可得四季度 TTM 汇总。
+- `ttm_sum_for_end_date(ts_code, trade_date, end_date, column)`：以指定报告期为锚点的 TTM 汇总。
+- `latest_annual_value(...)`、`latest_annual_end_date(...)`、`annual_value_for_end_date(...)`、`annual_values(...)`：年度口径 helper。
 
 ## Report Type / 报表类型
 
 Financial statement rows contain `report_type`.
 
-财务报表行包含 `report_type` 字段。
-
-| Code / 代码 | Type / 类型 | Description / 说明 |
+| Code | Type | Usage |
 | --- | --- | --- |
-| 1 | Consolidated / 合并报表 | Latest listed-company consolidated statement, default full-period statement. / 上市公司最新合并报表，默认累计报表。 |
-| 2 | Single-quarter consolidated / 单季合并 | Single-quarter consolidated report. / 单一季度合并报表。 |
-| 3 | Adjusted single-quarter consolidated / 调整单季合并 | Adjusted single-quarter consolidated report, preferred when available. / 调整后的单季合并报表，若存在则优先使用。 |
-| 4 | Adjusted consolidated / 调整合并报表 | Current-year disclosure of prior-year comparable report data. / 本年度公布上年同期的财务报表数据。 |
-| 5 | Pre-adjustment consolidated / 调整前合并报表 | Original consolidated report retained after data revision. / 数据变更后保留的调整前原始数据。 |
-| 6 | Parent-company statement / 母公司报表 | Parent-company financial statement. / 母公司财务报表数据。 |
-| 7 | Parent-company single-quarter / 母公司单季表 | Parent-company single-quarter statement. / 母公司单季度表。 |
-| 8 | Adjusted parent single-quarter / 母公司调整单季表 | Adjusted parent-company single-quarter statement. / 母公司调整后的单季表。 |
-| 9 | Adjusted parent statement / 母公司调整表 | Current-year disclosure of prior-year parent-company comparable data. / 本年度公布上年同期的母公司报表数据。 |
-| 10 | Pre-adjustment parent statement / 母公司调整前报表 | Original parent-company statement retained before adjustment. / 母公司调整前原始数据。 |
-| 11 | Pre-adjustment parent consolidated / 母公司调整前合并报表 | Original parent-company consolidated data retained before adjustment. / 母公司调整前合并报表原数据。 |
-| 12 | Pre-adjustment parent statement / 母公司调整前报表 | Original parent-company data retained before adjustment. / 母公司报表变更前保留的原数据。 |
+| 1 | Consolidated | Listed-company consolidated statement, default full-period statement. |
+| 2 | Single-quarter consolidated | Single-quarter consolidated statement. |
+| 3 | Adjusted single-quarter consolidated | Preferred single-quarter income row when available. |
+| 4 | Adjusted consolidated | Current-year disclosure of prior-year comparable data. |
+| 5 | Pre-adjustment consolidated | Original consolidated row retained after revision. |
+| 6-12 | Parent/pre-adjustment variants | Use only when a factor explicitly needs parent-company data. |
 
-Current defaults / 当前默认优先级：
+Current defaults:
 
-- Single-quarter income data / 利润表单季数据：`ReportTypePreference::income_single_quarter() = [3, 2]`
-- Consolidated balance sheet and annual-style data / 合并资产负债表和年度口径数据：`ReportTypePreference::balance_sheet_consolidated() = [1, 4]`
-- Generic consolidated data / 通用合并报表口径：`ReportTypePreference::consolidated() = [1, 4]`
+- Income single quarter: `ReportTypePreference::income_single_quarter() = [3, 2]`
+- Consolidated balance sheet: `ReportTypePreference::balance_sheet_consolidated() = [1, 4]`
+- Generic consolidated: `ReportTypePreference::consolidated() = [1, 4]`
 
 Within the same `ts_code + end_date + report_type`, only rows with
-`f_ann_date/ann_date <= trade_date` are visible. Versions are sorted by
+`f_ann_date.or(ann_date) <= trade_date` are visible. Versions are sorted by
 `disclosure_date` descending, then `update_flag` descending.
 
-同一 `ts_code + end_date + report_type` 下，只允许使用 `f_ann_date/ann_date <= trade_date` 的记录。版本按 `disclosure_date` 倒序、`update_flag` 倒序选择。
+同一 `ts_code + end_date + report_type` 下，只能使用 `f_ann_date.or(ann_date) <= trade_date` 的记录。版本按 `disclosure_date` 倒序、`update_flag` 倒序选择。
 
-## Storage And Loading / 存储与读取
-
-Statement parquet files are stored by `ann_date` year:
-
-财报 parquet 按 `ann_date` 年份存储：
-
-```text
-data/stock_data/income/{year}.parquet
-data/stock_data/balancesheet/{year}.parquet
-data/stock_data/cashflow/{year}.parquet
-```
+## Dependencies / 依赖声明
 
 Factor specs should request only needed value columns. The loader automatically
-adds PIT key/version columns: `ts_code`, `ann_date`, `f_ann_date`, `end_date`,
-`report_type`, and `update_flag`.
+adds PIT key/version columns such as `ts_code`, `ann_date`, `f_ann_date`,
+`end_date`, `report_type`, and `update_flag`.
 
-因子 spec 只应请求实际需要的数值列。loader 会自动补充 PIT 选版本所需的键列和版本列：`ts_code`、`ann_date`、`f_ann_date`、`end_date`、`report_type`、`update_flag`。
+因子 spec 只应请求实际需要的数值列。loader 会自动补齐 PIT 键列和版本列，例如 `ts_code`、`ann_date`、`f_ann_date`、`end_date`、`report_type`、`update_flag`。
 
-Example / 示例：
+Example:
 
 ```rust
 DataRequest::financial_quarters(
@@ -99,57 +141,80 @@ DataRequest::financial_quarters(
 )
 ```
 
-The loader derives conservative announcement-year windows from the requested
-quarter count and date batch, then reuses yearly tables through
-`DisclosureTableCache`.
+Any request for financial, dividend, main-business, or analyst datasets causes
+`DataPool` to build the stock universe panel from `stock_basic`. You do not need
+to request `StockBasic` manually unless the formula itself uses stock-basic
+fields such as `list_date`.
 
-loader 会根据请求的季度数和 date batch 推导保守的公告年份窗口，并通过 `DisclosureTableCache` 复用年度表。
+只要 request 中包含财报、分红、主营业务或分析师数据，`DataPool` 就会自动从 `stock_basic` 构建 stock universe panel。除非公式本身需要 `list_date` 等 stock-basic 字段，否则不需要手动请求 `StockBasic`。
 
-## Stock-Level Event Cache / 股票级事件驱动缓存
+## Event Replay / 事件回放
 
-Financial statement values are sparse. New financial factors should split the
-pipeline into slow stock-level statement snapshots and daily fast
-cross-sectional work.
+Pure slow financial factors should use `FactorUpdatePolicy::FinancialEventSnapshot`
+and `compute_financial_event_snapshot_streaming_on_panel(...)`.
 
-财报数据是低频稀疏数据。新的财务因子应把流程拆成“股票级财报慢指标 snapshot”和“每日快变量/截面处理”两层。
+纯财报慢因子应使用 `FactorUpdatePolicy::FinancialEventSnapshot` 和 `compute_financial_event_snapshot_streaming_on_panel(...)`。
 
-New financial factors should prefer provider-state caching:
-`InstrumentAlignedSnapshotCache<T>` lives in the factor/provider state, and each
-trading date calls `cached_financial_stock_snapshots_for_date(...)` to update
-only stocks whose marker changed. This keeps exactly one current stock-level
-snapshot cache per provider and avoids holding multiple event cross-sections in
-memory.
+There is no PV-anchor compatibility wrapper. The old API that internally read
+`data.daily_panel(DatasetId::StockDailyPv)` has been removed. Callers must pass
+the panel explicitly.
 
-新的财务因子应优先使用 provider-state 缓存：把
-`InstrumentAlignedSnapshotCache<T>` 放在因子或 provider state 中，每个交易日调用
-`cached_financial_stock_snapshots_for_date(...)`，只更新 marker 变化的股票。这样每个
-provider 只维护一个当前股票级 snapshot cache，不会在内存中堆积多个事件截面。
+目前没有 PV-anchor 兼容入口。旧的内部读取 `data.daily_panel(DatasetId::StockDailyPv)` 的 API 已删除。调用方必须显式传入 panel。
 
-`cached_financial_stock_snapshots(...)` is still available as a small batch
-utility, but it should not be the default path for long-lived financial factors
-or Barra financial exposures.
+Template:
 
-`cached_financial_stock_snapshots(...)` 仍可作为小范围批量工具使用，但不再是长期运行的
-财务因子或 Barra 财务暴露的默认开发方式。
+```rust
+let panel = data.stock_universe_panel()?;
+let schedule = FinancialEventSchedule::from_pit_readers(&[
+    income.clone(),
+    balance.clone(),
+]);
 
-Use it when all of the following are true:
+let raw_series = compute_financial_event_snapshot_streaming_on_panel(
+    requested_ids,
+    context,
+    data,
+    panel,
+    &mut state.final_cache,
+    &schedule,
+    &requested_specs,
+    |ids, event_context, event_data| {
+        compute_raw_on_event(ids, event_context, event_data)
+    },
+)?;
+```
 
-满足以下条件时使用该工具：
+The replay cache stores final factor values, not raw financial metrics. On
+event dates, compute the full event-date cross-section, including zscore,
+regression, peer/network reductions, and neutralization. On non-event dates,
+replay the latest final factor cross-section onto the same explicit panel.
 
-- The value is a stock-level financial statement formula. / 该值是股票级财报公式。
-- The formula only changes when visible `ann_date/f_ann_date` records or declared synthetic events change. / 公式只会在 PIT 可见财报记录或声明的 synthetic event 变化时变化。
-- The result can be reused across target dates until the marker changes. / marker 不变时可跨目标日复用结果。
+回放缓存存的是最终因子值，不是原始财务指标。事件日应计算完整截面，包括 zscore、回归、peer/network 降维和中性化；非事件日把最近一次最终因子截面回放到同一个显式 panel 上。
 
-Do **not** cache daily fast variables:
+## Slow Snapshot Cache / 慢指标缓存
 
-不要缓存每日快变量：
+For stock-level slow formulas, prefer provider-state caching:
+`InstrumentAlignedSnapshotCache<T>` plus `cached_financial_stock_snapshots_for_date(...)`.
+This cache is aligned by `ts_code`, not by raw vector position, so changing
+batch order or instrument order does not shift financial values across stocks.
 
-- market value, price, return, turnover, present universe / 市值、价格、收益、换手率、在市状态；
-- percentile rank, zscore, regression, neutralization / 分位数、标准化、回归、中性化；
-- peer/network reductions such as F-Link weighted returns / F-Link、peer 加权收益等截面网络降维；
-- rolling calendar values unless the calendar boundary is added to the marker. / 如果 rolling calendar 边界会改变结果，必须把边界加入 marker，否则不要缓存。
+股票级慢指标公式优先使用 provider-state 缓存：`InstrumentAlignedSnapshotCache<T>` + `cached_financial_stock_snapshots_for_date(...)`。该缓存按 `ts_code` 对齐，而不是按原始数组位置对齐，因此 batch 或股票顺序变化不会导致财务指标错位。
 
-Recommended provider-state pattern / 推荐 provider-state 写法：
+Cache only stock-level slow snapshots. Do not cache daily fast variables:
+
+- price, return, turnover, market value, present universe;
+- percentile rank, zscore, regression, neutralization;
+- peer/network reductions such as F-Link weighted returns;
+- rolling calendar values unless the calendar boundary is part of the marker.
+
+只缓存股票级慢指标。不要缓存每日快变量：
+
+- 价格、收益、换手、市值、在市状态；
+- 分位数、zscore、回归、中性化；
+- F-Link 加权收益等 peer/network 降维结果；
+- 未写入 marker 的 rolling calendar 结果。
+
+Template:
 
 ```rust
 #[derive(Clone, Copy, Debug)]
@@ -166,8 +231,8 @@ struct MyProviderState {
 fn slow_marker(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
     builder.include_latest_ttm(
@@ -188,8 +253,8 @@ fn slow_marker(
 fn slow_snapshot(
     ts_code: &str,
     trade_date: i32,
-    income: &PitFinancialData,
-    balance: &PitFinancialData,
+    income: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
 ) -> Option<SlowSnapshot> {
     Some(SlowSnapshot {
         revenue_ttm: income.ttm_sum(ts_code, trade_date, "revenue"),
@@ -201,151 +266,127 @@ fn slow_snapshot(
     })
 }
 
-let mut values = vec![None; panel.shape_len()];
-let instrument_count = panel.instruments().len();
-for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-    if !panel.is_target_date(trade_date) {
-        continue;
-    }
-    let snapshots = cached_financial_stock_snapshots_for_date(
-        panel,
-        trade_date,
-        &mut state.slow_cache,
-        |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
-        |trade_date, ts_code, _| slow_marker(ts_code, trade_date, &income, &balance),
-        |trade_date, ts_code, _| slow_snapshot(ts_code, trade_date, &income, &balance),
-    );
-    for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
-        let offset = date_idx * instrument_count + instrument_idx;
-        let Some(snapshot) = snapshot else {
-            continue;
-        };
-        let Some(mv) = total_mv.values()[offset] else {
-            continue;
-        };
-        values[offset] = snapshot.revenue_ttm.and_then(|revenue| safe_div(revenue, mv));
-    }
-}
-let raw = panel.column_from_values(values)?;
+let snapshots = cached_financial_stock_snapshots_for_date(
+    panel,
+    trade_date,
+    &mut state.slow_cache,
+    |_, _ts_code, offset| !panel.is_present_offset(offset),
+    |trade_date, ts_code, _| slow_marker(ts_code, trade_date, &income, &balance),
+    |trade_date, ts_code, _| slow_snapshot(ts_code, trade_date, &income, &balance),
+);
 ```
 
-Callback roles / 回调职责：
+Callback roles:
 
-- `skip_fn(trade_date, ts_code, offset)`: return `true` for `.BJ`, non-present rows, or excluded universe members; this clears the stock cache. / 对 `.BJ`、不在市行或被股票池剔除的股票返回 `true`，同时清空该股票缓存。
-- `marker_fn(...)`: declare all PIT records and synthetic events that can change the snapshot. / 声明所有会影响 snapshot 的 PIT 记录链和 synthetic event。
-- `compute_fn(...)`: calculate only the stock-level slow snapshot; it runs only when marker changes. / 只计算股票级慢指标；只有 marker 变化时才执行。
+- `skip_fn(trade_date, ts_code, offset)`: return `true` for non-present rows or factor-excluded stocks; this clears that stock cache entry.
+- `marker_fn(...)`: declare every PIT record and synthetic event that can change the snapshot.
+- `compute_fn(...)`: calculate only the stock-level slow snapshot; it runs only when the marker changes.
 
-Marker rules / marker 规则：
+回调职责：
 
-- Use record fingerprints, not values: `dataset + end_date + disclosure_date + report_type + update_flag`. / marker 使用记录指纹，而不是财务数值本身。
-- Include every statement chain that can affect the snapshot: latest quarter, YoY quarter, previous quarter, TTM chain, annual chain, etc. / 任何会影响 snapshot 的记录链都必须加入 marker。
-- If a formula depends on non-statement events, add a synthetic marker. `DP_LTM` is the main example because the 12-month implemented dividend window can change independently of statements. / 如果公式依赖非财报事件，需要加入 synthetic marker；典型例子是 `DP_LTM` 的 12 个月已实施分红窗口。
-- When a stock is not present in `DailyPanel.present` or is excluded by the factor universe, clear or skip the cache entry rather than carrying the previous snapshot forward. / 股票不在市或被因子股票池剔除时，应清空或跳过缓存，不能沿用旧 snapshot。
-- If marker is missing, do not reuse an old snapshot. / marker 缺失时不能复用旧 snapshot。
+- `skip_fn(trade_date, ts_code, offset)`：非 present 行或因子排除股票返回 `true`，同时清空该股票缓存。
+- `marker_fn(...)`：声明所有会影响 snapshot 的 PIT 记录链和 synthetic event。
+- `compute_fn(...)`：只计算股票级慢指标；只有 marker 变化时才执行。
 
-Multi-output providers should store shared slow snapshot caches in provider
-state, then write all requested outputs from the current snapshots. For example,
-`f_momentum_80pec` and `link_new` share the 10-dimensional financial vector;
-Barra `growth`, `quality`, `value`, and `dividend_yield` cache their
-statement/dividend-driven subcomponents but still run Barra standardization and
-neutralization on the normal daily panel.
+Marker rules:
 
-多输出 provider 应把共享慢指标 snapshot cache 放在 provider state 中，再基于当前 snapshot
-输出请求的因子。例如 `f_momentum_80pec` 和 `link_new` 共用 10 维财务向量；Barra
-`growth`、`quality`、`value`、`dividend_yield` 会缓存财报或分红驱动的子指标，但 Barra
-标准化和中性化仍按正常日频 panel 执行。
+- Use record fingerprints, not financial values: `dataset + end_date + disclosure_date + report_type + update_flag`.
+- Include every statement chain that can affect the snapshot: latest quarter, YoY quarter, previous quarter, TTM chain, annual chain, etc.
+- If the formula depends on non-statement events, add a synthetic marker. Dividend LTM windows are the main example.
+- If a marker is missing, do not reuse an old snapshot.
 
-## Factor Update Policy / 因子截面更新策略
+marker 规则：
 
-Stock-level statement cache only controls slow financial lookups. The final
-factor cross-section has its own explicit update policy. Do not infer this from
-the `fundamental` tag.
+- marker 使用记录指纹，而不是财务数值本身：`dataset + end_date + disclosure_date + report_type + update_flag`。
+- 所有影响 snapshot 的记录链都必须纳入 marker：最新季度、同比季度、上一季度、TTM 链、年度链等。
+- 如果公式依赖非财报事件，加入 synthetic marker。分红 LTM 窗口是典型例子。
+- marker 缺失时不能复用旧 snapshot。
 
-股票级财报缓存只控制慢财务查表。正式因子截面还有独立的显式更新策略，不能仅凭 `fundamental` tag 自动推断。
+## Fast Data Alignment / 快变量对齐
 
-Use `FactorUpdatePolicy` in the wrapper/provider:
+When a financial factor genuinely needs a fast dataset, keep the stock universe
+panel as the main grid and map the fast column onto it:
 
-在 wrapper 或 provider 中声明 `FactorUpdatePolicy`：
+```rust
+let panel = data.stock_universe_panel()?;
+let close = panel.column_from_table(data.daily(DatasetId::StockDailyPv)?, "close")?;
+let adj_factor =
+    panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+```
 
-- `Daily`: default. Use for valuation factors, price/return factors, and any
-  factor whose effective signal changes every trading day.
-- `FinancialEventSnapshot`: pure statement factors. On financial event dates,
-  recompute the whole cross-section, including rank/zscore, OLS, peer/network
-  reductions, and neutralization. On non-event dates, write daily rows by
-  replaying the latest final factor cross-section.
-- `FinancialEventStateDailyFast`: mixed slow/fast factors. Recompute slow
-  statement-driven state only on events, but recompute fast branches every day.
-  `f_momentum_80pec` is the template: financial vectors and top peers are
-  event-driven, while peer Ret20, Ret20 residualization, and SIZE+sector
-  neutralization are daily.
+Missing fast data for legal stocks remains `None`. Cross-sectional regressions
+and neutralization should use only rows where raw factor, SIZE, and industry are
+all valid; rows outside that intersection stay in the output grid with `None`.
 
-- `Daily`：默认策略。用于估值因子、价格收益因子，以及任何有效信号每天都会变化的因子。
-- `FinancialEventSnapshot`：纯财报慢因子。财务事件日重算完整截面，包括 rank/zscore、OLS、peer/network 降维和中性化；非事件日逐日写出，但回放最近一次最终因子截面。
-- `FinancialEventStateDailyFast`：快慢混合因子。只在事件日更新财报慢状态，快变量分支每日计算。`f_momentum_80pec` 是模板：财务向量和 top peers 事件驱动，peer Ret20、Ret20 残差化、SIZE+sector 中性化每日更新。
+合法股票缺快变量时保留为 `None`。截面回归和中性化只使用 raw 因子、SIZE、行业都有效的交集样本；交集外合法股票仍保留输出行，值为 `None`。
 
-Financial event schedules are built from the provider-declared event sources.
-Statement events use `f_ann_date.or(ann_date)`. Dividend LTM factors should also
-include dividend announcement dates, `ex_date`, and the 12-month window expiry
-date. `trade_date` remains the trading-calendar date; a weekend disclosure is
+## Update Policies / 更新策略
+
+Declare `FactorUpdatePolicy` explicitly in every factor wrapper/provider. Never
+infer update behavior from tags.
+
+每个因子 wrapper/provider 都必须显式声明 `FactorUpdatePolicy`，不要从 tag 自动推断。
+
+- `Daily`: valuation, price, return, turnover, market-cap, and any factor whose signal changes every trading day.
+- `FinancialEventSnapshot`: pure slow statement/event factors. Recompute the final cross-section only when financial events occur; replay final values otherwise.
+- `FinancialEventStateDailyFast`: mixed slow/fast factors. Update slow state only on events, then recompute fast branches every target date.
+
+- `Daily`：估值、价格、收益、换手、市值，以及任何有效信号每日变化的因子。
+- `FinancialEventSnapshot`：纯慢财报/事件因子。财务事件日重算最终截面，非事件日回放最终值。
+- `FinancialEventStateDailyFast`：快慢混合因子。事件日更新慢状态，每个目标交易日重新计算快变量分支。
+
+Financial event schedules are built from provider-declared event sources.
+Statement events use `f_ann_date.or(ann_date)`. Non-trading-day disclosures are
 picked up on the next target trading day because the engine checks
 `(last_processed_trade_date, current_trade_date]`.
 
-财务事件 schedule 由 provider 声明的事件源构建。财报事件使用 `f_ann_date.or(ann_date)`；分红 LTM 因子还应纳入分红公告日、`ex_date` 以及 12 个月窗口滚出日期。`trade_date` 仍然由交易日历控制；周末公告会在下一个目标交易日生效，因为引擎检查 `(last_processed_trade_date, current_trade_date]` 区间。
+财务事件 schedule 由 provider 声明的事件源构建。财报事件使用 `f_ann_date.or(ann_date)`。非交易日公告会在下一个目标交易日生效，因为引擎检查 `(last_processed_trade_date, current_trade_date]`。
 
-Implementation checklist / 实现清单：
+## Missing Values / 缺失值
 
-1. Pure slow factor: override `update_policy()`, `initial_compute_state()`, and
-   `compute_many_stateful()`, then call `compute_financial_event_snapshot_many`.
-2. Mixed factor: keep a provider-specific state struct; update slow state only
-   when `FinancialEventSchedule::has_event_after_until(...)` is true; compute
-   fast daily branches for every target date.
-3. Multi-output provider: every wrapper sharing `compute_provider_key()` must
-   use the same state type, and `factor-batch-size` will not split that provider.
-4. Non-event replay stores final factor values, not raw financial metrics. This
-   means pure slow factors also reuse the event-date neutralized cross-section.
+Default behavior is conservative:
 
-1. 纯慢因子：覆盖 `update_policy()`、`initial_compute_state()` 和 `compute_many_stateful()`，再调用 `compute_financial_event_snapshot_many`。
-2. 快慢混合因子：维护 provider 自己的 state；只有 `FinancialEventSchedule::has_event_after_until(...)` 为真时更新慢状态；每个目标交易日都计算快变量分支。
-3. 多输出 provider：共享 `compute_provider_key()` 的 wrapper 必须使用同一种 state 类型，`factor-batch-size` 不会把同一个 provider 拆开。
-4. 非事件日回放的是最终因子值，而不是原始财务指标。因此纯慢因子也会复用事件日已经中性化后的截面。
+- Missing core financial fields or invalid denominators produce `None`.
+- Missing optional add-back fields may be filled only when the factor spec says so.
+- Missing SIZE or industry means the stock cannot participate in neutralization and should remain `None` after that step.
+- Factor-specific fills must be local and documented in the factor implementation.
 
-## Missing Values / 缺失值处理
+默认处理保持保守：
 
-Financial similarity factors use per-metric percentile ranks. For listed
-non-BJ stocks, missing metric ranks are filled with `0` after percentile
-ranking. Stocks that are not present in the daily PV panel are not filled and do
-not output values. A stock with all ten financial dimensions missing still has a
-zero vector and is excluded from cosine similarity.
+- 核心财务字段缺失或分母非法输出 `None`。
+- 可选加回项只有在因子口径明确说明时才能填 0 或其他值。
+- 缺 SIZE 或行业时，该股票不参与中性化，中性化后保留 `None`。
+- 因子级填缺失逻辑必须局部实现并在因子代码中说明。
 
-财务相似度因子按单个指标做截面分位数标准化。对在市且非 BJ 的股票，单个指标缺失会在分位数标准化后填 `0`。不在日频 PV 面板中的股票不填充、不输出。若 10 个财务维度全部缺失，该股票为零向量，不参与余弦相似度。
+Financial similarity factors are a known special case: for present non-BJ
+stocks, missing per-metric percentile ranks may be filled with `0` after
+ranking, while all-zero vectors are excluded from cosine similarity.
 
-This differs from many Barra CNE6 exposures, which may use industry/global
-fills before standardization.
-
-这与部分 Barra CNE6 暴露不同；Barra 中一些暴露会在标准化前做行业或全局填充。
+财务相似度因子是已知特例：对 present 且非 BJ 股票，单指标分位数 rank 缺失可在 rank 后填 `0`；全零向量不参与余弦相似度。
 
 ## BJ Stock Rule / 北交所股票规则
 
-Unless explicitly stated otherwise, financial cross-sectional peer/network
-factors exclude `.BJ` stocks.
+The stock universe panel includes `.BJ`; each factor decides whether `.BJ`
+participates.
 
-除非另有说明，财务类截面 peer/network 因子剔除 `.BJ` 股票。
+stock universe panel 本身包含 `.BJ`；是否参与由具体因子决定。
 
-- `.BJ` stocks do not participate in financial cross-section transforms. / `.BJ` 不参与财务指标截面处理。
-- `.BJ` stocks do not participate in similarity matrices or peer networks. / `.BJ` 不参与相似度矩阵或 peer network。
-- `.BJ` stocks do not enter regression or neutralization inputs. / `.BJ` 不进入回归或中性化输入。
-- `.BJ` stocks should not produce final factor values. / `.BJ` 最终不输出有效因子值。
+Unless explicitly stated otherwise, financial peer/network factors exclude `.BJ`
+stocks from cross-sectional transforms, similarity matrices, regressions, and
+final valid outputs.
 
-## Multi-output Financial Providers / 多输出财务 Provider
+除非因子另有说明，财务 peer/network 因子会将 `.BJ` 从截面处理、相似度矩阵、回归和最终有效输出中剔除。
+
+## Multi-output Providers / 多输出 Provider
 
 When several financial factors share expensive setup, use a multi-output
 provider. The engine groups selected factors by `compute_provider_key()` and
-calls `compute_many(requested_ids, ...)` once per provider. Single-output legacy
-factors continue to use the default `compute()` path.
+calls `compute_many(requested_ids, ...)` once per provider. Wrappers sharing a
+provider key must use the same state type and remain requested-aware.
 
-多个财务因子共享高成本前置计算时，应使用多输出 provider。engine 会按 `compute_provider_key()` 对已选择因子分组，并对每个 provider 调用一次 `compute_many(requested_ids, ...)`。普通单输出因子继续走默认 `compute()` 路径。
+多个财务因子共享高成本前置计算时，应使用多输出 provider。engine 会按 `compute_provider_key()` 分组，并对每个 provider 调用一次 `compute_many(requested_ids, ...)`。共享 provider key 的 wrapper 必须使用同一种 state 类型，并且保持 requested-aware。
 
-Development layout / 推荐结构：
+Example layout:
 
 ```text
 factor/common/financial_similarity.rs
@@ -353,28 +394,32 @@ factor/chn_stock/daily/f_momentum_80pec.rs
 factor/chn_stock/daily/link_new.rs
 ```
 
-The common provider should build PIT financial metrics, cross-sectional
-transforms, and similarity/network state once, then compute only requested
-branches.
+## Implementation Checklist / 实现清单
 
-common provider 应一次性构造 PIT 财务指标、截面处理结果和相似度/网络状态，然后只计算 `requested_ids` 请求的输出分支。
+1. Declare exact `DataRequest`s. Do not add `StockDailyPv.close` as an anchor.
+2. Use `let panel = data.stock_universe_panel()?;` for financial/event stock factors.
+3. Use `data.financial_reader(...)`, `data.main_business_reader()`, `data.dividend_reader()`, or `data.daily(DatasetId::StockAnalystReport)` as appropriate.
+4. Put stock-level slow snapshots in provider state with `InstrumentAlignedSnapshotCache<T>`.
+5. Include every PIT record chain and synthetic event in the marker.
+6. Use `compute_financial_event_snapshot_streaming_on_panel(...)` for pure event replay.
+7. Align fast datasets onto the stock universe panel with `panel.column_from_table(...)`.
+8. Neutralize/regress on valid intersections only; preserve legal out-of-intersection stocks as `None`.
+9. Add tests for formulas, marker invalidation, batch/order alignment, missing values, and no PV-anchor dependency.
 
-## Current Financial Similarity Factors / 当前财务相似度因子
+1. 精确声明 `DataRequest`，不得把 `StockDailyPv.close` 当锚点。
+2. 财务/事件型股票因子使用 `let panel = data.stock_universe_panel()?;`。
+3. 按需使用 `data.financial_reader(...)`、`data.main_business_reader()`、`data.dividend_reader()` 或 `data.daily(DatasetId::StockAnalystReport)`。
+4. 股票级慢 snapshot 放进 provider state，使用 `InstrumentAlignedSnapshotCache<T>`。
+5. marker 覆盖所有 PIT 记录链和 synthetic event。
+6. 纯事件回放使用 `compute_financial_event_snapshot_streaming_on_panel(...)`。
+7. 快变量用 `panel.column_from_table(...)` 映射到 stock universe panel。
+8. 回归/中性化只用有效交集，交集外合法股票保留 `None`。
+9. 测试覆盖公式、marker 失效、batch/股票顺序对齐、缺失值，以及无 PV anchor 依赖。
 
-The current provider outputs / 当前 provider 输出：
+Recommended validation commands:
 
-- `f_momentum_80pec`
-- `link_new`
-
-Required tags / 必需标签：
-
-```text
-XYZQ, financial, fundamental, pit, f_momentum, cs_network,
-neutralize, barra, size, sector, daily
+```powershell
+cargo fmt --manifest-path factor_engine\Cargo.toml
+cargo test --manifest-path factor_engine\Cargo.toml financial
+cargo test --manifest-path factor_engine\Cargo.toml comprehensive_profitability special_roa sfli2 abcfo
 ```
-
-Both factors use PIT statements, percentile-rank standardization for ten
-financial metrics, `.BJ` exclusion, and final Barra `SIZE` + SW sector
-neutralization.
-
-两个因子均使用 PIT 财报、10 个财务指标截面分位数标准化、剔除 `.BJ`，并最终做 Barra `SIZE` + 申万一级行业中性化。

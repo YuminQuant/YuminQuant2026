@@ -18,7 +18,7 @@ use crate::factor::common::{
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_regression_residual, cs_zscore};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 const FACTOR_ID: &str = "comprehensive_profitability";
 const HISTORY_WINDOW: usize = 12;
 const BALANCE_HISTORY_QUARTERS: usize = HISTORY_WINDOW + 1;
@@ -34,9 +34,10 @@ const RAW_RONOA_STABILITY_ID: &str = "__comprehensive_profitability_ronoa_stabil
 const RAW_FCFFIC_ID: &str = "__comprehensive_profitability_fcffic";
 
 const NET_PROFIT_ATTR_P_COLUMN: &str = "n_income_attr_p";
-const EBIT_COLUMN: &str = "ebit";
+const NET_PROFIT_COLUMN: &str = "n_income";
 const INCOME_TAX_COLUMN: &str = "income_tax";
 const TOTAL_PROFIT_COLUMN: &str = "total_profit";
+const INT_EXP_COLUMN: &str = "int_exp";
 const OPERATE_PROFIT_COLUMN: &str = "operate_profit";
 const FIN_EXP_COLUMN: &str = "fin_exp";
 const INVEST_INCOME_COLUMN: &str = "invest_income";
@@ -79,15 +80,16 @@ impl Factor for StockDailyComprehensiveProfitability {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "Comprehensive profitability factor. It uses PIT single-quarter financials to build stable ROE, stable ROIC, stable RONOA, and FCFFIC. ROE/ROIC/RONOA stability is the negative 12-quarter sample standard deviation; stable ROE is additionally residualized against the equity multiplier. Each subfactor is neutralized by Barra SIZE and SW sector, z-scored, then equally averaged without winsorization.".to_string(),
+            description: "Comprehensive profitability factor. It uses PIT single-quarter financials to build stable ROE, stable ROIC, stable RONOA, and FCFFIC. Single-quarter EBIT is derived as net income plus income tax plus interest expense, with profit, expense, and cashflow line items filled as zero when missing. ROE/ROIC/RONOA stability is the negative 12-quarter sample standard deviation; stable ROE is additionally residualized against the equity multiplier. Each subfactor is neutralized by Barra SIZE and SW sector, z-scored, then available subfactors are equally averaged without winsorization.".to_string(),
             dependencies: vec![
                 DataRequest::financial_quarters(
                     DatasetId::StockIncome,
                     &[
                         NET_PROFIT_ATTR_P_COLUMN,
-                        EBIT_COLUMN,
+                        NET_PROFIT_COLUMN,
                         INCOME_TAX_COLUMN,
                         TOTAL_PROFIT_COLUMN,
+                        INT_EXP_COLUMN,
                         OPERATE_PROFIT_COLUMN,
                         FIN_EXP_COLUMN,
                         INVEST_INCOME_COLUMN,
@@ -257,7 +259,7 @@ impl StockDailyComprehensiveProfitability {
         let processed_roic = postprocess_subfactor(&stable_roic, &panel, data)?;
         let processed_ronoa = postprocess_subfactor(&stable_ronoa, &panel, data)?;
         let processed_fcffic = postprocess_subfactor(&raw.fcffic, &panel, data)?;
-        let final_factor = average_four_strict(
+        let final_factor = average_available_subfactors(
             &processed_roe,
             &processed_roic,
             &processed_ronoa,
@@ -496,7 +498,7 @@ fn roe_for_records(
     balance: PitFinancialRecordView<'_>,
     balance_prev: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
-    let net_profit = clean(income.column(NET_PROFIT_ATTR_P_COLUMN))?;
+    let net_profit = clean_or_zero(income.column(NET_PROFIT_ATTR_P_COLUMN));
     let equity = clean(balance.column(EQUITY_COLUMN))?;
     let equity_prev = clean(balance_prev.column(EQUITY_COLUMN))?;
     safe_div(net_profit, (equity + equity_prev) * 0.5)
@@ -513,11 +515,11 @@ fn roic_for_records(
     income: PitFinancialRecordView<'_>,
     balance: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
-    let ebit = clean(income.column(EBIT_COLUMN))?;
+    let ebit = derived_single_quarter_ebit(income)?;
     let tax = tax_rate(
         income.column(INCOME_TAX_COLUMN),
         income.column(TOTAL_PROFIT_COLUMN),
-    )?;
+    );
     let ic = invested_capital(balance)?;
     safe_div(ebit * (1.0 - tax), ic)
 }
@@ -535,14 +537,14 @@ fn fcffic_for_records(
     cashflow: PitFinancialRecordView<'_>,
     balance: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
-    let cfo = clean(cashflow.column(CFO_COLUMN))?;
-    let capex = clean(cashflow.column(CAPEX_COLUMN))?;
+    let cfo = clean_or_zero(cashflow.column(CFO_COLUMN));
+    let capex = clean_or_zero(cashflow.column(CAPEX_COLUMN));
     let ic = invested_capital(balance)?;
     safe_div(cfo - capex, ic)
 }
 
 fn operating_profit(income: PitFinancialRecordView<'_>) -> Option<f64> {
-    let operate_profit = clean(income.column(OPERATE_PROFIT_COLUMN))?;
+    let operate_profit = clean_or_zero(income.column(OPERATE_PROFIT_COLUMN));
     let fin_exp = clean_or_zero(income.column(FIN_EXP_COLUMN));
     let invest_income = clean_or_zero(income.column(INVEST_INCOME_COLUMN));
     let fv_value_chg_gain = clean_or_zero(income.column(FV_VALUE_CHG_GAIN_COLUMN));
@@ -550,18 +552,39 @@ fn operating_profit(income: PitFinancialRecordView<'_>) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
-fn tax_rate(income_tax: Option<f64>, total_profit: Option<f64>) -> Option<f64> {
-    let income_tax = clean(income_tax)?;
-    let total_profit = clean(total_profit)?;
-    let value = safe_div(income_tax, total_profit)?.clamp(0.0, 0.25);
+fn derived_single_quarter_ebit(income: PitFinancialRecordView<'_>) -> Option<f64> {
+    derived_single_quarter_ebit_from_values(
+        income.column(NET_PROFIT_COLUMN),
+        income.column(INCOME_TAX_COLUMN),
+        income.column(INT_EXP_COLUMN),
+    )
+}
+
+fn derived_single_quarter_ebit_from_values(
+    net_income: Option<f64>,
+    income_tax: Option<f64>,
+    interest_expense: Option<f64>,
+) -> Option<f64> {
+    let value =
+        clean_or_zero(net_income) + clean_or_zero(income_tax) + clean_or_zero(interest_expense);
     value.is_finite().then_some(value)
+}
+
+fn tax_rate(income_tax: Option<f64>, total_profit: Option<f64>) -> f64 {
+    let income_tax = clean_or_zero(income_tax);
+    match clean(total_profit) {
+        Some(total_profit) if total_profit.abs() > EPS => {
+            (income_tax / total_profit).clamp(0.0, 0.25)
+        }
+        _ => 0.0,
+    }
 }
 
 fn invested_capital(balance: PitFinancialRecordView<'_>) -> Option<f64> {
     invested_capital_from_values(
         clean(balance.column(EQUITY_COLUMN))?,
         interest_bearing_debt(balance),
-        clean(balance.column(MONEY_CAP_COLUMN))?,
+        clean_or_zero(balance.column(MONEY_CAP_COLUMN)),
     )
 }
 
@@ -573,7 +596,7 @@ fn invested_capital_from_values(equity: f64, debt: f64, cash: f64) -> Option<f64
 fn net_operating_assets(balance: PitFinancialRecordView<'_>) -> Option<f64> {
     net_operating_assets_from_values(
         clean(balance.column(TOTAL_ASSETS_COLUMN))?,
-        clean(balance.column(MONEY_CAP_COLUMN))?,
+        clean_or_zero(balance.column(MONEY_CAP_COLUMN)),
         clean(balance.column(TOTAL_LIAB_COLUMN))?,
         interest_bearing_debt(balance),
     )
@@ -646,28 +669,25 @@ fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> 
     })
 }
 
-fn average_four_strict(
+fn average_available_subfactors(
     first: &PanelColumn,
     second: &PanelColumn,
     third: &PanelColumn,
     fourth: &PanelColumn,
 ) -> Result<PanelColumn> {
-    first.zip_quaternary(
-        second,
-        third,
-        fourth,
-        |first, second, third, fourth| match (
-            clean(first),
-            clean(second),
-            clean(third),
-            clean(fourth),
-        ) {
-            (Some(first), Some(second), Some(third), Some(fourth)) => {
-                Some((first + second + third + fourth) * 0.25)
-            }
-            _ => None,
-        },
-    )
+    first.zip_quaternary(second, third, fourth, |first, second, third, fourth| {
+        average_clean_values(&[first, second, third, fourth])
+    })
+}
+
+fn average_clean_values(values: &[Option<f64>]) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for value in values.iter().filter_map(|value| clean(*value)) {
+        sum += value;
+        count += 1;
+    }
+    (count > 0).then_some(sum / count as f64)
 }
 
 fn raw_columns_from_series(
@@ -796,12 +816,25 @@ mod tests {
     }
 
     #[test]
-    fn tax_rate_clamps_and_rejects_invalid_profit() {
-        assert_close(tax_rate(Some(10.0), Some(100.0)), Some(0.10));
-        assert_close(tax_rate(Some(50.0), Some(100.0)), Some(0.25));
-        assert_close(tax_rate(Some(-5.0), Some(100.0)), Some(0.0));
-        assert_eq!(tax_rate(Some(1.0), Some(0.0)), None);
-        assert_eq!(tax_rate(None, Some(100.0)), None);
+    fn tax_rate_clamps_and_defaults_missing_to_zero() {
+        assert_eq!(tax_rate(Some(10.0), Some(100.0)), 0.10);
+        assert_eq!(tax_rate(Some(50.0), Some(100.0)), 0.25);
+        assert_eq!(tax_rate(Some(-5.0), Some(100.0)), 0.0);
+        assert_eq!(tax_rate(Some(1.0), Some(0.0)), 0.0);
+        assert_eq!(tax_rate(None, Some(100.0)), 0.0);
+        assert_eq!(tax_rate(Some(1.0), None), 0.0);
+    }
+
+    #[test]
+    fn derived_single_quarter_ebit_uses_net_income_tax_and_interest() {
+        assert_close(
+            derived_single_quarter_ebit_from_values(Some(100.0), Some(20.0), Some(5.0)),
+            Some(125.0),
+        );
+        assert_close(
+            derived_single_quarter_ebit_from_values(Some(100.0), None, Some(5.0)),
+            Some(105.0),
+        );
     }
 
     #[test]
@@ -845,30 +878,16 @@ mod tests {
     }
 
     #[test]
-    fn average_four_requires_all_components() {
-        let first = clean(Some(1.0));
-        let second = clean(Some(2.0));
-        let third = clean(Some(3.0));
-        let fourth = clean(Some(4.0));
-        assert_eq!(
-            match (first, second, third, fourth) {
-                (Some(first), Some(second), Some(third), Some(fourth)) => {
-                    Some((first + second + third + fourth) * 0.25)
-                }
-                _ => None,
-            },
-            Some(2.5)
+    fn average_available_subfactors_uses_non_null_values() {
+        assert_close(
+            average_clean_values(&[Some(1.0), Some(2.0), Some(3.0), Some(4.0)]),
+            Some(2.5),
         );
-        let missing = clean(None);
-        assert_eq!(
-            match (first, second, third, missing) {
-                (Some(first), Some(second), Some(third), Some(fourth)) => {
-                    Some((first + second + third + fourth) * 0.25)
-                }
-                _ => None,
-            },
-            None
+        assert_close(
+            average_clean_values(&[Some(1.0), None, Some(3.0), None]),
+            Some(2.0),
         );
+        assert_eq!(average_clean_values(&[None, None, None, None]), None);
     }
 
     #[test]

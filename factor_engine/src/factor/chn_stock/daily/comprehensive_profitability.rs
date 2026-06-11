@@ -758,6 +758,7 @@ fn raw_spec(id: &str) -> FactorSpec {
 
 fn tags() -> Vec<String> {
     [
+        "ZSZQ",
         "financial",
         "fundamental",
         "profitability",

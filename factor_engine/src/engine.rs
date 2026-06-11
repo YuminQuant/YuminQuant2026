@@ -445,6 +445,7 @@ impl Engine {
                         &mut compute_states,
                         thread_pool.as_ref(),
                     )?;
+                    validate_factor_series_target_dates(&results, &context.target_dates)?;
                     let compute_ms = compute_started.elapsed().as_millis();
                     let factor_profiles = results
                         .iter()
@@ -1967,6 +1968,25 @@ fn compute_factor_batch(
     Ok(output)
 }
 
+fn validate_factor_series_target_dates(
+    results: &[FactorSeries],
+    target_dates: &[i32],
+) -> Result<()> {
+    let target_dates = target_dates.iter().copied().collect::<BTreeSet<_>>();
+    for series in results {
+        for value in &series.values {
+            let trade_date = value.key.trade_date();
+            if !target_dates.contains(&trade_date) {
+                return Err(err(format!(
+                    "factor {} returned date {} outside current target date batch",
+                    series.spec.id, trade_date
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn available_specs() -> Vec<FactorSpec> {
     all_factors()
         .into_iter()
@@ -1995,8 +2015,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::core::{
-        AssetClass, DataRequest, DatasetId, DateLoadPolicy, FactorContext, FactorSeries,
-        FactorSpec, Frequency, IntradayDailyRawSpec, Lookback,
+        AssetClass, DataRequest, DatasetId, DateLoadPolicy, FactorContext, FactorRowKey,
+        FactorSeries, FactorSpec, FactorValue, Frequency, IntradayDailyRawSpec, Lookback,
     };
     use crate::data::table::Table;
     use crate::data::DataPool;
@@ -2007,8 +2027,8 @@ mod tests {
     use super::{
         date_batches_for_stage, disclosure_windows_for_requests, execution_groups_for_specs,
         provider_factor_batches, select_metadata, split_dates_by_chunk, validate_date_value,
-        ExecutionStage, IntradayRawRequirement, RawProvider, RunRequest, SelectionResult,
-        DEFAULT_DATE_BATCH_SIZE,
+        validate_factor_series_target_dates, ExecutionStage, IntradayRawRequirement, RawProvider,
+        RunRequest, SelectionResult, DEFAULT_DATE_BATCH_SIZE,
     };
 
     #[test]
@@ -2072,6 +2092,27 @@ mod tests {
             provider_factor_batches(&factors, &[], 1),
             Vec::<Vec<usize>>::new()
         );
+    }
+
+    #[test]
+    fn factor_series_target_date_validation_rejects_warmup_leakage() {
+        let series = FactorSeries {
+            spec: spec_with_dataset("leaky_factor", DatasetId::StockDailyPv, 0),
+            values: vec![FactorValue {
+                key: FactorRowKey::Daily {
+                    trade_date: 20260101,
+                    ts_code: "000001.SZ".to_string(),
+                },
+                value: Some(1.0),
+            }],
+        };
+
+        let error = validate_factor_series_target_dates(&[series], &[20260102])
+            .expect_err("warmup date must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("outside current target date batch"));
     }
 
     #[test]

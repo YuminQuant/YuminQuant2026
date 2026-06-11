@@ -94,6 +94,9 @@ impl FinancialEventSchedule {
         until_inclusive: i32,
     ) -> bool {
         let lower = after_exclusive.unwrap_or(i32::MIN);
+        if lower >= until_inclusive {
+            return false;
+        }
         self.event_dates
             .range((lower + 1)..=until_inclusive)
             .next()
@@ -1695,6 +1698,18 @@ mod tests {
         assert!(schedule.has_event_after_until(Some(20260102), 20260105));
         assert!(!schedule.has_event_after_until(Some(20260105), 20260106));
         assert!(schedule.has_event_after_until(Some(20260131), 20260201));
+    }
+
+    #[test]
+    fn financial_event_schedule_empty_or_replayed_range_does_not_panic() {
+        let statement = financial_table(&[(20251231, 20260103, 1, 0, 1.0)]);
+        let statement_index = FinancialPitIndex::from_table(Arc::new(statement)).expect("index");
+        let schedule = FinancialEventSchedule::from_pit_readers(&[
+            statement_index.reader(ReportTypePreference::consolidated())
+        ]);
+
+        assert!(!schedule.has_event_after_until(Some(20260103), 20260103));
+        assert!(!schedule.has_event_after_until(Some(20260104), 20260103));
     }
 
     #[test]

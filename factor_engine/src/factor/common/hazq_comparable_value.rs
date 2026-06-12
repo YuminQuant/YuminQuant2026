@@ -277,7 +277,6 @@ struct HazqComparableSnapshot {
     profit_ttm: Option<f64>,
     profit_q: Option<f64>,
     cfo_ttm: Option<f64>,
-    cash_dividend_ltm: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -310,7 +309,6 @@ struct HazqComparableInputs<'a> {
     income: FinancialPitReader<'a>,
     balance: FinancialPitReader<'a>,
     cashflow: FinancialPitReader<'a>,
-    dividends: DividendReader<'a>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -322,6 +320,56 @@ struct ComparablePoint {
 #[derive(Clone, Copy, Debug)]
 struct ComponentStats {
     values: [Option<f64>; COMPONENT_COUNT],
+}
+
+#[derive(Clone, Debug)]
+struct ComparableRequestPlan {
+    outputs: Vec<HazqComparableValueOutput>,
+    source_needs: Vec<bool>,
+}
+
+impl ComparableRequestPlan {
+    fn from_requested_ids(requested_ids: &[String]) -> Self {
+        let outputs = requested_outputs(requested_ids);
+        let source_needs = source_component_needs(&outputs);
+        Self {
+            outputs,
+            source_needs,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.outputs.is_empty()
+    }
+
+    fn requested_bases(&self) -> Vec<HazqComparableBase> {
+        BASES
+            .into_iter()
+            .filter(|base| {
+                COMPONENTS
+                    .into_iter()
+                    .any(|component| self.source_needs[source_key(*base, component)])
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn needs_ep_intermediate(&self) -> bool {
+        self.requested_bases().into_iter().any(|base| {
+            matches!(
+                base,
+                HazqComparableBase::Ep | HazqComparableBase::EpPercentile
+            )
+        })
+    }
+
+    fn needs_source_component(
+        &self,
+        base: HazqComparableBase,
+        component: HazqComparableComponent,
+    ) -> bool {
+        self.source_needs[source_key(base, component)]
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -378,7 +426,7 @@ pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
             output.base.alias(),
             output.component.alias()
         ),
-        dependencies: dependencies(),
+        dependencies: dependencies_for_output(output),
         intraday_raw_dependencies: Vec::new(),
         lookback: Lookback {
             trading_days: LOOKBACK,
@@ -401,14 +449,26 @@ pub fn compute_requested_stateful(
     data: &DataPool,
     state: &mut HazqComparableValueComputeState,
 ) -> Result<Vec<FactorSeries>> {
-    let outputs = requested_outputs(requested_ids);
-    if outputs.is_empty() {
+    let request_plan = ComparableRequestPlan::from_requested_ids(requested_ids);
+    if request_plan.is_empty() {
         return Ok(Vec::new());
     }
 
     let panel = non_bj_panel(data.stock_universe_panel()?)?;
     let inputs = hazq_inputs(data, &panel)?;
-    let base_columns = base_value_columns(&inputs, &mut state.snapshot_cache)?;
+    let requested_bases = request_plan.requested_bases();
+    let mut base_columns = vec![None; BASE_COUNT];
+    let mut ep_base_column = None;
+    for base in requested_bases.iter().copied() {
+        let column = compute_base_column(
+            base,
+            &inputs,
+            data,
+            &mut state.snapshot_cache,
+            &mut ep_base_column,
+        )?;
+        base_columns[base.idx()] = Some(column);
+    }
     let schedule = hazq_event_schedule(&inputs);
     let first_panel_date = panel.dates().first().copied();
     let mut peer_state = match (state.peer_state.last_processed_trade_date, first_panel_date) {
@@ -424,8 +484,7 @@ pub fn compute_requested_stateful(
     )
     .into_iter()
     .collect::<BTreeSet<_>>();
-    let source_needs = source_component_needs(&outputs);
-    let mut source_values = source_storage(&source_needs, &panel);
+    let mut source_values = source_storage(&request_plan.source_needs, &panel);
 
     for trade_date in panel.dates().iter().copied() {
         if event_dates.contains(&trade_date) {
@@ -433,20 +492,26 @@ pub fn compute_requested_stateful(
                 comparable_points_for_trade_date(&inputs, &mut state.snapshot_cache, trade_date)?;
             peer_state.peers = peer_profiles_from_points(&points, panel.instruments().len());
         }
-        write_source_components_for_date(
-            &panel,
-            trade_date,
-            &peer_state,
-            &base_columns,
-            &source_needs,
-            &mut source_values,
-        )?;
+        for base in requested_bases.iter().copied() {
+            let base_column = base_columns[base.idx()]
+                .as_ref()
+                .ok_or_else(|| err(format!("missing HAZQ comparable base column {}", base.id())))?;
+            write_source_components_for_base_date(
+                &panel,
+                trade_date,
+                &peer_state,
+                base,
+                base_column,
+                &request_plan,
+                &mut source_values,
+            )?;
+        }
         peer_state.mark_processed(trade_date);
     }
     state.peer_state = peer_state;
 
-    let mut result = Vec::with_capacity(outputs.len());
-    for output in outputs {
+    let mut result = Vec::with_capacity(request_plan.outputs.len());
+    for output in request_plan.outputs {
         let source = output.component.source_component();
         let key = source_key(output.base, source);
         let values = source_values[key]
@@ -481,20 +546,15 @@ fn hazq_inputs<'a>(data: &'a DataPool, panel: &'a DailyPanel) -> Result<HazqComp
             DatasetId::StockCashFlow,
             ReportTypePreference::consolidated(),
         )?,
-        dividends: data.dividend_reader()?,
     })
 }
 
 fn hazq_event_schedule(inputs: &HazqComparableInputs<'_>) -> FinancialEventSchedule {
-    let mut schedule = FinancialEventSchedule::from_pit_readers(&[
+    FinancialEventSchedule::from_pit_readers(&[
         inputs.income.clone(),
         inputs.balance.clone(),
         inputs.cashflow.clone(),
-    ]);
-    schedule.merge(FinancialEventSchedule::from_dividend_reader(
-        &inputs.dividends,
-    ));
-    schedule
+    ])
 }
 
 fn non_bj_panel(panel: &DailyPanel) -> Result<DailyPanel> {
@@ -525,18 +585,60 @@ fn non_bj_panel(panel: &DailyPanel) -> Result<DailyPanel> {
     DailyPanel::from_index(panel.dates().to_vec(), instruments, &target_dates, present)
 }
 
-fn base_value_columns(
+fn compute_base_column(
+    base: HazqComparableBase,
+    inputs: &HazqComparableInputs<'_>,
+    data: &DataPool,
+    cache: &mut InstrumentAlignedSnapshotCache<HazqComparableSnapshot>,
+    ep_base_column: &mut Option<PanelColumn>,
+) -> Result<PanelColumn> {
+    match base {
+        HazqComparableBase::Ep => cached_ep_base_column(inputs, cache, ep_base_column),
+        HazqComparableBase::EpPercentile => {
+            let ep = cached_ep_base_column(inputs, cache, ep_base_column)?;
+            ep.ts(|series| ts_zscore(series, LOOKBACK, ZSCORE_MIN_PERIODS))
+        }
+        HazqComparableBase::Dp => {
+            let dividends = data.dividend_reader()?;
+            compute_dp_base_column(inputs.panel, &inputs.total_mv, &dividends)
+        }
+        other => compute_snapshot_base_column(other, inputs, cache),
+    }
+}
+
+fn cached_ep_base_column(
     inputs: &HazqComparableInputs<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<HazqComparableSnapshot>,
-) -> Result<Vec<PanelColumn>> {
+    ep_base_column: &mut Option<PanelColumn>,
+) -> Result<PanelColumn> {
+    if let Some(column) = ep_base_column.as_ref() {
+        return Ok(column.clone());
+    }
+    let column = compute_snapshot_base_column(HazqComparableBase::Ep, inputs, cache)?;
+    *ep_base_column = Some(column.clone());
+    Ok(column)
+}
+
+fn compute_snapshot_base_column(
+    base: HazqComparableBase,
+    inputs: &HazqComparableInputs<'_>,
+    cache: &mut InstrumentAlignedSnapshotCache<HazqComparableSnapshot>,
+) -> Result<PanelColumn> {
+    if matches!(
+        base,
+        HazqComparableBase::Dp | HazqComparableBase::EpPercentile
+    ) {
+        return Err(err(format!(
+            "base {} requires a dedicated HAZQ comparable base helper",
+            base.id()
+        )));
+    }
     let panel = inputs.panel;
     let instrument_count = panel.instruments().len();
-    let mut values = vec![vec![None; panel.shape_len()]; BASE_COUNT];
-    let dividend_sums_by_date = dividend_sums_by_date(panel, &inputs.dividends);
+    let mut values = vec![None; panel.shape_len()];
 
     for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        let dividend_sums = dividend_sums_by_date.get(&trade_date);
-        let snapshots = hazq_snapshots_for_date(inputs, cache, trade_date, dividend_sums);
+        let snapshots = hazq_snapshots_for_date(inputs, cache, trade_date);
         let date_offset = date_idx * instrument_count;
         for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
             let offset = date_offset + instrument_idx;
@@ -547,21 +649,39 @@ fn base_value_columns(
                 continue;
             };
             let market_cap = clean(inputs.total_mv.values()[offset]).filter(|value| *value > EPS);
-            let base = base_values_from_snapshot(&snapshot, market_cap);
-            for base_kind in BASES {
-                values[base_kind.idx()][offset] = base[base_kind.idx()];
-            }
+            values[offset] = base_value_from_snapshot(base, &snapshot, market_cap);
         }
     }
 
-    let ep_raw = panel.column_from_values(values[HazqComparableBase::Ep.idx()].clone())?;
-    let ep_percentile = ep_raw.ts(|series| ts_zscore(series, LOOKBACK, ZSCORE_MIN_PERIODS))?;
-    values[HazqComparableBase::EpPercentile.idx()] = ep_percentile.values().to_vec();
+    panel.column_from_values(values)
+}
 
-    values
-        .into_iter()
-        .map(|values| panel.column_from_values(values))
-        .collect()
+fn compute_dp_base_column(
+    panel: &DailyPanel,
+    total_mv: &PanelColumn,
+    dividends: &DividendReader<'_>,
+) -> Result<PanelColumn> {
+    let instrument_count = panel.instruments().len();
+    let mut values = vec![None; panel.shape_len()];
+    let dividend_sums_by_date = dividend_sums_by_date(panel, dividends);
+
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        let dividend_sums = dividend_sums_by_date.get(&trade_date);
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
+            let offset = date_offset + instrument_idx;
+            if !panel.is_present_offset(offset) {
+                continue;
+            }
+            let market_cap = clean(total_mv.values()[offset]).filter(|value| *value > EPS);
+            let cash_dividend_ltm = dividend_sums
+                .and_then(|sums| sums.get(ts_code.as_str()).copied())
+                .unwrap_or(0.0);
+            values[offset] = safe_div_opt(Some(cash_dividend_ltm), market_cap);
+        }
+    }
+
+    panel.column_from_values(values)
 }
 
 fn comparable_points_for_trade_date(
@@ -575,10 +695,7 @@ fn comparable_points_for_trade_date(
     };
     let instrument_count = panel.instruments().len();
     let date_offset = date_idx * instrument_count;
-    let dividend_sums = inputs
-        .dividends
-        .implemented_ltm_sum_by_stock(add_months(trade_date, -12), trade_date);
-    let snapshots = hazq_snapshots_for_date(inputs, cache, trade_date, Some(&dividend_sums));
+    let snapshots = hazq_snapshots_for_date(inputs, cache, trade_date);
 
     let mut continuous_raw = vec![[None; CONTINUOUS_FEATURE_COUNT]; instrument_count];
     let mut lifecycle = vec![None; instrument_count];
@@ -633,7 +750,6 @@ fn hazq_snapshots_for_date(
     inputs: &HazqComparableInputs<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<HazqComparableSnapshot>,
     trade_date: i32,
-    dividend_sums: Option<&HashMap<&str, f64>>,
 ) -> Vec<Option<HazqComparableSnapshot>> {
     cached_financial_stock_snapshots_for_date(
         inputs.panel,
@@ -641,29 +757,21 @@ fn hazq_snapshots_for_date(
         cache,
         |_, _, offset| !inputs.panel.is_present_offset(offset),
         |trade_date, ts_code, _| {
-            let cash_dividend = dividend_sums
-                .and_then(|sums| sums.get(ts_code).copied())
-                .unwrap_or(0.0);
             hazq_snapshot_marker(
                 ts_code,
                 trade_date,
                 &inputs.income,
                 &inputs.balance,
                 &inputs.cashflow,
-                cash_dividend,
             )
         },
         |trade_date, ts_code, _| {
-            let cash_dividend = dividend_sums
-                .and_then(|sums| sums.get(ts_code).copied())
-                .unwrap_or(0.0);
             hazq_snapshot_for_stock(
                 ts_code,
                 trade_date,
                 &inputs.income,
                 &inputs.balance,
                 &inputs.cashflow,
-                cash_dividend,
             )
         },
     )
@@ -675,7 +783,6 @@ fn hazq_snapshot_marker(
     income: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
     cashflow: &FinancialPitReader<'_>,
-    cash_dividend_ltm: f64,
 ) -> Option<FinancialEventMarker> {
     let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
     let previous_end = previous_quarter_end_date(latest_end);
@@ -710,7 +817,6 @@ fn hazq_snapshot_marker(
             end_date,
         );
     }
-    builder.include_synthetic("cash_dividend_ltm", f64_marker_value(cash_dividend_ltm));
     builder.build()
 }
 
@@ -720,7 +826,6 @@ fn hazq_snapshot_for_stock(
     income: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
     cashflow: &FinancialPitReader<'_>,
-    cash_dividend_ltm: f64,
 ) -> Option<HazqComparableSnapshot> {
     let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
     let previous_end = previous_quarter_end_date(latest_end);
@@ -793,15 +898,14 @@ fn hazq_snapshot_for_stock(
         profit_ttm,
         profit_q: clean(income_record.column(NET_PROFIT_ATTR_P_COLUMN)),
         cfo_ttm,
-        cash_dividend_ltm,
     })
 }
 
-fn base_values_from_snapshot(
+fn base_value_from_snapshot(
+    base: HazqComparableBase,
     snapshot: &HazqComparableSnapshot,
     market_cap: Option<f64>,
-) -> [Option<f64>; BASE_COUNT] {
-    let mut values = [None; BASE_COUNT];
+) -> Option<f64> {
     let market_cap = market_cap.filter(|value| *value > EPS);
     let ev = market_cap
         .zip(snapshot.total_liab)
@@ -809,15 +913,15 @@ fn base_values_from_snapshot(
         .and_then(|((market_cap, total_liab), money_cap)| {
             finite_value(market_cap + total_liab - money_cap).filter(|value| *value > EPS)
         });
-    values[HazqComparableBase::Bp.idx()] = safe_div_opt(snapshot.equity, market_cap);
-    values[HazqComparableBase::Dp.idx()] =
-        safe_div_opt(Some(snapshot.cash_dividend_ltm), market_cap);
-    values[HazqComparableBase::Ebit2Ev.idx()] = safe_div_opt(snapshot.ebit_ttm, ev);
-    values[HazqComparableBase::Ep.idx()] = safe_div_opt(snapshot.profit_ttm, market_cap);
-    values[HazqComparableBase::EpQ.idx()] = safe_div_opt(snapshot.profit_q, market_cap);
-    values[HazqComparableBase::Ocfp.idx()] = safe_div_opt(snapshot.cfo_ttm, market_cap);
-    values[HazqComparableBase::Sales2Ev.idx()] = safe_div_opt(snapshot.revenue_ttm, ev);
-    values
+    match base {
+        HazqComparableBase::Bp => safe_div_opt(snapshot.equity, market_cap),
+        HazqComparableBase::Ebit2Ev => safe_div_opt(snapshot.ebit_ttm, ev),
+        HazqComparableBase::Ep => safe_div_opt(snapshot.profit_ttm, market_cap),
+        HazqComparableBase::EpQ => safe_div_opt(snapshot.profit_q, market_cap),
+        HazqComparableBase::Ocfp => safe_div_opt(snapshot.cfo_ttm, market_cap),
+        HazqComparableBase::Sales2Ev => safe_div_opt(snapshot.revenue_ttm, ev),
+        HazqComparableBase::Dp | HazqComparableBase::EpPercentile => None,
+    }
 }
 
 fn continuous_features_from_snapshot(
@@ -905,12 +1009,13 @@ fn peer_profiles_from_points(
         .collect()
 }
 
-fn write_source_components_for_date(
+fn write_source_components_for_base_date(
     panel: &DailyPanel,
     trade_date: i32,
     peer_state: &ComparablePeerState,
-    base_columns: &[PanelColumn],
-    source_needs: &[bool],
+    base: HazqComparableBase,
+    base_column: &PanelColumn,
+    request_plan: &ComparableRequestPlan,
     source_values: &mut [Option<Vec<Option<f64>>>],
 ) -> Result<()> {
     let Some(date_idx) = panel.dates().iter().position(|date| *date == trade_date) else {
@@ -918,45 +1023,28 @@ fn write_source_components_for_date(
     };
     let instrument_count = panel.instruments().len();
     let date_offset = date_idx * instrument_count;
-    for base in BASES {
-        let base_idx = base.idx();
-        let has_base_need = COMPONENTS
-            .into_iter()
-            .any(|component| source_needs[source_key(base, component.source_component())]);
-        if !has_base_need {
+    for instrument_idx in 0..instrument_count {
+        let offset = date_offset + instrument_idx;
+        if !panel.is_present_offset(offset) {
             continue;
         }
-        let base_column = base_columns
-            .get(base_idx)
-            .ok_or_else(|| err("missing HAZQ comparable base column"))?;
-        for instrument_idx in 0..instrument_count {
-            let offset = date_offset + instrument_idx;
-            if !panel.is_present_offset(offset) {
+        let profile = peer_state
+            .peers
+            .get(instrument_idx)
+            .cloned()
+            .unwrap_or_default();
+        let stats =
+            component_stats_for_stock(base_column, panel, date_offset, instrument_idx, &profile);
+        for component in COMPONENTS {
+            if component.is_time_zscore() {
                 continue;
             }
-            let profile = peer_state
-                .peers
-                .get(instrument_idx)
-                .cloned()
-                .unwrap_or_default();
-            let stats = component_stats_for_stock(
-                base_column,
-                panel,
-                date_offset,
-                instrument_idx,
-                &profile,
-            );
-            for component in COMPONENTS {
-                if component.is_time_zscore() {
-                    continue;
-                }
-                let key = source_key(base, component);
-                if !source_needs[key] {
-                    continue;
-                }
-                if let Some(values) = source_values[key].as_mut() {
-                    values[offset] = stats.values[component.idx()];
-                }
+            let key = source_key(base, component);
+            if !request_plan.needs_source_component(base, component) {
+                continue;
+            }
+            if let Some(values) = source_values[key].as_mut() {
+                values[offset] = stats.values[component.idx()];
             }
         }
     }
@@ -1083,7 +1171,15 @@ fn requested_outputs(requested_ids: &[String]) -> Vec<HazqComparableValueOutput>
         .collect()
 }
 
-fn dependencies() -> Vec<DataRequest> {
+fn dependencies_for_output(output: HazqComparableValueOutput) -> Vec<DataRequest> {
+    let mut dependencies = common_dependencies();
+    if output.base == HazqComparableBase::Dp {
+        dependencies.push(dividend_dependency());
+    }
+    dependencies
+}
+
+fn common_dependencies() -> Vec<DataRequest> {
     vec![
         DataRequest::new(DatasetId::StockDailyBasic, &[TOTAL_MV_COLUMN]),
         DataRequest::financial_quarters(
@@ -1101,20 +1197,23 @@ fn dependencies() -> Vec<DataRequest> {
             &CASHFLOW_COLUMNS,
             FINANCIAL_QUARTERS,
         ),
-        DataRequest::new(
-            DatasetId::StockDividend,
-            &[
-                "ts_code",
-                "ann_date",
-                "div_proc",
-                "cash_div_tax",
-                "ex_date",
-                "base_share",
-            ],
-        ),
         DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
         DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
     ]
+}
+
+fn dividend_dependency() -> DataRequest {
+    DataRequest::new(
+        DatasetId::StockDividend,
+        &[
+            "ts_code",
+            "ann_date",
+            "div_proc",
+            "cash_div_tax",
+            "ex_date",
+            "base_share",
+        ],
+    )
 }
 
 fn tags() -> Vec<String> {
@@ -1337,10 +1436,6 @@ fn finite_value(value: f64) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
-fn f64_marker_value(value: f64) -> i64 {
-    i64::from_ne_bytes(value.to_bits().to_ne_bytes())
-}
-
 fn add_months(date: i32, months_delta: i32) -> i32 {
     let (year, month, day) = ymd(date);
     let month_index = year * 12 + month as i32 - 1 + months_delta;
@@ -1546,24 +1641,44 @@ mod tests {
             profit_ttm: Some(8.0),
             profit_q: Some(2.0),
             cfo_ttm: Some(6.0),
-            cash_dividend_ltm: 3.0,
             ..Default::default()
         };
-        let values = base_values_from_snapshot(&snapshot, Some(100.0));
-        assert_close(values[HazqComparableBase::Bp.idx()].unwrap(), 0.5);
-        assert_close(values[HazqComparableBase::Dp.idx()].unwrap(), 0.03);
         assert_close(
-            values[HazqComparableBase::Ebit2Ev.idx()].unwrap(),
+            base_value_from_snapshot(HazqComparableBase::Bp, &snapshot, Some(100.0)).unwrap(),
+            0.5,
+        );
+        assert_close(
+            base_value_from_snapshot(HazqComparableBase::Ebit2Ev, &snapshot, Some(100.0)).unwrap(),
             12.0 / 130.0,
         );
-        assert_close(values[HazqComparableBase::Ep.idx()].unwrap(), 0.08);
-        assert_close(values[HazqComparableBase::EpQ.idx()].unwrap(), 0.02);
-        assert_close(values[HazqComparableBase::Ocfp.idx()].unwrap(), 0.06);
         assert_close(
-            values[HazqComparableBase::Sales2Ev.idx()].unwrap(),
+            base_value_from_snapshot(HazqComparableBase::Ep, &snapshot, Some(100.0)).unwrap(),
+            0.08,
+        );
+        assert_close(
+            base_value_from_snapshot(HazqComparableBase::EpQ, &snapshot, Some(100.0)).unwrap(),
+            0.02,
+        );
+        assert_close(
+            base_value_from_snapshot(HazqComparableBase::Ocfp, &snapshot, Some(100.0)).unwrap(),
+            0.06,
+        );
+        assert_close(
+            base_value_from_snapshot(HazqComparableBase::Sales2Ev, &snapshot, Some(100.0)).unwrap(),
             60.0 / 130.0,
         );
-        assert_eq!(base_values_from_snapshot(&snapshot, Some(0.0))[0], None);
+        assert_eq!(
+            base_value_from_snapshot(HazqComparableBase::Dp, &snapshot, Some(100.0)),
+            None
+        );
+        assert_eq!(
+            base_value_from_snapshot(HazqComparableBase::EpPercentile, &snapshot, Some(100.0)),
+            None
+        );
+        assert_eq!(
+            base_value_from_snapshot(HazqComparableBase::Bp, &snapshot, Some(0.0)),
+            None
+        );
     }
 
     #[test]
@@ -1699,8 +1814,59 @@ mod tests {
     }
 
     #[test]
+    fn hazq_comparable_request_plan_maps_outputs_to_needed_bases_and_sources() {
+        let plan = ComparableRequestPlan::from_requested_ids(&["comp_ep_med".to_string()]);
+        assert_eq!(plan.requested_bases(), vec![HazqComparableBase::Ep]);
+        assert!(plan.needs_source_component(HazqComparableBase::Ep, HazqComparableComponent::Med));
+        assert!(!plan.needs_source_component(HazqComparableBase::Ep, HazqComparableComponent::Avg));
+        assert!(!plan.needs_source_component(HazqComparableBase::Bp, HazqComparableComponent::Med));
+
+        let plan = ComparableRequestPlan::from_requested_ids(&["comp_ep_prm_zscore".to_string()]);
+        assert_eq!(plan.requested_bases(), vec![HazqComparableBase::Ep]);
+        assert!(plan.needs_source_component(HazqComparableBase::Ep, HazqComparableComponent::Prm));
+        assert!(!plan
+            .needs_source_component(HazqComparableBase::Ep, HazqComparableComponent::PrmZscore));
+
+        let plan =
+            ComparableRequestPlan::from_requested_ids(&["comp_ep_percentile_med".to_string()]);
+        assert_eq!(
+            plan.requested_bases(),
+            vec![HazqComparableBase::EpPercentile]
+        );
+        assert!(plan.needs_ep_intermediate());
+        assert!(plan.needs_source_component(
+            HazqComparableBase::EpPercentile,
+            HazqComparableComponent::Med
+        ));
+
+        let plan = ComparableRequestPlan::from_requested_ids(&[
+            "comp_ep_med".to_string(),
+            "comp_ep_percentile_avg".to_string(),
+        ]);
+        assert_eq!(
+            plan.requested_bases(),
+            vec![HazqComparableBase::Ep, HazqComparableBase::EpPercentile]
+        );
+        assert!(plan.needs_ep_intermediate());
+    }
+
+    #[test]
     fn hazq_comparable_dependencies_include_all_financial_lines() {
-        let deps = dependencies()
+        let ep_output =
+            HazqComparableValueOutput::new(HazqComparableBase::Ep, HazqComparableComponent::Med);
+        let dp_output =
+            HazqComparableValueOutput::new(HazqComparableBase::Dp, HazqComparableComponent::Med);
+        let ep_dependencies = dependencies_for_output(ep_output);
+        let dp_dependencies = dependencies_for_output(dp_output);
+
+        assert!(!ep_dependencies
+            .iter()
+            .any(|request| request.dataset == DatasetId::StockDividend));
+        assert!(dp_dependencies
+            .iter()
+            .any(|request| request.dataset == DatasetId::StockDividend));
+
+        let deps = ep_dependencies
             .into_iter()
             .map(|request| (request.dataset, request.financial_quarters))
             .collect::<BTreeMap<_, _>>();

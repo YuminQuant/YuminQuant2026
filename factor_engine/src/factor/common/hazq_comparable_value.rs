@@ -37,10 +37,11 @@ const FEATURE_DIM: usize = LIFECYCLE_STAGE_COUNT + CONTINUOUS_FEATURE_COUNT;
 const TOTAL_MV_COLUMN: &str = "total_mv";
 
 const REVENUE_COLUMN: &str = "revenue";
+const NET_PROFIT_COLUMN: &str = "n_income";
 const NET_PROFIT_ATTR_P_COLUMN: &str = "n_income_attr_p";
-const EBIT_COLUMN: &str = "ebit";
 const INCOME_TAX_COLUMN: &str = "income_tax";
 const TOTAL_PROFIT_COLUMN: &str = "total_profit";
+const INT_EXP_COLUMN: &str = "int_exp";
 const RD_EXP_COLUMN: &str = "rd_exp";
 
 const CFO_COLUMN: &str = "n_cashflow_act";
@@ -59,12 +60,13 @@ const NON_CURRENT_LIAB_DUE_1Y_COLUMN: &str = "non_cur_liab_due_1y";
 const LONG_BORROW_COLUMN: &str = "lt_borr";
 const BOND_PAYABLE_COLUMN: &str = "bond_payable";
 
-const INCOME_COLUMNS: [&str; 6] = [
+const INCOME_COLUMNS: [&str; 7] = [
     REVENUE_COLUMN,
+    NET_PROFIT_COLUMN,
     NET_PROFIT_ATTR_P_COLUMN,
-    EBIT_COLUMN,
     INCOME_TAX_COLUMN,
     TOTAL_PROFIT_COLUMN,
+    INT_EXP_COLUMN,
     RD_EXP_COLUMN,
 ];
 
@@ -735,11 +737,14 @@ fn hazq_snapshot_for_stock(
         latest_end,
         NET_PROFIT_ATTR_P_COLUMN,
     ));
-    let ebit_ttm = clean(income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, EBIT_COLUMN));
+    let net_income_ttm =
+        clean(income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, NET_PROFIT_COLUMN));
     let income_tax_ttm =
         clean(income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, INCOME_TAX_COLUMN));
     let total_profit_ttm =
         clean(income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, TOTAL_PROFIT_COLUMN));
+    let interest_expense_ttm =
+        clean(income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, INT_EXP_COLUMN));
     let rd_exp_ttm =
         clean(income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, RD_EXP_COLUMN));
     let cfo_ttm = clean(cashflow.ttm_sum_for_end_date(ts_code, trade_date, latest_end, CFO_COLUMN));
@@ -759,6 +764,7 @@ fn hazq_snapshot_for_stock(
         average_record_value(accounts_receiv, previous_balance, ACCOUNTS_RECEIV_COLUMN);
     let avg_inventories = average_record_value(inventories, previous_balance, INVENTORIES_COLUMN);
     let tax = tax_rate(income_tax_ttm, total_profit_ttm);
+    let ebit_ttm = derived_ebit_ttm(net_income_ttm, income_tax_ttm, interest_expense_ttm);
     let ic = invested_capital(balance_record);
 
     let mut slow_features = [None; SLOW_CONTINUOUS_FEATURE_COUNT];
@@ -1181,6 +1187,17 @@ fn invested_capital(balance: PitFinancialRecordView<'_>) -> Option<f64> {
     finite_value(equity + debt - cash)
 }
 
+fn derived_ebit_ttm(
+    net_income_ttm: Option<f64>,
+    income_tax_ttm: Option<f64>,
+    interest_expense_ttm: Option<f64>,
+) -> Option<f64> {
+    let value = clean_or_zero(net_income_ttm)
+        + clean_or_zero(income_tax_ttm)
+        + clean_or_zero(interest_expense_ttm);
+    finite_value(value)
+}
+
 fn tax_rate(income_tax: Option<f64>, total_profit: Option<f64>) -> Option<f64> {
     let value = safe_div_opt(income_tax, total_profit)?.clamp(0.0, 0.25);
     finite_value(value)
@@ -1547,6 +1564,18 @@ mod tests {
             60.0 / 130.0,
         );
         assert_eq!(base_values_from_snapshot(&snapshot, Some(0.0))[0], None);
+    }
+
+    #[test]
+    fn hazq_comparable_derived_ebit_ttm_uses_net_income_tax_and_interest() {
+        assert_close(
+            derived_ebit_ttm(Some(100.0), Some(20.0), Some(5.0)).unwrap(),
+            125.0,
+        );
+        assert_close(
+            derived_ebit_ttm(Some(100.0), None, Some(5.0)).unwrap(),
+            105.0,
+        );
     }
 
     #[test]

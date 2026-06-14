@@ -17,7 +17,7 @@ use crate::factor::common::{
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 const SFLI2_RAW_ID: &str = "__sfli2_raw";
 const SFLI_WINDOW: usize = 8;
 const CASHFLOW_QUARTERS: usize = 8;
@@ -291,10 +291,14 @@ fn sfli_for_records(
     let cidf = clean_or_zero(cash_t.column(CIDF_COLUMN));
     let lb_t = clean_or_zero(balance_t.column(LONG_BORROW_COLUMN));
     let lb_prev = clean_or_zero(balance_prev.column(LONG_BORROW_COLUMN));
-    let cs_t = clean_or_zero(balance_t.column(EQUITY_COLUMN));
-    let cs_prev = clean_or_zero(balance_prev.column(EQUITY_COLUMN));
+    let cs_t = positive_equity(balance_t.column(EQUITY_COLUMN))?;
+    let cs_prev = positive_equity(balance_prev.column(EQUITY_COLUMN))?;
     let assets = clean(balance_t.column(ASSET_COLUMN)).filter(|value| *value > 0.0)?;
     sfli_from_values(cpacf, lb_t - lb_prev, cs_t - cs_prev, cfo, cidf, assets)
+}
+
+fn positive_equity(value: Option<f64>) -> Option<f64> {
+    clean(value).filter(|value| *value > EPS)
 }
 
 fn sfli_from_values(
@@ -392,6 +396,13 @@ mod tests {
     fn sfli_rejects_invalid_assets() {
         assert!(sfli_from_values(100.0, 10.0, 20.0, 30.0, 5.0, 0.0).is_none());
         assert!(sfli_from_values(100.0, 10.0, 20.0, 30.0, 5.0, -1.0).is_none());
+    }
+
+    #[test]
+    fn positive_equity_rejects_zero_and_negative_values() {
+        assert_eq!(positive_equity(Some(10.0)), Some(10.0));
+        assert_eq!(positive_equity(Some(0.0)), None);
+        assert_eq!(positive_equity(Some(-1.0)), None);
     }
 
     #[test]

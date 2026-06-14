@@ -25,9 +25,10 @@ pub const STABLE_ROIC_ID: &str = "stable_roic";
 pub const STABLE_RONOA_ID: &str = "stable_ronoa";
 pub const FCFFIC_ID: &str = "fcffic";
 
-const VERSION: &str = "0.2.1";
+const VERSION: &str = "0.2.4";
 const HISTORY_WINDOW: usize = 12;
 const BALANCE_HISTORY_QUARTERS: usize = HISTORY_WINDOW + 1;
+const STABILITY_MIN_PERIODS: usize = 1;
 const EPS: f64 = 1e-12;
 const ROE_REGRESSION_CLIP: f64 = 3.5;
 
@@ -40,7 +41,6 @@ const RAW_RONOA_STABILITY_ID: &str = "__comprehensive_profitability_ronoa_stabil
 const RAW_FCFFIC_ID: &str = "__comprehensive_profitability_fcffic";
 
 const NET_PROFIT_ATTR_P_COLUMN: &str = "n_income_attr_p";
-const NET_PROFIT_COLUMN: &str = "n_income";
 const INCOME_TAX_COLUMN: &str = "income_tax";
 const TOTAL_PROFIT_COLUMN: &str = "total_profit";
 const INT_EXP_COLUMN: &str = "int_exp";
@@ -71,9 +71,8 @@ const INVEST_REAL_ESTATE_COLUMN: &str = "invest_real_estate";
 const DERIV_ASSETS_COLUMN: &str = "deriv_assets";
 const INVEST_AS_RECEIV_COLUMN: &str = "invest_as_receiv";
 
-const INCOME_COLUMNS: [&str; 9] = [
+const INCOME_COLUMNS: [&str; 8] = [
     NET_PROFIT_ATTR_P_COLUMN,
-    NET_PROFIT_COLUMN,
     INCOME_TAX_COLUMN,
     TOTAL_PROFIT_COLUMN,
     INT_EXP_COLUMN,
@@ -187,17 +186,17 @@ pub fn spec(output: ComprehensiveProfitabilityOutput) -> FactorSpec {
         ComprehensiveProfitabilityOutput::StableRoe => (
             STABLE_ROE_ID,
             vec!["Stable ROE".to_string(), "Leverage Residual Stable ROE".to_string()],
-            "Stable ROE factor. It uses PIT single-quarter ROE, z-scores and clips both ROE and the equity multiplier to +/-3.5 before cross-sectional residualization, combines current ROE residual z-score with negative 12-quarter residual volatility z-score, then neutralizes by Barra SIZE and SW sector and z-scores.",
+            "Stable ROE factor. It uses PIT single-quarter ROE, z-scores and clips both ROE and the equity multiplier to +/-3.5 before cross-sectional residualization, combines current ROE residual z-score with negative rolling residual volatility z-score over up to 12 quarters with min_periods=1, then neutralizes by Barra SIZE and SW sector and z-scores.",
         ),
         ComprehensiveProfitabilityOutput::StableRoic => (
             STABLE_ROIC_ID,
             vec!["Stable ROIC".to_string()],
-            "Stable ROIC factor. It derives single-quarter EBIT as net income plus income tax plus interest expense, computes non-annualized ROIC over invested capital, combines current ROIC z-score with negative 12-quarter ROIC volatility z-score, then neutralizes by Barra SIZE and SW sector and z-scores.",
+            "Stable ROIC factor. It uses PIT single-quarter NOPLAT as total profit plus interest expense less income tax, computes non-annualized ROIC over invested capital, combines current ROIC z-score with negative rolling ROIC volatility z-score over up to 12 quarters with min_periods=1, then neutralizes by Barra SIZE and SW sector and z-scores.",
         ),
         ComprehensiveProfitabilityOutput::StableRonoa => (
             STABLE_RONOA_ID,
             vec!["Stable RONOA".to_string()],
-            "Stable RONOA factor. It computes operating profit over net operating assets where NOA equals shareholder equity plus interest-bearing debt minus expanded financial assets, combines current RONOA z-score with negative 12-quarter RONOA volatility z-score, then neutralizes by Barra SIZE and SW sector and z-scores.",
+            "Stable RONOA factor. It computes operating profit over positive net operating assets where NOA equals shareholder equity plus interest-bearing debt minus expanded financial assets, combines current RONOA z-score with negative rolling RONOA volatility z-score over up to 12 quarters with min_periods=1, then neutralizes by Barra SIZE and SW sector and z-scores.",
         ),
         ComprehensiveProfitabilityOutput::Fcffic => (
             FCFFIC_ID,
@@ -604,13 +603,9 @@ fn roic_for_records(
     balance: PitFinancialRecordView<'_>,
     cashflow: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
-    let ebit = derived_single_quarter_ebit(income)?;
-    let tax = tax_rate(
-        income.column(INCOME_TAX_COLUMN),
-        income.column(TOTAL_PROFIT_COLUMN),
-    );
+    let noplat = roic_noplat(income)?;
     let ic = invested_capital(balance, cashflow)?;
-    safe_div(ebit * (1.0 - tax), ic)
+    safe_div(noplat, ic)
 }
 
 fn ronoa_for_records(
@@ -641,32 +636,22 @@ fn operating_profit(income: PitFinancialRecordView<'_>) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
-fn derived_single_quarter_ebit(income: PitFinancialRecordView<'_>) -> Option<f64> {
-    derived_single_quarter_ebit_from_values(
-        income.column(NET_PROFIT_COLUMN),
-        income.column(INCOME_TAX_COLUMN),
+fn roic_noplat(income: PitFinancialRecordView<'_>) -> Option<f64> {
+    roic_noplat_from_values(
+        income.column(TOTAL_PROFIT_COLUMN),
         income.column(INT_EXP_COLUMN),
+        income.column(INCOME_TAX_COLUMN),
     )
 }
 
-fn derived_single_quarter_ebit_from_values(
-    net_income: Option<f64>,
-    income_tax: Option<f64>,
+fn roic_noplat_from_values(
+    total_profit: Option<f64>,
     interest_expense: Option<f64>,
+    income_tax: Option<f64>,
 ) -> Option<f64> {
     let value =
-        clean_or_zero(net_income) + clean_or_zero(income_tax) + clean_or_zero(interest_expense);
+        clean_or_zero(total_profit) + clean_or_zero(interest_expense) - clean_or_zero(income_tax);
     value.is_finite().then_some(value)
-}
-
-fn tax_rate(income_tax: Option<f64>, total_profit: Option<f64>) -> f64 {
-    let income_tax = clean_or_zero(income_tax);
-    match clean(total_profit) {
-        Some(total_profit) if total_profit.abs() > EPS => {
-            (income_tax / total_profit).clamp(0.0, 0.25)
-        }
-        _ => 0.0,
-    }
 }
 
 fn invested_capital(
@@ -699,7 +684,7 @@ fn net_operating_assets_from_values(
     financial_assets: f64,
 ) -> Option<f64> {
     let value = equity + financial_liabilities - financial_assets;
-    value.is_finite().then_some(value)
+    (value > EPS && value.is_finite()).then_some(value)
 }
 
 fn interest_bearing_debt(balance: PitFinancialRecordView<'_>) -> f64 {
@@ -741,27 +726,30 @@ where
         .iter()
         .filter_map(|quarter| f(quarter))
         .collect::<Vec<_>>();
-    negative_sample_std_strict(&values, HISTORY_WINDOW)
+    negative_sample_std_min_periods(&values, STABILITY_MIN_PERIODS)
 }
 
 fn stability_from_options(values: &[Option<f64>]) -> Option<f64> {
     let values = values
         .iter()
-        .map(|value| clean(*value))
-        .collect::<Option<Vec<_>>>()?;
-    negative_sample_std_strict(&values, HISTORY_WINDOW)
+        .filter_map(|value| clean(*value))
+        .collect::<Vec<_>>();
+    negative_sample_std_min_periods(&values, STABILITY_MIN_PERIODS)
 }
 
-fn negative_sample_std_strict(values: &[f64], required_len: usize) -> Option<f64> {
-    if values.len() != required_len || values.iter().any(|value| !value.is_finite()) {
+fn negative_sample_std_min_periods(values: &[f64], min_periods: usize) -> Option<f64> {
+    if values.len() < min_periods || values.iter().any(|value| !value.is_finite()) {
         return None;
     }
     sample_std(values).map(|std| -std)
 }
 
 fn sample_std(values: &[f64]) -> Option<f64> {
-    if values.len() < 2 {
+    if values.is_empty() {
         return None;
+    }
+    if values.len() == 1 {
+        return Some(0.0);
     }
     let mean = values.iter().sum::<f64>() / values.len() as f64;
     let variance = values
@@ -1011,23 +999,13 @@ mod tests {
     }
 
     #[test]
-    fn tax_rate_clamps_and_defaults_missing_to_zero() {
-        assert_eq!(tax_rate(Some(10.0), Some(100.0)), 0.10);
-        assert_eq!(tax_rate(Some(50.0), Some(100.0)), 0.25);
-        assert_eq!(tax_rate(Some(-5.0), Some(100.0)), 0.0);
-        assert_eq!(tax_rate(Some(1.0), Some(0.0)), 0.0);
-        assert_eq!(tax_rate(None, Some(100.0)), 0.0);
-        assert_eq!(tax_rate(Some(1.0), None), 0.0);
-    }
-
-    #[test]
-    fn derived_single_quarter_ebit_uses_net_income_tax_and_interest() {
+    fn roic_noplat_uses_total_profit_interest_and_income_tax() {
         assert_close(
-            derived_single_quarter_ebit_from_values(Some(100.0), Some(20.0), Some(5.0)),
-            Some(125.0),
+            roic_noplat_from_values(Some(100.0), Some(5.0), Some(20.0)),
+            Some(85.0),
         );
         assert_close(
-            derived_single_quarter_ebit_from_values(Some(100.0), None, Some(5.0)),
+            roic_noplat_from_values(Some(100.0), Some(5.0), None),
             Some(105.0),
         );
     }
@@ -1053,18 +1031,22 @@ mod tests {
             net_operating_assets_from_values(1_000.0, 250.0, 150.0),
             Some(1_100.0),
         );
+        assert_eq!(net_operating_assets_from_values(100.0, 50.0, 150.0), None);
+        assert_eq!(net_operating_assets_from_values(100.0, 50.0, 200.0), None);
     }
 
     #[test]
-    fn stability_requires_strict_history_and_uses_negative_sample_std() {
+    fn stability_uses_min_periods_one_and_negative_sample_std() {
         assert_eq!(
-            negative_sample_std_strict(&[1.0, 2.0, 3.0], HISTORY_WINDOW),
+            negative_sample_std_min_periods(&[], STABILITY_MIN_PERIODS),
             None
         );
-        let values = [
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
-        ];
-        let mean = 6.5;
+        assert_close(
+            negative_sample_std_min_periods(&[5.0], STABILITY_MIN_PERIODS),
+            Some(0.0),
+        );
+        let values = [1.0, 2.0, 3.0];
+        let mean = 2.0;
         let variance = values
             .iter()
             .map(|value| {
@@ -1072,15 +1054,15 @@ mod tests {
                 diff * diff
             })
             .sum::<f64>()
-            / 11.0;
+            / 2.0;
         assert_close(
-            negative_sample_std_strict(&values, HISTORY_WINDOW),
+            negative_sample_std_min_periods(&values, STABILITY_MIN_PERIODS),
             Some(-variance.sqrt()),
         );
     }
 
     #[test]
-    fn residual_stability_requires_twelve_valid_residuals() {
+    fn residual_stability_uses_available_residuals() {
         let values = [
             Some(1.0),
             Some(2.0),
@@ -1098,7 +1080,20 @@ mod tests {
         assert!(stability_from_options(&values).is_some());
         let mut missing = values;
         missing[3] = None;
-        assert_eq!(stability_from_options(&missing), None);
+        assert!(stability_from_options(&missing).is_some());
+        assert_eq!(stability_from_options(&[None, None]), None);
+    }
+
+    #[test]
+    fn ronoa_stability_keeps_negative_values_when_denominator_was_valid() {
+        let mut quarters = [empty_quarter_profitability(); HISTORY_WINDOW];
+        quarters[0].ronoa = Some(-1.0);
+        quarters[1].ronoa = Some(1.0);
+
+        assert_close(
+            stability_from_quarters(&quarters, |quarter| quarter.ronoa),
+            Some(-(2.0_f64).sqrt()),
+        );
     }
 
     #[test]

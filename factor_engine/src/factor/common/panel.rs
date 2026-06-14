@@ -327,7 +327,12 @@ impl DailyPanel {
 
 fn is_a_stock_code(ts_code: &str) -> bool {
     let upper = ts_code.to_ascii_uppercase();
-    upper.ends_with(".SH") || upper.ends_with(".SZ") || upper.ends_with(".BJ")
+    let Some((symbol, exchange)) = upper.split_once('.') else {
+        return false;
+    };
+    symbol.len() == 6
+        && symbol.bytes().all(|byte| byte.is_ascii_digit())
+        && matches!(exchange, "SH" | "SZ" | "BJ")
 }
 
 #[derive(Clone, Debug)]
@@ -784,7 +789,7 @@ mod tests {
     };
     use std::sync::Arc;
 
-    use super::DailyPanel;
+    use super::{is_a_stock_code, DailyPanel};
 
     fn assert_option_close(actual: Option<f64>, expected: Option<f64>) {
         match (actual, expected) {
@@ -921,6 +926,8 @@ mod tests {
                     Some("000001.SZ".to_string()),
                     Some("600000.SH".to_string()),
                     Some("920001.BJ".to_string()),
+                    Some("A26018.SZ".to_string()),
+                    Some("TS0018.SH".to_string()),
                     Some("AAPL.US".to_string()),
                 ]),
             ),
@@ -931,11 +938,13 @@ mod tests {
                     Some(20260101),
                     Some(20260101),
                     Some(20260101),
+                    Some(20260101),
+                    Some(20260101),
                 ]),
             ),
             (
                 "delist_date".to_string(),
-                ColumnData::I32(vec![None, Some(20260102), None, None]),
+                ColumnData::I32(vec![None, Some(20260102), None, None, None, None]),
             ),
         ]))
         .expect("stock basic");
@@ -958,6 +967,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![false, true, true, true, true, true, true, false, true]
         );
+    }
+
+    #[test]
+    fn stock_code_filter_requires_six_digits_and_a_share_suffix() {
+        assert!(is_a_stock_code("000001.SZ"));
+        assert!(is_a_stock_code("600000.SH"));
+        assert!(is_a_stock_code("920001.bj"));
+        assert!(!is_a_stock_code("A26018.SZ"));
+        assert!(!is_a_stock_code("TS0018.SH"));
+        assert!(!is_a_stock_code("00001.SZ"));
+        assert!(!is_a_stock_code("000001.US"));
     }
 
     #[test]

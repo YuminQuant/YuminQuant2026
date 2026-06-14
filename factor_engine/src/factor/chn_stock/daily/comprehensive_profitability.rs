@@ -25,10 +25,11 @@ pub const STABLE_ROIC_ID: &str = "stable_roic";
 pub const STABLE_RONOA_ID: &str = "stable_ronoa";
 pub const FCFFIC_ID: &str = "fcffic";
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.1";
 const HISTORY_WINDOW: usize = 12;
 const BALANCE_HISTORY_QUARTERS: usize = HISTORY_WINDOW + 1;
 const EPS: f64 = 1e-12;
+const ROE_REGRESSION_CLIP: f64 = 3.5;
 
 const RAW_ROE_RESID_ID: &str = "__comprehensive_profitability_roe_resid";
 const RAW_ROE_RESID_STABILITY_ID: &str = "__comprehensive_profitability_roe_resid_stability";
@@ -186,7 +187,7 @@ pub fn spec(output: ComprehensiveProfitabilityOutput) -> FactorSpec {
         ComprehensiveProfitabilityOutput::StableRoe => (
             STABLE_ROE_ID,
             vec!["Stable ROE".to_string(), "Leverage Residual Stable ROE".to_string()],
-            "Stable ROE factor. It uses PIT single-quarter ROE, residualizes ROE against the equity multiplier cross-sectionally before stability calculation, combines current ROE residual z-score with negative 12-quarter residual volatility z-score, then neutralizes by Barra SIZE and SW sector and z-scores.",
+            "Stable ROE factor. It uses PIT single-quarter ROE, z-scores and clips both ROE and the equity multiplier to +/-3.5 before cross-sectional residualization, combines current ROE residual z-score with negative 12-quarter residual volatility z-score, then neutralizes by Barra SIZE and SW sector and z-scores.",
         ),
         ComprehensiveProfitabilityOutput::StableRoic => (
             STABLE_ROIC_ID,
@@ -424,7 +425,13 @@ fn profitability_raw_columns(
                     snapshot.and_then(|snapshot| snapshot.quarters[quarter_idx].equity_multiplier)
                 })
                 .collect::<Vec<_>>();
-            roe_residuals_by_quarter.push(cs_regression_residual(&roe_values, &equity_multipliers));
+            let roe_regression_values = zscore_clip_for_regression(&roe_values);
+            let equity_multiplier_regression_values =
+                zscore_clip_for_regression(&equity_multipliers);
+            roe_residuals_by_quarter.push(cs_regression_residual(
+                &roe_regression_values,
+                &equity_multiplier_regression_values,
+            ));
         }
 
         let date_offset = date_idx * instrument_count;
@@ -777,6 +784,15 @@ fn postprocess_subfactor(
     neutralize_size_sector(values, panel, data)?.cs(cs_zscore)
 }
 
+fn zscore_clip_for_regression(values: &[Option<f64>]) -> Vec<Option<f64>> {
+    cs_zscore(values)
+        .into_iter()
+        .map(|value| {
+            clean(value).map(|value| value.clamp(-ROE_REGRESSION_CLIP, ROE_REGRESSION_CLIP))
+        })
+        .collect()
+}
+
 fn sum_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> {
     left.zip_binary(right, |left, right| match (clean(left), clean(right)) {
         (Some(left), Some(right)) => Some(left + right),
@@ -1083,6 +1099,19 @@ mod tests {
         let mut missing = values;
         missing[3] = None;
         assert_eq!(stability_from_options(&missing), None);
+    }
+
+    #[test]
+    fn roe_regression_inputs_are_zscored_and_clipped() {
+        let mut values = vec![Some(0.0); 20];
+        values[19] = Some(1000.0);
+
+        let transformed = zscore_clip_for_regression(&values);
+
+        assert_close(transformed[19], Some(ROE_REGRESSION_CLIP));
+        assert!(transformed[..19]
+            .iter()
+            .all(|value| value.is_some_and(|value| value > -ROE_REGRESSION_CLIP && value < 0.0)));
     }
 
     #[test]

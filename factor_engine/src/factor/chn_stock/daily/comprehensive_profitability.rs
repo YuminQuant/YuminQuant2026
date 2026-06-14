@@ -18,15 +18,20 @@ use crate::factor::common::{
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_regression_residual, cs_zscore};
 
-const VERSION: &str = "0.1.2";
-const FACTOR_ID: &str = "comprehensive_profitability";
+pub const PROVIDER_KEY: &str = "stock|daily|comprehensive_profitability";
+pub const COMPREHENSIVE_PROFITABILITY_ID: &str = "comprehensive_profitability";
+pub const STABLE_ROE_ID: &str = "stable_roe";
+pub const STABLE_ROIC_ID: &str = "stable_roic";
+pub const STABLE_RONOA_ID: &str = "stable_ronoa";
+pub const FCFFIC_ID: &str = "fcffic";
+
+const VERSION: &str = "0.2.0";
 const HISTORY_WINDOW: usize = 12;
 const BALANCE_HISTORY_QUARTERS: usize = HISTORY_WINDOW + 1;
 const EPS: f64 = 1e-12;
 
-const RAW_ROE_ID: &str = "__comprehensive_profitability_roe";
-const RAW_ROE_STABILITY_ID: &str = "__comprehensive_profitability_roe_stability";
-const RAW_EQUITY_MULTIPLIER_ID: &str = "__comprehensive_profitability_equity_multiplier";
+const RAW_ROE_RESID_ID: &str = "__comprehensive_profitability_roe_resid";
+const RAW_ROE_RESID_STABILITY_ID: &str = "__comprehensive_profitability_roe_resid_stability";
 const RAW_ROIC_ID: &str = "__comprehensive_profitability_roic";
 const RAW_ROIC_STABILITY_ID: &str = "__comprehensive_profitability_roic_stability";
 const RAW_RONOA_ID: &str = "__comprehensive_profitability_ronoa";
@@ -49,16 +54,67 @@ const CASH_EQUIVALENTS_END_COLUMN: &str = "c_cash_equ_end_period";
 
 const EQUITY_COLUMN: &str = "total_hldr_eqy_exc_min_int";
 const TOTAL_ASSETS_COLUMN: &str = "total_assets";
-const TOTAL_LIAB_COLUMN: &str = "total_liab";
 const SHORT_BORROW_COLUMN: &str = "st_borr";
 const NON_CURRENT_LIAB_DUE_1Y_COLUMN: &str = "non_cur_liab_due_1y";
 const LONG_BORROW_COLUMN: &str = "lt_borr";
 const BOND_PAYABLE_COLUMN: &str = "bond_payable";
+const MONEY_CAP_COLUMN: &str = "money_cap";
+const TIME_DEPOSITS_COLUMN: &str = "time_deposits";
+const TRAD_ASSET_COLUMN: &str = "trad_asset";
+const DIV_RECEIV_COLUMN: &str = "div_receiv";
+const INT_RECEIV_COLUMN: &str = "int_receiv";
+const FA_AVAIL_FOR_SALE_COLUMN: &str = "fa_avail_for_sale";
+const HTM_INVEST_COLUMN: &str = "htm_invest";
+const LT_EQT_INVEST_COLUMN: &str = "lt_eqt_invest";
+const INVEST_REAL_ESTATE_COLUMN: &str = "invest_real_estate";
+const DERIV_ASSETS_COLUMN: &str = "deriv_assets";
+const INVEST_AS_RECEIV_COLUMN: &str = "invest_as_receiv";
+
+const INCOME_COLUMNS: [&str; 9] = [
+    NET_PROFIT_ATTR_P_COLUMN,
+    NET_PROFIT_COLUMN,
+    INCOME_TAX_COLUMN,
+    TOTAL_PROFIT_COLUMN,
+    INT_EXP_COLUMN,
+    OPERATE_PROFIT_COLUMN,
+    FIN_EXP_COLUMN,
+    INVEST_INCOME_COLUMN,
+    FV_VALUE_CHG_GAIN_COLUMN,
+];
+const CASHFLOW_COLUMNS: [&str; 3] = [CFO_COLUMN, CAPEX_COLUMN, CASH_EQUIVALENTS_END_COLUMN];
+const BALANCE_COLUMNS: [&str; 17] = [
+    EQUITY_COLUMN,
+    TOTAL_ASSETS_COLUMN,
+    SHORT_BORROW_COLUMN,
+    NON_CURRENT_LIAB_DUE_1Y_COLUMN,
+    LONG_BORROW_COLUMN,
+    BOND_PAYABLE_COLUMN,
+    MONEY_CAP_COLUMN,
+    TIME_DEPOSITS_COLUMN,
+    TRAD_ASSET_COLUMN,
+    DIV_RECEIV_COLUMN,
+    INT_RECEIV_COLUMN,
+    FA_AVAIL_FOR_SALE_COLUMN,
+    HTM_INVEST_COLUMN,
+    LT_EQT_INVEST_COLUMN,
+    INVEST_REAL_ESTATE_COLUMN,
+    DERIV_ASSETS_COLUMN,
+    INVEST_AS_RECEIV_COLUMN,
+];
 
 pub struct StockDailyComprehensiveProfitability;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComprehensiveProfitabilityOutput {
+    ComprehensiveProfitability,
+    StableRoe,
+    StableRoic,
+    StableRonoa,
+    Fcffic,
+}
+
 #[derive(Default)]
-struct ComprehensiveProfitabilityState {
+pub struct ComprehensiveProfitabilityState {
     raw_cache: EventDrivenCrossSectionCache,
     snapshot_cache: InstrumentAlignedSnapshotCache<ProfitabilitySnapshot>,
 }
@@ -69,58 +125,11 @@ pub fn create() -> Box<dyn Factor> {
 
 impl Factor for StockDailyComprehensiveProfitability {
     fn spec(&self) -> FactorSpec {
-        FactorSpec {
-            id: FACTOR_ID.to_string(),
-            aliases: vec![
-                "Comprehensive Profitability".to_string(),
-                "Stable ROE ROIC RONOA FCFFIC".to_string(),
-            ],
-            name: FACTOR_ID.to_string(),
-            asset_class: AssetClass::Stock,
-            frequency: Frequency::Daily,
-            version: VERSION.to_string(),
-            tags: tags(),
-            description: "Comprehensive profitability factor. It uses PIT single-quarter financials to build stable ROE, stable ROIC, stable RONOA, and FCFFIC. Single-quarter EBIT is derived as net income plus income tax plus interest expense, with profit, expense, and cashflow line items filled as zero when missing. ROE/ROIC/RONOA stability is the negative 12-quarter sample standard deviation; stable ROE is additionally residualized against the equity multiplier. Each subfactor is neutralized by Barra SIZE and SW sector, z-scored, then available subfactors are equally averaged without winsorization.".to_string(),
-            dependencies: vec![
-                DataRequest::financial_quarters(
-                    DatasetId::StockIncome,
-                    &[
-                        NET_PROFIT_ATTR_P_COLUMN,
-                        NET_PROFIT_COLUMN,
-                        INCOME_TAX_COLUMN,
-                        TOTAL_PROFIT_COLUMN,
-                        INT_EXP_COLUMN,
-                        OPERATE_PROFIT_COLUMN,
-                        FIN_EXP_COLUMN,
-                        INVEST_INCOME_COLUMN,
-                        FV_VALUE_CHG_GAIN_COLUMN,
-                    ],
-                    HISTORY_WINDOW,
-                ),
-                DataRequest::financial_quarters(
-                    DatasetId::StockCashFlow,
-                    &[CFO_COLUMN, CAPEX_COLUMN, CASH_EQUIVALENTS_END_COLUMN],
-                    HISTORY_WINDOW,
-                ),
-                DataRequest::financial_quarters(
-                    DatasetId::StockBalanceSheet,
-                    &[
-                        EQUITY_COLUMN,
-                        TOTAL_ASSETS_COLUMN,
-                        TOTAL_LIAB_COLUMN,
-                        SHORT_BORROW_COLUMN,
-                        NON_CURRENT_LIAB_DUE_1Y_COLUMN,
-                        LONG_BORROW_COLUMN,
-                        BOND_PAYABLE_COLUMN,
-                    ],
-                    BALANCE_HISTORY_QUARTERS,
-                ),
-                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
-                DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
-            ],
-            intraday_raw_dependencies: Vec::new(),
-            lookback: Lookback { trading_days: 0 },
-        }
+        spec(ComprehensiveProfitabilityOutput::ComprehensiveProfitability)
+    }
+
+    fn compute_provider_key(&self) -> String {
+        PROVIDER_KEY.to_string()
     }
 
     fn update_policy(&self) -> FactorUpdatePolicy {
@@ -131,10 +140,21 @@ impl Factor for StockDailyComprehensiveProfitability {
         Box::new(ComprehensiveProfitabilityState::default())
     }
 
-    fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let mut snapshot_cache = InstrumentAlignedSnapshotCache::default();
-        let raw_series = self.compute_raw_series(data, &mut snapshot_cache)?;
-        self.finalize_raw_series(data, raw_series)
+    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        let requested = [COMPREHENSIVE_PROFITABILITY_ID.to_string()];
+        compute_requested(&requested, context, data)?
+            .into_iter()
+            .find(|series| series.spec.id == COMPREHENSIVE_PROFITABILITY_ID)
+            .ok_or_else(|| err("comprehensive profitability provider did not return composite"))
+    }
+
+    fn compute_many(
+        &self,
+        requested_ids: &[String],
+        context: &FactorContext,
+        data: &DataPool,
+    ) -> Result<Vec<FactorSeries>> {
+        compute_requested(requested_ids, context, data)
     }
 
     fn compute_many_stateful(
@@ -144,140 +164,183 @@ impl Factor for StockDailyComprehensiveProfitability {
         data: &DataPool,
         state: &mut (dyn Any + Send),
     ) -> Result<Vec<FactorSeries>> {
-        if requested_ids.iter().all(|id| id != FACTOR_ID) {
-            return Ok(Vec::new());
-        }
         let state = state
             .downcast_mut::<ComprehensiveProfitabilityState>()
             .ok_or_else(|| {
-                err("comprehensive_profitability received incompatible event cache state")
+                err("comprehensive profitability provider received incompatible state")
             })?;
-        let income = data.financial_reader(
-            DatasetId::StockIncome,
-            ReportTypePreference::income_single_quarter(),
-        )?;
-        let cashflow = data.financial_reader(
-            DatasetId::StockCashFlow,
-            ReportTypePreference::income_single_quarter(),
-        )?;
-        let balance = data.financial_reader(
-            DatasetId::StockBalanceSheet,
-            ReportTypePreference::balance_sheet_consolidated(),
-        )?;
-        let schedule = FinancialEventSchedule::from_pit_readers(&[
-            income.clone(),
-            cashflow.clone(),
-            balance.clone(),
-        ]);
-        let raw_specs = raw_specs();
-        let raw_cache = &mut state.raw_cache;
-        let snapshot_cache = &mut state.snapshot_cache;
-        let panel = data.stock_universe_panel()?;
-        let raw_series = compute_financial_event_snapshot_streaming_on_panel(
-            requested_ids,
-            context,
-            data,
-            panel,
-            raw_cache,
-            &schedule,
-            &raw_specs,
-            |_, _, data| {
-                self.compute_raw_series_with_prepared_inputs(
-                    data,
-                    &income,
-                    &cashflow,
-                    &balance,
-                    snapshot_cache,
-                )
-            },
-        )?;
-        self.finalize_raw_series(data, raw_series)
-            .map(|series| vec![series])
+        compute_requested_stateful(requested_ids, context, data, state)
     }
 }
 
-impl StockDailyComprehensiveProfitability {
-    fn compute_raw_series(
-        &self,
-        data: &DataPool,
-        snapshot_cache: &mut InstrumentAlignedSnapshotCache<ProfitabilitySnapshot>,
-    ) -> Result<Vec<FactorSeries>> {
-        let income = data.financial_reader(
-            DatasetId::StockIncome,
-            ReportTypePreference::income_single_quarter(),
-        )?;
-        let cashflow = data.financial_reader(
-            DatasetId::StockCashFlow,
-            ReportTypePreference::income_single_quarter(),
-        )?;
-        let balance = data.financial_reader(
-            DatasetId::StockBalanceSheet,
-            ReportTypePreference::balance_sheet_consolidated(),
-        )?;
-        self.compute_raw_series_with_prepared_inputs(
-            data,
-            &income,
-            &cashflow,
-            &balance,
-            snapshot_cache,
-        )
+pub fn spec(output: ComprehensiveProfitabilityOutput) -> FactorSpec {
+    let (id, aliases, description) = match output {
+        ComprehensiveProfitabilityOutput::ComprehensiveProfitability => (
+            COMPREHENSIVE_PROFITABILITY_ID,
+            vec![
+                "Comprehensive Profitability".to_string(),
+                "Deprecated Stable ROE ROIC RONOA FCFFIC Composite".to_string(),
+            ],
+            "Deprecated composite profitability factor retained for backward compatibility. Use stable_roe, stable_roic, stable_ronoa, and fcffic as separate factors.",
+        ),
+        ComprehensiveProfitabilityOutput::StableRoe => (
+            STABLE_ROE_ID,
+            vec!["Stable ROE".to_string(), "Leverage Residual Stable ROE".to_string()],
+            "Stable ROE factor. It uses PIT single-quarter ROE, residualizes ROE against the equity multiplier cross-sectionally before stability calculation, combines current ROE residual z-score with negative 12-quarter residual volatility z-score, then neutralizes by Barra SIZE and SW sector and z-scores.",
+        ),
+        ComprehensiveProfitabilityOutput::StableRoic => (
+            STABLE_ROIC_ID,
+            vec!["Stable ROIC".to_string()],
+            "Stable ROIC factor. It derives single-quarter EBIT as net income plus income tax plus interest expense, computes non-annualized ROIC over invested capital, combines current ROIC z-score with negative 12-quarter ROIC volatility z-score, then neutralizes by Barra SIZE and SW sector and z-scores.",
+        ),
+        ComprehensiveProfitabilityOutput::StableRonoa => (
+            STABLE_RONOA_ID,
+            vec!["Stable RONOA".to_string()],
+            "Stable RONOA factor. It computes operating profit over net operating assets where NOA equals shareholder equity plus interest-bearing debt minus expanded financial assets, combines current RONOA z-score with negative 12-quarter RONOA volatility z-score, then neutralizes by Barra SIZE and SW sector and z-scores.",
+        ),
+        ComprehensiveProfitabilityOutput::Fcffic => (
+            FCFFIC_ID,
+            vec!["FCFFIC".to_string(), "FCFF to Invested Capital".to_string()],
+            "FCFFIC factor. It computes operating cash flow minus capex over invested capital, then neutralizes by Barra SIZE and SW sector and z-scores.",
+        ),
+    };
+
+    FactorSpec {
+        id: id.to_string(),
+        aliases,
+        name: id.to_string(),
+        asset_class: AssetClass::Stock,
+        frequency: Frequency::Daily,
+        version: VERSION.to_string(),
+        tags: tags_for_output(output),
+        description: description.to_string(),
+        dependencies: dependencies(),
+        intraday_raw_dependencies: Vec::new(),
+        lookback: Lookback { trading_days: 0 },
+    }
+}
+
+pub fn compute_requested(
+    requested_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+) -> Result<Vec<FactorSeries>> {
+    let mut state = ComprehensiveProfitabilityState::default();
+    compute_requested_stateful(requested_ids, context, data, &mut state)
+}
+
+pub fn compute_requested_stateful(
+    requested_ids: &[String],
+    context: &FactorContext,
+    data: &DataPool,
+    state: &mut ComprehensiveProfitabilityState,
+) -> Result<Vec<FactorSeries>> {
+    let outputs = outputs_from_requested(requested_ids);
+    if outputs.is_empty() {
+        return Ok(Vec::new());
     }
 
-    fn compute_raw_series_with_prepared_inputs(
-        &self,
-        data: &DataPool,
-        income: &FinancialPitReader<'_>,
-        cashflow: &FinancialPitReader<'_>,
-        balance: &FinancialPitReader<'_>,
-        snapshot_cache: &mut InstrumentAlignedSnapshotCache<ProfitabilitySnapshot>,
-    ) -> Result<Vec<FactorSeries>> {
-        let panel = data.stock_universe_panel()?;
-        let columns = profitability_raw_columns(&panel, income, cashflow, balance, snapshot_cache)?;
-        Ok(columns.into_factor_series())
-    }
+    let income = data.financial_reader(
+        DatasetId::StockIncome,
+        ReportTypePreference::income_single_quarter(),
+    )?;
+    let cashflow = data.financial_reader(
+        DatasetId::StockCashFlow,
+        ReportTypePreference::income_single_quarter(),
+    )?;
+    let balance = data.financial_reader(
+        DatasetId::StockBalanceSheet,
+        ReportTypePreference::balance_sheet_consolidated(),
+    )?;
+    let schedule = FinancialEventSchedule::from_pit_readers(&[
+        income.clone(),
+        cashflow.clone(),
+        balance.clone(),
+    ]);
+    let raw_specs = raw_specs();
+    let raw_cache = &mut state.raw_cache;
+    let snapshot_cache = &mut state.snapshot_cache;
+    let panel = data.stock_universe_panel()?;
+    let raw_series = compute_financial_event_snapshot_streaming_on_panel(
+        requested_ids,
+        context,
+        data,
+        panel,
+        raw_cache,
+        &schedule,
+        &raw_specs,
+        |_, _, data| {
+            compute_raw_series_with_prepared_inputs(
+                data,
+                &income,
+                &cashflow,
+                &balance,
+                snapshot_cache,
+            )
+        },
+    )?;
+    finalize_raw_series(data, raw_series, &outputs)
+}
 
-    fn finalize_raw_series(
-        &self,
-        data: &DataPool,
-        raw_series: Vec<FactorSeries>,
-    ) -> Result<FactorSeries> {
-        let panel = data.stock_universe_panel()?;
-        let raw = raw_columns_from_series(&panel, raw_series)?;
-        let stable_roe_pre =
-            average_pair(&raw.roe.cs(cs_zscore)?, &raw.roe_stability.cs(cs_zscore)?)?;
-        let stable_roe =
-            stable_roe_pre.cs_binary(&raw.equity_multiplier, cs_regression_residual)?;
-        let stable_roic =
-            average_pair(&raw.roic.cs(cs_zscore)?, &raw.roic_stability.cs(cs_zscore)?)?;
-        let stable_ronoa = average_pair(
-            &raw.ronoa.cs(cs_zscore)?,
-            &raw.ronoa_stability.cs(cs_zscore)?,
-        )?;
+fn compute_raw_series_with_prepared_inputs(
+    data: &DataPool,
+    income: &FinancialPitReader<'_>,
+    cashflow: &FinancialPitReader<'_>,
+    balance: &FinancialPitReader<'_>,
+    snapshot_cache: &mut InstrumentAlignedSnapshotCache<ProfitabilitySnapshot>,
+) -> Result<Vec<FactorSeries>> {
+    let panel = data.stock_universe_panel()?;
+    let columns = profitability_raw_columns(panel, income, cashflow, balance, snapshot_cache)?;
+    Ok(columns.into_factor_series())
+}
 
-        let processed_roe = postprocess_subfactor(&stable_roe, &panel, data)?;
-        let processed_roic = postprocess_subfactor(&stable_roic, &panel, data)?;
-        let processed_ronoa = postprocess_subfactor(&stable_ronoa, &panel, data)?;
-        let processed_fcffic = postprocess_subfactor(&raw.fcffic, &panel, data)?;
-        let final_factor = average_available_subfactors(
-            &processed_roe,
-            &processed_roic,
-            &processed_ronoa,
-            &processed_fcffic,
-        )?;
-        Ok(final_factor.to_factor_series(self.spec()))
+fn finalize_raw_series(
+    data: &DataPool,
+    raw_series: Vec<FactorSeries>,
+    outputs: &[ComprehensiveProfitabilityOutput],
+) -> Result<Vec<FactorSeries>> {
+    let panel = data.stock_universe_panel()?;
+    let raw = raw_columns_from_series(panel, raw_series)?;
+
+    let stable_roe = sum_pair(
+        &raw.roe_resid.cs(cs_zscore)?,
+        &raw.roe_resid_stability.cs(cs_zscore)?,
+    )?;
+    let stable_roic = sum_pair(&raw.roic.cs(cs_zscore)?, &raw.roic_stability.cs(cs_zscore)?)?;
+    let stable_ronoa = sum_pair(
+        &raw.ronoa.cs(cs_zscore)?,
+        &raw.ronoa_stability.cs(cs_zscore)?,
+    )?;
+
+    let processed_roe = postprocess_subfactor(&stable_roe, panel, data)?;
+    let processed_roic = postprocess_subfactor(&stable_roic, panel, data)?;
+    let processed_ronoa = postprocess_subfactor(&stable_ronoa, panel, data)?;
+    let processed_fcffic = postprocess_subfactor(&raw.fcffic, panel, data)?;
+
+    let mut series = Vec::new();
+    for output in outputs {
+        let column = match output {
+            ComprehensiveProfitabilityOutput::ComprehensiveProfitability => {
+                average_available_subfactors(
+                    &processed_roe,
+                    &processed_roic,
+                    &processed_ronoa,
+                    &processed_fcffic,
+                )?
+            }
+            ComprehensiveProfitabilityOutput::StableRoe => processed_roe.clone(),
+            ComprehensiveProfitabilityOutput::StableRoic => processed_roic.clone(),
+            ComprehensiveProfitabilityOutput::StableRonoa => processed_ronoa.clone(),
+            ComprehensiveProfitabilityOutput::Fcffic => processed_fcffic.clone(),
+        };
+        series.push(column.to_factor_series(spec(*output)));
     }
+    Ok(series)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ProfitabilitySnapshot {
-    roe: Option<f64>,
-    roe_stability: Option<f64>,
-    equity_multiplier: Option<f64>,
-    roic: Option<f64>,
-    roic_stability: Option<f64>,
-    ronoa: Option<f64>,
-    ronoa_stability: Option<f64>,
-    fcffic: Option<f64>,
+    quarters: [QuarterProfitability; HISTORY_WINDOW],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -290,9 +353,8 @@ struct QuarterProfitability {
 }
 
 struct RawColumns {
-    roe: PanelColumn,
-    roe_stability: PanelColumn,
-    equity_multiplier: PanelColumn,
+    roe_resid: PanelColumn,
+    roe_resid_stability: PanelColumn,
     roic: PanelColumn,
     roic_stability: PanelColumn,
     ronoa: PanelColumn,
@@ -303,11 +365,9 @@ struct RawColumns {
 impl RawColumns {
     fn into_factor_series(self) -> Vec<FactorSeries> {
         vec![
-            self.roe.to_factor_series(raw_spec(RAW_ROE_ID)),
-            self.roe_stability
-                .to_factor_series(raw_spec(RAW_ROE_STABILITY_ID)),
-            self.equity_multiplier
-                .to_factor_series(raw_spec(RAW_EQUITY_MULTIPLIER_ID)),
+            self.roe_resid.to_factor_series(raw_spec(RAW_ROE_RESID_ID)),
+            self.roe_resid_stability
+                .to_factor_series(raw_spec(RAW_ROE_RESID_STABILITY_ID)),
             self.roic.to_factor_series(raw_spec(RAW_ROIC_ID)),
             self.roic_stability
                 .to_factor_series(raw_spec(RAW_ROIC_STABILITY_ID)),
@@ -327,9 +387,8 @@ fn profitability_raw_columns(
     cache: &mut InstrumentAlignedSnapshotCache<ProfitabilitySnapshot>,
 ) -> Result<RawColumns> {
     let instrument_count = panel.instruments().len();
-    let mut roe = vec![None; panel.shape_len()];
-    let mut roe_stability = vec![None; panel.shape_len()];
-    let mut equity_multiplier = vec![None; panel.shape_len()];
+    let mut roe_resid = vec![None; panel.shape_len()];
+    let mut roe_resid_stability = vec![None; panel.shape_len()];
     let mut roic = vec![None; panel.shape_len()];
     let mut roic_stability = vec![None; panel.shape_len()];
     let mut ronoa = vec![None; panel.shape_len()];
@@ -352,27 +411,48 @@ fn profitability_raw_columns(
                 profitability_snapshot_for_stock(ts_code, trade_date, income, cashflow, balance)
             },
         );
+
+        let mut roe_residuals_by_quarter = Vec::with_capacity(HISTORY_WINDOW);
+        for quarter_idx in 0..HISTORY_WINDOW {
+            let roe_values = snapshots
+                .iter()
+                .map(|snapshot| snapshot.and_then(|snapshot| snapshot.quarters[quarter_idx].roe))
+                .collect::<Vec<_>>();
+            let equity_multipliers = snapshots
+                .iter()
+                .map(|snapshot| {
+                    snapshot.and_then(|snapshot| snapshot.quarters[quarter_idx].equity_multiplier)
+                })
+                .collect::<Vec<_>>();
+            roe_residuals_by_quarter.push(cs_regression_residual(&roe_values, &equity_multipliers));
+        }
+
         let date_offset = date_idx * instrument_count;
-        for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
-            let Some(snapshot) = snapshot else {
+        for instrument_idx in 0..instrument_count {
+            let Some(snapshot) = snapshots[instrument_idx] else {
                 continue;
             };
             let offset = date_offset + instrument_idx;
-            roe[offset] = snapshot.roe;
-            roe_stability[offset] = snapshot.roe_stability;
-            equity_multiplier[offset] = snapshot.equity_multiplier;
-            roic[offset] = snapshot.roic;
-            roic_stability[offset] = snapshot.roic_stability;
-            ronoa[offset] = snapshot.ronoa;
-            ronoa_stability[offset] = snapshot.ronoa_stability;
-            fcffic[offset] = snapshot.fcffic;
+            let current = snapshot.quarters[0];
+            roe_resid[offset] = roe_residuals_by_quarter[0][instrument_idx];
+            let resid_history = roe_residuals_by_quarter
+                .iter()
+                .map(|values| values[instrument_idx])
+                .collect::<Vec<_>>();
+            roe_resid_stability[offset] = stability_from_options(&resid_history);
+            roic[offset] = current.roic;
+            roic_stability[offset] =
+                stability_from_quarters(&snapshot.quarters, |quarter| quarter.roic);
+            ronoa[offset] = current.ronoa;
+            ronoa_stability[offset] =
+                stability_from_quarters(&snapshot.quarters, |quarter| quarter.ronoa);
+            fcffic[offset] = current.fcffic;
         }
     }
 
     Ok(RawColumns {
-        roe: panel.column_from_values(roe)?,
-        roe_stability: panel.column_from_values(roe_stability)?,
-        equity_multiplier: panel.column_from_values(equity_multiplier)?,
+        roe_resid: panel.column_from_values(roe_resid)?,
+        roe_resid_stability: panel.column_from_values(roe_resid_stability)?,
         roic: panel.column_from_values(roic)?,
         roic_stability: panel.column_from_values(roic_stability)?,
         ronoa: panel.column_from_values(ronoa)?,
@@ -434,30 +514,15 @@ fn profitability_snapshot_for_stock(
 ) -> Option<ProfitabilitySnapshot> {
     let anchor = income.latest_quarter_end_date(ts_code, trade_date)?;
     let end_dates = quarter_chain(anchor, BALANCE_HISTORY_QUARTERS)?;
-    let mut quarters = Vec::with_capacity(HISTORY_WINDOW);
+    let mut quarters = [empty_quarter_profitability(); HISTORY_WINDOW];
     for idx in 0..HISTORY_WINDOW {
         let income_t = income.record_for_end_date(ts_code, trade_date, end_dates[idx]);
         let cashflow_t = cashflow.record_for_end_date(ts_code, trade_date, end_dates[idx]);
         let balance_t = balance.record_for_end_date(ts_code, trade_date, end_dates[idx]);
         let balance_prev = balance.record_for_end_date(ts_code, trade_date, end_dates[idx + 1]);
-        quarters.push(quarter_profitability(
-            income_t,
-            cashflow_t,
-            balance_t,
-            balance_prev,
-        ));
+        quarters[idx] = quarter_profitability(income_t, cashflow_t, balance_t, balance_prev);
     }
-    let current = quarters.first().copied()?;
-    Some(ProfitabilitySnapshot {
-        roe: current.roe,
-        roe_stability: stability_from_quarters(&quarters, |quarter| quarter.roe),
-        equity_multiplier: current.equity_multiplier,
-        roic: current.roic,
-        roic_stability: stability_from_quarters(&quarters, |quarter| quarter.roic),
-        ronoa: current.ronoa,
-        ronoa_stability: stability_from_quarters(&quarters, |quarter| quarter.ronoa),
-        fcffic: current.fcffic,
-    })
+    Some(ProfitabilitySnapshot { quarters })
 }
 
 fn quarter_profitability(
@@ -486,8 +551,7 @@ fn quarter_profitability(
         .and_then(|((income, balance), cashflow)| roic_for_records(income, balance, cashflow));
     let ronoa = income
         .zip(balance)
-        .zip(cashflow)
-        .and_then(|((income, balance), cashflow)| ronoa_for_records(income, balance, cashflow));
+        .and_then(|(income, balance)| ronoa_for_records(income, balance));
     let fcffic = cashflow
         .zip(balance)
         .and_then(|(cashflow, balance)| fcffic_for_records(cashflow, balance));
@@ -545,10 +609,9 @@ fn roic_for_records(
 fn ronoa_for_records(
     income: PitFinancialRecordView<'_>,
     balance: PitFinancialRecordView<'_>,
-    cashflow: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
     let operating_profit = operating_profit(income)?;
-    let noa = net_operating_assets(balance, cashflow)?;
+    let noa = net_operating_assets(balance)?;
     safe_div(operating_profit, noa)
 }
 
@@ -615,33 +678,52 @@ fn invested_capital_from_values(equity: f64, debt: f64, cash: f64) -> Option<f64
     value.is_finite().then_some(value)
 }
 
-fn net_operating_assets(
-    balance: PitFinancialRecordView<'_>,
-    cashflow: PitFinancialRecordView<'_>,
-) -> Option<f64> {
+fn net_operating_assets(balance: PitFinancialRecordView<'_>) -> Option<f64> {
     net_operating_assets_from_values(
-        clean(balance.column(TOTAL_ASSETS_COLUMN))?,
-        clean_or_zero(cashflow.column(CASH_EQUIVALENTS_END_COLUMN)),
-        clean(balance.column(TOTAL_LIAB_COLUMN))?,
+        positive_equity(balance.column(EQUITY_COLUMN))?,
         interest_bearing_debt(balance),
+        financial_assets(balance),
     )
 }
 
 fn net_operating_assets_from_values(
-    total_assets: f64,
-    cash_equivalents: f64,
-    total_liab: f64,
-    debt: f64,
+    equity: f64,
+    financial_liabilities: f64,
+    financial_assets: f64,
 ) -> Option<f64> {
-    let value = (total_assets - cash_equivalents) - (total_liab - debt);
+    let value = equity + financial_liabilities - financial_assets;
     value.is_finite().then_some(value)
 }
 
 fn interest_bearing_debt(balance: PitFinancialRecordView<'_>) -> f64 {
-    clean_or_zero(balance.column(SHORT_BORROW_COLUMN))
-        + clean_or_zero(balance.column(NON_CURRENT_LIAB_DUE_1Y_COLUMN))
-        + clean_or_zero(balance.column(LONG_BORROW_COLUMN))
-        + clean_or_zero(balance.column(BOND_PAYABLE_COLUMN))
+    [
+        SHORT_BORROW_COLUMN,
+        NON_CURRENT_LIAB_DUE_1Y_COLUMN,
+        LONG_BORROW_COLUMN,
+        BOND_PAYABLE_COLUMN,
+    ]
+    .iter()
+    .map(|column| clean_or_zero(balance.column(*column)))
+    .sum()
+}
+
+fn financial_assets(balance: PitFinancialRecordView<'_>) -> f64 {
+    [
+        MONEY_CAP_COLUMN,
+        TIME_DEPOSITS_COLUMN,
+        TRAD_ASSET_COLUMN,
+        DIV_RECEIV_COLUMN,
+        INT_RECEIV_COLUMN,
+        FA_AVAIL_FOR_SALE_COLUMN,
+        HTM_INVEST_COLUMN,
+        LT_EQT_INVEST_COLUMN,
+        INVEST_REAL_ESTATE_COLUMN,
+        DERIV_ASSETS_COLUMN,
+        INVEST_AS_RECEIV_COLUMN,
+    ]
+    .iter()
+    .map(|column| clean_or_zero(balance.column(*column)))
+    .sum()
 }
 
 fn stability_from_quarters<F>(quarters: &[QuarterProfitability], mut f: F) -> Option<f64>
@@ -652,6 +734,14 @@ where
         .iter()
         .filter_map(|quarter| f(quarter))
         .collect::<Vec<_>>();
+    negative_sample_std_strict(&values, HISTORY_WINDOW)
+}
+
+fn stability_from_options(values: &[Option<f64>]) -> Option<f64> {
+    let values = values
+        .iter()
+        .map(|value| clean(*value))
+        .collect::<Option<Vec<_>>>()?;
     negative_sample_std_strict(&values, HISTORY_WINDOW)
 }
 
@@ -687,9 +777,9 @@ fn postprocess_subfactor(
     neutralize_size_sector(values, panel, data)?.cs(cs_zscore)
 }
 
-fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> {
+fn sum_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> {
     left.zip_binary(right, |left, right| match (clean(left), clean(right)) {
-        (Some(left), Some(right)) => Some((left + right) * 0.5),
+        (Some(left), Some(right)) => Some(left + right),
         _ => None,
     })
 }
@@ -720,9 +810,8 @@ fn raw_columns_from_series(
     raw_series: Vec<FactorSeries>,
 ) -> Result<RawColumns> {
     Ok(RawColumns {
-        roe: raw_column(panel, &raw_series, RAW_ROE_ID)?,
-        roe_stability: raw_column(panel, &raw_series, RAW_ROE_STABILITY_ID)?,
-        equity_multiplier: raw_column(panel, &raw_series, RAW_EQUITY_MULTIPLIER_ID)?,
+        roe_resid: raw_column(panel, &raw_series, RAW_ROE_RESID_ID)?,
+        roe_resid_stability: raw_column(panel, &raw_series, RAW_ROE_RESID_STABILITY_ID)?,
         roic: raw_column(panel, &raw_series, RAW_ROIC_ID)?,
         roic_stability: raw_column(panel, &raw_series, RAW_ROIC_STABILITY_ID)?,
         ronoa: raw_column(panel, &raw_series, RAW_RONOA_ID)?,
@@ -737,7 +826,7 @@ fn raw_column(panel: &DailyPanel, raw_series: &[FactorSeries], id: &str) -> Resu
         .find(|series| series.spec.id == id)
         .ok_or_else(|| {
             err(format!(
-                "missing comprehensive_profitability raw series {id}"
+                "missing comprehensive profitability raw series {id}"
             ))
         })?;
     factor_series_to_panel_column(panel, series)
@@ -773,11 +862,36 @@ fn safe_div(numerator: f64, denominator: f64) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
+fn outputs_from_requested(requested_ids: &[String]) -> Vec<ComprehensiveProfitabilityOutput> {
+    let mut outputs = Vec::new();
+    for id in requested_ids {
+        let Some(output) = ComprehensiveProfitabilityOutput::from_id(id) else {
+            continue;
+        };
+        if !outputs.contains(&output) {
+            outputs.push(output);
+        }
+    }
+    outputs
+}
+
+impl ComprehensiveProfitabilityOutput {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            COMPREHENSIVE_PROFITABILITY_ID => Some(Self::ComprehensiveProfitability),
+            STABLE_ROE_ID => Some(Self::StableRoe),
+            STABLE_ROIC_ID => Some(Self::StableRoic),
+            STABLE_RONOA_ID => Some(Self::StableRonoa),
+            FCFFIC_ID => Some(Self::Fcffic),
+            _ => None,
+        }
+    }
+}
+
 fn raw_specs() -> Vec<FactorSpec> {
     [
-        RAW_ROE_ID,
-        RAW_ROE_STABILITY_ID,
-        RAW_EQUITY_MULTIPLIER_ID,
+        RAW_ROE_RESID_ID,
+        RAW_ROE_RESID_STABILITY_ID,
         RAW_ROIC_ID,
         RAW_ROIC_STABILITY_ID,
         RAW_RONOA_ID,
@@ -798,25 +912,39 @@ fn raw_spec(id: &str) -> FactorSpec {
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
         tags: vec!["internal".to_string(), "financial_raw".to_string()],
-        description: "Internal comprehensive_profitability raw series.".to_string(),
+        description: "Internal comprehensive profitability raw series.".to_string(),
         dependencies: Vec::new(),
         intraday_raw_dependencies: Vec::new(),
         lookback: Lookback { trading_days: 0 },
     }
 }
 
-fn tags() -> Vec<String> {
-    [
+fn dependencies() -> Vec<DataRequest> {
+    vec![
+        DataRequest::financial_quarters(DatasetId::StockIncome, &INCOME_COLUMNS, HISTORY_WINDOW),
+        DataRequest::financial_quarters(
+            DatasetId::StockCashFlow,
+            &CASHFLOW_COLUMNS,
+            HISTORY_WINDOW,
+        ),
+        DataRequest::financial_quarters(
+            DatasetId::StockBalanceSheet,
+            &BALANCE_COLUMNS,
+            BALANCE_HISTORY_QUARTERS,
+        ),
+        DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+        DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
+    ]
+}
+
+fn tags_for_output(output: ComprehensiveProfitabilityOutput) -> Vec<String> {
+    let mut tags = [
         "ZSZQ",
         "financial",
         "fundamental",
         "profitability",
         "quality",
         "stability",
-        "roe",
-        "roic",
-        "ronoa",
-        "fcffic",
         "pit",
         "neutralize",
         "barra",
@@ -826,7 +954,29 @@ fn tags() -> Vec<String> {
     ]
     .iter()
     .map(|value| value.to_string())
-    .collect()
+    .collect::<Vec<_>>();
+    match output {
+        ComprehensiveProfitabilityOutput::ComprehensiveProfitability => {
+            tags.extend(
+                ["composite", "deprecated"]
+                    .iter()
+                    .map(|value| value.to_string()),
+            );
+        }
+        ComprehensiveProfitabilityOutput::StableRoe => {
+            tags.push("roe".to_string());
+        }
+        ComprehensiveProfitabilityOutput::StableRoic => {
+            tags.push("roic".to_string());
+        }
+        ComprehensiveProfitabilityOutput::StableRonoa => {
+            tags.push("ronoa".to_string());
+        }
+        ComprehensiveProfitabilityOutput::Fcffic => {
+            tags.push("fcffic".to_string());
+        }
+    }
+    tags
 }
 
 #[cfg(test)]
@@ -882,10 +1032,10 @@ mod tests {
     }
 
     #[test]
-    fn net_operating_assets_matches_assets_less_cash_less_operating_liabilities() {
+    fn net_operating_assets_uses_equity_debt_less_financial_assets() {
         assert_close(
-            net_operating_assets_from_values(2_000.0, 150.0, 900.0, 250.0),
-            Some(1_200.0),
+            net_operating_assets_from_values(1_000.0, 250.0, 150.0),
+            Some(1_100.0),
         );
     }
 
@@ -914,6 +1064,28 @@ mod tests {
     }
 
     #[test]
+    fn residual_stability_requires_twelve_valid_residuals() {
+        let values = [
+            Some(1.0),
+            Some(2.0),
+            Some(3.0),
+            Some(4.0),
+            Some(5.0),
+            Some(6.0),
+            Some(7.0),
+            Some(8.0),
+            Some(9.0),
+            Some(10.0),
+            Some(11.0),
+            Some(12.0),
+        ];
+        assert!(stability_from_options(&values).is_some());
+        let mut missing = values;
+        missing[3] = None;
+        assert_eq!(stability_from_options(&missing), None);
+    }
+
+    #[test]
     fn average_available_subfactors_uses_non_null_values() {
         assert_close(
             average_clean_values(&[Some(1.0), Some(2.0), Some(3.0), Some(4.0)]),
@@ -927,10 +1099,59 @@ mod tests {
     }
 
     #[test]
-    fn metadata_identifies_factor() {
-        let spec = StockDailyComprehensiveProfitability.spec();
-        assert_eq!(spec.id, FACTOR_ID);
-        assert!(spec.tags.iter().any(|tag| tag == "profitability"));
-        assert!(spec.tags.iter().any(|tag| tag == "pit"));
+    fn outputs_are_parsed_from_requested_ids_in_order() {
+        let requested = vec![
+            STABLE_ROIC_ID.to_string(),
+            "unknown".to_string(),
+            STABLE_ROE_ID.to_string(),
+            STABLE_ROIC_ID.to_string(),
+        ];
+        assert_eq!(
+            outputs_from_requested(&requested),
+            vec![
+                ComprehensiveProfitabilityOutput::StableRoic,
+                ComprehensiveProfitabilityOutput::StableRoe
+            ]
+        );
+    }
+
+    #[test]
+    fn metadata_marks_old_composite_deprecated_and_new_outputs_active() {
+        let old = spec(ComprehensiveProfitabilityOutput::ComprehensiveProfitability);
+        assert_eq!(old.id, COMPREHENSIVE_PROFITABILITY_ID);
+        assert!(old.tags.iter().any(|tag| tag == "deprecated"));
+
+        let stable_roe = spec(ComprehensiveProfitabilityOutput::StableRoe);
+        assert_eq!(stable_roe.id, STABLE_ROE_ID);
+        assert!(stable_roe.tags.iter().any(|tag| tag == "ZSZQ"));
+        assert!(!stable_roe.tags.iter().any(|tag| tag == "deprecated"));
+    }
+
+    #[test]
+    fn dependencies_include_expanded_ronoa_financial_assets() {
+        let spec = spec(ComprehensiveProfitabilityOutput::StableRonoa);
+        let balance = spec
+            .dependencies
+            .iter()
+            .find(|request| request.dataset == DatasetId::StockBalanceSheet)
+            .expect("balance request");
+        for column in [
+            MONEY_CAP_COLUMN,
+            TIME_DEPOSITS_COLUMN,
+            TRAD_ASSET_COLUMN,
+            DIV_RECEIV_COLUMN,
+            INT_RECEIV_COLUMN,
+            FA_AVAIL_FOR_SALE_COLUMN,
+            HTM_INVEST_COLUMN,
+            LT_EQT_INVEST_COLUMN,
+            INVEST_REAL_ESTATE_COLUMN,
+            DERIV_ASSETS_COLUMN,
+            INVEST_AS_RECEIV_COLUMN,
+        ] {
+            assert!(
+                balance.columns.iter().any(|value| value == column),
+                "missing balance column {column}"
+            );
+        }
     }
 }

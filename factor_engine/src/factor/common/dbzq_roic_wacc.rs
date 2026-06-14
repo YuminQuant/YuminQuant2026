@@ -17,7 +17,7 @@ pub const PROVIDER_KEY: &str = "stock|daily|dbzq_roic_wacc";
 pub const UNEXPECTED_ROIC_WACC_ID: &str = "unexpected_roic_wacc";
 pub const ROIC_WACC_STATE_GROWTH_ID: &str = "roic_wacc_state_growth";
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 const DAILY_LOOKBACK: usize = 820;
 const CAPM_LOOKBACK_WEEKS: usize = 156;
 const CAPM_MIN_PERIODS: usize = 104;
@@ -82,7 +82,7 @@ struct QuarterPrelim {
     equity: f64,
     noplat: f64,
     roic: f64,
-    rd: f64,
+    rd: Option<f64>,
     wd: f64,
     we: f64,
     re_accounting: Option<f64>,
@@ -287,7 +287,10 @@ fn compute_event_series(
             let Some(re) = re else {
                 continue;
             };
-            let wacc = prelim.wd * prelim.rd * (1.0 - prelim.tax) + prelim.we * re;
+            let Some(rd) = prelim.rd else {
+                continue;
+            };
+            let wacc = prelim.wd * rd * (1.0 - prelim.tax) + prelim.we * re;
             if !wacc.is_finite() {
                 continue;
             }
@@ -363,8 +366,6 @@ fn prelims_for_end_date(
     stock_indices: &[usize],
 ) -> Vec<Option<QuarterPrelim>> {
     let mut output = vec![None; panel.instruments().len()];
-    let fallback_interest_exp =
-        mean_available_interest_exp(trade_date, end_date, panel, income, stock_indices);
     for &instrument_idx in stock_indices {
         let ts_code = &panel.instruments()[instrument_idx];
         let offset = date_offset + instrument_idx;
@@ -375,33 +376,37 @@ fn prelims_for_end_date(
             income,
             balance,
             dv_ratio.values()[offset],
-            fallback_interest_exp,
         );
     }
+    fill_missing_rd_by_mean(&mut output, stock_indices);
     output
 }
 
-fn mean_available_interest_exp(
-    trade_date: i32,
-    end_date: i32,
-    panel: &DailyPanel,
-    income: &FinancialPitReader<'_>,
-    stock_indices: &[usize],
-) -> Option<f64> {
+fn fill_missing_rd_by_mean(prelims: &mut [Option<QuarterPrelim>], stock_indices: &[usize]) {
     let mut sum = 0.0;
     let mut count = 0usize;
     for &instrument_idx in stock_indices {
-        let ts_code = &panel.instruments()[instrument_idx];
-        let Some(record) = income.record_for_end_date(ts_code, trade_date, end_date) else {
-            continue;
-        };
-        let Some(value) = clean(record.column("int_exp")) else {
-            continue;
-        };
-        sum += value.max(0.0);
-        count += 1;
+        if let Some(prelim) = prelims[instrument_idx] {
+            if prelim.debt > EPS {
+                if let Some(rd) = prelim.rd.filter(|value| value.is_finite()) {
+                    sum += rd;
+                    count += 1;
+                }
+            }
+        }
     }
-    (count > 0).then_some(sum / count as f64)
+    if count == 0 {
+        return;
+    }
+    let mean_rd = sum / count as f64;
+    for &instrument_idx in stock_indices {
+        if let Some(mut prelim) = prelims[instrument_idx] {
+            if prelim.debt > EPS && prelim.rd.is_none() {
+                prelim.rd = Some(mean_rd);
+                prelims[instrument_idx] = Some(prelim);
+            }
+        }
+    }
 }
 
 fn quarter_prelim(
@@ -411,7 +416,6 @@ fn quarter_prelim(
     income: &FinancialPitReader<'_>,
     balance: &FinancialPitReader<'_>,
     dv_ratio: Option<f64>,
-    fallback_interest_exp: Option<f64>,
 ) -> Option<QuarterPrelim> {
     let income_record = income.record_for_end_date(ts_code, trade_date, end_date)?;
     let balance_record = balance.record_for_end_date(ts_code, trade_date, end_date)?;
@@ -440,22 +444,21 @@ fn quarter_prelim(
         return None;
     }
     let rd = if debt <= EPS {
-        0.0
+        Some(0.0)
     } else {
-        let prev_end = previous_quarter_end_date(end_date)?;
-        let prev_balance = balance.record_for_end_date(ts_code, trade_date, prev_end)?;
-        let prev_debt = interest_bearing_debt(&prev_balance);
-        let avg_debt = 0.5 * (prev_debt + debt);
-        if avg_debt <= EPS || !avg_debt.is_finite() {
-            return None;
-        }
-        let interest_exp =
-            interest_exp_or_fallback(income_record.column("int_exp"), fallback_interest_exp);
-        4.0 * interest_exp / avg_debt
+        previous_quarter_end_date(end_date)
+            .and_then(|prev_end| balance.record_for_end_date(ts_code, trade_date, prev_end))
+            .and_then(|prev_balance| {
+                let prev_debt = interest_bearing_debt(&prev_balance);
+                let avg_debt = 0.5 * (prev_debt + debt);
+                if avg_debt <= EPS || !avg_debt.is_finite() {
+                    return None;
+                }
+                clean(income_record.column("int_exp"))
+                    .map(|interest_exp| 4.0 * interest_exp.max(0.0) / avg_debt)
+                    .filter(|rd| rd.is_finite())
+            })
     };
-    if !rd.is_finite() {
-        return None;
-    }
     let re_accounting = accounting_re(dv_ratio);
     Some(QuarterPrelim {
         tax,
@@ -482,10 +485,6 @@ fn tax_rate(income_tax: Option<f64>, total_profit: Option<f64>) -> f64 {
         (Some(tax), Some(profit)) if profit.abs() > EPS => (tax / profit).clamp(0.0, 0.25),
         _ => 0.0,
     }
-}
-
-fn interest_exp_or_fallback(raw: Option<f64>, fallback: Option<f64>) -> f64 {
-    clean(raw).or(fallback).unwrap_or(0.0).max(0.0)
 }
 
 fn accounting_re(dv_ratio: Option<f64>) -> Option<f64> {
@@ -1039,16 +1038,32 @@ mod tests {
     }
 
     #[test]
-    fn missing_interest_exp_uses_current_fallback_mean() {
-        assert_close(Some(interest_exp_or_fallback(None, Some(8.0))), Some(8.0));
-        assert_close(
-            Some(interest_exp_or_fallback(Some(3.0), Some(8.0))),
-            Some(3.0),
-        );
-        assert_close(
-            Some(interest_exp_or_fallback(Some(-1.0), Some(8.0))),
-            Some(0.0),
-        );
+    fn missing_rd_uses_cross_section_mean_after_rate_calculation() {
+        let mut prelims = vec![
+            Some(prelim_with_rd(100.0, Some(0.08))),
+            Some(prelim_with_rd(50.0, Some(0.04))),
+            Some(prelim_with_rd(75.0, None)),
+            Some(prelim_with_rd(0.0, Some(0.0))),
+        ];
+
+        fill_missing_rd_by_mean(&mut prelims, &[0, 1, 2, 3]);
+
+        assert_close(prelims[2].unwrap().rd, Some(0.06));
+        assert_close(prelims[3].unwrap().rd, Some(0.0));
+    }
+
+    fn prelim_with_rd(debt: f64, rd: Option<f64>) -> QuarterPrelim {
+        QuarterPrelim {
+            tax: 0.2,
+            debt,
+            equity: 100.0,
+            noplat: 10.0,
+            roic: 0.1,
+            rd,
+            wd: 0.5,
+            we: 0.5,
+            re_accounting: Some(0.03),
+        }
     }
 
     #[test]

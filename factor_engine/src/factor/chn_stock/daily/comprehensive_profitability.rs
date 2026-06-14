@@ -18,7 +18,7 @@ use crate::factor::common::{
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_regression_residual, cs_zscore};
 
-const VERSION: &str = "0.1.1";
+const VERSION: &str = "0.1.2";
 const FACTOR_ID: &str = "comprehensive_profitability";
 const HISTORY_WINDOW: usize = 12;
 const BALANCE_HISTORY_QUARTERS: usize = HISTORY_WINDOW + 1;
@@ -466,6 +466,12 @@ fn quarter_profitability(
     balance: Option<PitFinancialRecordView<'_>>,
     balance_prev: Option<PitFinancialRecordView<'_>>,
 ) -> QuarterProfitability {
+    if balance
+        .and_then(|balance| positive_equity(balance.column(EQUITY_COLUMN)))
+        .is_none()
+    {
+        return empty_quarter_profitability();
+    }
     let roe =
         income
             .zip(balance)
@@ -494,21 +500,31 @@ fn quarter_profitability(
     }
 }
 
+fn empty_quarter_profitability() -> QuarterProfitability {
+    QuarterProfitability {
+        roe: None,
+        equity_multiplier: None,
+        roic: None,
+        ronoa: None,
+        fcffic: None,
+    }
+}
+
 fn roe_for_records(
     income: PitFinancialRecordView<'_>,
     balance: PitFinancialRecordView<'_>,
     balance_prev: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
     let net_profit = clean_or_zero(income.column(NET_PROFIT_ATTR_P_COLUMN));
-    let equity = clean(balance.column(EQUITY_COLUMN))?;
-    let equity_prev = clean(balance_prev.column(EQUITY_COLUMN))?;
+    let equity = positive_equity(balance.column(EQUITY_COLUMN))?;
+    let equity_prev = positive_equity(balance_prev.column(EQUITY_COLUMN))?;
     safe_div(net_profit, (equity + equity_prev) * 0.5)
 }
 
 fn equity_multiplier_for_record(balance: PitFinancialRecordView<'_>) -> Option<f64> {
     safe_div(
         clean(balance.column(TOTAL_ASSETS_COLUMN))?,
-        clean(balance.column(EQUITY_COLUMN))?,
+        positive_equity(balance.column(EQUITY_COLUMN))?,
     )
 }
 
@@ -588,7 +604,7 @@ fn invested_capital(
     cashflow: PitFinancialRecordView<'_>,
 ) -> Option<f64> {
     invested_capital_from_values(
-        clean(balance.column(EQUITY_COLUMN))?,
+        positive_equity(balance.column(EQUITY_COLUMN))?,
         interest_bearing_debt(balance),
         clean_or_zero(cashflow.column(CASH_EQUIVALENTS_END_COLUMN)),
     )
@@ -741,6 +757,10 @@ fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
 }
 
+fn positive_equity(value: Option<f64>) -> Option<f64> {
+    clean(value).filter(|value| *value > EPS)
+}
+
 fn clean_or_zero(value: Option<f64>) -> f64 {
     clean(value).unwrap_or(0.0)
 }
@@ -852,6 +872,13 @@ mod tests {
             invested_capital_from_values(1_000.0, 300.0, 120.0),
             Some(1_180.0),
         );
+    }
+
+    #[test]
+    fn positive_equity_rejects_zero_and_negative_values() {
+        assert_close(positive_equity(Some(10.0)), Some(10.0));
+        assert_eq!(positive_equity(Some(0.0)), None);
+        assert_eq!(positive_equity(Some(-1.0)), None);
     }
 
     #[test]

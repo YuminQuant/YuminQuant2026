@@ -18,9 +18,11 @@ use crate::factor::common::{
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.2";
 const RAW_ID: &str = "__jones_modified_accrual_raw";
-const FINANCIAL_QUARTERS: usize = 2;
+const INCOME_QUARTERS: usize = 5;
+const CASHFLOW_QUARTERS: usize = 1;
+const BALANCE_QUARTERS: usize = 2;
 const PARAM_COUNT: usize = 3;
 const MIN_INDUSTRY_OLS_OBS: usize = 4;
 const EPS: f64 = 1e-12;
@@ -68,22 +70,22 @@ impl Factor for StockDailyJonesModifiedAccrual {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: tags(),
-            description: "XYZQ modified Jones accrual factor. It computes PIT single-quarter accruals as operating profit minus operating cashflow, scales by average assets, runs CITIC level-1 industry OLS on 1/average-assets, revenue change/average-assets, and fixed assets/average-assets, excludes firms with negative current operating profit, replays raw residuals between financial events, and finally industry-neutralizes within CITIC level-1 industries.".to_string(),
+            description: "XYZQ modified Jones accrual factor. It computes PIT single-quarter accruals as single-quarter operating profit minus single-quarter operating cashflow, scales by average assets, runs CITIC level-1 industry OLS on 1/average-assets, year-over-year revenue change/average-assets, and fixed assets/average-assets, excludes firms with negative current single-quarter operating profit, and replays raw residuals between financial events.".to_string(),
             dependencies: vec![
                 DataRequest::financial_quarters(
                     DatasetId::StockIncome,
                     &[OPERATE_PROFIT_COLUMN, REVENUE_COLUMN],
-                    FINANCIAL_QUARTERS,
+                    INCOME_QUARTERS,
                 ),
                 DataRequest::financial_quarters(
                     DatasetId::StockCashFlow,
                     &[CFO_COLUMN],
-                    FINANCIAL_QUARTERS,
+                    CASHFLOW_QUARTERS,
                 ),
                 DataRequest::financial_quarters(
                     DatasetId::StockBalanceSheet,
                     &[ASSETS_COLUMN, PPE_COLUMN],
-                    FINANCIAL_QUARTERS,
+                    BALANCE_QUARTERS,
                 ),
                 DataRequest::new(DatasetId::StockCiClassification, &["l1_code"]),
             ],
@@ -228,12 +230,7 @@ impl StockDailyJonesModifiedAccrual {
             .find(|series| series.spec.id == RAW_ID)
             .ok_or_else(|| err("missing jones_modified_accrual raw series"))?;
         let raw = factor_series_to_panel_column(panel, &series)?;
-        let sector_map = ClassificationMap::from_table(
-            data.daily(DatasetId::StockCiClassification)?,
-            ClassificationLevel::Sector,
-        )?;
-        let neutralized = industry_demean(&raw, panel, &sector_map)?;
-        Ok(neutralized.to_factor_series(self.spec()))
+        Ok(raw.to_factor_series(self.spec()))
     }
 }
 
@@ -301,8 +298,9 @@ fn jones_marker(
 ) -> Option<FinancialEventMarker> {
     let end_t = income.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
+    let end_t4 = quarter_lag(end_t, 4)?;
     let mut builder = FinancialEventMarkerBuilder::new();
-    for end_date in [end_t, end_t1] {
+    for end_date in [end_t, end_t4] {
         builder.include_reader_record_for_end_date(
             FinancialStatementDataset::Income,
             income,
@@ -310,6 +308,8 @@ fn jones_marker(
             trade_date,
             end_date,
         );
+    }
+    for end_date in [end_t, end_t1] {
         builder.include_reader_record_for_end_date(
             FinancialStatementDataset::BalanceSheet,
             balance,
@@ -337,8 +337,9 @@ fn jones_snapshot(
 ) -> Option<JonesSnapshot> {
     let end_t = income.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
+    let end_t4 = quarter_lag(end_t, 4)?;
     let income_t = income.record_for_end_date(ts_code, trade_date, end_t)?;
-    let income_t1 = income.record_for_end_date(ts_code, trade_date, end_t1)?;
+    let income_t4 = income.record_for_end_date(ts_code, trade_date, end_t4)?;
     let cashflow_t = cashflow.record_for_end_date(ts_code, trade_date, end_t)?;
     let balance_t = balance.record_for_end_date(ts_code, trade_date, end_t)?;
     let balance_t1 = balance.record_for_end_date(ts_code, trade_date, end_t1)?;
@@ -349,7 +350,7 @@ fn jones_snapshot(
     }
     let cfo = clean(cashflow_t.column(CFO_COLUMN))?;
     let revenue = clean(income_t.column(REVENUE_COLUMN))?;
-    let prev_revenue = clean(income_t1.column(REVENUE_COLUMN))?;
+    let prev_revenue = clean(income_t4.column(REVENUE_COLUMN))?;
     let assets = clean(balance_t.column(ASSETS_COLUMN)).filter(|value| *value > 0.0)?;
     let prev_assets = clean(balance_t1.column(ASSETS_COLUMN)).filter(|value| *value > 0.0)?;
     let avg_assets = 0.5 * (assets + prev_assets);
@@ -443,52 +444,19 @@ fn solve_linear_system(
     b.iter().all(|value| value.is_finite()).then_some(b)
 }
 
-fn industry_demean(
-    raw: &PanelColumn,
-    panel: &DailyPanel,
-    sector_map: &ClassificationMap,
-) -> Result<PanelColumn> {
-    let instrument_count = panel.instruments().len();
-    let mut output = vec![None; panel.shape_len()];
-    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
-        let date_offset = date_idx * instrument_count;
-        let mut groups = BTreeMap::<String, Vec<usize>>::new();
-        for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
-            let offset = date_offset + instrument_idx;
-            if is_bj_stock(ts_code) || !panel.is_present_offset(offset) {
-                continue;
-            }
-            if clean(raw.values()[offset]).is_none() {
-                continue;
-            }
-            let Some(group) = sector_map.group_for(trade_date, ts_code) else {
-                continue;
-            };
-            groups.entry(group.to_string()).or_default().push(offset);
-        }
-        for offsets in groups.values() {
-            let values = offsets
-                .iter()
-                .filter_map(|offset| clean(raw.values()[*offset]))
-                .collect::<Vec<_>>();
-            if values.is_empty() {
-                continue;
-            }
-            let mean = values.iter().sum::<f64>() / values.len() as f64;
-            for offset in offsets {
-                output[*offset] = clean(raw.values()[*offset]).map(|value| value - mean);
-            }
-        }
-    }
-    panel.column_from_values(output)
-}
-
 fn dot(left: &[f64; PARAM_COUNT], right: &[f64; PARAM_COUNT]) -> f64 {
     (0..PARAM_COUNT).map(|idx| left[idx] * right[idx]).sum()
 }
 
 fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
+}
+
+fn quarter_lag(mut end_date: i32, quarters: usize) -> Option<i32> {
+    for _ in 0..quarters {
+        end_date = previous_quarter_end_date(end_date)?;
+    }
+    Some(end_date)
 }
 
 fn raw_spec() -> FactorSpec {
@@ -516,7 +484,7 @@ fn tags() -> Vec<String> {
         "jones",
         "accrual",
         "residual",
-        "industry_neutralize",
+        "industry_regression",
         "daily",
     ]
     .iter()
@@ -570,5 +538,28 @@ mod tests {
         let spec = StockDailyJonesModifiedAccrual.spec();
         assert_eq!(spec.id, "jones_modified_accrual");
         assert!(spec.tags.contains(&"XYZQ".to_string()));
+        assert_eq!(spec.version, "0.1.2");
+        assert!(spec.description.contains("single-quarter accruals"));
+        assert!(spec.description.contains("year-over-year revenue change"));
+        assert!(!spec.description.contains("annual accruals"));
+        assert!(spec.dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockIncome
+                && request.financial_quarters == Some(INCOME_QUARTERS)
+        }));
+        assert!(spec.dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockCashFlow
+                && request.financial_quarters == Some(CASHFLOW_QUARTERS)
+        }));
+        assert!(spec.dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockBalanceSheet
+                && request.financial_quarters == Some(BALANCE_QUARTERS)
+        }));
+    }
+
+    #[test]
+    fn quarter_lag_uses_prior_quarter_dates() {
+        assert_eq!(quarter_lag(20250331, 1), Some(20241231));
+        assert_eq!(quarter_lag(20250331, 4), Some(20240331));
+        assert_eq!(quarter_lag(20250630, 4), Some(20240630));
     }
 }

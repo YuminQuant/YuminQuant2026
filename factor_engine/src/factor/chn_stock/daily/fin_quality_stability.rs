@@ -19,7 +19,7 @@ use crate::factor::common::{
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::cs_zscore_by_group;
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 const FACTOR_ID: &str = "fin_quality_stability";
 const RAW_ID: &str = "__fin_quality_stability_raw";
 const PANEL_WINDOW: usize = 12;
@@ -541,7 +541,10 @@ fn cashflow_indicator(
     let cashflow_value = zero(cashflow.column(CFO_COLUMN))
         - zero(cashflow.column(FNC_CASHFLOW_COLUMN))
         - zero(cashflow.column(INV_CASHFLOW_COLUMN));
-    safe_ratio(Some(cashflow_value), balance.column(EQUITY_COLUMN))
+    safe_ratio_value(
+        cashflow_value,
+        positive_equity(balance.column(EQUITY_COLUMN))?,
+    )
 }
 
 fn panel_residual_std_by_stock(observations: &[PanelObservation]) -> Vec<(usize, f64)> {
@@ -778,6 +781,10 @@ fn safe_ratio_value(numerator: f64, denominator: f64) -> Option<f64> {
     Some(numerator / denominator)
 }
 
+fn positive_equity(value: Option<f64>) -> Option<f64> {
+    clean(value).filter(|value| *value > EPS)
+}
+
 fn zero(value: Option<f64>) -> f64 {
     clean(value).unwrap_or(0.0)
 }
@@ -837,6 +844,13 @@ mod tests {
     fn sample_std_uses_n_minus_one() {
         let std = sample_std_min_periods(&[1.0, 2.0, 3.0], 2).expect("std");
         assert_close(std, 1.0);
+    }
+
+    #[test]
+    fn positive_equity_rejects_zero_and_negative_values() {
+        assert_eq!(positive_equity(Some(10.0)), Some(10.0));
+        assert_eq!(positive_equity(Some(0.0)), None);
+        assert_eq!(positive_equity(Some(-1.0)), None);
     }
 
     #[test]

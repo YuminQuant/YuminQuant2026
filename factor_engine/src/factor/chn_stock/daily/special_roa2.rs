@@ -18,10 +18,10 @@ use crate::factor::common::{
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 const SPECIAL_ROA1_RAW_ID: &str = "__special_roa1_residual_raw";
 const SPECIAL_ROA2_RAW_ID: &str = "__special_roa2_residual_raw";
-const FINANCIAL_QUARTERS: usize = 5;
+const FINANCIAL_QUARTERS: usize = 2;
 const REGRESSOR_COUNT: usize = 7;
 const RIDGE_LAMBDA: f64 = 1.0;
 const EPS: f64 = 1e-12;
@@ -594,7 +594,6 @@ fn special_roa2_marker(
 ) -> Option<FinancialEventMarker> {
     let end_t = income.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
-    let end_t4 = quarter_lag(end_t, 4)?;
     let mut builder = FinancialEventMarkerBuilder::new();
     builder.include_reader_record_for_end_date(
         FinancialStatementDataset::Income,
@@ -603,7 +602,7 @@ fn special_roa2_marker(
         trade_date,
         end_t,
     );
-    for end_date in [end_t, end_t1, end_t4] {
+    for end_date in [end_t, end_t1] {
         builder.include_reader_record_for_end_date(
             FinancialStatementDataset::BalanceSheet,
             balance,
@@ -623,19 +622,16 @@ fn special_roa2_snapshot_for_stock(
 ) -> Option<SpecialRoa2Snapshot> {
     let end_t = income.latest_quarter_end_date(ts_code, trade_date)?;
     let end_t1 = previous_quarter_end_date(end_t)?;
-    let end_t4 = quarter_lag(end_t, 4)?;
     let income_t = income.record_for_end_date(ts_code, trade_date, end_t)?;
     let balance_t = balance.record_for_end_date(ts_code, trade_date, end_t)?;
     let balance_t1 = balance.record_for_end_date(ts_code, trade_date, end_t1)?;
-    let balance_t4 = balance.record_for_end_date(ts_code, trade_date, end_t4)?;
-    special_roa2_snapshot_from_records(income_t, balance_t, balance_t1, balance_t4)
+    special_roa2_snapshot_from_records(income_t, balance_t, balance_t1)
 }
 
 fn special_roa2_snapshot_from_records(
     income_t: PitFinancialRecordView<'_>,
     balance_t: PitFinancialRecordView<'_>,
     balance_t1: PitFinancialRecordView<'_>,
-    balance_t4: PitFinancialRecordView<'_>,
 ) -> Option<SpecialRoa2Snapshot> {
     let profit = clean(income_t.column(PROFIT_COLUMN))?;
     let assets_t = clean(balance_t.column(TOTAL_ASSETS_COLUMN)).filter(|value| *value > EPS)?;
@@ -647,7 +643,7 @@ fn special_roa2_snapshot_from_records(
         assets_t1,
         total_liab: clean(balance_t.column(TOTAL_LIAB_COLUMN)),
         equity_t: clean(balance_t.column(EQUITY_COLUMN)),
-        equity_t4: clean(balance_t4.column(EQUITY_COLUMN)),
+        equity_t1: clean(balance_t1.column(EQUITY_COLUMN)),
         cur_assets: clean(balance_t.column(CUR_ASSETS_COLUMN)),
         cur_liab: clean(balance_t.column(CUR_LIAB_COLUMN)),
         intan_assets: clean(balance_t.column(INTAN_ASSETS_COLUMN)),
@@ -664,7 +660,7 @@ struct SpecialRoa2Inputs {
     assets_t1: f64,
     total_liab: Option<f64>,
     equity_t: Option<f64>,
-    equity_t4: Option<f64>,
+    equity_t1: Option<f64>,
     cur_assets: Option<f64>,
     cur_liab: Option<f64>,
     intan_assets: Option<f64>,
@@ -680,14 +676,18 @@ fn special_roa2_snapshot_from_values(input: SpecialRoa2Inputs) -> Option<Special
     if avg_assets <= EPS {
         return None;
     }
+    let roa = 2.0 * input.profit / avg_assets;
+    if !roa.is_finite() || roa <= EPS {
+        return None;
+    }
     let debt_to_assets = input
         .total_liab
         .map(|total_liab| total_liab / input.assets_t);
     let na_yoy = input
         .equity_t
-        .zip(input.equity_t4)
-        .and_then(|(equity_t, equity_t4)| {
-            (equity_t4.abs() > EPS).then_some((equity_t - equity_t4) / equity_t4.abs())
+        .zip(input.equity_t1)
+        .and_then(|(equity_t, equity_t1)| {
+            (equity_t1.abs() > EPS).then_some((equity_t - equity_t1) / equity_t1.abs())
         });
     let working_assets_to_assets = input
         .cur_assets
@@ -710,7 +710,7 @@ fn special_roa2_snapshot_from_values(input: SpecialRoa2Inputs) -> Option<Special
             }
         });
     let snapshot = SpecialRoa2Snapshot {
-        roa: 2.0 * input.profit / avg_assets,
+        roa,
         debt_to_assets,
         na_yoy,
         working_assets_to_assets,
@@ -1020,13 +1020,6 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-fn quarter_lag(mut end_date: i32, quarters: usize) -> Option<i32> {
-    for _ in 0..quarters {
-        end_date = previous_quarter_end_date(end_date)?;
-    }
-    Some(end_date)
-}
-
 fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
 }
@@ -1086,6 +1079,7 @@ fn tags_roa1() -> Vec<String> {
         "size",
         "sector",
         "daily",
+        "deprecated",
     ]
     .iter()
     .map(|value| value.to_string())
@@ -1113,7 +1107,7 @@ mod tests {
             assets_t1: 80.0,
             total_liab: Some(30.0),
             equity_t: Some(50.0),
-            equity_t4: Some(40.0),
+            equity_t1: Some(40.0),
             cur_assets: Some(70.0),
             cur_liab: Some(20.0),
             intan_assets: Some(6.0),
@@ -1138,7 +1132,7 @@ mod tests {
             assets_t1: 80.0,
             total_liab: Some(30.0),
             equity_t: Some(50.0),
-            equity_t4: Some(40.0),
+            equity_t1: Some(40.0),
             cur_assets: Some(70.0),
             cur_liab: Some(20.0),
             intan_assets: Some(6.0),
@@ -1146,6 +1140,60 @@ mod tests {
             inventories_t1: Some(20.0),
         })
         .is_none());
+    }
+
+    #[test]
+    fn special_roa2_rejects_non_positive_roa() {
+        assert!(special_roa2_snapshot_from_values(SpecialRoa2Inputs {
+            profit: 0.0,
+            oper_cost: Some(60.0),
+            assets_t: 120.0,
+            assets_t1: 80.0,
+            total_liab: Some(30.0),
+            equity_t: Some(-1.0),
+            equity_t1: Some(40.0),
+            cur_assets: Some(70.0),
+            cur_liab: Some(20.0),
+            intan_assets: Some(6.0),
+            inventories_t: Some(10.0),
+            inventories_t1: Some(20.0),
+        })
+        .is_none());
+        assert!(special_roa2_snapshot_from_values(SpecialRoa2Inputs {
+            profit: -20.0,
+            oper_cost: Some(60.0),
+            assets_t: 120.0,
+            assets_t1: 80.0,
+            total_liab: Some(30.0),
+            equity_t: Some(50.0),
+            equity_t1: Some(0.0),
+            cur_assets: Some(70.0),
+            cur_liab: Some(20.0),
+            intan_assets: Some(6.0),
+            inventories_t: Some(10.0),
+            inventories_t1: Some(20.0),
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn special_roa2_na_yoy_uses_abs_previous_equity_without_sign_filter() {
+        let snapshot = special_roa2_snapshot_from_values(SpecialRoa2Inputs {
+            profit: 20.0,
+            oper_cost: Some(60.0),
+            assets_t: 120.0,
+            assets_t1: 80.0,
+            total_liab: Some(30.0),
+            equity_t: Some(-30.0),
+            equity_t1: Some(-40.0),
+            cur_assets: Some(70.0),
+            cur_liab: Some(20.0),
+            intan_assets: Some(6.0),
+            inventories_t: Some(10.0),
+            inventories_t1: Some(20.0),
+        })
+        .expect("snapshot");
+        assert_close(snapshot.na_yoy.unwrap(), 10.0 / 40.0);
     }
 
     #[test]
@@ -1157,7 +1205,7 @@ mod tests {
             assets_t1: 80.0,
             total_liab: Some(30.0),
             equity_t: Some(50.0),
-            equity_t4: Some(40.0),
+            equity_t1: Some(40.0),
             cur_assets: Some(70.0),
             cur_liab: Some(20.0),
             intan_assets: Some(6.0),
@@ -1326,7 +1374,7 @@ mod tests {
         let spec = StockDailySpecialRoa1.spec();
         assert_eq!(spec.id, "special_roa1");
         assert!(spec.tags.iter().any(|tag| tag == "DBZQ"));
-        assert!(!spec.tags.iter().any(|tag| tag == "deprecated"));
+        assert!(spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.tags.iter().any(|tag| tag == "sector"));
         assert!(spec.tags.iter().any(|tag| tag == "neutralize"));
         assert!(!spec.tags.iter().any(|tag| tag == "industry_dummy"));

@@ -23,7 +23,7 @@ use crate::operators::{cs_neutralize_regression, cs_pctrank};
 
 pub const PROVIDER_KEY: &str = "stock|daily|dfzq_dbzq_gaussian_financial";
 
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.1.1";
 const LOOKBACK: usize = 252;
 const FINANCIAL_QUARTERS: usize = 8;
 const GAUSSIAN_P_EPS: f64 = 1e-6;
@@ -838,13 +838,13 @@ fn financial_snapshot_for_stock(
     }
     if needs.balance_latest {
         if let Some(end_date) = balance.latest_quarter_end_date(ts_code, trade_date) {
-            snapshot.book_value = financial_value(
+            snapshot.book_value = positive_book_value(financial_value(
                 balance,
                 ts_code,
                 trade_date,
                 end_date,
                 "total_hldr_eqy_exc_min_int",
-            );
+            ));
         }
     }
     if needs.cashflow_latest {
@@ -872,6 +872,10 @@ fn financial_value(
 ) -> Option<f64> {
     data.record_for_end_date(ts_code, trade_date, end_date)?
         .column(column)
+}
+
+fn positive_book_value(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value > f64::EPSILON)
 }
 
 #[derive(Default)]
@@ -1352,6 +1356,13 @@ mod tests {
         assert!(!div_needs.uses_balance());
         assert!(!div_needs.uses_cashflow());
         assert!(div_needs.uses_dividend());
+    }
+
+    #[test]
+    fn gaussian_financial_book_value_requires_positive_equity() {
+        assert_eq!(positive_book_value(Some(10.0)), Some(10.0));
+        assert_eq!(positive_book_value(Some(0.0)), None);
+        assert_eq!(positive_book_value(Some(-1.0)), None);
     }
 
     #[test]

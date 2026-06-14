@@ -969,15 +969,19 @@ fn tags_for_output(output: ComprehensiveProfitabilityOutput) -> Vec<String> {
         }
         ComprehensiveProfitabilityOutput::StableRoe => {
             tags.push("roe".to_string());
+            tags.push("deprecated".to_string());
         }
         ComprehensiveProfitabilityOutput::StableRoic => {
             tags.push("roic".to_string());
+            tags.push("deprecated".to_string());
         }
         ComprehensiveProfitabilityOutput::StableRonoa => {
             tags.push("ronoa".to_string());
+            tags.push("deprecated".to_string());
         }
         ComprehensiveProfitabilityOutput::Fcffic => {
             tags.push("fcffic".to_string());
+            tags.push("deprecated".to_string());
         }
     }
     tags
@@ -1140,15 +1144,21 @@ mod tests {
     }
 
     #[test]
-    fn metadata_marks_old_composite_deprecated_and_new_outputs_active() {
+    fn metadata_marks_composite_and_split_outputs_deprecated() {
         let old = spec(ComprehensiveProfitabilityOutput::ComprehensiveProfitability);
         assert_eq!(old.id, COMPREHENSIVE_PROFITABILITY_ID);
         assert!(old.tags.iter().any(|tag| tag == "deprecated"));
 
-        let stable_roe = spec(ComprehensiveProfitabilityOutput::StableRoe);
-        assert_eq!(stable_roe.id, STABLE_ROE_ID);
-        assert!(stable_roe.tags.iter().any(|tag| tag == "ZSZQ"));
-        assert!(!stable_roe.tags.iter().any(|tag| tag == "deprecated"));
+        for output in [
+            ComprehensiveProfitabilityOutput::StableRoe,
+            ComprehensiveProfitabilityOutput::StableRoic,
+            ComprehensiveProfitabilityOutput::StableRonoa,
+            ComprehensiveProfitabilityOutput::Fcffic,
+        ] {
+            let spec = spec(output);
+            assert!(spec.tags.iter().any(|tag| tag == "ZSZQ"));
+            assert!(spec.tags.iter().any(|tag| tag == "deprecated"));
+        }
     }
 
     #[test]

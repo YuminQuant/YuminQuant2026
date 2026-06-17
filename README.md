@@ -97,6 +97,16 @@ Multi-raw provider example: these V-shape factors share one minute provider. In 
 cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors negv_mean,negv_max,negvwgt_mean,negvwgt_max,flash_crash_prob_v --profile --refresh-minute-cache
 ```
 
+### 派生数据 / Derived Data
+
+一致预期派生数据生成日频宽表，输出路径为 `data/derived/stock/consensus/{trade_date}.parquet`。第一版对齐 `consensus.txt` 中的个股年度、滚动、评级和目标价指标，并使用 `fy0/fy1/fy2/fy3/roll` 后缀。由于朝阳永续文档没有披露“机构影响力 + 发布时间影响力”的具体权重函数，当前实现保留窗口、机构数门槛、type 和沿用规则，但默认聚合器为可替换的同权模型。
+
+Analyst consensus derived data is generated as one daily wide parquet file per trading day at `data/derived/stock/consensus/{trade_date}.parquet`. Version 1 follows the stock-level annual, rolling, rating, and target-price fields described in `consensus.txt`, with `fy0/fy1/fy2/fy3/roll` suffixes. The CYYS document does not disclose the exact institution-influence and publication-time weighting functions, so the engine keeps the windows, institution-count thresholds, type labels, and carry-forward behavior while using a replaceable equal-weight aggregator by default.
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-consensus --start-date 20260401 --end-date 20260430 --date-batch-size 20
+```
+
 ### Barra 与 Label / Barra And Labels
 
 ```powershell

@@ -13,12 +13,13 @@ use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
 use yq_factor_engine::core::{AssetClass, Frequency};
 use yq_factor_engine::derive::request::{BarSource, DEFAULT_DERIVE_DATE_BATCH_SIZE};
+use yq_factor_engine::derive::DEFAULT_CONSENSUS_DATE_BATCH_SIZE;
 use yq_factor_engine::engine::{DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE};
 use yq_factor_engine::strategy::request::StrategyRunRequest;
 use yq_factor_engine::{
-    BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest, DeriveBarRequest,
-    DeriveEngine, Engine, LabelEngine, LabelRunRequest, Result, RunRequest, StrategyEngine,
-    StrategyRunReport,
+    AnalystConsensusRequest, BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest,
+    DeriveBarRequest, DeriveEngine, Engine, LabelEngine, LabelRunRequest, Result, RunRequest,
+    StrategyEngine, StrategyRunReport,
 };
 
 const DEFAULT_LABEL_BATCH_SIZE: usize = 5;
@@ -241,6 +242,12 @@ fn run_cli() -> Result<()> {
             let report = engine.run_bar(&request)?;
             print_derive_bar_report(&report);
         }
+        "derive-consensus" => {
+            let request = parse_derive_consensus_request(&args[1..])?;
+            let engine = DeriveEngine::from_consensus_request(&request)?;
+            let report = engine.run_analyst_consensus(&request)?;
+            print_derive_consensus_report(&report);
+        }
         command => {
             return Err(yq_factor_engine::error::err(format!(
                 "unknown command: {command}"
@@ -292,6 +299,44 @@ fn parse_derive_bar_request(args: &[String]) -> Result<DeriveBarRequest> {
         asset_class,
         source,
         bar_size,
+        start_date,
+        end_date,
+        overwrite: flag_bool(&flags, "overwrite", true),
+        date_batch_size,
+        project_config_path: flags
+            .get("project-config")
+            .or_else(|| flags.get("config"))
+            .map(PathBuf::from),
+    })
+}
+
+fn parse_derive_consensus_request(args: &[String]) -> Result<AnalystConsensusRequest> {
+    let flags = parse_flags(args)?;
+    let start_date = parse_yyyymmdd(
+        flags
+            .get("start-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --start-date YYYYMMDD"))?,
+        "start-date",
+    )?;
+    let end_date = parse_yyyymmdd(
+        flags
+            .get("end-date")
+            .ok_or_else(|| yq_factor_engine::error::err("missing --end-date YYYYMMDD"))?,
+        "end-date",
+    )?;
+    let date_batch_size = match flags.get("date-batch-size") {
+        Some(value) => {
+            let parsed = value.parse::<usize>()?;
+            if parsed == 0 {
+                return Err(yq_factor_engine::error::err(
+                    "--date-batch-size must be greater than 0",
+                ));
+            }
+            parsed
+        }
+        None => DEFAULT_CONSENSUS_DATE_BATCH_SIZE,
+    };
+    Ok(AnalystConsensusRequest {
         start_date,
         end_date,
         overwrite: flag_bool(&flags, "overwrite", true),
@@ -1152,6 +1197,22 @@ fn print_derive_bar_report(report: &yq_factor_engine::DeriveBarReport) {
     }
 }
 
+fn print_derive_consensus_report(report: &yq_factor_engine::AnalystConsensusReport) {
+    println!("derive-consensus complete");
+    println!("processed dates: {}", report.processed_dates);
+    println!("total rows: {}", report.total_rows);
+    println!("output files: {}", report.output_files.len());
+    if !report.skipped_existing_dates.is_empty() {
+        println!(
+            "skipped existing dates: {}",
+            report.skipped_existing_dates.len()
+        );
+    }
+    for path in &report.output_files {
+        println!("  {}", path.display());
+    }
+}
+
 fn print_help() {
     println!("YuminQuant factor engine MVP");
     println!();
@@ -1184,6 +1245,7 @@ fn print_help() {
         "  derive-bar --asset stock --source minute --bar-size N --start-date YYYYMMDD --end-date YYYYMMDD"
     );
     println!("    derive-bar stock minute allowed N: divisors of 240 with 1 < N <= 120");
+    println!("  derive-consensus --start-date YYYYMMDD --end-date YYYYMMDD");
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
@@ -1224,6 +1286,10 @@ fn print_help() {
     println!(
         "  --date-batch-size N for derive-bar controls concurrent dates (default {})",
         DEFAULT_DERIVE_DATE_BATCH_SIZE
+    );
+    println!(
+        "  --date-batch-size N for derive-consensus controls sequential date batches (default {})",
+        DEFAULT_CONSENSUS_DATE_BATCH_SIZE
     );
     println!(
         "  --label-batch-size N (default {})",

@@ -6,6 +6,9 @@ use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{AssetClass, DatasetId};
 use crate::data::{DataCatalog, MarketDataLoader, Table};
+use crate::derive::analyst::{
+    derive_analyst_consensus, AnalystConsensusReport, AnalystConsensusRequest,
+};
 use crate::derive::bar::{derive_stock_minute_bars, validate_stock_minute_bar_size};
 use crate::derive::request::{BarSource, DeriveBarRequest};
 use crate::derive::storage::{derived_stock_bar_path, write_bar_rows};
@@ -28,6 +31,12 @@ pub struct DeriveBarReport {
 
 impl DeriveEngine {
     pub fn from_request(request: &DeriveBarRequest) -> Result<Self> {
+        Ok(Self {
+            config: EngineConfig::discover(request.project_config_path.clone())?,
+        })
+    }
+
+    pub fn from_consensus_request(request: &AnalystConsensusRequest) -> Result<Self> {
         Ok(Self {
             config: EngineConfig::discover(request.project_config_path.clone())?,
         })
@@ -95,6 +104,13 @@ impl DeriveEngine {
         }
         progress.finish();
         Ok(report)
+    }
+
+    pub fn run_analyst_consensus(
+        &self,
+        request: &AnalystConsensusRequest,
+    ) -> Result<AnalystConsensusReport> {
+        derive_analyst_consensus(&self.config, request)
     }
 }
 

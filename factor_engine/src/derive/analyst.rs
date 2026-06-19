@@ -805,7 +805,7 @@ fn annual_consensus_from_base(
         previous.operating_revenue.value,
     );
     let np_yoy = yoy(base.net_profit.value, previous.net_profit.value);
-    let npcgrate_2y = cagr_2y(base.net_profit.value, historical.net_profit.value);
+    let npcgrate_2y = sqrt_change_rate_pct(base.net_profit.value, historical.net_profit.value);
     let peg = match (pe, npcgrate_2y) {
         (Some(pe), Some(growth)) if growth > EPS && pe >= 0.0 => Some(pe / growth),
         _ => None,
@@ -1158,7 +1158,7 @@ fn compute_roll_consensus(
             .and_then(|annual| annual.net_profit.value),
         w,
     );
-    let con_npcgrate_2y_roll = cagr_2y(con_np_roll, historical_roll_np);
+    let con_npcgrate_2y_roll = sqrt_change_rate_pct(con_np_roll, historical_roll_np);
     let con_peg_roll = match (con_pe_roll, con_npcgrate_2y_roll) {
         (Some(pe), Some(growth)) if growth > EPS && pe >= 0.0 => Some(pe / growth),
         _ => None,
@@ -1502,13 +1502,14 @@ fn yoy(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
     (previous.abs() > EPS).then_some(100.0 * (current - previous) / previous.abs())
 }
 
-fn cagr_2y(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
+fn sqrt_change_rate_pct(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
     let current = current.and_then(clean_value)?;
     let previous = previous.and_then(clean_value)?;
-    if current < 0.0 || previous <= EPS {
+    if previous.abs() <= EPS {
         return None;
     }
-    Some(100.0 * ((current / previous).sqrt() - 1.0))
+    let change_rate = (current - previous) / previous.abs();
+    (change_rate >= 0.0).then_some(100.0 * (change_rate.sqrt() - 1.0))
 }
 
 fn weighted(left: Option<f64>, right: Option<f64>, left_weight: f64) -> Option<f64> {
@@ -1687,7 +1688,10 @@ mod tests {
         assert_eq!(effective_price(Some(0.0), Some(9.0)), Some(9.0));
         assert_eq!(yoy(Some(120.0), Some(100.0)), Some(20.0));
         assert_eq!(yoy(Some(120.0), Some(0.0)), None);
-        assert!((cagr_2y(Some(121.0), Some(100.0)).unwrap() - 10.0).abs() < 1e-10);
-        assert_eq!(cagr_2y(Some(-1.0), Some(100.0)), None);
+        assert_eq!(yoy(Some(121.0), Some(100.0)), Some(21.0));
+        assert_eq!(yoy(Some(-1.0), Some(100.0)), Some(-101.0));
+        assert!((sqrt_change_rate_pct(Some(200.0), Some(100.0)).unwrap() - 0.0).abs() < 1e-10);
+        assert!((sqrt_change_rate_pct(Some(300.0), Some(-100.0)).unwrap() - 100.0).abs() < 1e-10);
+        assert_eq!(sqrt_change_rate_pct(Some(80.0), Some(100.0)), None);
     }
 }

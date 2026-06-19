@@ -558,6 +558,32 @@ impl MarketDataLoader {
         Ok(table)
     }
 
+    pub fn load_stock_analyst_report_between_cached(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+        cache: &mut DisclosureTableCache,
+    ) -> Result<Table> {
+        let columns = with_required_columns(
+            requested_columns,
+            &["ts_code", "report_date", "quarter", "rd"],
+        );
+        let files =
+            self.catalog
+                .daily_year_files(DatasetId::StockAnalystReport, start_date, end_date);
+        let mut table = Table::empty();
+        for file in files {
+            let yearly = cache.load_year(DatasetId::StockAnalystReport, file, &columns)?;
+            let filtered = filter_analyst_report_between(&yearly, start_date, end_date)?;
+            table.append(&filtered)?;
+        }
+        if table.columns.is_empty() {
+            return empty_disclosure_table(&columns);
+        }
+        Ok(table)
+    }
+
     pub fn load_minute_by_date(
         &self,
         dataset: DatasetId,
@@ -855,6 +881,14 @@ fn filter_analyst_report_range(table: &Table, end_date: i32) -> Result<Table> {
     table.take(&indices)
 }
 
+fn filter_analyst_report_between(table: &Table, start_date: i32, end_date: i32) -> Result<Table> {
+    let report_dates = table.required_i32_date_cast("report_date")?;
+    let indices = (0..table.len)
+        .filter(|idx| report_dates[*idx].is_some_and(|date| date >= start_date && date <= end_date))
+        .collect::<Vec<_>>();
+    table.take(&indices)
+}
+
 fn with_required_columns(requested: &[String], required: &[&str]) -> Vec<String> {
     let mut columns = BTreeSet::new();
     for column in required {
@@ -1143,6 +1177,76 @@ mod tests {
             .expect("prune disclosure cache columns");
         let profiles = cache.profiles();
         assert_eq!(profiles[0].loaded_columns, 7);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn analyst_report_between_loader_filters_lower_and_upper_bounds() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_analyst_between_test_{unique}"));
+        let path = root
+            .join("stock_data")
+            .join("analyst_report")
+            .join("2024.parquet");
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("000001.SZ".to_string()),
+                    Some("000001.SZ".to_string()),
+                    Some("000001.SZ".to_string()),
+                ]),
+            ),
+            (
+                "report_date".to_string(),
+                ColumnData::I32(vec![Some(20240101), Some(20240501), Some(20241231)]),
+            ),
+            (
+                "quarter".to_string(),
+                ColumnData::Utf8(vec![
+                    Some("2024Q4".to_string()),
+                    Some("2024Q4".to_string()),
+                    Some("2024Q4".to_string()),
+                ]),
+            ),
+            (
+                "rd".to_string(),
+                ColumnData::F64(vec![Some(1.0), Some(2.0), Some(3.0)]),
+            ),
+            (
+                "eps".to_string(),
+                ColumnData::F64(vec![Some(0.1), Some(0.2), Some(0.3)]),
+            ),
+        ]))
+        .expect("analyst table");
+        write_parquet(&path, &table).expect("write analyst");
+
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let mut cache = DisclosureTableCache::default();
+        let loaded = loader
+            .load_stock_analyst_report_between_cached(
+                &["eps".to_string()],
+                20240401,
+                20240601,
+                &mut cache,
+            )
+            .expect("load analyst between");
+
+        assert_eq!(loaded.len, 1);
+        assert_eq!(
+            loaded
+                .required_i32_date_cast("report_date")
+                .expect("report_date"),
+            vec![Some(20240501)]
+        );
+        assert_eq!(
+            loaded.required_f64_cast("eps").expect("eps"),
+            vec![Some(0.2)]
+        );
 
         fs::remove_dir_all(root).expect("cleanup");
     }

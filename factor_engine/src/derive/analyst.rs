@@ -19,7 +19,6 @@ const FORECAST_LOOSE_DAYS: i32 = 120;
 const FORECAST_CARRY_DAYS: i32 = 183;
 const NP_HISTORY_DAYS: i32 = 370;
 const STRICT_FORECAST_INSTITUTIONS: usize = 6;
-const STRICT_RATING_TARGET_INSTITUTIONS: usize = 4;
 const EPS: f64 = 1e-12;
 
 #[derive(Clone, Debug)]
@@ -540,11 +539,11 @@ impl AnalystRows {
                 org_name: org_name.to_string(),
                 create_time: create_times[idx].clone(),
                 forecast_year,
-                op_rt: clean(op_rt[idx]),
-                np: clean(np[idx]),
-                eps: clean(eps[idx]),
+                op_rt: clean_analyst_value(op_rt[idx]),
+                np: clean_analyst_value(np[idx]),
+                eps: clean_analyst_value(eps[idx]),
                 rating_strength: ratings[idx].as_deref().and_then(rating_strength),
-                min_price: clean(min_prices[idx]),
+                min_price: clean_analyst_value(min_prices[idx]),
             });
         }
         rows.sort_by(|left, right| {
@@ -695,19 +694,11 @@ impl BaseMetric {
 #[derive(Clone, Copy, Debug)]
 struct BaseConsensus {
     value: Option<f64>,
-    consensus_type: Option<i32>,
-    institution_count: Option<i32>,
-    hisdate: Option<i32>,
 }
 
 impl BaseConsensus {
-    fn missing(consensus_type: i32) -> Self {
-        Self {
-            value: None,
-            consensus_type: Some(consensus_type),
-            institution_count: Some(0),
-            hisdate: None,
-        }
+    fn missing() -> Self {
+        Self { value: None }
     }
 }
 
@@ -729,7 +720,7 @@ struct AnnualConsensus {
 
 impl Default for BaseConsensus {
     fn default() -> Self {
-        Self::missing(4)
+        Self::missing()
     }
 }
 
@@ -844,12 +835,7 @@ fn compute_annual_base_uncached(
     financial: &ConsensusFinancialData,
 ) -> BaseConsensus {
     if let Some(value) = actual_annual_value(ts_code, trade_date, year, metric, financial) {
-        return BaseConsensus {
-            value: Some(value),
-            consensus_type: Some(0),
-            institution_count: Some(0),
-            hisdate: None,
-        };
+        return BaseConsensus { value: Some(value) };
     }
     forecast_consensus(ts_code, trade_date, year, metric, state)
 }
@@ -948,7 +934,7 @@ fn compute_con_na(
     let equity = balance
         .record_for_end_date(ts_code, trade_date, end_date)?
         .column("total_hldr_eqy_exc_min_int")
-        .and_then(clean_value)?;
+        .and_then(clean_positive_value)?;
     Some(equity + con_np?)
 }
 
@@ -983,9 +969,6 @@ fn forecast_consensus(
     if strict.len() >= STRICT_FORECAST_INSTITUTIONS {
         return BaseConsensus {
             value: equal_weight(&strict),
-            consensus_type: Some(1),
-            institution_count: Some(strict.len() as i32),
-            hisdate: None,
         };
     }
     let loose_start = add_days(trade_date, -FORECAST_LOOSE_DAYS);
@@ -997,9 +980,6 @@ fn forecast_consensus(
     if !loose.is_empty() {
         return BaseConsensus {
             value: equal_weight(&loose),
-            consensus_type: Some(2),
-            institution_count: Some(loose.len() as i32),
-            hisdate: None,
         };
     }
     let carry_start = add_days(trade_date, -FORECAST_CARRY_DAYS);
@@ -1009,15 +989,11 @@ fn forecast_consensus(
         .filter(|obs| obs.report_date >= carry_start)
         .collect::<Vec<_>>();
     if !carry.is_empty() {
-        let hisdate = carry.iter().map(|obs| obs.report_date).max();
         return BaseConsensus {
             value: equal_weight(&carry),
-            consensus_type: Some(3),
-            institution_count: Some(carry.len() as i32),
-            hisdate,
         };
     }
-    BaseConsensus::missing(4)
+    BaseConsensus::missing()
 }
 
 fn compute_rating(
@@ -1041,22 +1017,12 @@ fn compute_rating(
         .copied()
         .filter(|obs| obs.report_date >= strict_start)
         .collect::<Vec<_>>();
-    if strict.len() >= STRICT_RATING_TARGET_INSTITUTIONS {
-        return RatingConsensus {
-            value: mean(strengths(&strict)),
-            consensus_type: Some(1),
-        };
-    }
     if !strict.is_empty() {
         return RatingConsensus {
             value: mean(strengths(&strict)),
-            consensus_type: Some(2),
         };
     }
-    RatingConsensus {
-        value: None,
-        consensus_type: Some(3),
-    }
+    RatingConsensus { value: None }
 }
 
 fn compute_target_price(
@@ -1080,22 +1046,12 @@ fn compute_target_price(
         .copied()
         .filter(|obs| obs.report_date >= strict_start)
         .collect::<Vec<_>>();
-    if strict.len() >= STRICT_RATING_TARGET_INSTITUTIONS {
-        return TargetConsensus {
-            value: mean(strict.iter().map(|obs| obs.target_price)),
-            consensus_type: Some(1),
-        };
-    }
     if !strict.is_empty() {
         return TargetConsensus {
             value: mean(strict.iter().map(|obs| obs.target_price)),
-            consensus_type: Some(2),
         };
     }
-    TargetConsensus {
-        value: None,
-        consensus_type: Some(3),
-    }
+    TargetConsensus { value: None }
 }
 
 fn strengths<'a>(observations: &'a [&'a RatingObservation]) -> impl Iterator<Item = f64> + 'a {
@@ -1125,13 +1081,11 @@ where
 #[derive(Clone, Copy, Debug, Default)]
 struct RatingConsensus {
     value: Option<f64>,
-    consensus_type: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct TargetConsensus {
     value: Option<f64>,
-    consensus_type: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1363,20 +1317,10 @@ fn consensus_rows_table(rows: &[ConsensusRow]) -> Result<Table> {
         "con_rating_strength",
         rows.iter().map(|row| row.rating.value),
     );
-    push_i32_column(
-        &mut columns,
-        "con_rating_type",
-        rows.iter().map(|row| row.rating.consensus_type),
-    );
     push_f64_column(
         &mut columns,
         "con_target_price",
         rows.iter().map(|row| row.target.value),
-    );
-    push_i32_column(
-        &mut columns,
-        "con_target_price_type",
-        rows.iter().map(|row| row.target.consensus_type),
     );
     Table::new(columns)
 }
@@ -1399,21 +1343,6 @@ fn push_base_columns(
         columns,
         &format!("{base}_{suffix}"),
         values.iter().map(|v| v.value),
-    );
-    push_i32_column(
-        columns,
-        &format!("{base}_type_{suffix}"),
-        values.iter().map(|v| v.consensus_type),
-    );
-    push_i32_column(
-        columns,
-        &format!("{base}_inst_count_{suffix}"),
-        values.iter().map(|v| v.institution_count),
-    );
-    push_i32_column(
-        columns,
-        &format!("{base}_hisdate_{suffix}"),
-        values.iter().map(|v| v.hisdate),
     );
 }
 
@@ -1488,13 +1417,6 @@ where
         name.to_string(),
         ColumnData::F64(values.map(|value| value.and_then(clean_value)).collect()),
     );
-}
-
-fn push_i32_column<I>(columns: &mut BTreeMap<String, ColumnData>, name: &str, values: I)
-where
-    I: Iterator<Item = Option<i32>>,
-{
-    columns.insert(name.to_string(), ColumnData::I32(values.collect()));
 }
 
 fn fiscal_years(trade_date: i32) -> [i32; 4] {
@@ -1596,6 +1518,13 @@ fn weighted(left: Option<f64>, right: Option<f64>, left_weight: f64) -> Option<f
     )
 }
 
+fn clean_analyst_value(value: Option<f64>) -> Option<f64> {
+    clean(value)
+}
+
+fn clean_positive_value(value: f64) -> Option<f64> {
+    clean_value(value).filter(|value| *value > 0.0)
+}
 fn clean(value: Option<f64>) -> Option<f64> {
     value.and_then(clean_value)
 }
@@ -1674,6 +1603,16 @@ mod tests {
         assert_eq!(rating_strength("卖出"), Some(0.0));
     }
 
+    #[test]
+    fn analyst_consensus_cleans_inf_and_non_positive_equity() {
+        assert_eq!(clean_analyst_value(Some(f64::INFINITY)), None);
+        assert_eq!(clean_analyst_value(Some(f64::NEG_INFINITY)), None);
+        assert_eq!(clean_analyst_value(Some(f64::NAN)), None);
+        assert_eq!(clean_analyst_value(Some(1.5)), Some(1.5));
+        assert_eq!(clean_positive_value(0.0), None);
+        assert_eq!(clean_positive_value(-1.0), None);
+        assert_eq!(clean_positive_value(2.0), Some(2.0));
+    }
     #[test]
     fn analyst_consensus_state_prunes_windows() {
         let mut state = AnalystConsensusState::default();

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+﻿use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,6 +17,7 @@ const ANALYST_WARMUP_DAYS: i32 = 600;
 const FORECAST_STRICT_DAYS: i32 = 90;
 const FORECAST_LOOSE_DAYS: i32 = 120;
 const FORECAST_CARRY_DAYS: i32 = 183;
+const NP_HISTORY_DAYS: i32 = 370;
 const STRICT_FORECAST_INSTITUTIONS: usize = 6;
 const STRICT_RATING_TARGET_INSTITUTIONS: usize = 4;
 const EPS: f64 = 1e-12;
@@ -66,6 +67,9 @@ pub fn derive_analyst_consensus(
     let progress = ProgressBar::new("derive-consensus", target_dates.len(), true);
     let mut report = AnalystConsensusReport::default();
     let mut disclosure_cache = DisclosureTableCache::default();
+    let mut state = AnalystConsensusState::default();
+    let warmup_start = add_days(request.start_date, -ANALYST_WARMUP_DAYS);
+    let mut analyst_cursor = AnalystReportCursor::new(warmup_start);
 
     for date_batch in target_dates.chunks(request.date_batch_size) {
         let Some(&batch_start) = date_batch.first() else {
@@ -74,27 +78,33 @@ pub fn derive_analyst_consensus(
         let Some(&batch_end) = date_batch.last() else {
             continue;
         };
-        let warmup_start = add_days(batch_start, -ANALYST_WARMUP_DAYS);
-        let calc_dates = calendar.open_dates_between(warmup_start, batch_end);
-        let batch_target_set = date_batch.iter().copied().collect::<BTreeSet<_>>();
         let np_history_dates = np_history_dates_for_batch(&calendar, date_batch);
+        let processing_dates = processing_dates_for_batch(&state, date_batch, &np_history_dates);
+        let Some(&processing_start) = processing_dates.iter().next() else {
+            continue;
+        };
         let market = DailyMarketData::load(&loader, date_batch)?;
-        let analyst_rows =
-            AnalystRows::load(&loader, warmup_start, batch_end, &mut disclosure_cache)?;
-        let financial =
-            ConsensusFinancialData::load(&loader, warmup_start, batch_end, &mut disclosure_cache)?;
-        let mut state = AnalystConsensusState::default();
-        for trade_date in calc_dates {
-            state.ingest_until(trade_date, &analyst_rows);
-            let output = if batch_target_set.contains(&trade_date) {
+        let analyst_rows = analyst_cursor.load_until(&loader, batch_end, &mut disclosure_cache)?;
+        let financial = ConsensusFinancialData::load(
+            &loader,
+            processing_start,
+            batch_end,
+            &mut disclosure_cache,
+        )?;
+        let mut analyst_row_cursor = 0usize;
+
+        for trade_date in processing_dates {
+            state.ingest_until(trade_date, &analyst_rows, &mut analyst_row_cursor);
+            let output = if date_batch.contains(&trade_date) {
                 let output_path = consensus_output_path(&config.data_root, trade_date);
                 if output_path.exists() && !request.overwrite {
                     report.skipped_existing_dates.push(trade_date);
                     progress.tick(format!("date={trade_date} skipped existing"));
                     None
                 } else {
-                    let table =
-                        build_consensus_table_for_date(trade_date, &market, &financial, &state)?;
+                    let table = build_consensus_table_for_date(
+                        trade_date, &market, &financial, &mut state,
+                    )?;
                     let rows = table.len;
                     write_parquet(&output_path, &table)?;
                     progress.tick(format!("date={trade_date} rows={rows}"));
@@ -105,24 +115,24 @@ pub fn derive_analyst_consensus(
             };
 
             if np_history_dates.contains(&trade_date) {
-                let np_fy0 = state
+                let active_stocks = state
                     .active_stocks()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                let np_fy0 = active_stocks
+                    .iter()
                     .filter_map(|ts_code| {
                         let years = fiscal_years(trade_date);
-                        let value = compute_annual_base(
-                            ts_code,
-                            trade_date,
-                            years[0],
-                            BaseMetric::NetProfit,
-                            &state,
-                            &financial,
-                        )
-                        .value?;
-                        Some((ts_code.to_string(), value))
+                        let value = state
+                            .annual_base_snapshot(ts_code, trade_date, years[0], &financial)
+                            .net_profit
+                            .value?;
+                        Some((ts_code.clone(), value))
                     })
                     .collect::<HashMap<_, _>>();
                 state.remember_np_fy0(trade_date, np_fy0);
             }
+            state.finish_trade_date(trade_date);
 
             if let Some(output) = output {
                 report.total_rows += output.rows;
@@ -130,6 +140,7 @@ pub fn derive_analyst_consensus(
                 report.output_files.push(output.output_path);
             }
         }
+        let _ = batch_start;
     }
     progress.finish();
     Ok(report)
@@ -158,35 +169,56 @@ fn np_history_dates_for_batch(calendar: &TradingCalendar, target_dates: &[i32]) 
     dates
 }
 
+fn processing_dates_for_batch(
+    state: &AnalystConsensusState,
+    target_dates: &[i32],
+    np_history_dates: &BTreeSet<i32>,
+) -> BTreeSet<i32> {
+    let mut dates = np_history_dates.clone();
+    dates.extend(target_dates.iter().copied());
+    if let Some(processed_until) = state.processed_until() {
+        dates.retain(|date| *date > processed_until);
+    }
+    dates
+}
+
 #[derive(Clone, Debug, Default)]
 struct AnalystConsensusState {
-    next_row_idx: usize,
     forecasts: HashMap<ForecastBucketKey, HashMap<String, ForecastObservation>>,
     ratings: HashMap<String, HashMap<String, RatingObservation>>,
     targets: HashMap<String, HashMap<String, TargetObservation>>,
     np_fy0_history: BTreeMap<i32, HashMap<String, f64>>,
+    annual_base_snapshots: HashMap<AnnualBaseSnapshotKey, AnnualBaseSnapshot>,
+    processed_until: Option<i32>,
 }
 
 impl AnalystConsensusState {
-    fn ingest_until(&mut self, trade_date: i32, rows: &AnalystRows) {
-        while self.next_row_idx < rows.rows.len()
-            && rows.rows[self.next_row_idx].report_date <= trade_date
-        {
-            let row = &rows.rows[self.next_row_idx];
+    fn processed_until(&self) -> Option<i32> {
+        self.processed_until
+    }
+
+    fn ingest_until(&mut self, trade_date: i32, rows: &AnalystRows, cursor: &mut usize) {
+        while *cursor < rows.rows.len() && rows.rows[*cursor].report_date <= trade_date {
+            let row = &rows.rows[*cursor];
             self.ingest_row(row);
-            self.next_row_idx += 1;
+            *cursor += 1;
         }
-        let min_keep_date = add_days(trade_date, -ANALYST_WARMUP_DAYS);
-        self.np_fy0_history.retain(|date, _| *date >= min_keep_date);
+        self.prune_windows(trade_date);
+    }
+
+    fn finish_trade_date(&mut self, trade_date: i32) {
+        self.processed_until = Some(trade_date);
     }
 
     fn ingest_row(&mut self, row: &AnalystRow) {
+        let mut invalidates_annual_base = false;
         for (metric, value) in [
             (BaseMetric::OperatingRevenue, row.op_rt),
             (BaseMetric::NetProfit, row.np),
             (BaseMetric::Eps, row.eps),
         ] {
             if let Some(value) = clean(value) {
+                invalidates_annual_base = true;
                 let key = ForecastBucketKey {
                     ts_code: row.ts_code.clone(),
                     year: row.forecast_year,
@@ -202,6 +234,12 @@ impl AnalystConsensusState {
                     bucket.insert(row.org_name.clone(), observation);
                 }
             }
+        }
+        if invalidates_annual_base {
+            self.annual_base_snapshots.remove(&AnnualBaseSnapshotKey {
+                ts_code: row.ts_code.clone(),
+                year: row.forecast_year,
+            });
         }
 
         if let Some(strength) = row.rating_strength {
@@ -254,6 +292,121 @@ impl AnalystConsensusState {
             .and_then(|(_, values)| values.get(ts_code))
             .copied()
     }
+
+    fn annual_base_snapshot(
+        &mut self,
+        ts_code: &str,
+        trade_date: i32,
+        year: i32,
+        financial: &ConsensusFinancialData,
+    ) -> AnnualBaseSnapshot {
+        let key = AnnualBaseSnapshotKey {
+            ts_code: ts_code.to_string(),
+            year,
+        };
+        let marker = annual_base_snapshot_marker(ts_code, trade_date, year, financial);
+        let cached = self.annual_base_snapshots.get(&key).copied();
+        let can_reuse = cached.is_some_and(|snapshot| {
+            snapshot.marker == marker
+                && !snapshot
+                    .valid_until
+                    .is_some_and(|expiry| trade_date >= expiry)
+        });
+        if can_reuse {
+            return cached.expect("checked above");
+        }
+
+        let operating_revenue = compute_annual_base_uncached(
+            ts_code,
+            trade_date,
+            year,
+            BaseMetric::OperatingRevenue,
+            self,
+            financial,
+        );
+        let net_profit = compute_annual_base_uncached(
+            ts_code,
+            trade_date,
+            year,
+            BaseMetric::NetProfit,
+            self,
+            financial,
+        );
+        let eps = compute_annual_base_uncached(
+            ts_code,
+            trade_date,
+            year,
+            BaseMetric::Eps,
+            self,
+            financial,
+        );
+        let net_assets = compute_con_na(ts_code, trade_date, net_profit.value, financial);
+        let snapshot = AnnualBaseSnapshot {
+            operating_revenue,
+            net_profit,
+            eps,
+            net_assets,
+            marker,
+            valid_until: next_annual_base_snapshot_expiry(ts_code, year, trade_date, self),
+        };
+        self.annual_base_snapshots.insert(key, snapshot);
+        snapshot
+    }
+
+    fn prune_windows(&mut self, trade_date: i32) {
+        let min_report_date = add_days(trade_date, -FORECAST_CARRY_DAYS);
+        self.forecasts.retain(|_, bucket| {
+            bucket.retain(|_, observation| observation.report_date >= min_report_date);
+            !bucket.is_empty()
+        });
+        self.ratings.retain(|_, bucket| {
+            bucket.retain(|_, observation| observation.report_date >= min_report_date);
+            !bucket.is_empty()
+        });
+        self.targets.retain(|_, bucket| {
+            bucket.retain(|_, observation| observation.report_date >= min_report_date);
+            !bucket.is_empty()
+        });
+        let min_np_history = add_days(trade_date, -NP_HISTORY_DAYS);
+        self.np_fy0_history
+            .retain(|date, _| *date >= min_np_history);
+
+        let years = fiscal_years(trade_date);
+        let min_year = years[0] - 2;
+        let max_year = years[3] + 1;
+        self.annual_base_snapshots
+            .retain(|key, _| key.year >= min_year && key.year <= max_year);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+struct AnnualBaseSnapshotKey {
+    ts_code: String,
+    year: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AnnualBaseSnapshot {
+    operating_revenue: BaseConsensus,
+    net_profit: BaseConsensus,
+    eps: BaseConsensus,
+    net_assets: Option<f64>,
+    marker: AnnualBaseSnapshotMarker,
+    valid_until: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AnnualBaseSnapshotMarker {
+    income: Option<FinancialRecordMarker>,
+    balance: Option<FinancialRecordMarker>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FinancialRecordMarker {
+    end_date: i32,
+    disclosure_date: i32,
+    report_type: i64,
+    update_flag: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -285,6 +438,34 @@ struct TargetObservation {
 }
 
 #[derive(Clone, Debug)]
+struct AnalystReportCursor {
+    loaded_until: i32,
+}
+
+impl AnalystReportCursor {
+    fn new(start_date: i32) -> Self {
+        Self {
+            loaded_until: add_days(start_date, -1),
+        }
+    }
+
+    fn load_until(
+        &mut self,
+        loader: &MarketDataLoader,
+        end_date: i32,
+        disclosure_cache: &mut DisclosureTableCache,
+    ) -> Result<AnalystRows> {
+        let start_date = add_days(self.loaded_until, 1);
+        if start_date > end_date {
+            return Ok(AnalystRows::default());
+        }
+        let rows = AnalystRows::load(loader, start_date, end_date, disclosure_cache)?;
+        self.loaded_until = end_date;
+        Ok(rows)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 struct AnalystRows {
     rows: Vec<AnalystRow>,
 }
@@ -321,7 +502,7 @@ impl AnalystRows {
             "min_price".to_string(),
             "max_price".to_string(),
         ];
-        let table = loader.load_stock_analyst_report_cached(
+        let table = loader.load_stock_analyst_report_between_cached(
             &columns,
             start_date,
             end_date,
@@ -556,7 +737,7 @@ fn build_consensus_table_for_date(
     trade_date: i32,
     market: &DailyMarketData,
     financial: &ConsensusFinancialData,
-    state: &AnalystConsensusState,
+    state: &mut AnalystConsensusState,
 ) -> Result<Table> {
     let snapshot = market.snapshot(trade_date);
     let years = fiscal_years(trade_date);
@@ -602,75 +783,47 @@ fn compute_annual_consensus(
     trade_date: i32,
     year: i32,
     price: Option<f64>,
-    state: &AnalystConsensusState,
+    state: &mut AnalystConsensusState,
     financial: &ConsensusFinancialData,
 ) -> AnnualConsensus {
-    let operating_revenue = compute_annual_base(
-        ts_code,
-        trade_date,
-        year,
-        BaseMetric::OperatingRevenue,
-        state,
-        financial,
-    );
-    let net_profit = compute_annual_base(
-        ts_code,
-        trade_date,
-        year,
-        BaseMetric::NetProfit,
-        state,
-        financial,
-    );
-    let eps = compute_annual_base(ts_code, trade_date, year, BaseMetric::Eps, state, financial);
-    let net_assets = compute_con_na(ts_code, trade_date, net_profit.value, financial);
-    let shares = safe_div(net_profit.value, eps.value);
+    let base = state.annual_base_snapshot(ts_code, trade_date, year, financial);
+    let previous = state.annual_base_snapshot(ts_code, trade_date, year - 1, financial);
+    let historical = state.annual_base_snapshot(ts_code, trade_date, year - 2, financial);
+    annual_consensus_from_base(price, base, previous, historical)
+}
+
+fn annual_consensus_from_base(
+    price: Option<f64>,
+    base: AnnualBaseSnapshot,
+    previous: AnnualBaseSnapshot,
+    historical: AnnualBaseSnapshot,
+) -> AnnualConsensus {
+    let shares = safe_div(base.net_profit.value, base.eps.value);
     let pb = safe_div(
         price.zip(shares).map(|(price, shares)| price * shares),
-        net_assets,
+        base.net_assets,
     );
     let ps = safe_div(
         price.zip(shares).map(|(price, shares)| price * shares),
-        operating_revenue.value,
+        base.operating_revenue.value,
     );
-    let pe = safe_div(price, eps.value);
-    let roe = safe_div(net_profit.value.map(|value| value * 100.0), net_assets);
-    let or_prev = compute_annual_base(
-        ts_code,
-        trade_date,
-        year - 1,
-        BaseMetric::OperatingRevenue,
-        state,
-        financial,
-    )
-    .value;
-    let np_prev = compute_annual_base(
-        ts_code,
-        trade_date,
-        year - 1,
-        BaseMetric::NetProfit,
-        state,
-        financial,
-    )
-    .value;
-    let or_yoy = yoy(operating_revenue.value, or_prev);
-    let np_yoy = yoy(net_profit.value, np_prev);
-    let historical_np = actual_annual_value(
-        ts_code,
-        trade_date,
-        year - 2,
-        BaseMetric::NetProfit,
-        financial,
+    let pe = safe_div(price, base.eps.value);
+    let roe = safe_div(base.net_profit.value, base.net_assets).map(|value| value * 100.0);
+    let or_yoy = yoy(
+        base.operating_revenue.value,
+        previous.operating_revenue.value,
     );
-    let npcgrate_2y = cagr_2y(net_profit.value, historical_np);
+    let np_yoy = yoy(base.net_profit.value, previous.net_profit.value);
+    let npcgrate_2y = cagr_2y(base.net_profit.value, historical.net_profit.value);
     let peg = match (pe, npcgrate_2y) {
         (Some(pe), Some(growth)) if growth > EPS && pe >= 0.0 => Some(pe / growth),
         _ => None,
     };
     AnnualConsensus {
-        operating_revenue,
-        net_profit,
-        eps,
-        net_assets,
+        operating_revenue: base.operating_revenue,
+        net_profit: base.net_profit,
+        eps: base.eps,
+        net_assets: base.net_assets,
         pb,
         ps,
         pe,
@@ -682,7 +835,7 @@ fn compute_annual_consensus(
     }
 }
 
-fn compute_annual_base(
+fn compute_annual_base_uncached(
     ts_code: &str,
     trade_date: i32,
     year: i32,
@@ -699,6 +852,74 @@ fn compute_annual_base(
         };
     }
     forecast_consensus(ts_code, trade_date, year, metric, state)
+}
+
+fn annual_base_snapshot_marker(
+    ts_code: &str,
+    trade_date: i32,
+    year: i32,
+    financial: &ConsensusFinancialData,
+) -> AnnualBaseSnapshotMarker {
+    let income = financial.income();
+    let income_marker = income
+        .record_for_end_date(ts_code, trade_date, year * 10_000 + 12_31)
+        .map(financial_record_marker);
+    let balance = financial.balance();
+    let balance_marker = balance
+        .latest_quarter_end_date(ts_code, trade_date)
+        .and_then(|end_date| balance.record_for_end_date(ts_code, trade_date, end_date))
+        .map(financial_record_marker);
+    AnnualBaseSnapshotMarker {
+        income: income_marker,
+        balance: balance_marker,
+    }
+}
+
+fn financial_record_marker(
+    record: crate::factor::common::PitFinancialRecordView<'_>,
+) -> FinancialRecordMarker {
+    FinancialRecordMarker {
+        end_date: record.end_date(),
+        disclosure_date: record.disclosure_date(),
+        report_type: record.report_type(),
+        update_flag: record.update_flag(),
+    }
+}
+
+fn next_annual_base_snapshot_expiry(
+    ts_code: &str,
+    year: i32,
+    trade_date: i32,
+    state: &AnalystConsensusState,
+) -> Option<i32> {
+    let mut next_expiry = None;
+    for metric in [
+        BaseMetric::OperatingRevenue,
+        BaseMetric::NetProfit,
+        BaseMetric::Eps,
+    ] {
+        let key = ForecastBucketKey {
+            ts_code: ts_code.to_string(),
+            year,
+            metric,
+        };
+        let Some(bucket) = state.forecasts.get(&key) else {
+            continue;
+        };
+        for observation in bucket.values() {
+            for window_days in [
+                FORECAST_STRICT_DAYS,
+                FORECAST_LOOSE_DAYS,
+                FORECAST_CARRY_DAYS,
+            ] {
+                let expiry = add_days(observation.report_date, window_days + 1);
+                if expiry > trade_date && next_expiry.is_none_or(|current| expiry < current) {
+                    next_expiry = Some(expiry);
+                }
+            }
+        }
+    }
+    next_expiry
 }
 
 fn actual_annual_value(
@@ -1429,9 +1650,7 @@ fn civil_from_days(days: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        cagr_2y, effective_price, fiscal_years, parse_annual_forecast_year, rating_strength, yoy,
-    };
+    use super::*;
 
     #[test]
     fn analyst_consensus_fiscal_years_switch_on_may_first() {
@@ -1453,6 +1672,75 @@ mod tests {
         assert_eq!(rating_strength("中性"), Some(0.5));
         assert_eq!(rating_strength("减持"), Some(0.25));
         assert_eq!(rating_strength("卖出"), Some(0.0));
+    }
+
+    #[test]
+    fn analyst_consensus_state_prunes_windows() {
+        let mut state = AnalystConsensusState::default();
+        let rows = AnalystRows {
+            rows: vec![AnalystRow {
+                ts_code: "000001.SZ".to_string(),
+                report_date: 20250101,
+                org_name: "org-a".to_string(),
+                create_time: None,
+                forecast_year: 2025,
+                op_rt: None,
+                np: Some(100.0),
+                eps: None,
+                rating_strength: Some(1.0),
+                min_price: Some(20.0),
+            }],
+        };
+        let mut cursor = 0usize;
+        state.ingest_until(20250102, &rows, &mut cursor);
+        assert_eq!(cursor, 1);
+        assert_eq!(state.forecasts.len(), 1);
+        assert_eq!(state.ratings.len(), 1);
+        assert_eq!(state.targets.len(), 1);
+        state.remember_np_fy0(20250102, HashMap::from([("000001.SZ".to_string(), 100.0)]));
+
+        let mut empty_cursor = 0usize;
+        state.ingest_until(
+            add_days(20250101, FORECAST_CARRY_DAYS + 1),
+            &AnalystRows::default(),
+            &mut empty_cursor,
+        );
+        assert!(state.forecasts.is_empty());
+        assert!(state.ratings.is_empty());
+        assert!(state.targets.is_empty());
+        assert!(!state.np_fy0_history.is_empty());
+
+        state.ingest_until(
+            add_days(20250101, NP_HISTORY_DAYS + 2),
+            &AnalystRows::default(),
+            &mut empty_cursor,
+        );
+        assert!(state.np_fy0_history.is_empty());
+    }
+
+    #[test]
+    fn analyst_consensus_snapshot_expiry_tracks_forecast_windows() {
+        let mut state = AnalystConsensusState::default();
+        let rows = AnalystRows {
+            rows: vec![AnalystRow {
+                ts_code: "000001.SZ".to_string(),
+                report_date: 20250101,
+                org_name: "org-a".to_string(),
+                create_time: None,
+                forecast_year: 2025,
+                op_rt: None,
+                np: Some(100.0),
+                eps: None,
+                rating_strength: None,
+                min_price: None,
+            }],
+        };
+        let mut cursor = 0usize;
+        state.ingest_until(20250102, &rows, &mut cursor);
+        assert_eq!(
+            next_annual_base_snapshot_expiry("000001.SZ", 2025, 20250102, &state),
+            Some(add_days(20250101, FORECAST_STRICT_DAYS + 1))
+        );
     }
 
     #[test]

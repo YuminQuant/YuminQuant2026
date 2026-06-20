@@ -6,6 +6,7 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::{err, Result};
+use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::gaussian_financial::gaussian_residual;
 use crate::factor::common::stock_daily_ops::{
     is_bj_stock, mask_bj, neutralize_size_sector_with_inputs,
@@ -187,7 +188,7 @@ pub fn compute_requested(
         .iter()
         .map(|date| sector_map.groups_for(*date, panel.instruments()))
         .collect::<Vec<_>>();
-    let market_gap_mean = market_open_gap_mean(panel, &open, &close);
+    let market_gap_mean = market_open_gap_mean(panel, &open, &pre_close);
     let industry_returns = industry_equal_weight_returns(panel, &stock_return, &groups_by_date);
     let index_close_by_date = index_close_map(data.index_daily_panel(MARKET_INDEX)?)?;
 
@@ -207,38 +208,38 @@ pub fn compute_requested(
             if !panel.is_present_offset(offset) || is_bj_stock(ts_code) {
                 continue;
             }
-            let Some((ann_trade_idx, ann_next_idx)) =
+            let Some((ann_anchor_idx, reaction_idx)) =
                 announcement_trade_indices(panel, &income, ts_code, trade_date)
             else {
                 continue;
             };
-            if date_idx < ann_next_idx {
+            if date_idx < reaction_idx {
                 continue;
             }
-            let ann_trade_offset = ann_trade_idx * instrument_count + instrument_idx;
-            let ann_next_offset = ann_next_idx * instrument_count + instrument_idx;
-            if !panel.is_present_offset(ann_trade_offset)
-                || !panel.is_present_offset(ann_next_offset)
+            let ann_anchor_offset = ann_anchor_idx * instrument_count + instrument_idx;
+            let reaction_offset = reaction_idx * instrument_count + instrument_idx;
+            if !panel.is_present_offset(ann_anchor_offset)
+                || !panel.is_present_offset(reaction_offset)
             {
                 continue;
             }
 
             let stock_gap = open_gap(
-                open.values()[ann_next_offset],
-                close.values()[ann_trade_offset],
+                open.values()[reaction_offset],
+                pre_close.values()[reaction_offset],
             );
-            gap_y[offset] = subtract(stock_gap, market_gap_mean[ann_next_idx]);
-            turnover_y[offset] = clean(turnover.values()[ann_next_offset]);
+            gap_y[offset] = subtract(stock_gap, market_gap_mean[reaction_idx]);
+            turnover_y[offset] = clean(turnover.values()[reaction_offset]);
 
             let stock_interval =
-                price_return(close.values()[offset], close.values()[ann_trade_offset]);
+                price_return(close.values()[offset], close.values()[ann_anchor_offset]);
             let sector = groups_by_date[date_idx][instrument_idx].as_deref();
             let industry_interval = sector.and_then(|sector| {
-                cumulative_group_return(&industry_returns, sector, ann_trade_idx + 1, date_idx)
+                cumulative_group_return(&industry_returns, sector, ann_anchor_idx + 1, date_idx)
             });
             ind_x[offset] = subtract(stock_interval, industry_interval);
 
-            let ann_trade_date = panel.dates()[ann_trade_idx];
+            let ann_trade_date = panel.dates()[ann_anchor_idx];
             let current_date = panel.dates()[date_idx];
             let market_interval = match (
                 index_close_by_date.get(&current_date).copied(),
@@ -286,43 +287,62 @@ fn announcement_trade_indices(
     ts_code: &str,
     trade_date: i32,
 ) -> Option<(usize, usize)> {
-    let end_date = income.latest_quarter_end_date(ts_code, trade_date)?;
-    let record = income.record_for_end_date(ts_code, trade_date, end_date)?;
-    let ann_date = record.disclosure_date();
-    let ann_trade_idx = first_date_on_or_after(panel.dates(), ann_date)?;
-    let ann_next_idx = ann_trade_idx + 1;
-    (ann_next_idx < panel.dates().len()).then_some((ann_trade_idx, ann_next_idx))
+    let mut end_date = income.latest_quarter_end_date(ts_code, trade_date)?;
+    for _ in 0..FINANCIAL_QUARTERS {
+        let record = income.record_for_end_date(ts_code, trade_date, end_date)?;
+        if let Some((anchor_idx, reaction_idx)) =
+            announcement_anchor_reaction_indices(panel.dates(), record.disclosure_date())
+        {
+            if panel.dates()[reaction_idx] <= trade_date {
+                return Some((anchor_idx, reaction_idx));
+            }
+        }
+        end_date = previous_quarter_end_date(end_date)?;
+    }
+    None
 }
 
-fn first_date_on_or_after(dates: &[i32], target: i32) -> Option<usize> {
-    dates
-        .binary_search(&target)
-        .map(Some)
-        .unwrap_or_else(|idx| (idx < dates.len()).then_some(idx))
+fn announcement_anchor_reaction_indices(dates: &[i32], ann_date: i32) -> Option<(usize, usize)> {
+    let anchor_idx = last_date_on_or_before(dates, ann_date)?;
+    let reaction_idx = first_date_after(dates, ann_date)?;
+    (anchor_idx < reaction_idx).then_some((anchor_idx, reaction_idx))
+}
+
+fn last_date_on_or_before(dates: &[i32], target: i32) -> Option<usize> {
+    match dates.binary_search(&target) {
+        Ok(idx) => Some(idx),
+        Err(0) => None,
+        Err(idx) => Some(idx - 1),
+    }
+}
+
+fn first_date_after(dates: &[i32], target: i32) -> Option<usize> {
+    match dates.binary_search(&target) {
+        Ok(idx) => (idx + 1 < dates.len()).then_some(idx + 1),
+        Err(idx) => (idx < dates.len()).then_some(idx),
+    }
 }
 
 fn market_open_gap_mean(
     panel: &DailyPanel,
     open: &PanelColumn,
-    close: &PanelColumn,
+    pre_close: &PanelColumn,
 ) -> Vec<Option<f64>> {
     let instrument_count = panel.instruments().len();
     let mut output = vec![None; panel.dates().len()];
-    for (date_idx, _) in panel.dates().iter().enumerate().skip(1) {
+    for (date_idx, _) in panel.dates().iter().enumerate() {
         let mut sum = 0.0;
         let mut count = 0usize;
         let date_offset = date_idx * instrument_count;
-        let prev_offset = (date_idx - 1) * instrument_count;
         for (instrument_idx, ts_code) in panel.instruments().iter().enumerate() {
             if is_bj_stock(ts_code) {
                 continue;
             }
             let offset = date_offset + instrument_idx;
-            let prev = prev_offset + instrument_idx;
-            if !panel.is_present_offset(offset) || !panel.is_present_offset(prev) {
+            if !panel.is_present_offset(offset) {
                 continue;
             }
-            if let Some(value) = open_gap(open.values()[offset], close.values()[prev]) {
+            if let Some(value) = open_gap(open.values()[offset], pre_close.values()[offset]) {
                 sum += value;
                 count += 1;
             }
@@ -447,12 +467,18 @@ mod tests {
     }
 
     #[test]
-    fn first_date_on_or_after_finds_announcement_trade_date() {
+    fn announcement_indices_use_strict_next_reaction_day() {
         let dates = [20260102, 20260105, 20260106];
-        assert_eq!(first_date_on_or_after(&dates, 20260101), Some(0));
-        assert_eq!(first_date_on_or_after(&dates, 20260105), Some(1));
-        assert_eq!(first_date_on_or_after(&dates, 20260104), Some(1));
-        assert_eq!(first_date_on_or_after(&dates, 20260107), None);
+        assert_eq!(
+            announcement_anchor_reaction_indices(&dates, 20260105),
+            Some((1, 2))
+        );
+        assert_eq!(
+            announcement_anchor_reaction_indices(&dates, 20260104),
+            Some((0, 1))
+        );
+        assert_eq!(announcement_anchor_reaction_indices(&dates, 20260101), None);
+        assert_eq!(announcement_anchor_reaction_indices(&dates, 20260107), None);
     }
 
     #[test]

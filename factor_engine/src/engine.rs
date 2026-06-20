@@ -1833,6 +1833,7 @@ fn request_has_daily_panel_dates(request: &DataRequest) -> bool {
             | DatasetId::StockDailyLimit
             | DatasetId::StockAdjFactor
             | DatasetId::StockMoneyflow
+            | DatasetId::StockConsensus
             | DatasetId::StockBarraDaily
             | DatasetId::IndexDaily
             | DatasetId::FutureDaily

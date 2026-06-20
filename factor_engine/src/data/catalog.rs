@@ -155,6 +155,12 @@ impl DataCatalog {
                 .join("moneyflow")
                 .join(year.to_string())
                 .join(format!("{}.parquet", trade_date)),
+            DatasetId::StockConsensus => self
+                .data_root
+                .join("derived")
+                .join("stock")
+                .join("consensus")
+                .join(format!("{}.parquet", trade_date)),
             DatasetId::FutureDaily => self
                 .data_root
                 .join("future_data")

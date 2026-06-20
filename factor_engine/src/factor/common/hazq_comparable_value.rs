@@ -27,14 +27,16 @@ const FINANCIAL_QUARTERS: usize = 8;
 const EPS: f64 = 1e-12;
 const SIMILARITY_THRESHOLD: f64 = 0.9;
 const TOP_PEER_COUNT: usize = 6;
-const BASE_COUNT: usize = 8;
-const COMPONENT_COUNT: usize = 11;
+const BASE_COUNT: usize = 9;
+const COMPONENT_COUNT: usize = 13;
 const LIFECYCLE_STAGE_COUNT: usize = 5;
 const CONTINUOUS_FEATURE_COUNT: usize = 12;
 const SLOW_CONTINUOUS_FEATURE_COUNT: usize = CONTINUOUS_FEATURE_COUNT - 1;
 const FEATURE_DIM: usize = LIFECYCLE_STAGE_COUNT + CONTINUOUS_FEATURE_COUNT;
 
 const TOTAL_MV_COLUMN: &str = "total_mv";
+const CONSENSUS_GROWTH_COLUMN: &str = "con_npcgrate_2y_roll";
+const CONSENSUS_PE_ROLL_COLUMN: &str = "con_pe_roll";
 
 const REVENUE_COLUMN: &str = "revenue";
 const NET_PROFIT_COLUMN: &str = "n_income";
@@ -96,6 +98,7 @@ pub enum HazqComparableBase {
     Ocfp,
     Sales2Ev,
     EpPercentile,
+    EpFttm,
 }
 
 impl HazqComparableBase {
@@ -109,6 +112,7 @@ impl HazqComparableBase {
             Self::Ocfp => "ocfp",
             Self::Sales2Ev => "sales2ev",
             Self::EpPercentile => "ep_percentile",
+            Self::EpFttm => "ep_fttm",
         }
     }
 
@@ -122,6 +126,7 @@ impl HazqComparableBase {
             Self::Ocfp => "OCFP",
             Self::Sales2Ev => "SALES2EV",
             Self::EpPercentile => "EP_PERCENTILE",
+            Self::EpFttm => "EP_FTTM",
         }
     }
 
@@ -135,6 +140,7 @@ impl HazqComparableBase {
             Self::Ocfp => 5,
             Self::Sales2Ev => 6,
             Self::EpPercentile => 7,
+            Self::EpFttm => 8,
         }
     }
 }
@@ -152,6 +158,8 @@ pub enum HazqComparableComponent {
     Prm,
     DstZscore,
     PrmZscore,
+    GapAvg,
+    GapMmm,
 }
 
 impl HazqComparableComponent {
@@ -168,6 +176,8 @@ impl HazqComparableComponent {
             Self::Prm => "prm",
             Self::DstZscore => "dst_zscore",
             Self::PrmZscore => "prm_zscore",
+            Self::GapAvg => "gap_avg",
+            Self::GapMmm => "gap_mmm",
         }
     }
 
@@ -184,6 +194,8 @@ impl HazqComparableComponent {
             Self::Prm => "PRM",
             Self::DstZscore => "DST_ZSCORE",
             Self::PrmZscore => "PRM_ZSCORE",
+            Self::GapAvg => "GAP_AVG",
+            Self::GapMmm => "GAP_MMM",
         }
     }
 
@@ -200,6 +212,8 @@ impl HazqComparableComponent {
             Self::Prm => 8,
             Self::DstZscore => 9,
             Self::PrmZscore => 10,
+            Self::GapAvg => 11,
+            Self::GapMmm => 12,
         }
     }
 
@@ -232,7 +246,7 @@ impl HazqComparableValueOutput {
     }
 }
 
-pub const BASES: [HazqComparableBase; 8] = [
+pub const BASES: [HazqComparableBase; 9] = [
     HazqComparableBase::Bp,
     HazqComparableBase::Dp,
     HazqComparableBase::Ebit2Ev,
@@ -241,9 +255,10 @@ pub const BASES: [HazqComparableBase; 8] = [
     HazqComparableBase::Ocfp,
     HazqComparableBase::Sales2Ev,
     HazqComparableBase::EpPercentile,
+    HazqComparableBase::EpFttm,
 ];
 
-pub const COMPONENTS: [HazqComparableComponent; 11] = [
+pub const COMPONENTS: [HazqComparableComponent; 13] = [
     HazqComparableComponent::Med,
     HazqComparableComponent::Avg,
     HazqComparableComponent::Weighted,
@@ -255,9 +270,9 @@ pub const COMPONENTS: [HazqComparableComponent; 11] = [
     HazqComparableComponent::Prm,
     HazqComparableComponent::DstZscore,
     HazqComparableComponent::PrmZscore,
+    HazqComparableComponent::GapAvg,
+    HazqComparableComponent::GapMmm,
 ];
-
-// TODO: Add GAP_AVG and GAP_MMM when analyst expected-growth data is wired into this provider.
 
 #[derive(Default)]
 pub struct HazqComparableValueComputeState {
@@ -275,6 +290,7 @@ struct HazqComparableSnapshot {
     revenue_ttm: Option<f64>,
     ebit_ttm: Option<f64>,
     profit_ttm: Option<f64>,
+    profit_ttm_yoy_growth: Option<f64>,
     profit_q: Option<f64>,
     cfo_ttm: Option<f64>,
 }
@@ -309,6 +325,8 @@ struct HazqComparableInputs<'a> {
     income: FinancialPitReader<'a>,
     balance: FinancialPitReader<'a>,
     cashflow: FinancialPitReader<'a>,
+    consensus_growth: Option<PanelColumn>,
+    consensus_pe_roll: Option<PanelColumn>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -340,6 +358,21 @@ impl ComparableRequestPlan {
 
     fn is_empty(&self) -> bool {
         self.outputs.is_empty()
+    }
+
+    fn needs_consensus_growth(&self) -> bool {
+        self.outputs.iter().any(|output| {
+            matches!(
+                output.component,
+                HazqComparableComponent::GapAvg | HazqComparableComponent::GapMmm
+            )
+        })
+    }
+
+    fn needs_consensus_pe_roll(&self) -> bool {
+        self.requested_bases()
+            .into_iter()
+            .any(|base| base == HazqComparableBase::EpFttm)
     }
 
     fn requested_bases(&self) -> Vec<HazqComparableBase> {
@@ -422,7 +455,7 @@ pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
         version: VERSION.to_string(),
         tags: tags(),
         description: format!(
-            "HAZQ comparable-company value factor {} {}. It builds a PIT financial cosine-similarity network, uses peers with similarity above 0.9, skips analyst GAP components, excludes BJ stocks, and neutralizes the output by SW level-1 industry and Barra SIZE.",
+            "HAZQ comparable-company value factor {} {}. It builds a PIT financial cosine-similarity network, uses peers with similarity above 0.9, excludes BJ stocks, and neutralizes the output by SW level-1 industry and Barra SIZE.",
             output.base.alias(),
             output.component.alias()
         ),
@@ -455,7 +488,12 @@ pub fn compute_requested_stateful(
     }
 
     let panel = non_bj_panel(data.stock_universe_panel()?)?;
-    let inputs = hazq_inputs(data, &panel)?;
+    let inputs = hazq_inputs(
+        data,
+        &panel,
+        request_plan.needs_consensus_growth(),
+        request_plan.needs_consensus_pe_roll(),
+    )?;
     let requested_bases = request_plan.requested_bases();
     let mut base_columns = vec![None; BASE_COUNT];
     let mut ep_base_column = None;
@@ -469,6 +507,11 @@ pub fn compute_requested_stateful(
         )?;
         base_columns[base.idx()] = Some(column);
     }
+    let growth_column = if request_plan.needs_consensus_growth() {
+        Some(compute_growth_column(&inputs, &mut state.snapshot_cache)?)
+    } else {
+        None
+    };
     let schedule = hazq_event_schedule(&inputs);
     let first_panel_date = panel.dates().first().copied();
     let mut peer_state = match (state.peer_state.last_processed_trade_date, first_panel_date) {
@@ -502,6 +545,7 @@ pub fn compute_requested_stateful(
                 &peer_state,
                 base,
                 base_column,
+                growth_column.as_ref(),
                 &request_plan,
                 &mut source_values,
             )?;
@@ -529,7 +573,17 @@ pub fn compute_requested_stateful(
     Ok(result)
 }
 
-fn hazq_inputs<'a>(data: &'a DataPool, panel: &'a DailyPanel) -> Result<HazqComparableInputs<'a>> {
+fn hazq_inputs<'a>(
+    data: &'a DataPool,
+    panel: &'a DailyPanel,
+    needs_consensus_growth: bool,
+    needs_consensus_pe_roll: bool,
+) -> Result<HazqComparableInputs<'a>> {
+    let consensus = if needs_consensus_growth || needs_consensus_pe_roll {
+        Some(data.daily(DatasetId::StockConsensus)?)
+    } else {
+        None
+    };
     Ok(HazqComparableInputs {
         panel,
         total_mv: panel
@@ -546,6 +600,14 @@ fn hazq_inputs<'a>(data: &'a DataPool, panel: &'a DailyPanel) -> Result<HazqComp
             DatasetId::StockCashFlow,
             ReportTypePreference::consolidated(),
         )?,
+        consensus_growth: consensus
+            .filter(|_| needs_consensus_growth)
+            .map(|table| panel.column_from_table(table, CONSENSUS_GROWTH_COLUMN))
+            .transpose()?,
+        consensus_pe_roll: consensus
+            .filter(|_| needs_consensus_pe_roll)
+            .map(|table| panel.column_from_table(table, CONSENSUS_PE_ROLL_COLUMN))
+            .transpose()?,
     })
 }
 
@@ -602,6 +664,7 @@ fn compute_base_column(
             let dividends = data.dividend_reader()?;
             compute_dp_base_column(inputs.panel, &inputs.total_mv, &dividends)
         }
+        HazqComparableBase::EpFttm => compute_ep_fttm_base_column(inputs),
         other => compute_snapshot_base_column(other, inputs, cache),
     }
 }
@@ -626,7 +689,7 @@ fn compute_snapshot_base_column(
 ) -> Result<PanelColumn> {
     if matches!(
         base,
-        HazqComparableBase::Dp | HazqComparableBase::EpPercentile
+        HazqComparableBase::Dp | HazqComparableBase::EpPercentile | HazqComparableBase::EpFttm
     ) {
         return Err(err(format!(
             "base {} requires a dedicated HAZQ comparable base helper",
@@ -653,6 +716,45 @@ fn compute_snapshot_base_column(
         }
     }
 
+    panel.column_from_values(values)
+}
+
+fn compute_ep_fttm_base_column(inputs: &HazqComparableInputs<'_>) -> Result<PanelColumn> {
+    let con_pe_roll = inputs
+        .consensus_pe_roll
+        .as_ref()
+        .ok_or_else(|| err("HAZQ comparable EP_FTTM requires consensus con_pe_roll"))?;
+    Ok(con_pe_roll.map_values(|value| {
+        let value = clean(value)?;
+        (value.abs() > EPS)
+            .then_some(1.0 / value)
+            .filter(|value| value.is_finite())
+    }))
+}
+
+fn compute_growth_column(
+    inputs: &HazqComparableInputs<'_>,
+    cache: &mut InstrumentAlignedSnapshotCache<HazqComparableSnapshot>,
+) -> Result<PanelColumn> {
+    let consensus_growth = inputs
+        .consensus_growth
+        .as_ref()
+        .ok_or_else(|| err("HAZQ comparable GAP requires consensus growth column"))?;
+    let panel = inputs.panel;
+    let instrument_count = panel.instruments().len();
+    let mut values = vec![None; panel.shape_len()];
+    for (date_idx, trade_date) in panel.dates().iter().copied().enumerate() {
+        let snapshots = hazq_snapshots_for_date(inputs, cache, trade_date);
+        let date_offset = date_idx * instrument_count;
+        for (instrument_idx, snapshot) in snapshots.into_iter().enumerate() {
+            let offset = date_offset + instrument_idx;
+            if !panel.is_present_offset(offset) {
+                continue;
+            }
+            values[offset] = clean(consensus_growth.values()[offset])
+                .or_else(|| snapshot.and_then(|snapshot| snapshot.profit_ttm_yoy_growth));
+        }
+    }
     panel.column_from_values(values)
 }
 
@@ -786,6 +888,7 @@ fn hazq_snapshot_marker(
 ) -> Option<FinancialEventMarker> {
     let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
     let previous_end = previous_quarter_end_date(latest_end);
+    let yoy_end = same_quarter_previous_year(latest_end);
     let mut builder = FinancialEventMarkerBuilder::new();
     builder.include_reader_ttm_for_end_date(
         FinancialStatementDataset::Income,
@@ -800,6 +903,13 @@ fn hazq_snapshot_marker(
         ts_code,
         trade_date,
         latest_end,
+    );
+    builder.include_reader_ttm_for_end_date(
+        FinancialStatementDataset::Income,
+        income,
+        ts_code,
+        trade_date,
+        yoy_end,
     );
     builder.include_reader_record_for_end_date(
         FinancialStatementDataset::BalanceSheet,
@@ -829,6 +939,7 @@ fn hazq_snapshot_for_stock(
 ) -> Option<HazqComparableSnapshot> {
     let latest_end = income.latest_quarter_end_date(ts_code, trade_date)?;
     let previous_end = previous_quarter_end_date(latest_end);
+    let yoy_end = same_quarter_previous_year(latest_end);
     let income_record = income.record_for_end_date(ts_code, trade_date, latest_end)?;
     let balance_record = balance.record_for_end_date(ts_code, trade_date, latest_end)?;
     let previous_balance = previous_end
@@ -842,6 +953,9 @@ fn hazq_snapshot_for_stock(
         latest_end,
         NET_PROFIT_ATTR_P_COLUMN,
     ));
+    let profit_ttm_yoy =
+        clean(income.ttm_sum_for_end_date(ts_code, trade_date, yoy_end, NET_PROFIT_ATTR_P_COLUMN));
+    let profit_ttm_yoy_growth = yoy_pct(profit_ttm, profit_ttm_yoy);
     let net_income_ttm =
         clean(income.ttm_sum_for_end_date(ts_code, trade_date, latest_end, NET_PROFIT_COLUMN));
     let income_tax_ttm =
@@ -896,6 +1010,7 @@ fn hazq_snapshot_for_stock(
         revenue_ttm,
         ebit_ttm,
         profit_ttm,
+        profit_ttm_yoy_growth,
         profit_q: clean(income_record.column(NET_PROFIT_ATTR_P_COLUMN)),
         cfo_ttm,
     })
@@ -920,7 +1035,9 @@ fn base_value_from_snapshot(
         HazqComparableBase::EpQ => safe_div_opt(snapshot.profit_q, market_cap),
         HazqComparableBase::Ocfp => safe_div_opt(snapshot.cfo_ttm, market_cap),
         HazqComparableBase::Sales2Ev => safe_div_opt(snapshot.revenue_ttm, ev),
-        HazqComparableBase::Dp | HazqComparableBase::EpPercentile => None,
+        HazqComparableBase::Dp | HazqComparableBase::EpPercentile | HazqComparableBase::EpFttm => {
+            None
+        }
     }
 }
 
@@ -1015,6 +1132,7 @@ fn write_source_components_for_base_date(
     peer_state: &ComparablePeerState,
     base: HazqComparableBase,
     base_column: &PanelColumn,
+    growth_column: Option<&PanelColumn>,
     request_plan: &ComparableRequestPlan,
     source_values: &mut [Option<Vec<Option<f64>>>],
 ) -> Result<()> {
@@ -1033,8 +1151,14 @@ fn write_source_components_for_base_date(
             .get(instrument_idx)
             .cloned()
             .unwrap_or_default();
-        let stats =
-            component_stats_for_stock(base_column, panel, date_offset, instrument_idx, &profile);
+        let stats = component_stats_for_stock(
+            base_column,
+            growth_column,
+            panel,
+            date_offset,
+            instrument_idx,
+            &profile,
+        );
         for component in COMPONENTS {
             if component.is_time_zscore() {
                 continue;
@@ -1053,6 +1177,7 @@ fn write_source_components_for_base_date(
 
 fn component_stats_for_stock(
     base_column: &PanelColumn,
+    growth_column: Option<&PanelColumn>,
     panel: &DailyPanel,
     date_offset: usize,
     instrument_idx: usize,
@@ -1087,7 +1212,67 @@ fn component_stats_for_stock(
     values[HazqComparableComponent::Prm.idx()] = own
         .zip(med)
         .and_then(|(own, med)| safe_div(own, med).and_then(|value| finite_value(value - 1.0)));
+    let gap = gap_components(
+        base_column,
+        growth_column,
+        panel,
+        date_offset,
+        instrument_idx,
+        &profile.all,
+    );
+    values[HazqComparableComponent::GapAvg.idx()] = gap.gap_avg;
+    values[HazqComparableComponent::GapMmm.idx()] = gap.gap_mmm;
     ComponentStats { values }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct GapStats {
+    gap_avg: Option<f64>,
+    gap_mmm: Option<f64>,
+}
+
+fn gap_components(
+    base_column: &PanelColumn,
+    growth_column: Option<&PanelColumn>,
+    panel: &DailyPanel,
+    date_offset: usize,
+    instrument_idx: usize,
+    peers: &[PeerLink],
+) -> GapStats {
+    let Some(growth_column) = growth_column else {
+        return GapStats::default();
+    };
+    let own_growth = clean(growth_column.values()[date_offset + instrument_idx]);
+    let Some(own_growth) = own_growth else {
+        return GapStats::default();
+    };
+    let mut high = Vec::new();
+    let mut low = Vec::new();
+    for peer in peers {
+        let offset = date_offset + peer.peer_idx;
+        if !panel.is_present_offset(offset) {
+            continue;
+        }
+        let Some(value) = clean(base_column.values()[offset]) else {
+            continue;
+        };
+        let Some(peer_growth) = clean(growth_column.values()[offset]) else {
+            continue;
+        };
+        if peer_growth > own_growth {
+            high.push(value);
+        } else if peer_growth < own_growth {
+            low.push(value);
+        }
+    }
+    GapStats {
+        gap_avg: mean(&low)
+            .zip(mean(&high))
+            .and_then(|(low, high)| finite_value(low - high)),
+        gap_mmm: max_value(&low)
+            .zip(min_value(&high))
+            .and_then(|(low, high)| finite_value(low - high)),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1175,6 +1360,22 @@ fn dependencies_for_output(output: HazqComparableValueOutput) -> Vec<DataRequest
     let mut dependencies = common_dependencies();
     if output.base == HazqComparableBase::Dp {
         dependencies.push(dividend_dependency());
+    }
+    let mut consensus_columns = Vec::new();
+    if matches!(
+        output.component,
+        HazqComparableComponent::GapAvg | HazqComparableComponent::GapMmm
+    ) {
+        consensus_columns.push(CONSENSUS_GROWTH_COLUMN);
+    }
+    if output.base == HazqComparableBase::EpFttm {
+        consensus_columns.push(CONSENSUS_PE_ROLL_COLUMN);
+    }
+    if !consensus_columns.is_empty() {
+        dependencies.push(DataRequest::new(
+            DatasetId::StockConsensus,
+            &consensus_columns,
+        ));
     }
     dependencies
 }
@@ -1274,6 +1475,18 @@ fn average_record_value(
     let current = current?;
     let previous = previous_balance.and_then(|record| clean(record.column(column)))?;
     finite_value((current + previous) * 0.5)
+}
+
+fn same_quarter_previous_year(end_date: i32) -> i32 {
+    end_date - 10_000
+}
+
+fn yoy_pct(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
+    let current = clean(current)?;
+    let previous = clean(previous)?;
+    (previous.abs() > EPS)
+        .then_some(100.0 * (current - previous) / previous.abs())
+        .filter(|value| value.is_finite())
 }
 
 fn invested_capital(balance: PitFinancialRecordView<'_>) -> Option<f64> {
@@ -1580,13 +1793,22 @@ mod tests {
     }
 
     #[test]
-    fn hazq_comparable_registers_88_outputs_with_required_tags() {
+    fn hazq_comparable_registers_117_outputs_with_required_tags() {
         let outputs = all_outputs();
-        assert_eq!(outputs.len(), 88);
-        assert!(outputs.iter().any(|output| output.id() == "comp_ep_med"));
-        assert!(outputs
-            .iter()
-            .any(|output| output.id() == "comp_bp_prm_zscore"));
+        assert_eq!(outputs.len(), 117);
+        for id in [
+            "comp_ep_med",
+            "comp_bp_prm_zscore",
+            "comp_ep_gap_avg",
+            "comp_bp_gap_mmm",
+            "comp_ep_fttm_med",
+            "comp_ep_fttm_gap_mmm",
+        ] {
+            assert!(
+                outputs.iter().any(|output| output.id() == id),
+                "missing {id}"
+            );
+        }
 
         let spec = spec(HazqComparableValueOutput::new(
             HazqComparableBase::Ep,
@@ -1599,6 +1821,10 @@ mod tests {
             .dependencies
             .iter()
             .any(|request| request.dataset == DatasetId::StockDailyPv));
+        assert!(!spec
+            .dependencies
+            .iter()
+            .any(|request| request.dataset == DatasetId::StockConsensus));
         assert!(spec
             .dependencies
             .iter()
@@ -1676,6 +1902,10 @@ mod tests {
             None
         );
         assert_eq!(
+            base_value_from_snapshot(HazqComparableBase::EpFttm, &snapshot, Some(100.0)),
+            None
+        );
+        assert_eq!(
             base_value_from_snapshot(HazqComparableBase::Bp, &snapshot, Some(0.0)),
             None
         );
@@ -1746,7 +1976,7 @@ mod tests {
             }],
         };
 
-        let stats = component_stats_for_stock(&base, &panel, 0, 0, &profile);
+        let stats = component_stats_for_stock(&base, None, &panel, 0, 0, &profile);
 
         assert_close(
             stats.values[HazqComparableComponent::Med.idx()].unwrap(),
@@ -1768,6 +1998,114 @@ mod tests {
             stats.values[HazqComparableComponent::Prm.idx()].unwrap(),
             10.0 / 12.0 - 1.0,
         );
+        assert_eq!(stats.values[HazqComparableComponent::GapAvg.idx()], None);
+        assert_eq!(stats.values[HazqComparableComponent::GapMmm.idx()], None);
+    }
+
+    #[test]
+    fn hazq_comparable_gap_components_group_by_growth_against_all_peers() {
+        let panel = DailyPanel::from_index(
+            vec![20260105],
+            vec![
+                "000001.SZ".to_string(),
+                "000002.SZ".to_string(),
+                "000003.SZ".to_string(),
+                "000004.SZ".to_string(),
+                "000005.SZ".to_string(),
+            ],
+            &[20260105],
+            vec![true, true, true, true, true],
+        )
+        .unwrap();
+        let base = panel
+            .column_from_values(vec![
+                Some(10.0),
+                Some(8.0),
+                Some(10.0),
+                Some(2.0),
+                Some(4.0),
+            ])
+            .unwrap();
+        let growth = panel
+            .column_from_values(vec![
+                Some(10.0),
+                Some(5.0),
+                Some(7.0),
+                Some(12.0),
+                Some(15.0),
+            ])
+            .unwrap();
+        let profile = PeerProfile {
+            all: vec![
+                PeerLink {
+                    peer_idx: 1,
+                    similarity: 0.91,
+                },
+                PeerLink {
+                    peer_idx: 2,
+                    similarity: 0.92,
+                },
+                PeerLink {
+                    peer_idx: 3,
+                    similarity: 0.93,
+                },
+                PeerLink {
+                    peer_idx: 4,
+                    similarity: 0.94,
+                },
+            ],
+            top: vec![PeerLink {
+                peer_idx: 3,
+                similarity: 0.93,
+            }],
+        };
+
+        let stats = component_stats_for_stock(&base, Some(&growth), &panel, 0, 0, &profile);
+
+        assert_close(
+            stats.values[HazqComparableComponent::GapAvg.idx()].unwrap(),
+            6.0,
+        );
+        assert_close(
+            stats.values[HazqComparableComponent::GapMmm.idx()].unwrap(),
+            8.0,
+        );
+    }
+
+    #[test]
+    fn hazq_comparable_gap_components_require_both_growth_groups() {
+        let panel = DailyPanel::from_index(
+            vec![20260105],
+            vec!["000001.SZ".to_string(), "000002.SZ".to_string()],
+            &[20260105],
+            vec![true, true],
+        )
+        .unwrap();
+        let base = panel
+            .column_from_values(vec![Some(10.0), Some(8.0)])
+            .unwrap();
+        let growth = panel
+            .column_from_values(vec![Some(10.0), Some(5.0)])
+            .unwrap();
+        let profile = PeerProfile {
+            all: vec![PeerLink {
+                peer_idx: 1,
+                similarity: 0.91,
+            }],
+            top: Vec::new(),
+        };
+
+        let stats = component_stats_for_stock(&base, Some(&growth), &panel, 0, 0, &profile);
+
+        assert_eq!(stats.values[HazqComparableComponent::GapAvg.idx()], None);
+        assert_eq!(stats.values[HazqComparableComponent::GapMmm.idx()], None);
+    }
+
+    #[test]
+    fn hazq_comparable_yoy_growth_uses_abs_previous_denominator() {
+        assert_close(yoy_pct(Some(120.0), Some(100.0)).unwrap(), 20.0);
+        assert_close(yoy_pct(Some(-80.0), Some(-100.0)).unwrap(), 20.0);
+        assert_eq!(yoy_pct(Some(120.0), Some(0.0)), None);
     }
 
     #[test]
@@ -1839,6 +2177,19 @@ mod tests {
             HazqComparableComponent::Med
         ));
 
+        let plan = ComparableRequestPlan::from_requested_ids(&["comp_ep_gap_avg".to_string()]);
+        assert_eq!(plan.requested_bases(), vec![HazqComparableBase::Ep]);
+        assert!(plan.needs_consensus_growth());
+        assert!(!plan.needs_consensus_pe_roll());
+        assert!(
+            plan.needs_source_component(HazqComparableBase::Ep, HazqComparableComponent::GapAvg)
+        );
+
+        let plan = ComparableRequestPlan::from_requested_ids(&["comp_ep_fttm_med".to_string()]);
+        assert_eq!(plan.requested_bases(), vec![HazqComparableBase::EpFttm]);
+        assert!(!plan.needs_consensus_growth());
+        assert!(plan.needs_consensus_pe_roll());
+
         let plan = ComparableRequestPlan::from_requested_ids(&[
             "comp_ep_med".to_string(),
             "comp_ep_percentile_avg".to_string(),
@@ -1851,20 +2202,57 @@ mod tests {
     }
 
     #[test]
-    fn hazq_comparable_dependencies_include_all_financial_lines() {
+    fn hazq_comparable_dependencies_include_all_financial_lines_and_requested_consensus() {
         let ep_output =
             HazqComparableValueOutput::new(HazqComparableBase::Ep, HazqComparableComponent::Med);
         let dp_output =
             HazqComparableValueOutput::new(HazqComparableBase::Dp, HazqComparableComponent::Med);
+        let gap_output =
+            HazqComparableValueOutput::new(HazqComparableBase::Ep, HazqComparableComponent::GapAvg);
+        let fttm_output = HazqComparableValueOutput::new(
+            HazqComparableBase::EpFttm,
+            HazqComparableComponent::Med,
+        );
+        let fttm_gap_output = HazqComparableValueOutput::new(
+            HazqComparableBase::EpFttm,
+            HazqComparableComponent::GapMmm,
+        );
         let ep_dependencies = dependencies_for_output(ep_output);
         let dp_dependencies = dependencies_for_output(dp_output);
+        let gap_dependencies = dependencies_for_output(gap_output);
+        let fttm_dependencies = dependencies_for_output(fttm_output);
+        let fttm_gap_dependencies = dependencies_for_output(fttm_gap_output);
 
         assert!(!ep_dependencies
             .iter()
             .any(|request| request.dataset == DatasetId::StockDividend));
+        assert!(!ep_dependencies
+            .iter()
+            .any(|request| request.dataset == DatasetId::StockConsensus));
         assert!(dp_dependencies
             .iter()
             .any(|request| request.dataset == DatasetId::StockDividend));
+        assert!(gap_dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockConsensus
+                && request
+                    .columns
+                    .contains(&CONSENSUS_GROWTH_COLUMN.to_string())
+        }));
+        assert!(fttm_dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockConsensus
+                && request
+                    .columns
+                    .contains(&CONSENSUS_PE_ROLL_COLUMN.to_string())
+        }));
+        assert!(fttm_gap_dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockConsensus
+                && request
+                    .columns
+                    .contains(&CONSENSUS_GROWTH_COLUMN.to_string())
+                && request
+                    .columns
+                    .contains(&CONSENSUS_PE_ROLL_COLUMN.to_string())
+        }));
 
         let deps = ep_dependencies
             .into_iter()

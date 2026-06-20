@@ -36,6 +36,7 @@ const FEATURE_DIM: usize = LIFECYCLE_STAGE_COUNT + CONTINUOUS_FEATURE_COUNT;
 
 const TOTAL_MV_COLUMN: &str = "total_mv";
 const PE_TTM_COLUMN: &str = "pe_ttm";
+const PB_COLUMN: &str = "pb";
 const CONSENSUS_GROWTH_COLUMN: &str = "con_npcgrate_2y_roll";
 const CONSENSUS_PE_ROLL_COLUMN: &str = "con_pe_roll";
 
@@ -285,7 +286,6 @@ pub struct HazqComparableValueComputeState {
 struct HazqComparableSnapshot {
     lifecycle: Option<LifecycleStage>,
     slow_features: [Option<f64>; SLOW_CONTINUOUS_FEATURE_COUNT],
-    equity: Option<f64>,
     total_liab: Option<f64>,
     money_cap: Option<f64>,
     revenue_ttm: Option<f64>,
@@ -322,6 +322,7 @@ struct PeerLink {
 struct HazqComparableInputs<'a> {
     panel: &'a DailyPanel,
     total_mv: PanelColumn,
+    pb: Option<PanelColumn>,
     pe_ttm: Option<PanelColumn>,
     income: FinancialPitReader<'a>,
     balance: FinancialPitReader<'a>,
@@ -394,6 +395,12 @@ impl ComparableRequestPlan {
                 HazqComparableBase::Ep | HazqComparableBase::EpPercentile
             )
         })
+    }
+
+    fn needs_pb(&self) -> bool {
+        self.requested_bases()
+            .into_iter()
+            .any(|base| base == HazqComparableBase::Bp)
     }
 
     fn needs_source_component(
@@ -491,6 +498,7 @@ pub fn compute_requested_stateful(
     let inputs = hazq_inputs(
         data,
         &panel,
+        request_plan.needs_pb(),
         request_plan.needs_ep_intermediate(),
         request_plan.needs_consensus_growth(),
         request_plan.needs_consensus_pe_roll(),
@@ -577,6 +585,7 @@ pub fn compute_requested_stateful(
 fn hazq_inputs<'a>(
     data: &'a DataPool,
     panel: &'a DailyPanel,
+    needs_pb: bool,
     needs_pe_ttm: bool,
     needs_consensus_growth: bool,
     needs_consensus_pe_roll: bool,
@@ -590,6 +599,9 @@ fn hazq_inputs<'a>(
     Ok(HazqComparableInputs {
         panel,
         total_mv: panel.column_from_table(daily_basic, TOTAL_MV_COLUMN)?,
+        pb: needs_pb
+            .then(|| panel.column_from_table(daily_basic, PB_COLUMN))
+            .transpose()?,
         pe_ttm: needs_pe_ttm
             .then(|| panel.column_from_table(daily_basic, PE_TTM_COLUMN))
             .transpose()?,
@@ -660,6 +672,7 @@ fn compute_base_column(
     ep_base_column: &mut Option<PanelColumn>,
 ) -> Result<PanelColumn> {
     match base {
+        HazqComparableBase::Bp => compute_bp_base_column(inputs),
         HazqComparableBase::Ep => cached_ep_base_column(inputs, ep_base_column),
         HazqComparableBase::EpPercentile => {
             let ep = cached_ep_base_column(inputs, ep_base_column)?;
@@ -694,6 +707,14 @@ fn compute_ep_base_column(inputs: &HazqComparableInputs<'_>) -> Result<PanelColu
     Ok(pe_ttm.map_values(reciprocal_valuation))
 }
 
+fn compute_bp_base_column(inputs: &HazqComparableInputs<'_>) -> Result<PanelColumn> {
+    let pb = inputs
+        .pb
+        .as_ref()
+        .ok_or_else(|| err("HAZQ comparable BP requires daily_basic pb"))?;
+    Ok(pb.map_values(reciprocal_valuation))
+}
+
 fn compute_snapshot_base_column(
     base: HazqComparableBase,
     inputs: &HazqComparableInputs<'_>,
@@ -701,7 +722,8 @@ fn compute_snapshot_base_column(
 ) -> Result<PanelColumn> {
     if matches!(
         base,
-        HazqComparableBase::Dp
+        HazqComparableBase::Bp
+            | HazqComparableBase::Dp
             | HazqComparableBase::Ep
             | HazqComparableBase::EpPercentile
             | HazqComparableBase::EpFttm
@@ -1021,7 +1043,6 @@ fn hazq_snapshot_for_stock(
     Some(HazqComparableSnapshot {
         lifecycle: lifecycle_stage(cfo_ttm, cfi_ttm, cff_ttm),
         slow_features,
-        equity,
         total_liab,
         money_cap,
         revenue_ttm,
@@ -1045,7 +1066,7 @@ fn base_value_from_snapshot(
             finite_value(market_cap + total_liab - money_cap).filter(|value| *value > EPS)
         });
     match base {
-        HazqComparableBase::Bp => safe_div_opt(snapshot.equity, market_cap),
+        HazqComparableBase::Bp => None,
         HazqComparableBase::Ebit2Ev => safe_div_opt(snapshot.ebit_ttm, ev),
         HazqComparableBase::Ep => None,
         HazqComparableBase::EpQ => safe_div_opt(snapshot.profit_q, market_cap),
@@ -1398,6 +1419,9 @@ fn dependencies_for_output(output: HazqComparableValueOutput) -> Vec<DataRequest
 
 fn common_dependencies(output: HazqComparableValueOutput) -> Vec<DataRequest> {
     let mut daily_basic_columns = vec![TOTAL_MV_COLUMN];
+    if output.base == HazqComparableBase::Bp {
+        daily_basic_columns.push(PB_COLUMN);
+    }
     if matches!(
         output.base,
         HazqComparableBase::Ep | HazqComparableBase::EpPercentile
@@ -1880,9 +1904,8 @@ mod tests {
     }
 
     #[test]
-    fn hazq_comparable_base_values_use_market_cap_and_ev() {
+    fn hazq_comparable_snapshot_base_values_use_market_cap_and_ev() {
         let snapshot = HazqComparableSnapshot {
-            equity: Some(50.0),
             total_liab: Some(40.0),
             money_cap: Some(10.0),
             revenue_ttm: Some(60.0),
@@ -1891,10 +1914,6 @@ mod tests {
             cfo_ttm: Some(6.0),
             ..Default::default()
         };
-        assert_close(
-            base_value_from_snapshot(HazqComparableBase::Bp, &snapshot, Some(100.0)).unwrap(),
-            0.5,
-        );
         assert_close(
             base_value_from_snapshot(HazqComparableBase::Ebit2Ev, &snapshot, Some(100.0)).unwrap(),
             12.0 / 130.0,
@@ -1928,13 +1947,13 @@ mod tests {
             None
         );
         assert_eq!(
-            base_value_from_snapshot(HazqComparableBase::Bp, &snapshot, Some(0.0)),
+            base_value_from_snapshot(HazqComparableBase::Bp, &snapshot, Some(100.0)),
             None
         );
     }
 
     #[test]
-    fn hazq_comparable_ep_uses_reciprocal_pe_ttm_value() {
+    fn hazq_comparable_ep_and_bp_use_reciprocal_valuation_value() {
         assert_close(reciprocal_valuation(Some(20.0)).unwrap(), 0.05);
         assert_close(reciprocal_valuation(Some(-10.0)).unwrap(), -0.1);
         assert_eq!(reciprocal_valuation(Some(0.0)), None);
@@ -2185,9 +2204,15 @@ mod tests {
     fn hazq_comparable_request_plan_maps_outputs_to_needed_bases_and_sources() {
         let plan = ComparableRequestPlan::from_requested_ids(&["comp_ep_med".to_string()]);
         assert_eq!(plan.requested_bases(), vec![HazqComparableBase::Ep]);
+        assert!(!plan.needs_pb());
         assert!(plan.needs_source_component(HazqComparableBase::Ep, HazqComparableComponent::Med));
         assert!(!plan.needs_source_component(HazqComparableBase::Ep, HazqComparableComponent::Avg));
         assert!(!plan.needs_source_component(HazqComparableBase::Bp, HazqComparableComponent::Med));
+
+        let plan = ComparableRequestPlan::from_requested_ids(&["comp_bp_med".to_string()]);
+        assert_eq!(plan.requested_bases(), vec![HazqComparableBase::Bp]);
+        assert!(plan.needs_pb());
+        assert!(plan.needs_source_component(HazqComparableBase::Bp, HazqComparableComponent::Med));
 
         let plan = ComparableRequestPlan::from_requested_ids(&["comp_ep_prm_zscore".to_string()]);
         assert_eq!(plan.requested_bases(), vec![HazqComparableBase::Ep]);
@@ -2235,6 +2260,8 @@ mod tests {
     fn hazq_comparable_dependencies_include_all_financial_lines_and_requested_consensus() {
         let ep_output =
             HazqComparableValueOutput::new(HazqComparableBase::Ep, HazqComparableComponent::Med);
+        let bp_output =
+            HazqComparableValueOutput::new(HazqComparableBase::Bp, HazqComparableComponent::Med);
         let dp_output =
             HazqComparableValueOutput::new(HazqComparableBase::Dp, HazqComparableComponent::Med);
         let gap_output =
@@ -2248,6 +2275,7 @@ mod tests {
             HazqComparableComponent::GapMmm,
         );
         let ep_dependencies = dependencies_for_output(ep_output);
+        let bp_dependencies = dependencies_for_output(bp_output);
         let dp_dependencies = dependencies_for_output(dp_output);
         let gap_dependencies = dependencies_for_output(gap_output);
         let fttm_dependencies = dependencies_for_output(fttm_output);
@@ -2263,10 +2291,18 @@ mod tests {
             request.dataset == DatasetId::StockDailyBasic
                 && request.columns.contains(&TOTAL_MV_COLUMN.to_string())
                 && request.columns.contains(&PE_TTM_COLUMN.to_string())
+                && !request.columns.contains(&PB_COLUMN.to_string())
+        }));
+        assert!(bp_dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockDailyBasic
+                && request.columns.contains(&TOTAL_MV_COLUMN.to_string())
+                && request.columns.contains(&PB_COLUMN.to_string())
+                && !request.columns.contains(&PE_TTM_COLUMN.to_string())
         }));
         assert!(dp_dependencies.iter().any(|request| {
             request.dataset == DatasetId::StockDailyBasic
                 && request.columns.contains(&TOTAL_MV_COLUMN.to_string())
+                && !request.columns.contains(&PB_COLUMN.to_string())
                 && !request.columns.contains(&PE_TTM_COLUMN.to_string())
         }));
         assert!(dp_dependencies

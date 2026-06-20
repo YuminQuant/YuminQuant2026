@@ -35,6 +35,7 @@ const SLOW_CONTINUOUS_FEATURE_COUNT: usize = CONTINUOUS_FEATURE_COUNT - 1;
 const FEATURE_DIM: usize = LIFECYCLE_STAGE_COUNT + CONTINUOUS_FEATURE_COUNT;
 
 const TOTAL_MV_COLUMN: &str = "total_mv";
+const PE_TTM_COLUMN: &str = "pe_ttm";
 const CONSENSUS_GROWTH_COLUMN: &str = "con_npcgrate_2y_roll";
 const CONSENSUS_PE_ROLL_COLUMN: &str = "con_pe_roll";
 
@@ -289,7 +290,6 @@ struct HazqComparableSnapshot {
     money_cap: Option<f64>,
     revenue_ttm: Option<f64>,
     ebit_ttm: Option<f64>,
-    profit_ttm: Option<f64>,
     profit_ttm_yoy_growth: Option<f64>,
     profit_q: Option<f64>,
     cfo_ttm: Option<f64>,
@@ -322,6 +322,7 @@ struct PeerLink {
 struct HazqComparableInputs<'a> {
     panel: &'a DailyPanel,
     total_mv: PanelColumn,
+    pe_ttm: Option<PanelColumn>,
     income: FinancialPitReader<'a>,
     balance: FinancialPitReader<'a>,
     cashflow: FinancialPitReader<'a>,
@@ -386,7 +387,6 @@ impl ComparableRequestPlan {
             .collect()
     }
 
-    #[cfg(test)]
     fn needs_ep_intermediate(&self) -> bool {
         self.requested_bases().into_iter().any(|base| {
             matches!(
@@ -491,6 +491,7 @@ pub fn compute_requested_stateful(
     let inputs = hazq_inputs(
         data,
         &panel,
+        request_plan.needs_ep_intermediate(),
         request_plan.needs_consensus_growth(),
         request_plan.needs_consensus_pe_roll(),
     )?;
@@ -576,9 +577,11 @@ pub fn compute_requested_stateful(
 fn hazq_inputs<'a>(
     data: &'a DataPool,
     panel: &'a DailyPanel,
+    needs_pe_ttm: bool,
     needs_consensus_growth: bool,
     needs_consensus_pe_roll: bool,
 ) -> Result<HazqComparableInputs<'a>> {
+    let daily_basic = data.daily(DatasetId::StockDailyBasic)?;
     let consensus = if needs_consensus_growth || needs_consensus_pe_roll {
         Some(data.daily(DatasetId::StockConsensus)?)
     } else {
@@ -586,8 +589,10 @@ fn hazq_inputs<'a>(
     };
     Ok(HazqComparableInputs {
         panel,
-        total_mv: panel
-            .column_from_table(data.daily(DatasetId::StockDailyBasic)?, TOTAL_MV_COLUMN)?,
+        total_mv: panel.column_from_table(daily_basic, TOTAL_MV_COLUMN)?,
+        pe_ttm: needs_pe_ttm
+            .then(|| panel.column_from_table(daily_basic, PE_TTM_COLUMN))
+            .transpose()?,
         income: data.financial_reader(
             DatasetId::StockIncome,
             ReportTypePreference::income_single_quarter(),
@@ -655,9 +660,9 @@ fn compute_base_column(
     ep_base_column: &mut Option<PanelColumn>,
 ) -> Result<PanelColumn> {
     match base {
-        HazqComparableBase::Ep => cached_ep_base_column(inputs, cache, ep_base_column),
+        HazqComparableBase::Ep => cached_ep_base_column(inputs, ep_base_column),
         HazqComparableBase::EpPercentile => {
-            let ep = cached_ep_base_column(inputs, cache, ep_base_column)?;
+            let ep = cached_ep_base_column(inputs, ep_base_column)?;
             ep.ts(|series| ts_zscore(series, LOOKBACK, ZSCORE_MIN_PERIODS))
         }
         HazqComparableBase::Dp => {
@@ -671,15 +676,22 @@ fn compute_base_column(
 
 fn cached_ep_base_column(
     inputs: &HazqComparableInputs<'_>,
-    cache: &mut InstrumentAlignedSnapshotCache<HazqComparableSnapshot>,
     ep_base_column: &mut Option<PanelColumn>,
 ) -> Result<PanelColumn> {
     if let Some(column) = ep_base_column.as_ref() {
         return Ok(column.clone());
     }
-    let column = compute_snapshot_base_column(HazqComparableBase::Ep, inputs, cache)?;
+    let column = compute_ep_base_column(inputs)?;
     *ep_base_column = Some(column.clone());
     Ok(column)
+}
+
+fn compute_ep_base_column(inputs: &HazqComparableInputs<'_>) -> Result<PanelColumn> {
+    let pe_ttm = inputs
+        .pe_ttm
+        .as_ref()
+        .ok_or_else(|| err("HAZQ comparable EP requires daily_basic pe_ttm"))?;
+    Ok(pe_ttm.map_values(reciprocal_valuation))
 }
 
 fn compute_snapshot_base_column(
@@ -689,7 +701,10 @@ fn compute_snapshot_base_column(
 ) -> Result<PanelColumn> {
     if matches!(
         base,
-        HazqComparableBase::Dp | HazqComparableBase::EpPercentile | HazqComparableBase::EpFttm
+        HazqComparableBase::Dp
+            | HazqComparableBase::Ep
+            | HazqComparableBase::EpPercentile
+            | HazqComparableBase::EpFttm
     ) {
         return Err(err(format!(
             "base {} requires a dedicated HAZQ comparable base helper",
@@ -724,12 +739,14 @@ fn compute_ep_fttm_base_column(inputs: &HazqComparableInputs<'_>) -> Result<Pane
         .consensus_pe_roll
         .as_ref()
         .ok_or_else(|| err("HAZQ comparable EP_FTTM requires consensus con_pe_roll"))?;
-    Ok(con_pe_roll.map_values(|value| {
-        let value = clean(value)?;
-        (value.abs() > EPS)
-            .then_some(1.0 / value)
-            .filter(|value| value.is_finite())
-    }))
+    Ok(con_pe_roll.map_values(reciprocal_valuation))
+}
+
+fn reciprocal_valuation(value: Option<f64>) -> Option<f64> {
+    let value = clean(value)?;
+    (value.abs() > EPS)
+        .then_some(1.0 / value)
+        .filter(|value| value.is_finite())
 }
 
 fn compute_growth_column(
@@ -1009,7 +1026,6 @@ fn hazq_snapshot_for_stock(
         money_cap,
         revenue_ttm,
         ebit_ttm,
-        profit_ttm,
         profit_ttm_yoy_growth,
         profit_q: clean(income_record.column(NET_PROFIT_ATTR_P_COLUMN)),
         cfo_ttm,
@@ -1031,7 +1047,7 @@ fn base_value_from_snapshot(
     match base {
         HazqComparableBase::Bp => safe_div_opt(snapshot.equity, market_cap),
         HazqComparableBase::Ebit2Ev => safe_div_opt(snapshot.ebit_ttm, ev),
-        HazqComparableBase::Ep => safe_div_opt(snapshot.profit_ttm, market_cap),
+        HazqComparableBase::Ep => None,
         HazqComparableBase::EpQ => safe_div_opt(snapshot.profit_q, market_cap),
         HazqComparableBase::Ocfp => safe_div_opt(snapshot.cfo_ttm, market_cap),
         HazqComparableBase::Sales2Ev => safe_div_opt(snapshot.revenue_ttm, ev),
@@ -1357,7 +1373,7 @@ fn requested_outputs(requested_ids: &[String]) -> Vec<HazqComparableValueOutput>
 }
 
 fn dependencies_for_output(output: HazqComparableValueOutput) -> Vec<DataRequest> {
-    let mut dependencies = common_dependencies();
+    let mut dependencies = common_dependencies(output);
     if output.base == HazqComparableBase::Dp {
         dependencies.push(dividend_dependency());
     }
@@ -1380,9 +1396,16 @@ fn dependencies_for_output(output: HazqComparableValueOutput) -> Vec<DataRequest
     dependencies
 }
 
-fn common_dependencies() -> Vec<DataRequest> {
+fn common_dependencies(output: HazqComparableValueOutput) -> Vec<DataRequest> {
+    let mut daily_basic_columns = vec![TOTAL_MV_COLUMN];
+    if matches!(
+        output.base,
+        HazqComparableBase::Ep | HazqComparableBase::EpPercentile
+    ) {
+        daily_basic_columns.push(PE_TTM_COLUMN);
+    }
     vec![
-        DataRequest::new(DatasetId::StockDailyBasic, &[TOTAL_MV_COLUMN]),
+        DataRequest::new(DatasetId::StockDailyBasic, &daily_basic_columns),
         DataRequest::financial_quarters(
             DatasetId::StockIncome,
             &INCOME_COLUMNS,
@@ -1864,7 +1887,6 @@ mod tests {
             money_cap: Some(10.0),
             revenue_ttm: Some(60.0),
             ebit_ttm: Some(12.0),
-            profit_ttm: Some(8.0),
             profit_q: Some(2.0),
             cfo_ttm: Some(6.0),
             ..Default::default()
@@ -1877,9 +1899,9 @@ mod tests {
             base_value_from_snapshot(HazqComparableBase::Ebit2Ev, &snapshot, Some(100.0)).unwrap(),
             12.0 / 130.0,
         );
-        assert_close(
-            base_value_from_snapshot(HazqComparableBase::Ep, &snapshot, Some(100.0)).unwrap(),
-            0.08,
+        assert_eq!(
+            base_value_from_snapshot(HazqComparableBase::Ep, &snapshot, Some(100.0)),
+            None
         );
         assert_close(
             base_value_from_snapshot(HazqComparableBase::EpQ, &snapshot, Some(100.0)).unwrap(),
@@ -1909,6 +1931,14 @@ mod tests {
             base_value_from_snapshot(HazqComparableBase::Bp, &snapshot, Some(0.0)),
             None
         );
+    }
+
+    #[test]
+    fn hazq_comparable_ep_uses_reciprocal_pe_ttm_value() {
+        assert_close(reciprocal_valuation(Some(20.0)).unwrap(), 0.05);
+        assert_close(reciprocal_valuation(Some(-10.0)).unwrap(), -0.1);
+        assert_eq!(reciprocal_valuation(Some(0.0)), None);
+        assert_eq!(reciprocal_valuation(None), None);
     }
 
     #[test]
@@ -2229,6 +2259,16 @@ mod tests {
         assert!(!ep_dependencies
             .iter()
             .any(|request| request.dataset == DatasetId::StockConsensus));
+        assert!(ep_dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockDailyBasic
+                && request.columns.contains(&TOTAL_MV_COLUMN.to_string())
+                && request.columns.contains(&PE_TTM_COLUMN.to_string())
+        }));
+        assert!(dp_dependencies.iter().any(|request| {
+            request.dataset == DatasetId::StockDailyBasic
+                && request.columns.contains(&TOTAL_MV_COLUMN.to_string())
+                && !request.columns.contains(&PE_TTM_COLUMN.to_string())
+        }));
         assert!(dp_dependencies
             .iter()
             .any(|request| request.dataset == DatasetId::StockDividend));

@@ -161,6 +161,22 @@ impl GaussianFinancialExtOutput {
                 | Self::InvCashOutMv
         )
     }
+
+    fn is_deprecated(self) -> bool {
+        matches!(
+            self,
+            Self::EbitYoyChgMv
+                | Self::UndistrProfitYoyChgMv
+                | Self::NOthIncomeMv
+                | Self::PayrollPayableOthPayYoy
+                | Self::CapexCipYoy
+                | Self::TotalCogsCurLiabYoy
+                | Self::BizTaxSurchgAssets
+                | Self::SurplusReseIntExpYoy
+                | Self::UndistrProfitYoy
+                | Self::CashEquOthCompIncomeYoy
+        )
+    }
 }
 
 pub struct GaussianFinancialExtFactor {
@@ -276,7 +292,7 @@ pub fn spec(kind: GaussianFinancialExtOutput) -> FactorSpec {
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
-        tags: tags(),
+        tags: tags(kind),
         description: format!(
             "Gaussian-rank financial regression residual factor {}. It uses PIT single-quarter financial snapshots, Gaussian-rank transforms both sides, runs cross-sectional OLS residualization, and excludes BJ stocks.",
             kind.id()
@@ -294,8 +310,8 @@ pub fn spec(kind: GaussianFinancialExtOutput) -> FactorSpec {
     }
 }
 
-fn tags() -> Vec<String> {
-    [
+fn tags(kind: GaussianFinancialExtOutput) -> Vec<String> {
+    let mut tags = [
         "DFZQ",
         "DBZQ",
         "financial",
@@ -311,7 +327,11 @@ fn tags() -> Vec<String> {
     ]
     .iter()
     .map(|value| value.to_string())
-    .collect()
+    .collect::<Vec<_>>();
+    if kind.is_deprecated() {
+        tags.push("deprecated".to_string());
+    }
+    tags
 }
 
 fn raw_spec(id: &str) -> FactorSpec {
@@ -952,9 +972,18 @@ mod tests {
 
     #[test]
     fn ext_specs_keep_fundamental_gaussian_tags() {
-        let factor_spec = spec(GaussianFinancialExtOutput::NOthIncomeMv);
-        assert_eq!(factor_spec.id, "n_oth_income_mv_gauss_resid");
+        let factor_spec = spec(GaussianFinancialExtOutput::TotalAssetsMv);
+        assert_eq!(factor_spec.id, "total_assets_mv_gauss_resid");
         assert!(factor_spec.tags.contains(&"fundamental".to_string()));
         assert!(factor_spec.tags.contains(&"gaussian_rank".to_string()));
+        assert!(!factor_spec.tags.contains(&"deprecated".to_string()));
+    }
+
+    #[test]
+    fn selected_ext_outputs_are_deprecated() {
+        let deprecated = spec(GaussianFinancialExtOutput::NOthIncomeMv);
+        assert!(deprecated.tags.contains(&"deprecated".to_string()));
+        let active = spec(GaussianFinancialExtOutput::TotalAssetsMv);
+        assert!(!active.tags.contains(&"deprecated".to_string()));
     }
 }

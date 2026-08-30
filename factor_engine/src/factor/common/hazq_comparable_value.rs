@@ -246,6 +246,38 @@ impl HazqComparableValueOutput {
     pub fn id(self) -> String {
         format!("comp_{}_{}", self.base.id(), self.component.id())
     }
+
+    pub const fn is_deprecated(self) -> bool {
+        use HazqComparableBase::*;
+        use HazqComparableComponent::*;
+
+        match self.base {
+            Bp => matches!(self.component, Avg | Weighted | Max | Min | Med | Wgt2),
+            Dp => matches!(self.component, Avg | Weighted | Max | Min | Med | Wgt2),
+            Ebit2Ev => matches!(
+                self.component,
+                Avg | Weighted | Max | Med | Wgt | Wgt2 | Prm | PrmZscore
+            ),
+            Ep => matches!(
+                self.component,
+                Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | GapAvg | GapMmm
+            ),
+            EpQ => matches!(self.component, Avg | Weighted | Max | Min | Med | GapMmm),
+            Ocfp => matches!(
+                self.component,
+                Avg | Weighted | Max | Min | Med | Wgt2 | GapMmm
+            ),
+            Sales2Ev => matches!(
+                self.component,
+                Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore | GapMmm
+            ),
+            EpPercentile => matches!(
+                self.component,
+                Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | Prm | PrmZscore | GapAvg | GapMmm
+            ),
+            EpFttm => matches!(self.component, Avg | Weighted | Max | Min | Med | GapMmm),
+        }
+    }
 }
 
 pub const BASES: [HazqComparableBase; 9] = [
@@ -446,6 +478,10 @@ pub fn all_outputs() -> Vec<HazqComparableValueOutput> {
 
 pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
     let id = output.id();
+    let mut output_tags = tags();
+    if output.is_deprecated() {
+        output_tags.push("deprecated".to_string());
+    }
     FactorSpec {
         id: id.clone(),
         aliases: vec![
@@ -460,7 +496,7 @@ pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
-        tags: tags(),
+        tags: output_tags,
         description: format!(
             "HAZQ comparable-company value factor {} {}. It builds a PIT financial cosine-similarity network, uses peers with similarity above 0.9, excludes BJ stocks, and neutralizes the output by SW level-1 industry and Barra SIZE.",
             output.base.alias(),
@@ -1816,7 +1852,7 @@ macro_rules! define_hazq_comparable_value_factor {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use crate::core::{AssetClass, FactorContext, Frequency};
 
@@ -1950,6 +1986,97 @@ mod tests {
             base_value_from_snapshot(HazqComparableBase::Bp, &snapshot, Some(100.0)),
             None
         );
+    }
+
+    #[test]
+    fn hazq_comparable_marks_only_rejected_outputs_deprecated() {
+        let expected = [
+            "comp_ep_wgt",
+            "comp_bp_wgt2",
+            "comp_ep_wgt2",
+            "comp_ep_percentile_wgt",
+            "comp_bp_max",
+            "comp_bp_med",
+            "comp_ep_percentile_wgt2",
+            "comp_dp_wgt2",
+            "comp_bp_weighted",
+            "comp_bp_avg",
+            "comp_dp_min",
+            "comp_bp_min",
+            "comp_ep_fttm_avg",
+            "comp_ep_fttm_weighted",
+            "comp_ep_fttm_min",
+            "comp_ocfp_max",
+            "comp_ep_fttm_med",
+            "comp_ebit2ev_wgt",
+            "comp_dp_avg",
+            "comp_dp_weighted",
+            "comp_ebit2ev_prm_zscore",
+            "comp_dp_max",
+            "comp_ep_gap_avg",
+            "comp_ep_percentile_min",
+            "comp_dp_med",
+            "comp_ep_avg",
+            "comp_ep_weighted",
+            "comp_ocfp_med",
+            "comp_ep_med",
+            "comp_ep_min",
+            "comp_ep_q_avg",
+            "comp_ep_q_weighted",
+            "comp_ep_percentile_gap_avg",
+            "comp_ocfp_wgt2",
+            "comp_ep_fttm_max",
+            "comp_ep_gap_mmm",
+            "comp_ep_q_max",
+            "comp_ep_percentile_prm_zscore",
+            "comp_ep_max",
+            "comp_ep_percentile_gap_mmm",
+            "comp_ep_percentile_prm",
+            "comp_ep_q_med",
+            "comp_ocfp_avg",
+            "comp_ocfp_weighted",
+            "comp_ep_fttm_gap_mmm",
+            "comp_sales2ev_dst",
+            "comp_sales2ev_prm_zscore",
+            "comp_sales2ev_dst_zscore",
+            "comp_sales2ev_gap_mmm",
+            "comp_ep_percentile_max",
+            "comp_ocfp_gap_mmm",
+            "comp_sales2ev_prm",
+            "comp_sales2ev_wgt2",
+            "comp_ep_q_gap_mmm",
+            "comp_sales2ev_wgt",
+            "comp_ep_q_min",
+            "comp_ebit2ev_prm",
+            "comp_ep_percentile_med",
+            "comp_ebit2ev_wgt2",
+            "comp_ocfp_min",
+            "comp_ep_percentile_avg",
+            "comp_ep_percentile_weighted",
+            "comp_ebit2ev_max",
+            "comp_ebit2ev_avg",
+            "comp_ebit2ev_weighted",
+            "comp_ebit2ev_med",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+        let actual = all_outputs()
+            .into_iter()
+            .filter(|output| output.is_deprecated())
+            .map(HazqComparableValueOutput::id)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual.len(), 66);
+        assert_eq!(actual, expected);
+        for output in all_outputs() {
+            assert_eq!(
+                spec(output).tags.iter().any(|tag| tag == "deprecated"),
+                output.is_deprecated(),
+                "unexpected deprecated metadata for {}",
+                output.id()
+            );
+        }
     }
 
     #[test]

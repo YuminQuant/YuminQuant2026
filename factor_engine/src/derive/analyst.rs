@@ -148,7 +148,7 @@ pub fn derive_analyst_consensus(
                 let np_fy0 = active_stocks
                     .iter()
                     .filter_map(|ts_code| {
-                        let years = fiscal_years(trade_date);
+                        let years = fiscal_years(trade_date, ts_code, &financial);
                         let value = state
                             .annual_base_snapshot(ts_code, trade_date, years[0], &financial)
                             .net_profit
@@ -413,9 +413,10 @@ impl AnalystConsensusState {
         self.np_fy0_history
             .retain(|date, _| *date >= min_np_history);
 
-        let years = fiscal_years(trade_date);
-        let min_year = years[0] - 2;
-        let max_year = years[3] + 1;
+        // Retain the union of both possible stock-specific fiscal-year ranges.
+        let year = trade_date / 10_000;
+        let min_year = year - 4;
+        let max_year = year + 3;
         self.annual_base_snapshots
             .retain(|key, _| key.year >= min_year && key.year <= max_year);
     }
@@ -828,9 +829,9 @@ fn build_consensus_table_for_date(
     state: &mut AnalystConsensusState,
 ) -> Result<Table> {
     let snapshot = market.snapshot(trade_date);
-    let years = fiscal_years(trade_date);
     let mut rows = Vec::with_capacity(snapshot.rows.len());
     for market_row in snapshot.rows {
+        let years = fiscal_years(trade_date, &market_row.ts_code, financial);
         let price = effective_price(market_row.close, market_row.pre_close);
         let mut by_year = HashMap::<i32, AnnualConsensus>::new();
         for year in (years[0] - 2)..=(years[3] + 1) {
@@ -1516,10 +1517,17 @@ where
     );
 }
 
-fn fiscal_years(trade_date: i32) -> [i32; 4] {
+/// Advance on the previous calendar year's PIT-visible annual report, with
+/// May 1 as an unconditional fallback. Record presence, not metric validity,
+/// determines disclosure; use the same inclusive PIT date as actual values.
+fn fiscal_years(trade_date: i32, ts_code: &str, financial: &ConsensusFinancialData) -> [i32; 4] {
     let year = trade_date / 10_000;
-    let month_day = trade_date % 10_000;
-    let base = if month_day < 501 { year - 2 } else { year - 1 };
+    let switched = trade_date % 10_000 >= 501
+        || financial
+            .income()
+            .record_for_end_date(ts_code, trade_date, (year - 1) * 10_000 + 1231)
+            .is_some();
+    let base = if switched { year - 1 } else { year - 2 };
     [base, base + 1, base + 2, base + 3]
 }
 
@@ -1792,8 +1800,24 @@ mod tests {
 
     #[test]
     fn analyst_consensus_fiscal_years_switch_on_may_first() {
-        assert_eq!(fiscal_years(20260430), [2024, 2025, 2026, 2027]);
-        assert_eq!(fiscal_years(20260501), [2025, 2026, 2027, 2028]);
+        let index = Arc::new(FinancialPitIndex::from_source_tables(Vec::new(), None).unwrap());
+        let financial = ConsensusFinancialData {
+            income_index: index.clone(),
+            balance_index: index,
+            needs: Needs::all(),
+        };
+        assert_eq!(
+            fiscal_years(20260430, "A", &financial),
+            [2024, 2025, 2026, 2027]
+        );
+        assert_eq!(
+            fiscal_years(20260501, "A", &financial),
+            [2025, 2026, 2027, 2028]
+        );
+        assert_eq!(
+            fiscal_years(20270101, "A", &financial),
+            [2025, 2026, 2027, 2028]
+        );
     }
 
     #[test]

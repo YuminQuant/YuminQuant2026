@@ -260,22 +260,19 @@ impl HazqComparableValueOutput {
             ),
             Ep => matches!(
                 self.component,
-                Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | GapAvg | GapMmm
+                Avg | Weighted | Max | Min | Med | Wgt | Wgt2
             ),
-            EpQ => matches!(self.component, Avg | Weighted | Max | Min | Med | GapMmm),
-            Ocfp => matches!(
-                self.component,
-                Avg | Weighted | Max | Min | Med | Wgt2 | GapMmm
-            ),
+            EpQ => matches!(self.component, Avg | Weighted | Max | Min | Med),
+            Ocfp => matches!(self.component, Avg | Weighted | Max | Min | Med | Wgt2),
             Sales2Ev => matches!(
                 self.component,
-                Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore | GapMmm
+                Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore
             ),
             EpPercentile => matches!(
                 self.component,
-                Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | Prm | PrmZscore | GapAvg | GapMmm
+                Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | Prm | PrmZscore
             ),
-            EpFttm => matches!(self.component, Avg | Weighted | Max | Min | Med | GapMmm),
+            EpFttm => matches!(self.component, Avg | Weighted | Max | Min | Med),
         }
     }
 }
@@ -501,7 +498,7 @@ fn hazq_comparable_analyst_tag_is_output_specific() {
         }
     }
     assert_eq!(analyst_count, 29);
-    assert_eq!(active_count, 16);
+    assert_eq!(active_count, 24);
 }
 
 pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
@@ -2024,6 +2021,20 @@ mod tests {
     }
 
     #[test]
+    fn hazq_comparable_all_growth_gap_outputs_are_active() {
+        for base in BASES {
+            for component in [
+                HazqComparableComponent::GapAvg,
+                HazqComparableComponent::GapMmm,
+            ] {
+                let output = HazqComparableValueOutput::new(base, component);
+                assert!(!output.is_deprecated(), "{}", output.id());
+                assert!(!spec(output).tags.iter().any(|tag| tag == "deprecated"));
+            }
+        }
+    }
+
+    #[test]
     fn hazq_comparable_marks_only_rejected_outputs_deprecated() {
         let expected = [
             "comp_ep_wgt",
@@ -2048,7 +2059,6 @@ mod tests {
             "comp_dp_weighted",
             "comp_ebit2ev_prm_zscore",
             "comp_dp_max",
-            "comp_ep_gap_avg",
             "comp_ep_percentile_min",
             "comp_dp_med",
             "comp_ep_avg",
@@ -2058,28 +2068,21 @@ mod tests {
             "comp_ep_min",
             "comp_ep_q_avg",
             "comp_ep_q_weighted",
-            "comp_ep_percentile_gap_avg",
             "comp_ocfp_wgt2",
             "comp_ep_fttm_max",
-            "comp_ep_gap_mmm",
             "comp_ep_q_max",
             "comp_ep_percentile_prm_zscore",
             "comp_ep_max",
-            "comp_ep_percentile_gap_mmm",
             "comp_ep_percentile_prm",
             "comp_ep_q_med",
             "comp_ocfp_avg",
             "comp_ocfp_weighted",
-            "comp_ep_fttm_gap_mmm",
             "comp_sales2ev_dst",
             "comp_sales2ev_prm_zscore",
             "comp_sales2ev_dst_zscore",
-            "comp_sales2ev_gap_mmm",
             "comp_ep_percentile_max",
-            "comp_ocfp_gap_mmm",
             "comp_sales2ev_prm",
             "comp_sales2ev_wgt2",
-            "comp_ep_q_gap_mmm",
             "comp_sales2ev_wgt",
             "comp_ep_q_min",
             "comp_ebit2ev_prm",
@@ -2102,7 +2105,7 @@ mod tests {
             .map(HazqComparableValueOutput::id)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(actual.len(), 66);
+        assert_eq!(actual.len(), 58);
         assert_eq!(actual, expected);
         for output in all_outputs() {
             assert_eq!(

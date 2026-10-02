@@ -866,6 +866,9 @@ fn table_slice_dates_or_clone(table: &Arc<Table>, selected_dates: &BTreeSet<i32>
             date.and_then(|date| selected_dates.contains(&date).then_some(idx))
         })
         .collect::<Vec<_>>();
+    if indices.len() == table.len {
+        return Arc::clone(table);
+    }
     Arc::new(
         table
             .take(&indices)
@@ -932,6 +935,19 @@ mod tests {
             load_dates: vec![20260101, 20260102],
             target_dates: vec![20260102],
         }
+    }
+
+    #[test]
+    fn unchanged_table_date_view_shares_source() {
+        let source = Arc::new(sample_daily_table());
+        let same = table_slice_dates_or_clone(&source, &BTreeSet::from([20260101, 20260102]));
+        assert!(Arc::ptr_eq(&source, &same));
+        let smaller = table_slice_dates_or_clone(&source, &BTreeSet::from([20260102]));
+        assert!(!Arc::ptr_eq(&source, &smaller));
+        assert_eq!(
+            smaller.required_i32("trade_date").unwrap(),
+            &[Some(20260102)]
+        );
     }
 
     fn sample_daily_table() -> Table {

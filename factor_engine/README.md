@@ -420,7 +420,19 @@ English rules:
 - Multi-raw providers must be driven by the current requested `raw_ids`. Shared setup such as minute returns, 5-minute bars, or state matrices is allowed, but unrequested sibling metric branches must not be computed opportunistically.
 - Prefer `RequestedRawIds` in new multi-raw providers and guard concrete metric branches with `requested.contains(raw_id)` or `requested.contains_any([...])`.
 
+## 内存与数据分发 / Memory and Data Distribution
+
+- 日期裁剪未移除任何行时，Table 和 DailyPanel 共享底层存储；真正的日期子集仍独立裁剪，避免稀疏日期请求影响其他因子的时序计算。无需修改因子接口。
+  When date selection removes no rows, Table and DailyPanel reuse their backing storage. Proper subsets remain isolated so sparse requests cannot change another factor's time axis. Factor interfaces are unchanged.
+- 正式因子写出按日期构建列式缓冲，通过股票代码及分钟时间键对齐旧数据。显式空值会覆盖旧值；未更新的股票或因子列保留。避免将整个 batch 和旧宽表展开为逐单元格字符串映射。
+  Factor output builds column buffers one date at a time, aligning existing rows by stock code and minute timestamp. Explicit null updates replace old values; untouched rows and columns are preserved, without per-cell string maps for the full batch and existing wide table.
+- 主营业务与分析师 loader 借用年度缓存，按日期筛选后逐列追加，避免完整年度投影表和完整过滤表同时驻留。最终 batch 表仍存在；这不是跨年度索引重构。
+  Main-business and analyst loaders borrow yearly cache sources and append selected rows column by column, avoiding full projected and filtered intermediate tables. The final batch table still exists; this does not replace it with a multi-source index.
+- 16GB 机器可从 `--threads 4 --factor-batch-size 5 --date-batch-size 60 --profile` 开始测量。缩小 factor batch 会增加旧宽表重写次数，应结合加载、计算、写出耗时调整。此版本没有改变线程默认值或 Parquet 压缩格式。
+  On a 16GB machine, start measuring with the flags above. Smaller factor batches increase existing wide-file rewrites; tune against load, compute and write timings. Thread defaults and Parquet compression are unchanged.
+
 ## 开发入口 / Development Guides
+
 
 - Factor development: [FACTOR_DEVELOPMENT_README.md](FACTOR_DEVELOPMENT_README.md)
 - Financial factor development: [FINANCIAL_FACTOR_DEVELOPMENT_README.md](FINANCIAL_FACTOR_DEVELOPMENT_README.md)

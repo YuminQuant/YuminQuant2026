@@ -186,6 +186,15 @@ impl DailyPanel {
     }
 
     pub fn with_target_dates(&self, target_dates: &[i32]) -> Self {
+        if self
+            .index
+            .target_dates
+            .iter()
+            .copied()
+            .eq(target_dates.iter().copied())
+        {
+            return self.clone();
+        }
         Self {
             index: Arc::new(DailyPanelIndex {
                 dates: self.index.dates.clone(),
@@ -199,6 +208,9 @@ impl DailyPanel {
 
     pub fn slice_dates(&self, selected_dates: &[i32]) -> Self {
         let selected = selected_dates.iter().copied().collect::<BTreeSet<_>>();
+        if self.index.dates.iter().all(|date| selected.contains(date)) {
+            return self.with_target_dates(selected_dates);
+        }
         let date_indices = self
             .index
             .dates
@@ -881,6 +893,25 @@ mod tests {
                 Some(20.0)
             ]
         );
+    }
+
+    #[test]
+    fn unchanged_date_slice_shares_all_column_buffers() {
+        let panel = DailyPanel::from_table(
+            &sample_table(),
+            &context(vec![20260101, 20260102, 20260103]),
+        )
+        .unwrap();
+        let sliced = panel.slice_dates(panel.dates());
+        for (name, column) in &panel.columns {
+            assert!(Arc::ptr_eq(column, &sliced.columns[name]));
+        }
+        let smaller = panel.slice_dates(&[20260103]);
+        assert!(!Arc::ptr_eq(
+            &panel.columns["close"],
+            &smaller.columns["close"]
+        ));
+        assert_eq!(smaller.dates(), &[20260103]);
     }
 
     #[test]

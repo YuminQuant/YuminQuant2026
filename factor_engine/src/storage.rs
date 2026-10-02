@@ -149,41 +149,24 @@ impl FactorStorage {
     }
 
     pub fn write_results(&self, results: &[FactorSeries]) -> Result<Vec<PathBuf>> {
-        let mut grouped: BTreeMap<(AssetClass, Frequency, i32), PendingFrame> = BTreeMap::new();
+        let mut grouped = BTreeMap::<_, BTreeMap<String, Vec<&crate::core::FactorValue>>>::new();
         for series in results {
             let column_name = series.spec.output_column();
             for item in &series.values {
                 let trade_date = item.key.trade_date();
-                let output_key = match &item.key {
-                    FactorRowKey::Daily { ts_code, .. } => OutputKey {
-                        ts_code: ts_code.clone(),
-                        trade_time: None,
-                    },
-                    FactorRowKey::Minute {
-                        ts_code,
-                        trade_time,
-                        ..
-                    } => OutputKey {
-                        ts_code: ts_code.clone(),
-                        trade_time: Some(trade_time.clone()),
-                    },
-                };
                 grouped
                     .entry((series.spec.asset_class, series.spec.frequency, trade_date))
                     .or_default()
-                    .values
-                    .entry(output_key)
+                    .entry(column_name.clone())
                     .or_default()
-                    .insert(column_name.clone(), item.value);
+                    .push(item);
             }
         }
 
         let mut written = Vec::new();
-        for ((asset_class, frequency, trade_date), mut frame) in grouped {
+        for ((asset_class, frequency, trade_date), columns) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
-            merge_existing_output(&path, frequency, trade_date, &mut frame)?;
-            let table =
-                pending_frame_to_table(frequency, trade_date, &frame, OutputValueDtype::F32)?;
+            let table = merge_factor_columns(&path, frequency, trade_date, &columns)?;
             write_parquet(&path, &table)?;
             written.push(path);
         }
@@ -240,6 +223,108 @@ impl FactorStorage {
             .join(year.to_string())
             .join(format!("{}.parquet", trade_date))
     }
+}
+
+// Build only one day's column buffers; explicit null updates overwrite old values.
+fn merge_factor_columns(
+    path: &Path,
+    frequency: Frequency,
+    trade_date: i32,
+    updates: &BTreeMap<String, Vec<&crate::core::FactorValue>>,
+) -> Result<Table> {
+    let existing = if path.exists() {
+        read_parquet(path, None)?
+    } else {
+        Table::empty()
+    };
+    let mut old_keys = Vec::with_capacity(existing.len);
+    if existing.len > 0 {
+        let codes = existing.required_utf8("ts_code")?;
+        let times = if frequency == Frequency::Minute1 {
+            Some(existing.required_utf8("trade_time")?)
+        } else {
+            None
+        };
+        for idx in 0..existing.len {
+            old_keys.push(codes[idx].as_ref().map(|code| OutputKey {
+                ts_code: code.clone(),
+                trade_time: times.and_then(|values| values[idx].clone()),
+            }));
+        }
+    }
+    let key_of = |value: &crate::core::FactorValue| match &value.key {
+        FactorRowKey::Daily { ts_code, .. } => OutputKey {
+            ts_code: ts_code.clone(),
+            trade_time: None,
+        },
+        FactorRowKey::Minute {
+            ts_code,
+            trade_time,
+            ..
+        } => OutputKey {
+            ts_code: ts_code.clone(),
+            trade_time: Some(trade_time.clone()),
+        },
+    };
+    let mut keys = old_keys.iter().flatten().cloned().collect::<BTreeSet<_>>();
+    for values in updates.values() {
+        keys.extend(values.iter().map(|value| key_of(value)));
+    }
+    let keys = keys.into_iter().collect::<Vec<_>>();
+    let positions = keys
+        .iter()
+        .enumerate()
+        .map(|(idx, key)| (key, idx))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let old_positions = old_keys
+        .iter()
+        .map(|key| {
+            key.as_ref()
+                .and_then(|key| seen.insert(key).then(|| positions[key]))
+        })
+        .collect::<Vec<_>>();
+    let mut table = Table::empty();
+    table.insert(
+        "trade_date",
+        ColumnData::I32(vec![Some(trade_date); keys.len()]),
+    )?;
+    table.insert(
+        "ts_code",
+        ColumnData::Utf8(keys.iter().map(|key| Some(key.ts_code.clone())).collect()),
+    )?;
+    if frequency == Frequency::Minute1 {
+        table.insert(
+            "trade_time",
+            ColumnData::Utf8(keys.iter().map(|key| key.trade_time.clone()).collect()),
+        )?;
+    }
+    let names = existing
+        .columns
+        .keys()
+        .chain(updates.keys())
+        .filter(|name| !matches!(name.as_str(), "trade_date" | "ts_code" | "trade_time"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for name in names {
+        let mut values = vec![None; keys.len()];
+        if existing.columns.contains_key(&name) {
+            let old = existing.required_f64_cast(&name)?;
+            for (idx, dest) in old_positions.iter().enumerate() {
+                if let Some(dest) = dest {
+                    // Match the old merge's first-row-wins rule for duplicate keys.
+                    values[*dest] = old[idx];
+                }
+            }
+        }
+        if let Some(changes) = updates.get(&name) {
+            for item in changes {
+                values[positions[&key_of(item)]] = item.value;
+            }
+        }
+        table.insert(name, value_column(values, OutputValueDtype::F32))?;
+    }
+    Ok(table)
 }
 
 impl LabelStorage {
@@ -1377,6 +1462,89 @@ mod tests {
             dependencies: Vec::new(),
             lookback: Lookback { trading_days: 0 },
         }
+    }
+
+    #[test]
+    fn columnar_factor_merge_matches_legacy_for_sparse_null_and_minute_updates() {
+        use super::{
+            merge_existing_output, merge_factor_columns, pending_frame_to_table, OutputKey,
+            OutputValueDtype, PendingFrame,
+        };
+        use crate::data::parquet_io::write_parquet;
+        use std::collections::BTreeMap;
+        let root = temp_factor_root();
+        for frequency in [Frequency::Daily, Frequency::Minute1] {
+            let path = root.join(format!("{frequency:?}.parquet"));
+            let key = |code: &str, time: &str| OutputKey {
+                ts_code: code.to_string(),
+                trade_time: (frequency == Frequency::Minute1).then(|| time.to_string()),
+            };
+            let mut old = PendingFrame::default();
+            for (code, time, value) in [
+                ("000002.SZ", "09:31", 2.0),
+                ("000001.SZ", "09:31", 1.0),
+                ("000001.SZ", "09:32", 3.0),
+            ] {
+                old.values.insert(
+                    key(code, time),
+                    BTreeMap::from([("old".into(), Some(value)), ("changed".into(), Some(value))]),
+                );
+            }
+            write_parquet(
+                &path,
+                &pending_frame_to_table(frequency, 20260105, &old, OutputValueDtype::F32).unwrap(),
+            )
+            .unwrap();
+            let make = |code: &str, time: &str, value| crate::core::FactorValue {
+                key: if frequency == Frequency::Minute1 {
+                    FactorRowKey::Minute {
+                        trade_date: 20260105,
+                        ts_code: code.into(),
+                        trade_time: time.into(),
+                    }
+                } else {
+                    FactorRowKey::Daily {
+                        trade_date: 20260105,
+                        ts_code: code.into(),
+                    }
+                },
+                value,
+            };
+            let values = [
+                make("000001.SZ", "09:31", None),
+                make("000003.SZ", "09:31", Some(7.0)),
+                make("000003.SZ", "09:31", Some(8.0)),
+            ];
+            let updates = BTreeMap::from([
+                ("changed".into(), values.iter().collect()),
+                ("new".into(), vec![&values[1]]),
+            ]);
+            let actual = merge_factor_columns(&path, frequency, 20260105, &updates).unwrap();
+            let mut legacy = PendingFrame::default();
+            for (name, rows) in &updates {
+                for item in rows {
+                    let row_key = match &item.key {
+                        FactorRowKey::Daily { ts_code, .. } => key(ts_code, ""),
+                        FactorRowKey::Minute {
+                            ts_code,
+                            trade_time,
+                            ..
+                        } => key(ts_code, trade_time),
+                    };
+                    legacy
+                        .values
+                        .entry(row_key)
+                        .or_default()
+                        .insert(name.clone(), item.value);
+                }
+            }
+            merge_existing_output(&path, frequency, 20260105, &mut legacy).unwrap();
+            let expected =
+                pending_frame_to_table(frequency, 20260105, &legacy, OutputValueDtype::F32)
+                    .unwrap();
+            assert_eq!(format!("{:?}", actual), format!("{:?}", expected));
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

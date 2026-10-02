@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import math
+import warnings
 from typing import Any
 
 import numpy as np
@@ -115,8 +116,10 @@ def _series_metrics(
     return raw
 
 
-def _has_valid_column(frame: pd.DataFrame, column: str) -> bool:
-    return column in frame.columns and clean_series(frame[column]).shape[0] > 0
+def _empty_return_report(*, by_year: bool = False) -> pd.DataFrame:
+    keys = ["portfolio", "year"] if by_year else ["portfolio"]
+    metrics = _return_metrics(pd.Series(dtype="float64"), 240, 0.0)
+    return pd.DataFrame(columns=[*keys, *metrics])
 
 
 def _group_only(frame: pd.DataFrame) -> pd.DataFrame:
@@ -140,7 +143,7 @@ def make_return_report(
         rows = [{"portfolio": returns.name or "series", **_series_metrics(returns, periods_per_year, risk_free_rate)}]
         return pd.DataFrame(rows)
     if returns is None or returns.empty:
-        return pd.DataFrame()
+        return _empty_return_report()
 
     if "portfolio" not in returns.columns:
         rows = [{"portfolio": "series", **_series_metrics(returns[return_col], periods_per_year, risk_free_rate)}]
@@ -168,7 +171,7 @@ def make_return_report_by_year(
     risk_free_rate: float = 0.0,
 ) -> pd.DataFrame:
     if returns is None or returns.empty:
-        return pd.DataFrame()
+        return _empty_return_report(by_year=True)
     date_col = _date_column(returns)
     if date_col is None:
         raise ValueError("returns must contain trade_date, factor_date, or date for yearly report")
@@ -195,6 +198,8 @@ def make_return_report_by_year(
         else:
             metrics = _series_metrics(group[return_col], periods_per_year, risk_free_rate)
         rows.append({**key_values, **metrics})
+    if not rows:
+        return _empty_return_report(by_year=True)
     output = pd.DataFrame(rows)
     if "portfolio" in output.columns:
         output = output.sort_values(
@@ -293,18 +298,26 @@ def make_backtest_report(
     risk_free_rate: float = 0.0,
 ) -> dict[str, pd.DataFrame]:
     if returns is None:
-        portfolio_total = pd.DataFrame()
-        portfolio_by_year = pd.DataFrame()
-        excess_total = pd.DataFrame()
-        excess_by_year = pd.DataFrame()
+        portfolio_total = _empty_return_report()
+        portfolio_by_year = _empty_return_report(by_year=True)
+        excess_total = _empty_return_report()
+        excess_by_year = _empty_return_report(by_year=True)
     else:
+        values = returns[return_col] if isinstance(returns, pd.DataFrame) and return_col in returns.columns else returns
+        if not returns.empty and clean_series(values).empty:
+            warnings.warn(
+                "No finite portfolio returns in the selected period; check factor coverage, "
+                "labels and backtest filters. Performance metrics are unavailable.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         portfolio_total = make_return_report(returns, return_col, periods_per_year, risk_free_rate)
         portfolio_by_year = (
             make_return_report_by_year(returns, return_col, periods_per_year, risk_free_rate)
             if isinstance(returns, pd.DataFrame)
             else pd.DataFrame()
         )
-        if isinstance(returns, pd.DataFrame) and _has_valid_column(returns, "excess_return"):
+        if isinstance(returns, pd.DataFrame) and "excess_return" in returns.columns:
             excess_frame = _group_only(returns)
             excess_total = make_return_report(
                 excess_frame,
@@ -319,8 +332,8 @@ def make_backtest_report(
                 risk_free_rate,
             )
         else:
-            excess_total = pd.DataFrame()
-            excess_by_year = pd.DataFrame()
+            excess_total = _empty_return_report()
+            excess_by_year = _empty_return_report(by_year=True)
     return {
         "portfolio_total": portfolio_total,
         "portfolio_by_year": portfolio_by_year,

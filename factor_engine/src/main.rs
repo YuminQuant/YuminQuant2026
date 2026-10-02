@@ -337,6 +337,7 @@ fn parse_derive_consensus_request(args: &[String]) -> Result<AnalystConsensusReq
         None => DEFAULT_CONSENSUS_DATE_BATCH_SIZE,
     };
     Ok(AnalystConsensusRequest {
+        columns: flags.get("columns").map(|value| parse_csv_values(value)),
         start_date,
         end_date,
         overwrite: flag_bool(&flags, "overwrite", true),
@@ -1245,7 +1246,9 @@ fn print_help() {
         "  derive-bar --asset stock --source minute --bar-size N --start-date YYYYMMDD --end-date YYYYMMDD"
     );
     println!("    derive-bar stock minute allowed N: divisors of 240 with 1 < N <= 120");
-    println!("  derive-consensus --start-date YYYYMMDD --end-date YYYYMMDD");
+    println!(
+        "  derive-consensus --start-date YYYYMMDD --end-date YYYYMMDD [--columns column1,column2]"
+    );
     println!();
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
@@ -1312,6 +1315,30 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_consensus_columns_and_default_full_request() {
+        let mut args = vec![
+            "--start-date".into(),
+            "20160101".into(),
+            "--end-date".into(),
+            "20260424".into(),
+        ];
+        assert!(super::parse_derive_consensus_request(&args)
+            .unwrap()
+            .columns
+            .is_none());
+        args.extend([
+            "--columns".into(),
+            "con_npcgrate_2y_roll,con_peg_roll".into(),
+        ]);
+        let request = super::parse_derive_consensus_request(&args).unwrap();
+        assert_eq!(
+            request.columns.unwrap(),
+            vec!["con_npcgrate_2y_roll", "con_peg_roll"]
+        );
+        assert!(request.overwrite);
+    }
+
     use super::{
         flag_enabled, matches_tag_filter, parse_backtest_run_request, parse_barra_run_request,
         parse_csv_values, parse_flags, parse_label_run_request, parse_run_request, parse_yyyymmdd,

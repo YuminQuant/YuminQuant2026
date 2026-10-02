@@ -4,6 +4,7 @@ pub mod daily;
 pub mod dbzq_5min_risk;
 pub mod dbzq_coskewness;
 pub mod dbzq_financial_efficiency;
+pub mod dbzq_financial_surprise;
 pub mod dbzq_intraday_volume_distribution;
 pub mod dbzq_profit_skew;
 pub mod dbzq_roic_wacc;

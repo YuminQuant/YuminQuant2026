@@ -474,3 +474,42 @@ It uses the stock universe panel, excludes BJ and has no PV dependency.
   state across batches. Missing regression inputs leave legal output rows null.
 
 Validation: `cargo test --manifest-path factor_engine/Cargo.toml equity_duration`.
+
+## DBZQ J and O
+
+`eps_growth_jump` (alias `J`) and `operating_cash_inflow_surprise` (alias `O`)
+are positive-direction, PIT daily factors tagged `DBZQ` and `fundamental`.
+Both use stock universe panels, exclude BJ, and subtract the daily SW level-1
+industry mean on valid samples. There is no SIZE dependency, Gaussian rank,
+winsorization, extra zscore or analyst dependency.
+
+- J uses `StockIncome.n_income_attr_p` single-quarter values divided by
+  `StockBalanceSheet.total_share` from the same report quarter (positive shares
+  required). Each historical quarter uses its own PIT-visible quarter-end share
+  capital, not today's share count. This is an EPS proxy, not weighted-average
+  share EPS; stock splits/bonus issues are not adjusted and disclosed `basic_eps`
+  is never mixed in.
+- For latest disclosed quarter q, `G_q=(EPS_q-EPS_q-4)/abs(EPS_q-4)`;
+  near-zero prior EPS is invalid. Fit G_q-4..G_q-1 against 1..4 WITHOUT intercept,
+  predict `5*beta`, and output `(G_q-prediction)/sample_std(training residuals)`.
+  All nine report quarters q-8..q are required. Negative profits are retained.
+- O uses single-quarter `StockCashFlow.c_fr_sale_sg`, not net operating cash.
+  The adopted reconstruction assumption is
+  `A=notes_receiv+accounts_receiv+prepayment+inventories` from the balance sheet,
+  and `delta_A_q=A_q-A_q-1`. All components must be finite, with no zero fill.
+- Fit `C_s=alpha+beta*C_s-1+gamma*delta_A_s+epsilon_s` for eight complete
+  historical rows s=q-8..q-1, predict q, and divide the current surprise by the
+  sample std of the eight training residuals. This requires ten report quarters
+  q-9..q. The latest quarter is NEVER in training. Centered/scaled two-column QR
+  includes an intercept; rank-deficient fits return null, with no ridge fallback.
+- Both use residual sample std (ddof=1), not regression RMSE or residual degrees
+  of freedom. Near-zero residual std returns null. Current flow and balance
+  records must match the same report quarter and already be PIT-visible; no
+  substitution of a previous quarter when the newest balance is not yet visible.
+- Independent wrappers declare only their own dependencies and compute only
+  their requested factor. A common helper handles event replay and formulas;
+  batch-local instrument-aligned snapshots hold raw values between PIT events.
+  Markers cover all income/cashflow and balance records in the respective window,
+  including historical share revisions. Industry neutralization is applied daily.
+
+Validation: `cargo test --manifest-path factor_engine/Cargo.toml dbzq_financial_surprise`.

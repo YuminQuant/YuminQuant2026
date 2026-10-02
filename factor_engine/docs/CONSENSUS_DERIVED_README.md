@@ -165,31 +165,69 @@ Annual suffixes / 年度后缀：
 - `fy2`
 - `fy3`
 
-The fiscal-year anchor follows the current Chaoyang Yongxu convention used in
-the generator:
+The fiscal-year anchor is stock-specific. Before May 1, advance as soon as
+that stock's previous-calendar-year annual income statement is PIT-visible.
+From May 1 onward, advance unconditionally, even if that annual report is absent.
 
 ```text
-if trade_date month-day < 0501:
-    fy0 base year = trade_year - 2
-else:
-    fy0 base year = trade_year - 1
-
+Y = trade_date year
+annual_visible = a PIT-visible annual income record exists for (Y-1)-12-31
+fy0 = Y-1 if month-day >= 0501 or annual_visible else Y-2
 fy1 = fy0 + 1
 fy2 = fy0 + 2
 fy3 = fy0 + 3
 ```
 
-财年锚点规则：
+财年锚点按股票确定：五月一日前，上一年度正式年报已经 PIT 可见则提前切换；
+未披露则保持旧基准年。五月一日起，不论披露与否统一切换。
+披露判断采用与实际值相同的利润表 PIT reader、合并报表优先级及
+`f_ann_date.or(ann_date) <= trade_date`，即公告日期当天生效，不额外延迟一天。
+只判断上一年度 12 月 31 日记录是否存在，不要求利润、收入或 EPS 非空；
+季报、业绩预告和快报不触发切换。五月一日后 FY0 仍可能是预测值。
 
-```text
-如果 trade_date 的月日 < 0501:
-    fy0 基准年 = trade_year - 2
-否则:
-    fy0 基准年 = trade_year - 1
+### Fiscal-anchor migration / 财年锚点历史迁移
 
-fy1 = fy0 + 1
-fy2 = fy0 + 2
-fy3 = fy0 + 3
+This replaces the old market-wide May 1-only switch. Regenerate all 48 annual
+columns (12 families times four FY suffixes), plus five `con_npgrate_*` columns.
+The 12 calendar-year rolling columns, ratings and targets are unchanged.
+Annual differences occur between each early disclosure and April 30; revision
+differences can persist for up to 364 days because historical FY0 values change.
+Revision metrics still compare each date's own FY0, not a fixed target year.
+
+旧数据不会自动迁移。需重生成 48 个年度字段及 5 个变化率字段，共 53 列。
+变化率仍比较两个时点各自的 FY0，切换时可能包含跨财年增长，未改为同财年预测修正。
+不能只更新每年的一至四月，变化率受历史比较值影响可延续到之后约一年。
+当前直接受影响的下游因子为 `equity_duration`，需在派生数据更新后重新生产；
+`bet_cagr_csv_std` 和 HAZQ 可比估值的一致预期依赖均为滚动列，不受此变更影响。
+
+Run from the repository root. Set the range to the history being maintained;
+the example covers the existing local consensus files through 2026-04-24.
+The generator loads its own warmup history. These commands do not download raw data.
+
+在仓库根目录依次执行；以下日期覆盖现有本地一致预期历史。派生引擎自动加载预热历史，
+但原始数据必须已具备所需覆盖范围。因子生产会替换选中列，保留其他因子列。
+
+```powershell
+$startDate = '20110101'
+$endDate = '20260424'
+$families = @(
+  'con_or', 'con_np', 'con_eps', 'con_na', 'con_pb', 'con_ps',
+  'con_pe', 'con_peg', 'con_roe', 'con_or_yoy', 'con_np_yoy', 'con_npcgrate_2y'
+)
+$columns = @(foreach ($family in $families) {
+  foreach ($suffix in @('fy0', 'fy1', 'fy2', 'fy3')) { "${family}_${suffix}" }
+})
+$columns += @('con_npgrate_1w', 'con_npgrate_4w', 'con_npgrate_13w', 'con_npgrate_26w', 'con_npgrate_52w')
+
+cargo run --release --manifest-path factor_engine/Cargo.toml -- derive-consensus `
+  --start-date $startDate --end-date $endDate `
+  --columns ($columns -join ',') --date-batch-size 120 --overwrite true
+if ($LASTEXITCODE -ne 0) { throw 'Consensus regeneration failed; do not rebuild factors yet.' }
+
+cargo run --release --manifest-path factor_engine/Cargo.toml -- run `
+  --asset stock --frequency daily --start-date $startDate --end-date $endDate `
+  --factors equity_duration --date-batch-size 120 --profile
+if ($LASTEXITCODE -ne 0) { throw 'Equity duration regeneration failed.' }
 ```
 
 ## Annual Metrics / 年度指标

@@ -32,10 +32,10 @@ impl Factor for StockDailyEquityDuration {
             name: "Negative Implied Equity Duration".into(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.2.0".into(),
+            version: "0.2.1".into(),
             tags: ["XYZQ", "fundamental", "analyst", "financial", "consensus", "valuation", "pit", "size_neutralize", "sector_neutralize", "daily"]
                 .into_iter().map(str::to_string).collect(),
-            description: "Negative residual-income equity duration using strictly three consensus periods FY0/FY1/FY2; all three must be finite, with no two-period fallback. All monetary totals in wan yuan. Payout=implemented LTM cash dividends / latest PIT parent profit TTM; positive current/recursive equity and TTM profit required. Terminal residual income stays constant. Require a unique positive implied discount rate above 0.0001; central price sensitivity at +/-0.0001. SW level-1 and Barra SIZE neutralization; no winsorization or zscore; excludes BJ.".into(),
+            description: "Negative residual-income equity duration using strictly three consensus periods FY0/FY1/FY2 with a PIT annual-disclosure anchor and May 1 fallback; all three must be finite, with no two-period fallback. All monetary totals in wan yuan. Payout=implemented LTM cash dividends / latest PIT parent profit TTM; positive current/recursive equity and TTM profit required. Terminal residual income stays constant. Require a unique positive implied discount rate above 0.0001; central price sensitivity at +/-0.0001. SW level-1 and Barra SIZE neutralization; no winsorization or zscore; excludes BJ.".into(),
             dependencies: vec![
                 DataRequest::financial_quarters(DatasetId::StockIncome, &[PROFIT], 4),
                 DataRequest::financial_quarters(DatasetId::StockBalanceSheet, &[EQUITY], 4),

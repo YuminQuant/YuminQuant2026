@@ -23,6 +23,7 @@ const FORECAST_CARRY_DAYS: i32 = 183;
 const NP_HISTORY_DAYS: i32 = 370;
 const STRICT_FORECAST_INSTITUTIONS: usize = 6;
 const EPS: f64 = 1e-12;
+const YUAN_PER_WAN: f64 = 10_000.0;
 
 #[derive(Clone, Debug)]
 pub struct AnalystConsensusRequest {
@@ -761,6 +762,15 @@ enum BaseMetric {
 }
 
 impl BaseMetric {
+    // Raw forecasts are already in wan yuan; normalize only PIT monetary actuals.
+    fn actual_to_consensus_units(self, value: f64) -> Option<f64> {
+        let value = clean_value(value)?;
+        clean_value(match self {
+            Self::OperatingRevenue | Self::NetProfit => value / YUAN_PER_WAN,
+            Self::Eps => value,
+        })
+    }
+
     fn actual_column(self) -> &'static str {
         match self {
             Self::OperatingRevenue => "revenue",
@@ -1007,7 +1017,7 @@ fn actual_annual_value(
         .income()
         .record_for_end_date(ts_code, trade_date, end_date)?
         .column(metric.actual_column())
-        .and_then(clean_value)
+        .and_then(|value| metric.actual_to_consensus_units(value))
 }
 
 fn compute_con_na(
@@ -1022,7 +1032,7 @@ fn compute_con_na(
         .record_for_end_date(ts_code, trade_date, end_date)?
         .column("total_hldr_eqy_exc_min_int")
         .and_then(clean_positive_value)?;
-    Some(equity + con_np?)
+    clean_value(equity / YUAN_PER_WAN + con_np?)
 }
 
 fn forecast_consensus(
@@ -1671,6 +1681,114 @@ fn civil_from_days(days: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analyst_consensus_monetary_actuals_are_wan_yuan_but_eps_is_yuan() {
+        assert_eq!(
+            BaseMetric::NetProfit.actual_to_consensus_units(1_440_000.0),
+            Some(144.0)
+        );
+        assert_eq!(
+            BaseMetric::OperatingRevenue.actual_to_consensus_units(-1_000_000.0),
+            Some(-100.0)
+        );
+        assert_eq!(BaseMetric::Eps.actual_to_consensus_units(2.0), Some(2.0));
+        assert_eq!(
+            BaseMetric::NetProfit.actual_to_consensus_units(f64::INFINITY),
+            None
+        );
+    }
+
+    #[test]
+    fn analyst_consensus_forecast_actual_transition_keeps_units_and_valuation() {
+        let income = Table::new(BTreeMap::from([
+            (
+                "ts_code".into(),
+                ColumnData::Utf8(vec![Some("000001.SZ".into()); 2]),
+            ),
+            (
+                "end_date".into(),
+                ColumnData::I32(vec![Some(20221231), Some(20241231)]),
+            ),
+            (
+                "ann_date".into(),
+                ColumnData::I32(vec![Some(20230301), Some(20250401)]),
+            ),
+            (
+                "f_ann_date".into(),
+                ColumnData::I32(vec![Some(20230301), Some(20250401)]),
+            ),
+            ("report_type".into(), ColumnData::I64(vec![Some(1); 2])),
+            ("update_flag".into(), ColumnData::I64(vec![Some(0); 2])),
+            (
+                "revenue".into(),
+                ColumnData::F64(vec![Some(8_000_000.0), Some(10_000_000.0)]),
+            ),
+            (
+                "n_income_attr_p".into(),
+                ColumnData::F64(vec![Some(1_000_000.0), Some(1_440_000.0)]),
+            ),
+            (
+                "basic_eps".into(),
+                ColumnData::F64(vec![Some(1.0), Some(2.0)]),
+            ),
+        ]))
+        .unwrap();
+        let balance = Table::new(BTreeMap::from([
+            (
+                "ts_code".into(),
+                ColumnData::Utf8(vec![Some("000001.SZ".into())]),
+            ),
+            ("end_date".into(), ColumnData::I32(vec![Some(20241231)])),
+            ("ann_date".into(), ColumnData::I32(vec![Some(20250301)])),
+            ("f_ann_date".into(), ColumnData::I32(vec![Some(20250301)])),
+            ("report_type".into(), ColumnData::I64(vec![Some(1)])),
+            ("update_flag".into(), ColumnData::I64(vec![Some(0)])),
+            (
+                "total_hldr_eqy_exc_min_int".into(),
+                ColumnData::F64(vec![Some(20_000_000.0)]),
+            ),
+        ]))
+        .unwrap();
+        let financial = ConsensusFinancialData {
+            income_index: Arc::new(FinancialPitIndex::from_table(Arc::new(income)).unwrap()),
+            balance_index: Arc::new(FinancialPitIndex::from_table(Arc::new(balance)).unwrap()),
+            needs: Needs::all(),
+        };
+        let mut state = AnalystConsensusState::default();
+        state.ingest_row(&AnalystRow {
+            ts_code: "000001.SZ".into(),
+            report_date: 20250301,
+            org_name: "org".into(),
+            create_time: None,
+            forecast_year: 2024,
+            op_rt: Some(1000.0),
+            np: Some(144.0),
+            eps: Some(2.0),
+            rating_strength: None,
+            min_price: None,
+        });
+        for date in [20250315, 20250402] {
+            let annual = compute_annual_consensus(
+                "000001.SZ",
+                date,
+                2024,
+                Some(40.0),
+                &mut state,
+                &financial,
+            );
+            assert_eq!(annual.net_profit.value, Some(144.0));
+            assert_eq!(annual.operating_revenue.value, Some(1000.0));
+            assert_eq!(annual.eps.value, Some(2.0));
+            assert_eq!(annual.net_assets, Some(2144.0));
+            assert_eq!(annual.pe, Some(20.0));
+            assert!((annual.pb.unwrap() - 2880.0 / 2144.0).abs() < 1e-12);
+            assert!((annual.ps.unwrap() - 2.88).abs() < 1e-12);
+            assert!((annual.roe.unwrap() - 100.0 * 144.0 / 2144.0).abs() < 1e-12);
+            assert!((annual.npcgrate_2y.unwrap() - 20.0).abs() < 1e-10);
+            assert!((annual.peg.unwrap() - 1.0).abs() < 1e-10);
+        }
+    }
 
     #[test]
     fn analyst_consensus_fiscal_years_switch_on_may_first() {

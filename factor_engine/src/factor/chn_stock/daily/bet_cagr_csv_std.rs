@@ -36,7 +36,7 @@ impl Factor for StockDailyBetCagrCsvStd {
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: "0.1.0".into(),
-            tags: ["HAZQ", "fundamental", "financial", "consensus", "valuation", "pit", "size_neutralize", "sector_neutralize", "daily"]
+            tags: ["HAZQ", "fundamental", "analyst", "financial", "consensus", "valuation", "pit", "size_neutralize", "sector_neutralize", "daily"]
                 .into_iter().map(str::to_string).collect(),
             description: "Daily BET uses g=min(consensus two-year growth / 100, PIT parent net-profit TTM YoY with absolute base). BET=ln1p(g*pe_ttm)/ln1p(g), with BET=pe_ttm at zero growth; positive PE and valid logarithms required. Apply 252-trading-day population z-score including today, min_periods=60, then SW level-1 and Barra SIZE neutralization. Lower is cheaper; no sign flip, fills or winsorization; excludes BJ.".into(),
             dependencies: vec![

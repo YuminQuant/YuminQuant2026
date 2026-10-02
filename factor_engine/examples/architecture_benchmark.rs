@@ -17,6 +17,7 @@ fn main() -> yq_factor_engine::Result<()> {
     engine.write_metadata()?;
     let start = Instant::now();
     let report = engine.run(&RunRequest {
+        include_deprecated: false,
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
         start_date: args[2].parse().unwrap(),

@@ -476,9 +476,44 @@ pub fn all_outputs() -> Vec<HazqComparableValueOutput> {
         .collect()
 }
 
+#[cfg(test)]
+#[test]
+fn hazq_comparable_analyst_tag_is_output_specific() {
+    let mut analyst_count = 0;
+    let mut active_count = 0;
+    for output in all_outputs() {
+        let spec = spec(output);
+        let expected = output.base == HazqComparableBase::EpFttm
+            || matches!(
+                output.component,
+                HazqComparableComponent::GapAvg | HazqComparableComponent::GapMmm
+            );
+        assert_eq!(
+            spec.tags.iter().any(|tag| tag == "analyst"),
+            expected,
+            "{}",
+            spec.id
+        );
+        if expected {
+            analyst_count += 1;
+            active_count += usize::from(!output.is_deprecated());
+            assert!(spec.tags.iter().any(|tag| tag == "fundamental"));
+        }
+    }
+    assert_eq!(analyst_count, 29);
+    assert_eq!(active_count, 16);
+}
+
 pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
     let id = output.id();
     let mut output_tags = tags();
+    let dependencies = dependencies_for_output(output);
+    if dependencies
+        .iter()
+        .any(|request| request.dataset == DatasetId::StockConsensus)
+    {
+        output_tags.push("analyst".to_string());
+    }
     if output.is_deprecated() {
         output_tags.push("deprecated".to_string());
     }
@@ -502,7 +537,7 @@ pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
             output.base.alias(),
             output.component.alias()
         ),
-        dependencies: dependencies_for_output(output),
+        dependencies,
         intraday_raw_dependencies: Vec::new(),
         lookback: Lookback {
             trading_days: LOOKBACK,

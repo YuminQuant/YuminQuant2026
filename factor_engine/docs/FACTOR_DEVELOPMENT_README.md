@@ -489,6 +489,10 @@ Note: backtest CLI `sector` means Shenwan level-1 sector. In factor code, state 
 
 不再推荐使用的因子不要删除 `.rs` 文件，给 metadata tags 增加 `deprecated`，这样 `--all-factors` 和 `--tags` 默认跳过。
 
+需要历史修复时，`run/plan --factors id1,id2 --include-deprecated` 可显式允许指定列表中的
+deprecated 因子。该开关不可与 `--tags` 或无明确 ID 的批量选择组合；默认仍禁止生产
+deprecated 因子，不改变 metadata 的标签或回测选择规则。
+
 Do not delete old factor source files just to retire them. Add the `deprecated` tag so broad selections skip them.
 
 从正式因子库或外部 alpha root 删除历史列：

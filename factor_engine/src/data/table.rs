@@ -148,12 +148,14 @@ impl ColumnData {
 
     pub fn to_arrow(&self) -> ArrayRef {
         match self {
-            Self::Utf8(values) => Arc::new(StringArray::from(values.clone())),
-            Self::I32(values) => Arc::new(Int32Array::from(values.clone())),
-            Self::I64(values) => Arc::new(Int64Array::from(values.clone())),
-            Self::F32(values) => Arc::new(Float32Array::from(values.clone())),
-            Self::F64(values) => Arc::new(Float64Array::from(values.clone())),
-            Self::Bool(values) => Arc::new(BooleanArray::from(values.clone())),
+            Self::Utf8(values) => {
+                Arc::new(StringArray::from_iter(values.iter().map(|v| v.as_deref())))
+            }
+            Self::I32(values) => Arc::new(Int32Array::from_iter(values.iter().copied())),
+            Self::I64(values) => Arc::new(Int64Array::from_iter(values.iter().copied())),
+            Self::F32(values) => Arc::new(Float32Array::from_iter(values.iter().copied())),
+            Self::F64(values) => Arc::new(Float64Array::from_iter(values.iter().copied())),
+            Self::Bool(values) => Arc::new(BooleanArray::from_iter(values.iter().copied())),
         }
     }
 

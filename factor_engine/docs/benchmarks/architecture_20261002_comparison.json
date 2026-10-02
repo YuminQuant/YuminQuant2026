@@ -1,0 +1,50 @@
+[
+  {
+    "case": "fresh",
+    "repeat": 1,
+    "files": 20,
+    "compared_cells": 1097870,
+    "byte_identical_files": 20,
+    "exact_values": true
+  },
+  {
+    "case": "fresh",
+    "repeat": 2,
+    "files": 20,
+    "compared_cells": 1097870,
+    "byte_identical_files": 20,
+    "exact_values": true
+  },
+  {
+    "case": "fresh",
+    "repeat": 3,
+    "files": 20,
+    "compared_cells": 1097870,
+    "byte_identical_files": 20,
+    "exact_values": true
+  },
+  {
+    "case": "existing",
+    "repeat": 1,
+    "files": 20,
+    "compared_cells": 45232244,
+    "byte_identical_files": 20,
+    "exact_values": true
+  },
+  {
+    "case": "existing",
+    "repeat": 2,
+    "files": 20,
+    "compared_cells": 45232244,
+    "byte_identical_files": 20,
+    "exact_values": true
+  },
+  {
+    "case": "existing",
+    "repeat": 3,
+    "files": 20,
+    "compared_cells": 45232244,
+    "byte_identical_files": 20,
+    "exact_values": true
+  }
+]

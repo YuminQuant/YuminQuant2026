@@ -1,4 +1,5 @@
 factor_id = "bar_gru_15m"
+tags = ["deprecated"]
 data_root = "data"
 
 [output]

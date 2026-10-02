@@ -169,6 +169,7 @@ impl OutputPlan {
         let snapshot = market.snapshot(date);
         let mut values = vec![Vec::with_capacity(snapshot.rows.len()); self.outputs.len()];
         for row in &snapshot.rows {
+            let years = fiscal_years(date, &row.ts_code, financial);
             let mut eval = Evaluator {
                 code: &row.ts_code,
                 date,
@@ -180,10 +181,10 @@ impl OutputPlan {
             };
             for ((_, output), column) in self.outputs.iter().zip(&mut values) {
                 let value = match *output {
-                    Output::Annual(m, i) => eval.annual(m, fiscal_years(date)[i]),
+                    Output::Annual(m, i) => eval.annual(m, years[i]),
                     Output::Roll(m) => eval.roll(m),
                     Output::Revision(days) => {
-                        let current = eval.annual(Metric::Profit, fiscal_years(date)[0]);
+                        let current = eval.annual(Metric::Profit, years[0]);
                         yoy(
                             current,
                             eval.state
@@ -525,6 +526,116 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn analyst_consensus_disclosure_anchor_full_partial_and_roll_agree() {
+        // A publishes early; B has a visible Q1 but a delayed annual report.
+        // Null metrics still constitute disclosure. f_ann_date takes precedence.
+        let income = Table::new(BTreeMap::from([
+            (
+                "ts_code".into(),
+                ColumnData::Utf8(vec![
+                    Some("600000.SH".into()),
+                    Some("000001.SZ".into()),
+                    Some("000001.SZ".into()),
+                ]),
+            ),
+            (
+                "end_date".into(),
+                ColumnData::I32(vec![Some(20251231), Some(20251231), Some(20260331)]),
+            ),
+            (
+                "ann_date".into(),
+                ColumnData::I32(vec![Some(20260301), Some(20260510), Some(20260420)]),
+            ),
+            (
+                "f_ann_date".into(),
+                ColumnData::I32(vec![Some(20260320), None, None]),
+            ),
+            ("report_type".into(), ColumnData::I64(vec![Some(1); 3])),
+            ("update_flag".into(), ColumnData::I64(vec![Some(0); 3])),
+            ("n_income_attr_p".into(), ColumnData::F64(vec![None; 3])),
+        ]))
+        .unwrap();
+        let index = Arc::new(FinancialPitIndex::from_table(Arc::new(income)).unwrap());
+        for (date, bases) in [
+            (20260319, [2024, 2024]),
+            (20260320, [2025, 2024]),
+            (20260430, [2025, 2024]),
+            (20260501, [2025, 2025]),
+            (20270101, [2025, 2025]),
+        ] {
+            let (market, mut financial, mut state) = fixture(date);
+            let baseline =
+                build_consensus_table_for_date(date, &market, &financial, &mut state.clone())
+                    .unwrap();
+            financial.income_index = index.clone();
+            // Synthetic per-calendar-year values stay fixed; only FY labels change.
+            for (key, snapshot) in &mut state.annual_base_snapshots {
+                snapshot.marker =
+                    annual_base_snapshot_marker(&key.ts_code, date, key.year, &financial);
+            }
+            for (code, base) in ["600000.SH", "000001.SZ"].into_iter().zip(bases) {
+                assert_eq!(
+                    fiscal_years(date, code, &financial),
+                    [base, base + 1, base + 2, base + 3]
+                );
+            }
+            let full =
+                build_consensus_table_for_date(date, &market, &financial, &mut state.clone())
+                    .unwrap();
+            let names = full
+                .columns
+                .keys()
+                .filter(|s| s.as_str() != "trade_date" && s.as_str() != "ts_code")
+                .cloned()
+                .collect::<Vec<_>>();
+            for name in &names {
+                let single = OutputPlan::new(&[name.clone()])
+                    .unwrap()
+                    .build(date, &market, &financial, &mut state.clone())
+                    .unwrap();
+                assert_eq!(
+                    single.required_f64_cast(name).unwrap(),
+                    full.required_f64_cast(name).unwrap(),
+                    "{date} {name}"
+                );
+                if name.ends_with("_roll")
+                    || name == "con_rating_strength"
+                    || name == "con_target_price"
+                {
+                    assert_eq!(
+                        full.required_f64_cast(name).unwrap(),
+                        baseline.required_f64_cast(name).unwrap(),
+                        "unchanged {date} {name}"
+                    );
+                }
+            }
+            for i in 0..4 {
+                let values = full.required_f64_cast(&format!("con_np_fy{i}")).unwrap();
+                for (value, base) in values.into_iter().zip(bases) {
+                    assert_eq!(value, Some(((base + i - 2018) as f64).powi(2) * 10.0));
+                }
+            }
+            // History retains each observation date's own FY0 (existing revision convention).
+            let previous_date = 20260319;
+            let previous_base = fiscal_years(previous_date, "600000.SH", &financial)[0];
+            state.remember_np_fy0(
+                previous_date,
+                HashMap::from([(
+                    "600000.SH".into(),
+                    ((previous_base - 2018) as f64).powi(2) * 10.0,
+                )]),
+            );
+            if date == 20260320 {
+                let revisions = compute_np_grates("600000.SH", 20260326, &state, Some(490.0));
+                assert!(
+                    (revisions.con_npgrate_1w.unwrap() - 100.0 * (490.0 - 360.0) / 360.0).abs()
+                        < 1e-10
+                );
             }
         }
     }

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -85,3 +86,29 @@ def test_ic_decay_report_adds_approximate_multi_day_ic() -> None:
     assert len(decay) == 20
     assert math.isclose(approx_5d, 0.05 / math.sqrt(5))
     assert math.isclose(approx_20d, 0.20 / math.sqrt(20))
+
+
+def test_all_missing_returns_keep_queryable_portfolios_without_fake_performance() -> None:
+    returns = pd.DataFrame({
+        "trade_date": [20260105, 20260105, 20260105],
+        "portfolio": ["group_1", "group_10", "long_short"],
+        "return": [np.nan, np.nan, np.inf],
+        "excess_return": [np.nan, np.nan, np.nan],
+    })
+    with pytest.warns(RuntimeWarning, match="No finite portfolio returns"):
+        report = make_backtest_report(returns)
+    selected = report["excess_total"].query("portfolio == 'group_10' or portfolio == 'group_1'")
+    assert len(selected) == 2
+    assert selected["observations"].eq(0).all()
+    assert selected["annual_return(%)"].isna().all()
+    assert report["portfolio_total"]["annual_return(%)"].isna().all()
+
+
+@pytest.mark.parametrize("returns", [None, pd.DataFrame(), pd.DataFrame({
+    "trade_date": [20260105], "portfolio": ["group_1"], "return": [0.01],
+})])
+def test_unavailable_excess_report_preserves_query_schema(returns) -> None:
+    report = make_backtest_report(returns)
+    for name in ("excess_total", "excess_by_year"):
+        assert report[name].query("portfolio == 'group_1'").empty
+        assert "annual_return(%)" in report[name].columns

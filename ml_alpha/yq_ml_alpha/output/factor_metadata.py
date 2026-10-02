@@ -55,6 +55,7 @@ def _read_existing(path: Path) -> pd.DataFrame:
 
 def _metadata_row(config: MlAlphaConfig, factor_id: str) -> dict[str, str]:
     tags = ["e2e", "model_generated"]
+    tags.extend(tag for tag in config.tags if tag not in tags)
     model_name = str(config.model.name)
     if model_name:
         tags.append(model_name)

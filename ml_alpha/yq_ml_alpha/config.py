@@ -141,6 +141,7 @@ class MlAlphaConfig:
     model: ModelConfig
     output: OutputConfig
     factor_id: str | None = None
+    tags: tuple[str, ...] = ()
     data_root: Path = Path("data")
     output_root: Path = Path("data/models")
 
@@ -264,6 +265,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             write_metadata=bool(output.get("write_metadata", True)),
         ),
         factor_id=factor_id,
+        tags=tuple(raw.get("tags", [])),
         data_root=data_root,
         output_root=output_root,
     )

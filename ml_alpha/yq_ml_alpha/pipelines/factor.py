@@ -48,7 +48,7 @@ def metadata_only(config_paths: list[str | Path] | None = None, config_dir: str 
     written: list[Path] = []
     seen: set[Path] = set()
     for path in paths:
-        metadata_path = write_factor_metadata(_load_factor_config(path))
+        metadata_path = write_factor_metadata(_load_factor_config(path, allow_deprecated=True))
         if metadata_path is not None and metadata_path not in seen:
             written.append(metadata_path)
             seen.add(metadata_path)
@@ -263,13 +263,15 @@ def _new_writer(config: MlAlphaConfig) -> DailyWideWriter:
     )
 
 
-def _load_factor_config(config_path: str | Path) -> MlAlphaConfig:
+def _load_factor_config(config_path: str | Path, *, allow_deprecated: bool = False) -> MlAlphaConfig:
     config = load_config(config_path)
-    _ensure_factor_config(config)
+    _ensure_factor_config(config, allow_deprecated=allow_deprecated)
     return config
 
 
-def _ensure_factor_config(config: MlAlphaConfig) -> None:
+def _ensure_factor_config(config: MlAlphaConfig, *, allow_deprecated: bool = False) -> None:
+    if "deprecated" in config.tags and not allow_deprecated:
+        raise ValueError(f"deprecated factor cannot be generated: {config.factor_id}")
     if config.output.kind != "factor" or config.factor_id is None:
         raise ValueError("factor pipeline requires factor_id and output.kind='factor'")
     if config.output.id != config.factor_id:

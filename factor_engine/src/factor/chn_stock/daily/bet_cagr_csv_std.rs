@@ -397,6 +397,7 @@ mod tests {
     fn bet_cagr_csv_std_spec_has_no_pv_anchor() {
         let spec = StockDailyBetCagrCsvStd.spec();
         assert_eq!(spec.id, "bet_cagr_csv_std");
+        assert!(!spec.tags.iter().any(|tag| tag == "deprecated"));
         assert!(spec.aliases.contains(&"BET_CAGR_CSV_STD".into()));
         assert_eq!(spec.lookback.trading_days, 251);
         for tag in ["HAZQ", "fundamental"] {

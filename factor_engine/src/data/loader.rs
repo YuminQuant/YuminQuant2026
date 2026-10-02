@@ -510,9 +510,15 @@ impl MarketDataLoader {
         );
         let mut table = Table::empty();
         for file in files {
-            let yearly = cache.load_year(DatasetId::StockMainBusiness, file, &columns)?;
-            let filtered = filter_main_business_range(&yearly, end_date)?;
-            table.append(&filtered)?;
+            let yearly = cache.load_year_source(DatasetId::StockMainBusiness, file, &columns)?;
+            append_disclosure_range(
+                &mut table,
+                &yearly,
+                &columns,
+                "end_date",
+                i32::MIN,
+                end_date,
+            )?;
         }
         if table.columns.is_empty() {
             return empty_disclosure_table(&columns);
@@ -548,9 +554,15 @@ impl MarketDataLoader {
         );
         let mut table = Table::empty();
         for file in files {
-            let yearly = cache.load_year(DatasetId::StockAnalystReport, file, &columns)?;
-            let filtered = filter_analyst_report_range(&yearly, end_date)?;
-            table.append(&filtered)?;
+            let yearly = cache.load_year_source(DatasetId::StockAnalystReport, file, &columns)?;
+            append_disclosure_range(
+                &mut table,
+                &yearly,
+                &columns,
+                "report_date",
+                i32::MIN,
+                end_date,
+            )?;
         }
         if table.columns.is_empty() {
             return empty_disclosure_table(&columns);
@@ -574,9 +586,15 @@ impl MarketDataLoader {
                 .daily_year_files(DatasetId::StockAnalystReport, start_date, end_date);
         let mut table = Table::empty();
         for file in files {
-            let yearly = cache.load_year(DatasetId::StockAnalystReport, file, &columns)?;
-            let filtered = filter_analyst_report_between(&yearly, start_date, end_date)?;
-            table.append(&filtered)?;
+            let yearly = cache.load_year_source(DatasetId::StockAnalystReport, file, &columns)?;
+            append_disclosure_range(
+                &mut table,
+                &yearly,
+                &columns,
+                "report_date",
+                start_date,
+                end_date,
+            )?;
         }
         if table.columns.is_empty() {
             return empty_disclosure_table(&columns);
@@ -865,28 +883,34 @@ fn filter_dividend_range(table: &Table, end_date: i32) -> Result<Table> {
     table.take(&indices)
 }
 
-fn filter_main_business_range(table: &Table, end_date: i32) -> Result<Table> {
-    let end_dates = table.required_i32_date_cast("end_date")?;
-    let indices = (0..table.len)
-        .filter(|idx| end_dates[*idx].is_some_and(|date| date <= end_date))
+fn append_disclosure_range(
+    target: &mut Table,
+    source: &Table,
+    columns: &[String],
+    date_column: &str,
+    start_date: i32,
+    end_date: i32,
+) -> Result<()> {
+    for name in columns {
+        if !source.columns.contains_key(name) {
+            return Err(err(format!("missing cached disclosure column {name}")));
+        }
+    }
+    let dates = source.required_i32_date_cast(date_column)?;
+    let indices = (0..source.len)
+        .filter(|idx| dates[*idx].is_some_and(|date| date >= start_date && date <= end_date))
         .collect::<Vec<_>>();
-    table.take(&indices)
-}
-
-fn filter_analyst_report_range(table: &Table, end_date: i32) -> Result<Table> {
-    let report_dates = table.required_i32_date_cast("report_date")?;
-    let indices = (0..table.len)
-        .filter(|idx| report_dates[*idx].is_some_and(|date| date <= end_date))
-        .collect::<Vec<_>>();
-    table.take(&indices)
-}
-
-fn filter_analyst_report_between(table: &Table, start_date: i32, end_date: i32) -> Result<Table> {
-    let report_dates = table.required_i32_date_cast("report_date")?;
-    let indices = (0..table.len)
-        .filter(|idx| report_dates[*idx].is_some_and(|date| date >= start_date && date <= end_date))
-        .collect::<Vec<_>>();
-    table.take(&indices)
+    // Keep at most one temporary column, not a projected yearly and filtered table.
+    for name in columns {
+        let selected = source.columns[name].take(&indices);
+        if let Some(column) = target.columns.get_mut(name) {
+            column.append(&selected)?;
+        } else {
+            target.columns.insert(name.clone(), selected);
+        }
+    }
+    target.len += indices.len();
+    Ok(())
 }
 
 fn with_required_columns(requested: &[String], required: &[&str]) -> Vec<String> {
@@ -929,6 +953,58 @@ mod tests {
             financial_disclosure_years_for_range(20260507, 20261102, 8),
             BTreeSet::from([2023, 2024, 2025, 2026])
         );
+    }
+
+    #[test]
+    fn disclosure_column_append_filters_projects_and_preserves_nulls() {
+        let source = Table::new(BTreeMap::from([
+            (
+                "report_date".into(),
+                ColumnData::I32(vec![Some(20260101), Some(20260102), Some(20260103)]),
+            ),
+            (
+                "eps".into(),
+                ColumnData::F64(vec![Some(1.0), None, Some(3.0)]),
+            ),
+            ("unused".into(), ColumnData::F64(vec![Some(9.0); 3])),
+        ]))
+        .unwrap();
+        let columns = vec!["report_date".into(), "eps".into()];
+        let mut target = Table::empty();
+        append_disclosure_range(
+            &mut target,
+            &source,
+            &columns,
+            "report_date",
+            20260102,
+            20260102,
+        )
+        .unwrap();
+        append_disclosure_range(
+            &mut target,
+            &source,
+            &columns,
+            "report_date",
+            20260103,
+            20260103,
+        )
+        .unwrap();
+        assert_eq!(target.len, 2);
+        assert_eq!(
+            target.required_f64_cast("eps").unwrap(),
+            vec![None, Some(3.0)]
+        );
+        assert!(!target.columns.contains_key("unused"));
+        assert!(append_disclosure_range(
+            &mut target,
+            &source,
+            &["missing".into()],
+            "report_date",
+            0,
+            i32::MAX
+        )
+        .is_err());
+        assert_eq!(target.len, 2);
     }
 
     #[test]

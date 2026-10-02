@@ -252,27 +252,33 @@ impl HazqComparableValueOutput {
         use HazqComparableComponent::*;
 
         match self.base {
-            Bp => matches!(self.component, Avg | Weighted | Max | Min | Med | Wgt2),
+            Bp => matches!(
+                self.component,
+                Avg | Weighted | Max | Min | Med | Wgt2 | GapAvg
+            ),
             Dp => matches!(self.component, Avg | Weighted | Max | Min | Med | Wgt2),
             Ebit2Ev => matches!(
                 self.component,
-                Avg | Weighted | Max | Med | Wgt | Wgt2 | Prm | PrmZscore
+                Avg | Weighted | Max | Med | Wgt | Wgt2 | Prm | PrmZscore | GapAvg
             ),
             Ep => matches!(
                 self.component,
-                Avg | Weighted | Max | Min | Med | Wgt | Wgt2
+                Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | GapAvg | GapMmm
             ),
-            EpQ => matches!(self.component, Avg | Weighted | Max | Min | Med),
-            Ocfp => matches!(self.component, Avg | Weighted | Max | Min | Med | Wgt2),
+            EpQ => matches!(self.component, Avg | Weighted | Max | Min | Med | GapMmm),
+            Ocfp => matches!(
+                self.component,
+                Avg | Weighted | Max | Min | Med | Wgt2 | GapAvg | GapMmm
+            ),
             Sales2Ev => matches!(
                 self.component,
-                Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore
+                Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore | GapAvg | GapMmm
             ),
             EpPercentile => matches!(
                 self.component,
                 Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | Prm | PrmZscore
             ),
-            EpFttm => matches!(self.component, Avg | Weighted | Max | Min | Med),
+            EpFttm => matches!(self.component, Avg | Weighted | Max | Min | Med | GapMmm),
         }
     }
 }
@@ -498,7 +504,7 @@ fn hazq_comparable_analyst_tag_is_output_specific() {
         }
     }
     assert_eq!(analyst_count, 29);
-    assert_eq!(active_count, 24);
+    assert_eq!(active_count, 14);
 }
 
 pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
@@ -2021,15 +2027,29 @@ mod tests {
     }
 
     #[test]
-    fn hazq_comparable_all_growth_gap_outputs_are_active() {
+    fn hazq_comparable_growth_gap_screen_retains_eight_outputs() {
+        let retained = [
+            "comp_bp_gap_mmm",
+            "comp_dp_gap_avg",
+            "comp_dp_gap_mmm",
+            "comp_ebit2ev_gap_mmm",
+            "comp_ep_q_gap_avg",
+            "comp_ep_percentile_gap_avg",
+            "comp_ep_percentile_gap_mmm",
+            "comp_ep_fttm_gap_avg",
+        ];
         for base in BASES {
             for component in [
                 HazqComparableComponent::GapAvg,
                 HazqComparableComponent::GapMmm,
             ] {
                 let output = HazqComparableValueOutput::new(base, component);
-                assert!(!output.is_deprecated(), "{}", output.id());
-                assert!(!spec(output).tags.iter().any(|tag| tag == "deprecated"));
+                let deprecated = !retained.contains(&output.id().as_str());
+                assert_eq!(output.is_deprecated(), deprecated, "{}", output.id());
+                assert_eq!(
+                    spec(output).tags.iter().any(|tag| tag == "deprecated"),
+                    deprecated
+                );
             }
         }
     }
@@ -2037,6 +2057,16 @@ mod tests {
     #[test]
     fn hazq_comparable_marks_only_rejected_outputs_deprecated() {
         let expected = [
+            "comp_bp_gap_avg",
+            "comp_ebit2ev_gap_avg",
+            "comp_ep_gap_avg",
+            "comp_ep_gap_mmm",
+            "comp_ep_q_gap_mmm",
+            "comp_ocfp_gap_avg",
+            "comp_ocfp_gap_mmm",
+            "comp_sales2ev_gap_avg",
+            "comp_sales2ev_gap_mmm",
+            "comp_ep_fttm_gap_mmm",
             "comp_ep_wgt",
             "comp_bp_wgt2",
             "comp_ep_wgt2",
@@ -2105,7 +2135,7 @@ mod tests {
             .map(HazqComparableValueOutput::id)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(actual.len(), 58);
+        assert_eq!(actual.len(), 68);
         assert_eq!(actual, expected);
         for output in all_outputs() {
             assert_eq!(

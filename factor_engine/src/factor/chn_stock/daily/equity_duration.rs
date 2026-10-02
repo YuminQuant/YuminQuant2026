@@ -14,7 +14,7 @@ use crate::factor::{Factor, FactorUpdatePolicy};
 
 const EQUITY: &str = "total_hldr_eqy_exc_min_int";
 const PROFIT: &str = "n_income_attr_p";
-const FORECASTS: [&str; 3] = ["con_np_fy1", "con_np_fy2", "con_np_fy3"];
+const FORECASTS: [&str; 3] = ["con_np_fy0", "con_np_fy1", "con_np_fy2"];
 const YUAN_PER_WAN: f64 = 10_000.0;
 const RATE_STEP: f64 = 0.0001;
 
@@ -32,10 +32,10 @@ impl Factor for StockDailyEquityDuration {
             name: "Negative Implied Equity Duration".into(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.1.0".into(),
+            version: "0.2.0".into(),
             tags: ["XYZQ", "fundamental", "analyst", "financial", "consensus", "valuation", "pit", "size_neutralize", "sector_neutralize", "daily"]
                 .into_iter().map(str::to_string).collect(),
-            description: "Negative residual-income equity duration using consensus FY1/FY2/FY3 (FY0 is the base year); use two years only when FY3 is unavailable. All monetary totals in wan yuan. Payout=implemented LTM cash dividends / latest PIT parent profit TTM; positive current/recursive equity and TTM profit required. Terminal residual income stays constant. Require a unique positive implied discount rate above 0.0001; central price sensitivity at +/-0.0001. SW level-1 and Barra SIZE neutralization; no winsorization or zscore; excludes BJ.".into(),
+            description: "Negative residual-income equity duration using strictly three consensus periods FY0/FY1/FY2; all three must be finite, with no two-period fallback. All monetary totals in wan yuan. Payout=implemented LTM cash dividends / latest PIT parent profit TTM; positive current/recursive equity and TTM profit required. Terminal residual income stays constant. Require a unique positive implied discount rate above 0.0001; central price sensitivity at +/-0.0001. SW level-1 and Barra SIZE neutralization; no winsorization or zscore; excludes BJ.".into(),
             dependencies: vec![
                 DataRequest::financial_quarters(DatasetId::StockIncome, &[PROFIT], 4),
                 DataRequest::financial_quarters(DatasetId::StockBalanceSheet, &[EQUITY], 4),
@@ -202,7 +202,6 @@ fn raw_duration(
 
 struct Valuation {
     earnings: [f64; 3],
-    years: usize,
     payout: f64,
 }
 
@@ -214,20 +213,16 @@ impl Valuation {
             return None;
         }
         let forecasts = forecasts.map(|value| value.filter(|v| v.is_finite()));
-        let first = forecasts[0]?;
-        let second = forecasts[1]?;
-        let years = if forecasts[2].is_some() { 3 } else { 2 };
-        let earnings = [first, second, forecasts[2].unwrap_or(0.0)];
+        let earnings = [forecasts[0]?, forecasts[1]?, forecasts[2]?];
         let mut book = equity;
-        for earning in &earnings[..years - 1] {
+        for earning in &earnings[..2] {
             book = positive(book + earning * (1.0 - payout))?;
         }
         let earnings = earnings.map(|earning| earning / cap);
-        earnings.iter().all(|e| e.is_finite()).then_some(Self {
-            earnings,
-            years,
-            payout,
-        })
+        earnings
+            .iter()
+            .all(|e| e.is_finite())
+            .then_some(Self { earnings, payout })
     }
 
     fn price_ratio(&self, rate: f64) -> Option<f64> {
@@ -235,52 +230,34 @@ impl Valuation {
         // Clean-surplus telescoping of the residual-income formula avoids subtracting
         // large book values: early dividends + terminal earnings perpetuity.
         let q = 1.0 + rate;
-        let value = if self.years == 2 {
-            (self.payout * self.earnings[0] + self.earnings[1] / rate) / q
-        } else {
-            self.payout * self.earnings[0] / q
-                + (self.payout * self.earnings[1] + self.earnings[2] / rate) / (q * q)
-        };
+        let value = self.payout * self.earnings[0] / q
+            + (self.payout * self.earnings[1] + self.earnings[2] / rate) / (q * q);
         value.is_finite().then_some(value)
     }
 
     fn implied_rate(&self) -> Option<f64> {
-        // V(r)=market cap is a monic quadratic/cubic. Partition at derivative
+        // V(r)=market cap is a monic cubic. Partition at derivative
         // roots so each interval is monotone, detecting multiple positive roots.
-        let (b, c, d) = if self.years == 3 {
-            (
-                2.0 - self.payout * self.earnings[0],
-                1.0 - self.payout * (self.earnings[0] + self.earnings[1]),
-                -self.earnings[2],
-            )
-        } else {
-            (0.0, 1.0 - self.payout * self.earnings[0], -self.earnings[1])
-        };
+        let (b, c, d) = (
+            2.0 - self.payout * self.earnings[0],
+            1.0 - self.payout * (self.earnings[0] + self.earnings[1]),
+            -self.earnings[2],
+        );
         if ![b, c, d].iter().all(|v| v.is_finite()) {
             return None;
         }
-        let poly = |r: f64| {
-            if self.years == 3 {
-                ((r + b) * r + c) * r + d
-            } else {
-                (r + c) * r + d
-            }
-        };
+        let poly = |r: f64| ((r + b) * r + c) * r + d;
         let bound = 1.0 + b.abs().max(c.abs()).max(d.abs());
         let mut points = [0.0; 4];
         let mut count = 1;
-        let critical = if self.years == 3 {
-            let disc = b * b - 3.0 * c;
-            if !disc.is_finite() {
-                return None;
-            }
-            if disc >= 0.0 {
-                [(-b - disc.sqrt()) / 3.0, (-b + disc.sqrt()) / 3.0]
-            } else {
-                [0.0; 2]
-            }
+        let disc = b * b - 3.0 * c;
+        if !disc.is_finite() {
+            return None;
+        }
+        let critical = if disc >= 0.0 {
+            [(-b - disc.sqrt()) / 3.0, (-b + disc.sqrt()) / 3.0]
         } else {
-            [-c / 2.0, 0.0]
+            [0.0; 2]
         };
         for r in critical {
             if r > 0.0 && r < bound && (count == 1 || r > points[count - 1]) {
@@ -553,24 +530,14 @@ mod tests {
     }
 
     #[test]
-    fn equity_duration_adaptive_forecasts_and_invalid_inputs() {
-        assert_eq!(
-            Valuation::new(100.0, 200.0, 0.4, [Some(10.0), Some(12.0), None])
-                .unwrap()
-                .years,
-            2
-        );
-        assert_eq!(
-            Valuation::new(100.0, 200.0, 0.4, [Some(10.0), Some(12.0), Some(14.0)])
-                .unwrap()
-                .years,
-            3
-        );
-        for forecasts in [
-            [None, Some(12.0), Some(14.0)],
-            [Some(10.0), None, Some(14.0)],
-        ] {
-            assert!(Valuation::new(100.0, 200.0, 0.4, forecasts).is_none());
+    fn equity_duration_requires_all_three_forecasts_and_valid_inputs() {
+        assert!(Valuation::new(100.0, 200.0, 0.4, [Some(10.0), Some(12.0), Some(14.0)]).is_some());
+        for idx in 0..3 {
+            for invalid in [None, Some(f64::NAN), Some(f64::INFINITY)] {
+                let mut forecasts = [Some(10.0), Some(12.0), Some(14.0)];
+                forecasts[idx] = invalid;
+                assert!(duration_alpha(100.0, 200.0, 0.4, forecasts).is_none());
+            }
         }
         assert!(duration_alpha(0.0, 200.0, 0.4, [Some(10.0); 3]).is_none());
         assert!(duration_alpha(100.0, 0.0, 0.4, [Some(10.0); 3]).is_none());
@@ -596,36 +563,32 @@ mod tests {
 
     #[test]
     fn equity_duration_matches_residual_income_and_recovers_rate() {
-        for years in [2, 3] {
-            for payout in [0.0, 0.4, 1.0, 1.2] {
-                let earnings = [10.0, 12.0, 14.0];
-                let cap = residual_price(100.0, &earnings[..years], payout, 0.08);
-                let forecasts = [Some(10.0), Some(12.0), (years == 3).then_some(14.0)];
-                let model = Valuation::new(100.0, cap, payout, forecasts).unwrap();
-                assert!((model.price_ratio(0.08).unwrap() - 1.0).abs() < 1e-12);
-                assert!((model.implied_rate().unwrap() - 0.08).abs() < 1e-12);
-                let expected = (residual_price(100.0, &earnings[..years], payout, 0.0801)
-                    - residual_price(100.0, &earnings[..years], payout, 0.0799))
-                    / (cap * 0.0002);
-                let actual = duration_alpha(100.0, cap, payout, forecasts).unwrap();
-                assert!((actual - expected).abs() < 1e-8);
-                assert!(actual < 0.0);
-                let scaled = duration_alpha(
-                    1_000_000.0,
-                    cap * 10000.0,
-                    payout,
-                    forecasts.map(|v| v.map(|v| v * 10000.0)),
-                )
-                .unwrap();
-                assert!((actual - scaled).abs() < 1e-8);
-            }
+        for payout in [0.0, 0.4, 1.0, 1.2] {
+            let earnings = [10.0, 12.0, 14.0];
+            let cap = residual_price(100.0, &earnings, payout, 0.08);
+            let forecasts = earnings.map(Some);
+            let model = Valuation::new(100.0, cap, payout, forecasts).unwrap();
+            assert!((model.price_ratio(0.08).unwrap() - 1.0).abs() < 1e-12);
+            assert!((model.implied_rate().unwrap() - 0.08).abs() < 1e-12);
+            let expected = (residual_price(100.0, &earnings, payout, 0.0801)
+                - residual_price(100.0, &earnings, payout, 0.0799))
+                / (cap * 0.0002);
+            let actual = duration_alpha(100.0, cap, payout, forecasts).unwrap();
+            assert!((actual - expected).abs() < 1e-8);
+            assert!(actual < 0.0);
+            let scaled = duration_alpha(
+                1_000_000.0,
+                cap * 10000.0,
+                payout,
+                forecasts.map(|v| v.map(|v| v * 10000.0)),
+            )
+            .unwrap();
+            assert!((actual - scaled).abs() < 1e-8);
         }
     }
 
     #[test]
     fn equity_duration_rejects_multiple_roots_and_near_zero_rate() {
-        // r^2 - 0.5r + 0.04 = 0 has two positive roots, 0.1 and 0.4.
-        assert!(duration_alpha(100.0, 100.0, 1.0, [Some(150.0), Some(-4.0), None]).is_none());
         // Three positive roots, and a repeated root plus another positive root.
         for (second, terminal) in [(-1.71, 0.006), (-1.69, 0.004)] {
             assert!(
@@ -633,8 +596,8 @@ mod tests {
                     .is_none()
             );
         }
-        let cap = residual_price(100.0, &[10.0, 12.0], 0.4, RATE_STEP / 2.0);
-        assert!(duration_alpha(100.0, cap, 0.4, [Some(10.0), Some(12.0), None]).is_none());
+        let cap = residual_price(100.0, &[10.0, 12.0, 14.0], 0.4, RATE_STEP / 2.0);
+        assert!(duration_alpha(100.0, cap, 0.4, [Some(10.0), Some(12.0), Some(14.0)]).is_none());
     }
 
     #[test]
@@ -655,7 +618,12 @@ mod tests {
             .find(|d| d.dataset == DatasetId::StockConsensus)
             .unwrap()
             .columns;
-        assert_eq!(columns, &FORECASTS.map(str::to_string).to_vec());
+        assert_eq!(
+            columns,
+            &["con_np_fy0", "con_np_fy1", "con_np_fy2"]
+                .map(str::to_string)
+                .to_vec()
+        );
         assert_eq!(ltm_start(20240229), 20230228);
     }
 }

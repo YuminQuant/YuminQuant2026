@@ -441,10 +441,11 @@ cargo test --manifest-path factor_engine\Cargo.toml comprehensive_profitability 
 Barra SIZE neutralization. Tags include `XYZQ`, `fundamental` and `analyst`.
 It uses the stock universe panel, excludes BJ and has no PV dependency.
 
-- Forecast years are the consensus generator's FY1/FY2/FY3, with FY0 as base.
-  FY1 and FY2 must both be finite. Missing/non-finite FY3 selects two periods;
-  otherwise use three. An invalid three-period model does not fall back to two.
-- Monetary totals are all wan yuan: consensus `con_np_fy1/2/3`, daily basic
+- Forecast years are strictly the consensus generator's FY0/FY1/FY2, mapped to
+  model periods 1/2/3. All three must be finite; no two-period fallback or FY3
+  substitution. This factor does not change the generator's fiscal-year mapping
+  or its use of PIT actuals when available: FY0 need not be a future calendar year.
+- Monetary totals are all wan yuan: consensus `con_np_fy0/1/2`, daily basic
   `total_mv`, and `DividendReader` cash totals already use this unit. Divide PIT
   `total_hldr_eqy_exc_min_int` and four single-quarter `n_income_attr_p` totals
   by 10,000. Rebuild old mixed-unit consensus files before factor production.
@@ -456,12 +457,12 @@ It uses the stock universe panel, excludes BJ and has no PV dependency.
 - Start with the latest visible parent equity and recursively retain
   `(1-k)*E_i`; current equity and each book value used as an ROE denominator
   must stay positive. Finite negative forecasts are not automatically dropped.
-- Terminal residual income is constant from the last forecast year. For N=2/3,
+- Terminal residual income is constant from the third forecast year. For N=3,
   the clean-surplus identity reduces value to
   `sum(i=1..N-1, k*E_i/(1+r)^i) + E_N/[r*(1+r)^(N-1)]`.
   Tests compare this numerically with the original book-value residual-income
   formula. The identity avoids cancellation of large book values.
-- Solve the resulting quadratic/cubic using stationary-point partitions and
+- Solve the resulting cubic using stationary-point partitions and
   bisection. Require exactly one positive root, repricing error <=1e-8 relative
   to market cap, and `r > 0.0001`. No arbitrary root choice or rate clipping.
   Alpha is `[V(r+0.0001)-V(r-0.0001)] / (market_cap*0.0002)`, i.e. negative

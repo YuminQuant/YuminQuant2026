@@ -7,6 +7,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::{ArrowWriter, ProjectionMask};
+use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 
 use crate::data::table::{ColumnData, Table};
@@ -82,6 +83,14 @@ pub fn parquet_column_names(path: &Path) -> Result<BTreeSet<String>> {
 }
 
 pub fn write_parquet(path: &Path, table: &Table) -> Result<()> {
+    write_parquet_with_compression(path, table, Compression::UNCOMPRESSED)
+}
+
+pub fn write_parquet_with_compression(
+    path: &Path,
+    table: &Table,
+    compression: Compression,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -97,7 +106,9 @@ pub fn write_parquet(path: &Path, table: &Table) -> Result<()> {
     let schema = Arc::new(Schema::new(fields));
     let batch = RecordBatch::try_new(schema.clone(), arrays)?;
     let file = File::create(path)?;
-    let props = WriterProperties::builder().build();
+    let props = WriterProperties::builder()
+        .set_compression(compression)
+        .build();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
     writer.write(&batch)?;
     writer.close()?;

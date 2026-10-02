@@ -1,4 +1,4 @@
-﻿use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -6,8 +6,8 @@ use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::DatasetId;
 use crate::data::loader::{DisclosureTableCache, MarketDataLoader};
-use crate::data::parquet_io::write_parquet;
 use crate::data::{ColumnData, DataCatalog, Table};
+use crate::derive::storage::write_derived_parquet;
 use crate::error::{err, Result};
 use crate::factor::common::{FinancialPitIndex, FinancialPitReader, ReportTypePreference};
 use crate::progress::ProgressBar;
@@ -105,7 +105,7 @@ pub fn derive_analyst_consensus(
                         trade_date, &market, &financial, &mut state,
                     )?;
                     let rows = table.len;
-                    write_parquet(&output_path, &table)?;
+                    write_derived_parquet(&output_path, &table)?;
                     progress.tick(format!("date={trade_date} rows={rows}"));
                     Some(ConsensusOutput { output_path, rows })
                 }

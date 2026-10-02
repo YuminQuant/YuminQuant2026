@@ -1,4 +1,5 @@
 factor_id = "residual_multi_bar_gru"
+tags = ["deprecated"]
 data_root = "data"
 
 [output]

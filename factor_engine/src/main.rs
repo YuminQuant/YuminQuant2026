@@ -763,7 +763,14 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
     let config_path = flags.get("config").map(PathBuf::from);
     let profile = flag_enabled(&flags, "profile");
     let refresh_minute_cache = flag_enabled(&flags, "refresh-minute-cache");
+    let include_deprecated = flag_enabled(&flags, "include-deprecated");
+    if include_deprecated && (factor_ids.as_ref().is_none_or(Vec::is_empty) || tags.is_some()) {
+        return Err(yq_factor_engine::error::err(
+            "--include-deprecated requires explicit --factors and cannot be used with --tags",
+        ));
+    }
     Ok(RunRequest {
+        include_deprecated,
         asset_class,
         frequency,
         start_date,
@@ -1253,6 +1260,7 @@ fn print_help() {
     println!("optional flags:");
     println!("  --factors factor_id[,factor_id...]");
     println!("  --all-factors (backtest all non-deprecated factors)");
+    println!("  --include-deprecated (run/plan only; requires explicit --factors)");
     println!("  --labels label_id[,label_id...]");
     println!("  --exposures exposure_id[,exposure_id...]");
     println!("  --families barra_family[,barra_family...]");
@@ -1315,6 +1323,33 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn run_include_deprecated_requires_explicit_factor_ids() {
+        let mut args: Vec<String> = [
+            "--asset",
+            "stock",
+            "--frequency",
+            "daily",
+            "--start-date",
+            "20260424",
+            "--end-date",
+            "20260424",
+            "--include-deprecated",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert!(super::parse_run_request(&args, false).is_err());
+        args.extend(["--factors".into(), "comp_ep_gap_avg".into()]);
+        assert!(
+            super::parse_run_request(&args, false)
+                .unwrap()
+                .include_deprecated
+        );
+        args.extend(["--tags".into(), "fundamental".into()]);
+        assert!(super::parse_run_request(&args, false).is_err());
+    }
+
     #[test]
     fn parse_consensus_columns_and_default_full_request() {
         let mut args = vec![

@@ -12,6 +12,9 @@ use crate::error::{err, Result};
 use crate::factor::common::{FinancialPitIndex, FinancialPitReader, ReportTypePreference};
 use crate::progress::ProgressBar;
 
+mod selection;
+use selection::{Needs, OutputPlan};
+
 pub const DEFAULT_CONSENSUS_DATE_BATCH_SIZE: usize = 20;
 const ANALYST_WARMUP_DAYS: i32 = 600;
 const FORECAST_STRICT_DAYS: i32 = 90;
@@ -28,6 +31,7 @@ pub struct AnalystConsensusRequest {
     pub overwrite: bool,
     pub date_batch_size: usize,
     pub project_config_path: Option<PathBuf>,
+    pub columns: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -57,6 +61,12 @@ pub fn derive_analyst_consensus(
     request: &AnalystConsensusRequest,
 ) -> Result<AnalystConsensusReport> {
     ensure_supported_request(request)?;
+    let plan = request
+        .columns
+        .as_deref()
+        .map(OutputPlan::new)
+        .transpose()?;
+    let needs = plan.as_ref().map_or_else(Needs::all, |plan| plan.needs);
     let calendar = TradingCalendar::load(&config.data_root, &config.stock_calendar_exchange)?;
     let target_dates = calendar.open_dates_between(request.start_date, request.end_date);
     let catalog = DataCatalog::new(config.data_root.clone())
@@ -77,18 +87,24 @@ pub fn derive_analyst_consensus(
         let Some(&batch_end) = date_batch.last() else {
             continue;
         };
-        let np_history_dates = np_history_dates_for_batch(&calendar, date_batch);
+        let np_history_dates = if needs.revisions {
+            np_history_dates_for_batch(&calendar, date_batch)
+        } else {
+            BTreeSet::new()
+        };
         let processing_dates = processing_dates_for_batch(&state, date_batch, &np_history_dates);
         let Some(&processing_start) = processing_dates.iter().next() else {
             continue;
         };
-        let market = DailyMarketData::load(&loader, date_batch)?;
-        let analyst_rows = analyst_cursor.load_until(&loader, batch_end, &mut disclosure_cache)?;
+        let market = DailyMarketData::load(&loader, date_batch, needs.price)?;
+        let analyst_rows =
+            analyst_cursor.load_until(&loader, batch_end, &mut disclosure_cache, needs)?;
         let financial = ConsensusFinancialData::load(
             &loader,
             processing_start,
             batch_end,
             &mut disclosure_cache,
+            needs,
         )?;
         let mut analyst_row_cursor = 0usize;
 
@@ -101,11 +117,21 @@ pub fn derive_analyst_consensus(
                     progress.tick(format!("date={trade_date} skipped existing"));
                     None
                 } else {
-                    let table = build_consensus_table_for_date(
-                        trade_date, &market, &financial, &mut state,
-                    )?;
+                    let table = if let Some(plan) = &plan {
+                        plan.build(trade_date, &market, &financial, &mut state)?
+                    } else {
+                        build_consensus_table_for_date(trade_date, &market, &financial, &mut state)?
+                    };
                     let rows = table.len;
-                    write_derived_parquet(&output_path, &table)?;
+                    if plan.is_some() {
+                        crate::derive::storage::write_consensus_columns(
+                            &output_path,
+                            table,
+                            trade_date,
+                        )?;
+                    } else {
+                        write_derived_parquet(&output_path, &table)?;
+                    }
                     progress.tick(format!("date={trade_date} rows={rows}"));
                     Some(ConsensusOutput { output_path, rows })
                 }
@@ -315,31 +341,47 @@ impl AnalystConsensusState {
             return cached.expect("checked above");
         }
 
-        let operating_revenue = compute_annual_base_uncached(
-            ts_code,
-            trade_date,
-            year,
-            BaseMetric::OperatingRevenue,
-            self,
-            financial,
-        );
-        let net_profit = compute_annual_base_uncached(
-            ts_code,
-            trade_date,
-            year,
-            BaseMetric::NetProfit,
-            self,
-            financial,
-        );
-        let eps = compute_annual_base_uncached(
-            ts_code,
-            trade_date,
-            year,
-            BaseMetric::Eps,
-            self,
-            financial,
-        );
-        let net_assets = compute_con_na(ts_code, trade_date, net_profit.value, financial);
+        let operating_revenue = if financial.needs.revenue {
+            compute_annual_base_uncached(
+                ts_code,
+                trade_date,
+                year,
+                BaseMetric::OperatingRevenue,
+                self,
+                financial,
+            )
+        } else {
+            BaseConsensus::missing()
+        };
+        let net_profit = if financial.needs.profit {
+            compute_annual_base_uncached(
+                ts_code,
+                trade_date,
+                year,
+                BaseMetric::NetProfit,
+                self,
+                financial,
+            )
+        } else {
+            BaseConsensus::missing()
+        };
+        let eps = if financial.needs.eps {
+            compute_annual_base_uncached(
+                ts_code,
+                trade_date,
+                year,
+                BaseMetric::Eps,
+                self,
+                financial,
+            )
+        } else {
+            BaseConsensus::missing()
+        };
+        let net_assets = if financial.needs.equity {
+            compute_con_na(ts_code, trade_date, net_profit.value, financial)
+        } else {
+            None
+        };
         let snapshot = AnnualBaseSnapshot {
             operating_revenue,
             net_profit,
@@ -453,12 +495,13 @@ impl AnalystReportCursor {
         loader: &MarketDataLoader,
         end_date: i32,
         disclosure_cache: &mut DisclosureTableCache,
+        needs: Needs,
     ) -> Result<AnalystRows> {
         let start_date = add_days(self.loaded_until, 1);
         if start_date > end_date {
             return Ok(AnalystRows::default());
         }
-        let rows = AnalystRows::load(loader, start_date, end_date, disclosure_cache)?;
+        let rows = AnalystRows::load(loader, start_date, end_date, disclosure_cache, needs)?;
         self.loaded_until = end_date;
         Ok(rows)
     }
@@ -489,18 +532,20 @@ impl AnalystRows {
         start_date: i32,
         end_date: i32,
         disclosure_cache: &mut DisclosureTableCache,
+        needs: Needs,
     ) -> Result<Self> {
-        let columns = vec![
-            "org_name".to_string(),
-            "author_name".to_string(),
-            "create_time".to_string(),
-            "op_rt".to_string(),
-            "np".to_string(),
-            "eps".to_string(),
-            "rating".to_string(),
-            "min_price".to_string(),
-            "max_price".to_string(),
-        ];
+        let mut columns = vec!["org_name".to_string(), "create_time".to_string()];
+        for (required, name) in [
+            (needs.revenue, "op_rt"),
+            (needs.profit, "np"),
+            (needs.eps, "eps"),
+            (needs.rating, "rating"),
+            (needs.target, "min_price"),
+        ] {
+            if required {
+                columns.push(name.into());
+            }
+        }
         let table = loader.load_stock_analyst_report_between_cached(
             &columns,
             start_date,
@@ -512,11 +557,22 @@ impl AnalystRows {
         let quarters = table.required_utf8("quarter")?;
         let org_names = table.required_utf8("org_name")?;
         let create_times = table.required_utf8("create_time")?;
-        let op_rt = table.required_f64_cast("op_rt")?;
-        let np = table.required_f64_cast("np")?;
-        let eps = table.required_f64_cast("eps")?;
-        let ratings = table.required_utf8("rating")?;
-        let min_prices = table.required_f64_cast("min_price")?;
+        let optional_numeric = |name: &str, required: bool| -> Result<Option<Vec<Option<f64>>>> {
+            if required {
+                table.required_f64_cast(name).map(Some)
+            } else {
+                Ok(None)
+            }
+        };
+        let op_rt = optional_numeric("op_rt", needs.revenue)?;
+        let np = optional_numeric("np", needs.profit)?;
+        let eps = optional_numeric("eps", needs.eps)?;
+        let ratings = if needs.rating {
+            Some(table.required_utf8("rating")?)
+        } else {
+            None
+        };
+        let min_prices = optional_numeric("min_price", needs.target)?;
 
         let mut rows = Vec::new();
         for idx in 0..table.len {
@@ -539,11 +595,13 @@ impl AnalystRows {
                 org_name: org_name.to_string(),
                 create_time: create_times[idx].clone(),
                 forecast_year,
-                op_rt: clean_analyst_value(op_rt[idx]),
-                np: clean_analyst_value(np[idx]),
-                eps: clean_analyst_value(eps[idx]),
-                rating_strength: ratings[idx].as_deref().and_then(rating_strength),
-                min_price: clean_analyst_value(min_prices[idx]),
+                op_rt: clean_analyst_value(op_rt.as_ref().and_then(|values| values[idx])),
+                np: clean_analyst_value(np.as_ref().and_then(|values| values[idx])),
+                eps: clean_analyst_value(eps.as_ref().and_then(|values| values[idx])),
+                rating_strength: ratings
+                    .and_then(|ratings| ratings[idx].as_deref())
+                    .and_then(rating_strength),
+                min_price: clean_analyst_value(min_prices.as_ref().and_then(|values| values[idx])),
             });
         }
         rows.sort_by(|left, right| {
@@ -573,10 +631,14 @@ struct MarketRow {
 }
 
 impl DailyMarketData {
-    fn load(loader: &MarketDataLoader, target_dates: &[i32]) -> Result<Self> {
+    fn load(loader: &MarketDataLoader, target_dates: &[i32], needs_price: bool) -> Result<Self> {
         let pv = loader.load_daily_by_dates(
             DatasetId::StockDailyPv,
-            &["close".to_string(), "pre_close".to_string()],
+            &if needs_price {
+                vec!["close".to_string(), "pre_close".to_string()]
+            } else {
+                Vec::new()
+            },
             target_dates,
         )?;
 
@@ -584,8 +646,16 @@ impl DailyMarketData {
         if !pv.columns.is_empty() {
             let dates = pv.required_i32("trade_date")?;
             let ts_codes = pv.required_utf8("ts_code")?;
-            let closes = pv.required_f64_cast("close")?;
-            let pre_closes = pv.required_f64_cast("pre_close")?;
+            let closes = if needs_price {
+                pv.required_f64_cast("close")?
+            } else {
+                vec![None; pv.len]
+            };
+            let pre_closes = if needs_price {
+                pv.required_f64_cast("pre_close")?
+            } else {
+                vec![None; pv.len]
+            };
             for idx in 0..pv.len {
                 let (Some(date), Some(ts_code)) = (dates[idx], ts_codes[idx].as_deref()) else {
                     continue;
@@ -614,6 +684,7 @@ impl DailyMarketData {
 struct ConsensusFinancialData {
     income_index: Arc<FinancialPitIndex>,
     balance_index: Arc<FinancialPitIndex>,
+    needs: Needs,
 }
 
 impl ConsensusFinancialData {
@@ -622,28 +693,44 @@ impl ConsensusFinancialData {
         start_date: i32,
         end_date: i32,
         disclosure_cache: &mut DisclosureTableCache,
+        needs: Needs,
     ) -> Result<Self> {
-        let income_sources = loader.load_financial_sources_cached(
-            DatasetId::StockIncome,
-            &[
-                "revenue".to_string(),
-                "n_income_attr_p".to_string(),
-                "basic_eps".to_string(),
-            ],
-            start_date,
-            end_date,
-            24,
-            disclosure_cache,
-        )?;
-        let balance_sources = loader.load_financial_sources_cached(
-            DatasetId::StockBalanceSheet,
-            &["total_hldr_eqy_exc_min_int".to_string()],
-            start_date,
-            end_date,
-            24,
-            disclosure_cache,
-        )?;
+        let mut income_columns = Vec::new();
+        for (required, name) in [
+            (needs.revenue, "revenue"),
+            (needs.profit, "n_income_attr_p"),
+            (needs.eps, "basic_eps"),
+        ] {
+            if required {
+                income_columns.push(name.to_string());
+            }
+        }
+        let income_sources = if income_columns.is_empty() {
+            Vec::new()
+        } else {
+            loader.load_financial_sources_cached(
+                DatasetId::StockIncome,
+                &income_columns,
+                start_date,
+                end_date,
+                24,
+                disclosure_cache,
+            )?
+        };
+        let balance_sources = if needs.equity {
+            loader.load_financial_sources_cached(
+                DatasetId::StockBalanceSheet,
+                &["total_hldr_eqy_exc_min_int".to_string()],
+                start_date,
+                end_date,
+                24,
+                disclosure_cache,
+            )?
+        } else {
+            Vec::new()
+        };
         Ok(Self {
+            needs,
             income_index: Arc::new(FinancialPitIndex::from_source_tables(
                 income_sources,
                 Some(end_date),
@@ -805,7 +892,7 @@ fn annual_consensus_from_base(
         previous.operating_revenue.value,
     );
     let np_yoy = yoy(base.net_profit.value, previous.net_profit.value);
-    let npcgrate_2y = sqrt_change_rate_pct(base.net_profit.value, historical.net_profit.value);
+    let npcgrate_2y = cagr_2y_abs_base_pct(base.net_profit.value, historical.net_profit.value);
     let peg = match (pe, npcgrate_2y) {
         (Some(pe), Some(growth)) if growth > EPS && pe >= 0.0 => Some(pe / growth),
         _ => None,
@@ -1158,7 +1245,7 @@ fn compute_roll_consensus(
             .and_then(|annual| annual.net_profit.value),
         w,
     );
-    let con_npcgrate_2y_roll = sqrt_change_rate_pct(con_np_roll, historical_roll_np);
+    let con_npcgrate_2y_roll = cagr_2y_abs_base_pct(con_np_roll, historical_roll_np);
     let con_peg_roll = match (con_pe_roll, con_npcgrate_2y_roll) {
         (Some(pe), Some(growth)) if growth > EPS && pe >= 0.0 => Some(pe / growth),
         _ => None,
@@ -1502,14 +1589,17 @@ fn yoy(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
     (previous.abs() > EPS).then_some(100.0 * (current - previous) / previous.abs())
 }
 
-fn sqrt_change_rate_pct(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
+fn cagr_2y_abs_base_pct(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
     let current = current.and_then(clean_value)?;
     let previous = previous.and_then(clean_value)?;
     if previous.abs() <= EPS {
         return None;
     }
-    let change_rate = (current - previous) / previous.abs();
-    (change_rate >= 0.0).then_some(100.0 * (change_rate.sqrt() - 1.0))
+    let ratio = current / previous.abs();
+    if ratio < 0.0 || !ratio.is_finite() {
+        return None;
+    }
+    clean_value(100.0 * (ratio.sqrt() - 1.0))
 }
 
 fn weighted(left: Option<f64>, right: Option<f64>, left_weight: f64) -> Option<f64> {
@@ -1690,8 +1780,80 @@ mod tests {
         assert_eq!(yoy(Some(120.0), Some(0.0)), None);
         assert_eq!(yoy(Some(121.0), Some(100.0)), Some(21.0));
         assert_eq!(yoy(Some(-1.0), Some(100.0)), Some(-101.0));
-        assert!((sqrt_change_rate_pct(Some(200.0), Some(100.0)).unwrap() - 0.0).abs() < 1e-10);
-        assert!((sqrt_change_rate_pct(Some(300.0), Some(-100.0)).unwrap() - 100.0).abs() < 1e-10);
-        assert_eq!(sqrt_change_rate_pct(Some(80.0), Some(100.0)), None);
+    }
+
+    #[test]
+    fn analyst_consensus_cagr_uses_ratio_and_absolute_base() {
+        for base in [100.0, -100.0] {
+            for (current, expected) in [(144.0, 20.0), (100.0, 0.0), (81.0, -10.0), (0.0, -100.0)] {
+                let actual = cagr_2y_abs_base_pct(Some(current), Some(base)).unwrap();
+                assert!((actual - expected).abs() < 1e-10);
+            }
+        }
+        for base in [
+            None,
+            Some(0.0),
+            Some(EPS / 2.0),
+            Some(-EPS / 2.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            assert_eq!(cagr_2y_abs_base_pct(Some(144.0), base), None);
+        }
+        for current in [None, Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            assert_eq!(cagr_2y_abs_base_pct(current, Some(100.0)), None);
+        }
+        assert_eq!(cagr_2y_abs_base_pct(Some(f64::MAX), Some(0.5)), None);
+    }
+
+    #[test]
+    fn analyst_consensus_annual_cagr_and_peg_use_absolute_base() {
+        let base = AnnualBaseSnapshot {
+            operating_revenue: BaseConsensus::missing(),
+            net_profit: BaseConsensus { value: Some(144.0) },
+            eps: BaseConsensus { value: Some(2.0) },
+            net_assets: None,
+            marker: AnnualBaseSnapshotMarker {
+                income: None,
+                balance: None,
+            },
+            valid_until: None,
+        };
+        let historical = AnnualBaseSnapshot {
+            net_profit: BaseConsensus {
+                value: Some(-100.0),
+            },
+            ..base
+        };
+        let annual = annual_consensus_from_base(Some(40.0), base, historical, historical);
+        assert!((annual.npcgrate_2y.unwrap() - 20.0).abs() < 1e-10);
+        assert!((annual.peg.unwrap() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn analyst_consensus_rolling_cagr_combines_profits_before_absolute_base() {
+        let date = 20250703;
+        let w = days_until_year_end(date) as f64 / 365.0;
+        let by_year = [(2023, -100.0), (2024, 20.0), (2025, 144.0), (2026, 225.0)]
+            .into_iter()
+            .map(|(year, profit)| {
+                (
+                    year,
+                    AnnualConsensus {
+                        net_profit: BaseConsensus {
+                            value: Some(profit),
+                        },
+                        eps: BaseConsensus { value: Some(2.0) },
+                        ..AnnualConsensus::default()
+                    },
+                )
+            })
+            .collect();
+        let future = w * 144.0 + (1.0 - w) * 225.0;
+        let historical = w * -100.0 + (1.0 - w) * 20.0;
+        let expected = 100.0 * ((future / historical.abs()).sqrt() - 1.0);
+        let roll = compute_roll_consensus(date, Some(40.0), &by_year);
+        assert!((roll.con_npcgrate_2y_roll.unwrap() - expected).abs() < 1e-10);
+        assert!((roll.con_peg_roll.unwrap() - 20.0 / expected).abs() < 1e-10);
     }
 }

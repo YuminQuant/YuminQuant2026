@@ -60,6 +60,59 @@ Notes / 说明：
 - `--date-batch-size` 控制顺序处理批次；进度条仍按输出日期推进，因为每天
   写一个 parquet。
 
+## Selective Regeneration / 按列重生成
+
+`derive-consensus --columns name1,name2` computes only requested outputs and their
+dependencies. All existing consensus metric names listed below are supported;
+unknown names, key columns and empty selections are rejected. Omitting `--columns`
+preserves the full-table generation behavior.
+
+新增 `--columns`，支持下文全部一致预期指标列名，以逗号分隔。不传该参数仍为原来的
+全量生成。未知字段、键列和空选择会报错。重复字段自动去重，不支持通配符。
+
+Only regenerate the ten CAGR/PEG fields / 仅重生成十个 CAGR/PEG 字段：
+
+```powershell
+$columns = foreach ($suffix in @("fy0", "fy1", "fy2", "fy3", "roll")) {
+  "con_npcgrate_2y_$suffix"
+  "con_peg_$suffix"
+}
+cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-consensus `
+  --start-date 20160101 `
+  --end-date 20260424 `
+  --columns ($columns -join ",") `
+  --date-batch-size 120 `
+  --overwrite true
+```
+
+- Partial writes align by `(trade_date, ts_code)`, replacing selected columns,
+  including explicit nulls. Other columns keep their values and types. The stock
+  universe is the union of old and new rows; selected values for old-only rows are
+  cleared, and unselected values for new-only rows are null.
+- 按 `(trade_date, ts_code)` 对齐，选中列的新空值也覆盖旧值。未选中列保持原值和类型。
+  股票取新旧行并集：仅旧表存在的股票，其选中列清空；新增股票的未选中列为空。
+  若整日输入股票网格为空且旧表非空，则报错保护旧文件，避免缺整日源数据导致整列误清空。
+- If the file is absent, only keys and requested columns are created. With
+  `--overwrite false`, an existing file is skipped entirely, even if it lacks a
+  requested column. Dependencies are computed but not implicitly written; request
+  PEG explicitly when refreshing CAGR if PEG must also be updated.
+- 文件不存在时仅创建键列和指定列；`--overwrite false` 仍按文件跳过，不补写缺失列。
+  依赖只在内存中计算，不隐式改写未请求列；修正 CAGR 后需要同时请求 PEG 才会更新 PEG。
+- Input columns and computational branches are selected by dependencies. CAGR-only
+  requests do not load balance sheets, EPS, price values, revenue, ratings, targets,
+  or revision history. PEG adds EPS and prices. Forecast/PIT state remains shared
+  across date batches; the original daily PV key universe is unchanged.
+- 按依赖裁剪输入和计算分支。只算 CAGR 时不加载资产负债表、EPS、价格值、收入、评级、
+  目标价和预测修正率历史；PEG 额外加载 EPS 和价格。复用跨 batch 预测/PIT 缓存。
+  派生宽表原有的日频 PV 股票键网格保持不变，没有将其改为财务因子的 panel。
+- Parquet still requires a daily-file rewrite: keep only one old daily table in
+  memory, merge column-wise, write Snappy to a same-directory temporary file and
+  replace the original after completion. Do not run concurrent writers on the same
+  target dates. No whole-history wide table or per-cell string map is built.
+- Parquet 不能原地替换列：仍需重写单日文件，但只读取一个旧日表，逐列合并后以 Snappy
+  写同目录临时文件，完成后替换原文件。不构建全历史宽表或逐单元格字符串映射。
+  不要对相同目标日期并发运行多个写入任务。
+
 ## Inputs / 输入数据
 
 Analyst detail data / 分析师明细：
@@ -331,31 +384,38 @@ Consensus two-year net-profit growth transform.
 一致预期两年净利润增长变换。
 
 The current project convention is user-adjusted from the original document:
-keep the square-root transform, but use an absolute-denominator change rate
-inside the square root.
+use the profit ratio with an absolute base-profit denominator inside the square
+root, not the difference in profits. Negative base profit is allowed.
 
-当前项目口径是在原文基础上的用户确认调整：保留平方根变换，但平方根内部改为
-使用绝对值分母的变化幅度。
+当前项目口径采用用户确认调整：平方根内部使用利润比值，基期利润取绝对值，
+不先计算利润差。允许基期利润为负。
 
 Formula / 公式：
 
 ```text
 base_np = con_np_{fyX-2}
 current_np = con_np_{fyX}
-raw_change = (current_np - base_np) / abs(base_np)
+profit_ratio = current_np / abs(base_np)
 
-con_npcgrate_2y_fyX = 100 * (sqrt(raw_change) - 1)
+con_npcgrate_2y_fyX = 100 * (sqrt(profit_ratio) - 1)
 ```
 
 Null rules / 空值规则：
 
 - `base_np` missing or `abs(base_np) <= eps`: null
 - `current_np` missing: null
-- `raw_change < 0`: null
+- `current_np < 0`, non-finite inputs, ratio or result: null
 
 - `base_np` 缺失或 `abs(base_np) <= eps`：空
 - `current_np` 缺失：空
-- `raw_change < 0`：空
+- `current_np < 0`，输入、比值或结果非有限：空
+
+A zero current profit gives -100%; declining positive profit produces a negative
+growth rate. These growth values are retained, while PEG still requires positive
+growth. This absolute-base convention is not standard CAGR for a loss-making base.
+
+当期利润为 0 时返回 -100%；正利润下降时保留负增长率。PEG 仍要求增长率为正。
+亏损基期取绝对值是本项目约定，不等同于亏损情形下的标准 CAGR。
 
 ### `con_peg_fy*`
 
@@ -443,14 +503,23 @@ historical_roll_np =
     con_np_{calendar_year-2} * w
   + con_np_{calendar_year-1} * (1 - w)
 
-raw_change = (future_roll_np - historical_roll_np) / abs(historical_roll_np)
+profit_ratio = future_roll_np / abs(historical_roll_np)
 
-con_npcgrate_2y_roll = 100 * (sqrt(raw_change) - 1)
+con_npcgrate_2y_roll = 100 * (sqrt(profit_ratio) - 1)
 ```
 
 Null rules are the same as annual `con_npcgrate_2y_fy*`.
 
 空值规则同年度 `con_npcgrate_2y_fy*`。
+
+Combine the annual profits first, then take the absolute value of the historical
+combination and calculate the ratio. Do not average annual growth rates or replace
+the rolling combination with a fixed fy2/fy0 ratio. Existing annual source selection
+(PIT actuals first, forecasts otherwise) is unchanged.
+
+先分别组合年度利润，再对历史组合利润取绝对值并计算比值；不对年度增长率取平均，
+也不使用固定 fy2/fy0 比值代替滚动组合。年度取数规则保持不变：优先 PIT 实际值，
+否则使用预测值。本次公式更新不自动重写已有派生数据或因子文件。
 
 ### `con_peg_roll`
 
@@ -590,4 +659,3 @@ output trading day, because price can change daily.
 - 不得使用未来财报；真实财务值必须通过 PIT reader 按 `trade_date` 查询。
 - 如果后续拿到原始供应商的机构/时间权重函数，应只替换聚合模型，不应改下游
   列公式。
-

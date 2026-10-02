@@ -33,6 +33,7 @@ pub struct RunRequest {
     pub start_date: i32,
     pub end_date: i32,
     pub factor_ids: Option<Vec<String>>,
+    pub include_deprecated: bool,
     pub tags: Option<Vec<String>>,
     pub config_path: Option<PathBuf>,
     pub dry_run: bool,
@@ -1359,6 +1360,14 @@ fn execution_stage_names(
 }
 
 fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> SelectionResult {
+    if request.include_deprecated
+        && (request.factor_ids.as_ref().is_none_or(Vec::is_empty) || request.tags.is_some())
+    {
+        return SelectionResult::Empty(
+            "--include-deprecated requires explicit --factors and cannot be used with --tags"
+                .to_string(),
+        );
+    }
     let base = metadata
         .iter()
         .filter(|row| {
@@ -1396,7 +1405,7 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
                     || row.name == *factor_id_or_name
                     || row.aliases.iter().any(|alias| alias == factor_id_or_name)
             }) {
-                if is_deprecated_factor(row) {
+                if is_deprecated_factor(row) && !request.include_deprecated {
                     deprecated.push(row.factor_id.clone());
                 } else {
                     selected.push(row.clone());
@@ -2418,6 +2427,7 @@ mod tests {
             start_date: 20260105,
             end_date: 20260105,
             factor_ids: Some(vec!["stock.daily.pv.daily_factor".to_string()]),
+            include_deprecated: false,
             tags: None,
             config_path: None,
             dry_run: false,
@@ -2459,6 +2469,7 @@ mod tests {
             end_date: 20260105,
             factor_ids: None,
             tags: Some(vec!["worldquant101alpha".to_string()]),
+            include_deprecated: false,
             config_path: None,
             dry_run: false,
             factor_batch_size: 64,
@@ -2488,6 +2499,7 @@ mod tests {
             start_date: 20260105,
             end_date: 20260105,
             factor_ids: Some(vec!["WQAlpha001".to_string()]),
+            include_deprecated: false,
             tags: None,
             config_path: None,
             dry_run: false,
@@ -2500,11 +2512,25 @@ mod tests {
         let mut deprecated = metadata_row("WQAlpha001", "stock", "daily", &[]);
         deprecated.tags = vec!["deprecated".to_string()];
 
-        let SelectionResult::Empty(message) = select_metadata(&request, &[deprecated]) else {
+        let SelectionResult::Empty(message) = select_metadata(&request, &[deprecated.clone()])
+        else {
             panic!("expected empty");
         };
         assert!(message.contains("Deprecated factors are excluded from run"));
         assert!(message.contains("WQAlpha001"));
+        let mut explicit = request;
+        explicit.include_deprecated = true;
+        let SelectionResult::Selected(selected) = select_metadata(&explicit, &[deprecated.clone()])
+        else {
+            panic!("expected explicitly opted-in deprecated factor");
+        };
+        assert_eq!(selected[0].factor_id, "WQAlpha001");
+        explicit.factor_ids = None;
+        explicit.tags = Some(vec!["deprecated".into()]);
+        assert!(matches!(
+            select_metadata(&explicit, &[deprecated]),
+            SelectionResult::Empty(_)
+        ));
     }
 
     fn metadata_row(

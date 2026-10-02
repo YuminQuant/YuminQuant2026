@@ -194,6 +194,32 @@ fy3 = fy0 + 3
 
 ## Annual Metrics / 年度指标
 
+### Units / 单位约定
+
+All derived monetary totals use **wan yuan (10,000 CNY)**: `con_or_*`, `con_np_*`
+and `con_na_*`. Raw analyst `op_rt`/`np` forecasts are already in wan yuan and are
+not rescaled. PIT income `revenue`/`n_income_attr_p` and balance-sheet equity are
+in yuan and are divided by 10,000 at the consensus boundary. The original files
+and the shared PIT readers are unchanged. EPS and prices remain yuan per share;
+`con_np / con_eps` consequently represents shares in units of 10,000. Growth and
+ROE outputs remain percentages; PE/PB/PS/PEG are ratios.
+
+金额统一为**万元**：分析师原始 `op_rt/np` 不换算；财报实际收入、归母净利润和归母权益
+仅在一致预期派生层除以 10000。EPS 与价格仍为元/股，隐含股本 `con_np/con_eps` 为万股，
+增长率和 ROE 仍为百分数。下载文件、共用 PIT reader 及其他财报因子的单位不变。
+
+Older derived files mixed yuan actuals with wan-yuan forecasts. They must be
+regenerated before combining with new files. Rebuild the following families for
+all `fy0/fy1/fy2/fy3/roll` suffixes: `con_or`, `con_np`, `con_na`, `con_pb`, `con_ps`,
+`con_roe`, `con_or_yoy`, `con_np_yoy`, `con_npcgrate_2y`, `con_peg`; also rebuild
+`con_npgrate_1w/4w/13w/26w/52w`. This is 55 columns. EPS, PE, ratings and targets
+do not require regeneration for this unit correction. No files are migrated
+automatically. Ensure the rebuilt range also covers downstream factor warmup.
+
+历史文件存在元/万元混用，需重生成上述 55 列，且覆盖下游滚动因子的 warmup 日期。
+不自动迁移数据，不应把未重生成的旧金额列与新列混用。EPS、PE、评级和目标价不受本次
+单位修正影响。只重生成 CAGR/PEG 十列不足以完成这次单位迁移。
+
 The following annual metrics are output for every suffix `fy0..fy3`.
 
 以下指标均输出 `fy0..fy3` 四个版本。
@@ -288,7 +314,7 @@ Consensus net assets.
 Formula / 公式：
 
 ```text
-con_na = latest PIT visible total_hldr_eqy_exc_min_int + 0 + con_np
+con_na = latest PIT visible total_hldr_eqy_exc_min_int / 10000 + 0 + con_np
 ```
 
 Notes / 说明：

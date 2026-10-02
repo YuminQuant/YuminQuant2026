@@ -125,6 +125,17 @@ Within the same `ts_code + end_date + report_type`, only rows with
 
 ## Dependencies / 依赖声明
 
+Analyst-data factors must include the `analyst` tag, including factors consuming
+derived `StockConsensus` data or raw `StockAnalystReport`. When combined with PIT
+financial statements, include both `analyst` and `fundamental`. Shared providers
+must tag individual outputs by their dependencies: an analyst-dependent sibling
+does not make every output an analyst factor. Apply this rule to deprecated
+outputs as well; it does not change their generation policy.
+
+使用分析师明细或一致预期派生数据的因子必须标记 `analyst`；同时使用财报 PIT 的因子
+必须同时标记 `fundamental`。共享 provider 按各输出的实际依赖打标签，不因某个子项
+使用分析师数据而把整个因子簇标记为 analyst。deprecated 输出同样适用，但不改变其生产限制。
+
 Factor specs should request only needed value columns. The loader automatically
 adds PIT key/version columns such as `ts_code`, `ann_date`, `f_ann_date`,
 `end_date`, `report_type`, and `update_flag`.

@@ -8,13 +8,14 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, financial_event_trade_dates, DailyPanel,
-    DividendReader, FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule,
-    FinancialPitReader, FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn,
-    PitFinancialRecordView, ReportTypePreference,
+    cached_financial_stock_snapshots_for_date, financial_event_trade_dates, ClassificationLevel,
+    ClassificationMap, DailyPanel, DividendReader, FinancialEventMarker,
+    FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
+    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialRecordView,
+    ReportTypePreference,
 };
 use crate::operators::{cs_zscore, ts_zscore};
 
@@ -637,20 +638,44 @@ pub fn compute_requested_stateful(
     }
     state.peer_state = peer_state;
 
+    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let sector = ClassificationMap::from_table(
+        data.daily(DatasetId::StockSwClassification)?,
+        ClassificationLevel::Sector,
+    )?;
+    // Share immutable source columns when both raw and rolling-zscore outputs need them.
+    let mut source_columns: Vec<Option<PanelColumn>> = vec![None; source_values.len()];
+    let mut remaining = vec![0usize; source_values.len()];
+    for output in &request_plan.outputs {
+        remaining[source_key(output.base, output.component.source_component())] += 1;
+    }
     let mut result = Vec::with_capacity(request_plan.outputs.len());
     for output in request_plan.outputs {
         let source = output.component.source_component();
         let key = source_key(output.base, source);
-        let values = source_values[key]
-            .clone()
-            .unwrap_or_else(|| vec![None; panel.shape_len()]);
-        let raw = panel.column_from_values(values)?;
+        if source_columns[key].is_none() {
+            let values = source_values[key]
+                .take()
+                .unwrap_or_else(|| vec![None; panel.shape_len()]);
+            source_columns[key] = Some(panel.column_from_values(values)?);
+        }
+        remaining[key] -= 1;
+        let raw = if remaining[key] == 0 {
+            source_columns[key]
+                .take()
+                .expect("source column initialized")
+        } else {
+            source_columns[key]
+                .as_ref()
+                .expect("source column initialized")
+                .clone()
+        };
         let raw = if output.component.is_time_zscore() {
             raw.ts(|series| ts_zscore(series, LOOKBACK, ZSCORE_MIN_PERIODS))?
         } else {
             raw
         };
-        let neutralized = neutralize_size_sector(&raw, &panel, data)?;
+        let neutralized = neutralize_size_sector_with_inputs(&raw, &panel, &size, &sector)?;
         result.push(neutralized.to_factor_series(spec(output)));
     }
     Ok(result)
@@ -1252,6 +1277,8 @@ fn write_source_components_for_base_date(
     };
     let instrument_count = panel.instruments().len();
     let date_offset = date_idx * instrument_count;
+    let empty_profile = PeerProfile::default();
+    let needs = std::array::from_fn(|i| request_plan.needs_source_component(base, COMPONENTS[i]));
     for instrument_idx in 0..instrument_count {
         let offset = date_offset + instrument_idx;
         if !panel.is_present_offset(offset) {
@@ -1260,15 +1287,15 @@ fn write_source_components_for_base_date(
         let profile = peer_state
             .peers
             .get(instrument_idx)
-            .cloned()
-            .unwrap_or_default();
-        let stats = component_stats_for_stock(
+            .unwrap_or(&empty_profile);
+        let stats = requested_component_stats_for_stock(
             base_column,
             growth_column,
             panel,
             date_offset,
             instrument_idx,
-            &profile,
+            profile,
+            &needs,
         );
         for component in COMPONENTS {
             if component.is_time_zscore() {
@@ -1286,6 +1313,104 @@ fn write_source_components_for_base_date(
     Ok(())
 }
 
+fn requested_component_stats_for_stock(
+    base_column: &PanelColumn,
+    growth_column: Option<&PanelColumn>,
+    panel: &DailyPanel,
+    date_offset: usize,
+    instrument_idx: usize,
+    profile: &PeerProfile,
+    needs: &[bool; COMPONENT_COUNT],
+) -> ComponentStats {
+    use HazqComparableComponent::*;
+    let wanted = |component: HazqComparableComponent| needs[component.idx()];
+    let own = clean(base_column.values()[date_offset + instrument_idx]);
+    let mut values = [None; COMPONENT_COUNT];
+    if [Med, Max, Min, Dst, Prm].into_iter().any(wanted) {
+        let top = peer_values(base_column, panel, date_offset, &profile.top);
+        let top_values: Vec<_> = top.iter().map(|p| p.value).collect();
+        if [Med, Dst, Prm].into_iter().any(wanted) {
+            let med = median(&top_values);
+            if wanted(Med) {
+                values[Med.idx()] = med;
+            }
+            if wanted(Dst) {
+                values[Dst.idx()] = own.zip(med).and_then(|(v, m)| finite_value(v - m));
+            }
+            if wanted(Prm) {
+                values[Prm.idx()] = own
+                    .zip(med)
+                    .and_then(|(v, m)| safe_div(v, m).and_then(|r| finite_value(r - 1.0)));
+            }
+        }
+        if wanted(Max) {
+            values[Max.idx()] = max_value(&top_values);
+        }
+        if wanted(Min) {
+            values[Min.idx()] = min_value(&top_values);
+        }
+    }
+    if [Avg, Weighted, Wgt, Wgt2].into_iter().any(wanted) {
+        let all = peer_values(base_column, panel, date_offset, &profile.all);
+        let all_values: Vec<_> = all.iter().map(|p| p.value).collect();
+        if wanted(Avg) {
+            values[Avg.idx()] = mean(&all_values);
+        }
+        if [Weighted, Wgt, Wgt2].into_iter().any(wanted) {
+            let weighted = weighted_peer_mean(&all);
+            if wanted(Weighted) {
+                values[Weighted.idx()] = weighted;
+            }
+            if wanted(Wgt) || wanted(Wgt2) {
+                let sim_avg = if all.is_empty() {
+                    0.0
+                } else {
+                    all.iter().map(|p| p.similarity).sum::<f64>() / all.len() as f64
+                };
+                if wanted(Wgt) {
+                    values[Wgt.idx()] = comparable_weighted_value(
+                        own,
+                        weighted,
+                        all.len(),
+                        sim_avg,
+                        &all_values,
+                        false,
+                    );
+                }
+                if wanted(Wgt2) {
+                    values[Wgt2.idx()] = comparable_weighted_value(
+                        own,
+                        weighted,
+                        all.len(),
+                        sim_avg,
+                        &all_values,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+    if wanted(GapAvg) || wanted(GapMmm) {
+        let gap = gap_components(
+            base_column,
+            growth_column,
+            panel,
+            date_offset,
+            instrument_idx,
+            &profile.all,
+        );
+        if wanted(GapAvg) {
+            values[GapAvg.idx()] = gap.gap_avg;
+        }
+        if wanted(GapMmm) {
+            values[GapMmm.idx()] = gap.gap_mmm;
+        }
+    }
+    ComponentStats { values }
+}
+
+// Pre-optimization implementation remains an independent test oracle.
+#[cfg(test)]
 fn component_stats_for_stock(
     base_column: &PanelColumn,
     growth_column: Option<&PanelColumn>,
@@ -1890,6 +2015,98 @@ macro_rules! define_hazq_comparable_value_factor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hazq_comparable_requested_components_match_original_statistics() {
+        use super::*;
+        for scenario in 0..40 {
+            let n = 19;
+            let mut present = vec![true; n];
+            if scenario % 2 == 0 {
+                present[5] = false;
+            }
+            let panel = DailyPanel::from_index(
+                vec![20250703],
+                (0..n).map(|i| format!("{i:06}.SZ")).collect(),
+                &[20250703],
+                present,
+            )
+            .unwrap();
+            let base = panel
+                .column_from_values(
+                    (0..n)
+                        .map(|i| {
+                            if (i + scenario) % 7 == 0 {
+                                None
+                            } else {
+                                Some(((i * 13 + scenario * 7) % 31) as f64 - 12.0)
+                            }
+                        })
+                        .collect(),
+                )
+                .unwrap();
+            let growth = panel
+                .column_from_values(
+                    (0..n)
+                        .map(|i| {
+                            if (i + scenario) % 9 == 0 {
+                                None
+                            } else {
+                                Some(((i + scenario) % 5) as f64)
+                            }
+                        })
+                        .collect(),
+                )
+                .unwrap();
+            let profile = PeerProfile {
+                all: if scenario == 0 {
+                    vec![]
+                } else {
+                    (1..n)
+                        .map(|i| PeerLink {
+                            peer_idx: i,
+                            similarity: 0.91 + i as f64 / 1000.0,
+                        })
+                        .collect()
+                },
+                top: (1..=6)
+                    .map(|i| PeerLink {
+                        peer_idx: i,
+                        similarity: 0.95,
+                    })
+                    .collect(),
+            };
+            for growth in [None, Some(&growth)] {
+                let reference = component_stats_for_stock(&base, growth, &panel, 0, 0, &profile);
+                for component in COMPONENTS {
+                    let mut needs = [false; COMPONENT_COUNT];
+                    needs[component.idx()] = true;
+                    let selected = requested_component_stats_for_stock(
+                        &base, growth, &panel, 0, 0, &profile, &needs,
+                    );
+                    assert_eq!(
+                        selected.values[component.idx()],
+                        reference.values[component.idx()],
+                        "scenario={scenario} component={component:?}"
+                    );
+                    for other in COMPONENTS {
+                        if other != component {
+                            assert!(selected.values[other.idx()].is_none());
+                        }
+                    }
+                }
+                let all = requested_component_stats_for_stock(
+                    &base,
+                    growth,
+                    &panel,
+                    0,
+                    0,
+                    &profile,
+                    &[true; COMPONENT_COUNT],
+                );
+                assert_eq!(all.values, reference.values);
+            }
+        }
+    }
     use std::collections::{BTreeMap, BTreeSet};
 
     use crate::core::{AssetClass, FactorContext, Frequency};

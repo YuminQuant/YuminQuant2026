@@ -93,6 +93,23 @@ fn spec(output: Output) -> FactorSpec {
         Output::Ocfa => ("GDZQ", "ts_regression", "Latest in-sample residual of single-quarter total_cogs on same-quarter end fix_assets. Eight complete consecutive quarters, each variable time-series population-zscored, OLS with intercept; missing data or constant variables yield null."),
         Output::Qpt => ("CICC", "growth", "Daily latest disclosed quarter, no month-end freeze. Growth=current parent-profit TTM / previous-quarter parent-profit TTM - 1 with signed nonzero denominator. Acceleration is the raw quadratic coefficient over eight single quarters. Growth tercile score plus within-group acceleration population zscore. Missing growth is forced to group 2, with previous-quarter acceleration fallback if current acceleration is unavailable. All eight acceleration observations required; singleton/constant groups contribute zero acceleration score."),
     };
+    let mut tags: Vec<String> = [
+        broker,
+        "fundamental",
+        "financial",
+        "pit",
+        kind,
+        "neutralize",
+        "size",
+        "sector",
+        "daily",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    if output == Output::Opmd {
+        tags.push("deprecated".into());
+    }
     FactorSpec {
         id: output.id().into(),
         aliases: vec![output.id().to_ascii_uppercase()],
@@ -100,8 +117,7 @@ fn spec(output: Output) -> FactorSpec {
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
         version: "0.1.0".into(),
-        tags: [broker, "fundamental", "financial", "pit", kind, "neutralize", "size", "sector", "daily"]
-            .into_iter().map(str::to_string).collect(),
+        tags,
         description: format!("{description} Regular PIT reports only. SW L1 and Barra SIZE neutralized daily; excludes BJ; no winsorization or final zscore."),
         dependencies,
         intraday_raw_dependencies: vec![],

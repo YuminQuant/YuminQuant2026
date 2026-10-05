@@ -10,6 +10,7 @@ pub mod dbzq_profit_skew;
 pub mod dbzq_roic_wacc;
 pub mod earnings_reaction_gaussian;
 pub mod financial;
+pub mod financial_profit_trend;
 pub mod financial_similarity;
 pub mod gaussian_financial;
 pub mod gaussian_financial_ext;

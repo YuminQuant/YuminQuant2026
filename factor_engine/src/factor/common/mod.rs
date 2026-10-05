@@ -13,6 +13,7 @@ pub mod financial;
 pub mod financial_similarity;
 pub mod gaussian_financial;
 pub mod gaussian_financial_ext;
+pub mod gdzq_financial_ts_residual;
 pub mod gfzq_5min_salience;
 pub mod gfzq_apl_beta;
 pub mod gfzq_behavioral;

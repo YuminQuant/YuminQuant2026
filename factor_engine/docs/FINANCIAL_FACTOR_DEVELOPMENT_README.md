@@ -513,3 +513,81 @@ winsorization, extra zscore or analyst dependency.
   including historical share revisions. Industry neutralization is applied daily.
 
 Validation: `cargo test --manifest-path factor_engine/Cargo.toml dbzq_financial_surprise`.
+
+## GDZQ eight-quarter time-series residuals
+
+`gdzq_financial_ts_residual` provides nine independent outputs tagged `GDZQ`
+and `fundamental`. Purified RROC is not implemented. Each stock uses the latest
+eight consecutive calendar quarters (including the current quarter) with eight
+valid Y/X pairs. Both series use within-window population zscore, followed by
+OLS with an intercept; the newest in-sample residual is the raw factor. Constant
+X or Y returns null; a perfect nonconstant linear fit returns zero.
+
+| Factor ID | Y | X |
+| --- | --- | --- |
+| `oper_profit_ebit_ts_resid` | `operate_profit` | `n_income + income_tax + int_exp` |
+| `oper_profit_gross_profit_ts_resid` | `operate_profit` | `revenue - oper_cost` |
+| `oper_profit_cash_collection_ts_resid` | `operate_profit` | `c_fr_sale_sg / revenue` |
+| `roe_surplus_reserve_ts_resid` | `4 * n_income_attr_p / average_parent_equity` | `surplus_rese` |
+| `oper_margin_surplus_reserve_ts_resid` | `operate_profit / total_revenue` | `surplus_rese` |
+| `total_cost_ratio_surplus_reserve_ts_resid` | `total_cogs / total_revenue` | `surplus_rese` |
+| `advance_inventory_days_ts_resid` | `adv_receipts` | `90 / inventory_turnover` |
+| `cash_sales_inventory_turnover_ts_resid` | `c_fr_sale_sg` | `inventory_turnover` |
+| `noninterest_cur_liab_inventory_turnover_ts_resid` | `total_cur_liab - st_borr - non_cur_liab_due_1y - st_bonds_payable - st_fin_payable` | `inventory_turnover` |
+
+- The total-cost-ratio output negates the residual; all others retain its sign.
+- Income and cashflow use PIT single-quarter report types `[3,2]`; balances
+  use consolidated `[1,4]`. All statements align to the latest visible income
+  quarter. No TTM or cumulative flow substitution is used.
+- `average_parent_equity=(equity_q+equity_q-1)/2`, where equity is
+  `total_hldr_eqy_exc_min_int`. Observed nonpositive equity invalidates ROE.
+- `inventory_turnover=oper_cost/((inventories_q+inventories_q-1)/2)`.
+  Division requires a finite positive denominator greater than `1e-12`.
+- Per user confirmation, every multi-field sum/difference treats missing or
+  nonfinite operands as zero unless ALL operands are missing. This also applies
+  to the two endpoint averages (still divide by two, not by valid count).
+  Standalone fields are not zero-filled. Missing quarterly Y/X pairs do not
+  count as valid observations. No other existing factors change their policy.
+- NIBCL is an approved reconstructed approximation. Gross profit and inventory
+  metrics are reconstructed as above. Advance receipts do not include contract
+  liabilities. These are explicit implementations, not claims of exact source
+  indicator equivalence.
+- Stock-universe panel, no PV anchor, excludes BJ. All outputs receive daily
+  SW L1 + Barra SIZE neutralization, with no extra winsorization or zscore.
+- Shared `FinancialEventStateDailyFast` provider computes only requested outputs.
+  Instrument-aligned state caches raw stock-level time-series residuals, not
+  final cross-sectional residuals. Request-set changes invalidate the cache.
+  Markers cover all eight flow quarters and up to nine balance quarters,
+  including the prior endpoint of the oldest average. First-date refresh in each
+  batch handles instrument reordering and backwards date traversal.
+
+Validation: `cargo test --manifest-path factor_engine/Cargo.toml gdzq_financial_ts_residual`.
+
+## SWHYZQ abnormal gross profit
+
+`abnormal_gross_profit` has tags `SWHYZQ` and `fundamental`, positive direction:
+`(GP_q-GP_q-4*(CashSales_q/CashSales_q-4))/total_assets_q`, with
+`GP=revenue-oper_cost` and `CashSales=c_fr_sale_sg`. Income and cashflow use
+single-quarter `[3,2]` report types; balance uses consolidated `[1,4]`.
+
+- Raw updates on calendar May 1 (Q1), September 1 (Q2), and November 1 (Q3).
+  January-April holds the previous year's Q3. Q4/annual flows never enter.
+  On nontrading cutoffs the first following output date uses records visible
+  by the calendar cutoff, not records first disclosed after it. No fallback
+  quarter is substituted when the prescribed quarter is unavailable.
+- Current and prior-year flows and current assets must be PIT-visible at the
+  cutoff. Later revisions do not change that period's held raw value. A missing
+  operand in GP or the final difference uses zero unless all operands are
+  missing. The growth multiplier still requires both cash-sales observations,
+  a strictly positive prior cash-sales denominator, and finite arithmetic;
+  assets must also be finite and positive (greater than `1e-12`).
+- Eight-quarter requests cover the held quarter and its prior-year comparison,
+  including January-April batches. Only the two specified flow quarters and
+  current balance record enter the snapshot marker.
+- Uses stock-universe panel and instrument-aligned raw snapshot cache, no PV
+  anchor. Excludes BJ and SW banks (`801780`), non-bank financials (`801790`),
+  and legacy financial services (`801190`), accepting `.SI` suffixes.
+  Exclusions apply before daily SW L1 + Barra SIZE neutralization. Missing
+  industry/SIZE leaves null output. No winsorization or extra zscore.
+
+Validation: `cargo test --manifest-path factor_engine/Cargo.toml abnormal_gross_profit`.

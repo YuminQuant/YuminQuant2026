@@ -591,3 +591,54 @@ single-quarter `[3,2]` report types; balance uses consolidated `[1,4]`.
   industry/SIZE leaves null output. No winsorization or extra zscore.
 
 Validation: `cargo test --manifest-path factor_engine/Cargo.toml abnormal_gross_profit`.
+
+## CICC/GDZQ profit trend and residuals
+
+`financial_profit_trend` provides four separate daily PIT outputs:
+
+| ID | Broker tag | Raw definition |
+| --- | --- | --- |
+| `opmd` | CICC | Current TTM `operate_profit/revenue` minus the previous quarter's TTM ratio |
+| `lpnp` | GDZQ | Latest residual of quarterly `n_income` on quarterly `non_oper_income` and `c_paid_to_for_empl` |
+| `ocfa` | GDZQ | Latest residual of quarterly `total_cogs` on same-quarter-end `fix_assets` |
+| `qpt` | CICC | Growth tercile score plus within-group acceleration zscore |
+
+- All four carry `fundamental`, use stock-universe panels (no PV anchor),
+  exclude BJ, and receive daily SW L1 + Barra SIZE neutralization. No additional
+  winsorization, Gaussian rank, or final zscore is applied.
+- Income/cashflow use single-quarter PIT report types [3,2]; balance uses [1,4].
+  The anchor is each stock's latest disclosed income quarter. Preview/express
+  reports are not used. OPMD's lag is one fiscal quarter, not one trading day.
+- OPMD requires five consecutive quarters to form two complete four-quarter
+  TTM sums. Revenue denominators must be finite and positive. Missing quarters
+  are not filled with zero.
+- LPNP and OCFA require eight complete consecutive Y/X observations. Standardize
+  each variable within the window (population standard deviation), regress with
+  an intercept, and keep the latest IN-SAMPLE residual without residual-volatility
+  scaling. LPNP is a joint two-predictor regression, not sequential residualizing.
+  Reorthogonalized QR avoids forming normal equations. Missing/constant variables
+  and rank-deficient designs return null; no ridge fallback.
+- QPT updates daily using the latest disclosed quarter, NOT monthly and NOT
+  against a globally prescribed unreported calendar quarter. Growth is
+  `sum(NP_q..NP_q-3)/sum(NP_q-1..NP_q-4)-1`, using `n_income_attr_p`.
+  Its denominator is signed; zero/near-zero, nonfinite or incomplete TTM data
+  make Growth missing.
+- Acceleration is the quadratic coefficient of eight raw single-quarter parent
+  profits on time-squared, time, and intercept. It requires all eight values.
+  No pre-standardization or amount-unit adjustment is applied to that regression.
+  If current acceleration is unavailable, try the previous quarter's eight-value
+  window; nine quarters are requested and included in the PIT marker.
+- Finite Growth values are sorted into near-equal terciles (ascending, stock-code
+  tie break), scored 1/2/3. Missing Growth with available acceleration is forced
+  into group 2, outside the tercile sort. Actual zero growth is ranked normally.
+  Standardize acceleration within each assigned group; singleton/constant groups
+  contribute zero acceleration score. Missing acceleration leaves QPT null.
+  Missing a new disclosure alone does not reset Growth; the prior disclosed
+  quarter remains the anchor.
+- Shared requested-output provider caches stock-level raw metrics, aligned by
+  stock code. Financial revisions and listing-presence changes refresh snapshots
+  and QPT groups. Daily SIZE/industry neutralization is not cached. Changing the
+  request set clears raw cache; first-date refresh makes date/factor batches and
+  reordered instruments safe.
+
+Validation: `cargo test --manifest-path factor_engine/Cargo.toml financial_profit_trend`.

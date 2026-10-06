@@ -40,6 +40,7 @@ pub fn factor_spec(def: CoskewnessFactorDef) -> FactorSpec {
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
         tags: [
+            "price_volume",
             "price",
             "return",
             "coskewness",

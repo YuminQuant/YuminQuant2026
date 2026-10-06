@@ -58,6 +58,7 @@ impl Factor for StockDailyMstClosenessCentrality {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "HCZQ",
         "cs_network",
         "mst",

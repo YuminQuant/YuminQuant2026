@@ -24,7 +24,7 @@ impl Factor for StockDailyRet20 {
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
-            tags: ["price", "return", "reversal", "general", "daily"]
+            tags: ["price_volume", "price", "return", "reversal", "general", "daily"]
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),

@@ -80,6 +80,7 @@ impl Factor for StockDailyBarraCne6SimiMom {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "CJZQ",
         "cs_network",
         "style_similarity",

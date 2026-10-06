@@ -61,6 +61,7 @@ impl Factor for StockDailyRetailHerdingRankcorr {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "KYZQ",
         "moneyflow",
         "small_order",

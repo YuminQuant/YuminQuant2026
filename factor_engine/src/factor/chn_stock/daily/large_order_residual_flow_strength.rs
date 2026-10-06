@@ -63,6 +63,7 @@ impl Factor for StockDailyLargeOrderResidualFlowStrength {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "KYZQ",
         "moneyflow",
         "large_order",

@@ -167,6 +167,7 @@ fn raw_spec(raw_id: &str) -> IntradayDailyRawSpec {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "KYZQ",
         "return",
         "extreme",

@@ -28,6 +28,7 @@ impl Factor for StockDailyAplBeta {
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
             tags: [
+                "price_volume",
                 "GFZQ",
                 "behavioral",
                 "price_limit",

@@ -294,6 +294,7 @@ pub fn minute_compute_stateful_many(
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "GFZQ",
         "behavioral",
         "salience",

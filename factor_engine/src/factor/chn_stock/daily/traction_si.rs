@@ -64,6 +64,7 @@ impl Factor for StockDailyTractionSi {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "KYZQ",
         "cs_network",
         "moneyflow",

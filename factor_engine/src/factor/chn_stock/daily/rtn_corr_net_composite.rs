@@ -66,6 +66,7 @@ impl Factor for StockDailyRtnCorrNetComposite {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "CJZQ",
         "cs_network",
         "correlation",

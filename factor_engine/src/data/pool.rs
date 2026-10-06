@@ -240,7 +240,7 @@ impl DataPool {
         pool.financial_context = financial_context;
         if grouped
             .keys()
-            .any(|(dataset, _, _)| is_financial_context_dataset(*dataset))
+            .any(|(dataset, _, _)| needs_stock_universe(*dataset))
         {
             let table = loader.load_stock_basic(&stock_universe_columns())?;
             pool.stock_universe_panel = Some(DailyPanel::from_stock_basic(&table, context)?);
@@ -467,7 +467,7 @@ impl DataPool {
         let mut index_panel_dates = HashMap::<String, BTreeSet<i32>>::new();
         let needs_stock_universe_panel = requests
             .iter()
-            .any(|request| is_financial_context_dataset(request.dataset));
+            .any(|request| needs_stock_universe(request.dataset));
         for request in requests {
             let dates = request.resolved_dates(context);
             if dates.is_empty() {
@@ -931,6 +931,11 @@ fn is_financial_context_dataset(dataset: DatasetId) -> bool {
     )
 }
 
+fn needs_stock_universe(dataset: DatasetId) -> bool {
+    is_financial_context_dataset(dataset)
+        || matches!(dataset, DatasetId::StockConsensus | DatasetId::StockBasic)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
@@ -1170,6 +1175,41 @@ mod tests {
         );
         let panel = view.stock_universe_panel().expect("stock universe");
 
+        assert_eq!(panel.dates(), &[20260102]);
+        assert_eq!(
+            panel.instruments(),
+            &["000001.SZ".to_string(), "000002.SZ".to_string()]
+        );
+        assert!(panel.is_present_offset(0));
+        assert!(panel.is_present_offset(1));
+    }
+
+    #[test]
+    fn consensus_requests_load_and_slice_stock_universe_without_pit_dependencies() {
+        assert!(needs_stock_universe(DatasetId::StockConsensus));
+        assert!(needs_stock_universe(DatasetId::StockBasic));
+        assert!(!is_financial_context_dataset(DatasetId::StockConsensus));
+        assert!(!needs_stock_universe(DatasetId::StockDailyPv));
+        let mut base_context = context();
+        base_context.load_dates = vec![20260101, 20260102, 20260103];
+        let pool = DataPool::from_daily_tables_for_test(
+            HashMap::from([(DatasetId::StockBasic, sample_stock_basic_table())]),
+            &base_context,
+        )
+        .unwrap();
+        let request_context = FactorContext {
+            load_dates: vec![20260102],
+            target_dates: vec![20260102],
+            ..base_context
+        };
+        let view = pool.view_for_requests(
+            &[DataRequest::new(
+                DatasetId::StockConsensus,
+                &["con_eps_fy1", "con_eps_fy2"],
+            )],
+            &request_context,
+        );
+        let panel = view.stock_universe_panel().unwrap();
         assert_eq!(panel.dates(), &[20260102]);
         assert_eq!(
             panel.instruments(),

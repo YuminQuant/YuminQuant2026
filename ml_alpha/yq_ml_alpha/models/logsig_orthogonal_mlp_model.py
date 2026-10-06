@@ -173,13 +173,15 @@ class LogsigOrthogonalMLPAlphaModel(AlphaModel):
         self.model.eval()
         x = _apply_standardizer(_features(data, context.feature_columns), self.feature_mean, self.feature_std)
         scores = np.empty(len(data), dtype="float32")
-        row_index = data.index.to_numpy()
         with torch.no_grad():
-            for start in range(0, len(row_index), int(self.params["batch_size"])):
-                end = start + int(self.params["batch_size"])
-                base = self.model(torch.from_numpy(x[start:end]).to(device))
-                composite = _composite_factor(torch, base).detach().cpu().numpy().astype("float32")
-                scores[start : start + len(composite)] = composite
+            for rows in data.groupby("trade_date", sort=False).indices.values():
+                # Inference chunks are only a memory bound, never a statistical universe.
+                bases = []
+                for start in range(0, len(rows), int(self.params["batch_size"])):
+                    indices = rows[start : start + int(self.params["batch_size"])]
+                    bases.append(self.model(torch.from_numpy(x[indices]).to(device)).cpu())
+                composite = _composite_factor(torch, torch.cat(bases, dim=0))
+                scores[rows] = composite.numpy().astype("float32")
         self.model.to("cpu")
         series = pd.Series(scores, index=data.index, dtype="float32")
         zscored = series.groupby(data["trade_date"], group_keys=False).transform(_zscore_series).astype("float32")

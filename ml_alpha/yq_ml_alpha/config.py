@@ -64,6 +64,7 @@ class PostprocessConfig:
 class LabelConfig:
     id: str
     root: Path = Path("data/label/stock/daily")
+    lookahead_days: int | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ class MaterializeConfig:
     cache_samples: bool = False
     cache_dir: Path = Path("data/model_workspace/cache")
     predict_batch_size: int = 20
+    tensor_storage: str = "mmap"
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,7 @@ class MlAlphaConfig:
     tags: tuple[str, ...] = ()
     data_root: Path = Path("data")
     output_root: Path = Path("data/models")
+    data_version: str = "unversioned"
 
 
 def load_config(path: str | Path) -> MlAlphaConfig:
@@ -205,6 +208,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     _validate_train_scheme(train_scheme)
 
     return MlAlphaConfig(
+        data_version=str(raw.get("data_version", "unversioned")),
         run_id=run_id,
         alpha_id=alpha_id,
         dates=DatesConfig(
@@ -217,6 +221,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         label=LabelConfig(
             id=_required(label, "id", "label.id"),
             root=_project_path(label.get("root", data_root / "label" / "stock" / "daily")),
+            lookahead_days=label.get("lookahead_days"),
         ),
         universe=UniverseConfig(id=universe.get("id", "mkt_all")),
         filters=FiltersConfig(
@@ -239,6 +244,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             cache_samples=bool(materialize.get("cache_samples", False)),
             cache_dir=_project_path(materialize.get("cache_dir", data_root / "model_workspace" / run_id / "cache")),
             predict_batch_size=max(1, int(materialize.get("predict_batch_size", 20))),
+            tensor_storage=str(materialize.get("tensor_storage", "mmap")),
         ),
         diagnostics=DiagnosticsConfig(
             enabled=bool(diagnostics.get("enabled", False)),
@@ -375,6 +381,8 @@ def _feature_root(features: dict[str, Any], feature_type: str, data_root: Path) 
 
 def _normalize_feature_params(params: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(params)
+    if "feature_cache_dir" in normalized:
+        normalized["feature_cache_dir"] = _project_path(normalized["feature_cache_dir"])
     panels = normalized.get("panels")
     if isinstance(panels, dict):
         normalized_panels: dict[str, dict[str, Any]] = {}

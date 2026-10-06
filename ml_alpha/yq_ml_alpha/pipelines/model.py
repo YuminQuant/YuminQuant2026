@@ -6,7 +6,7 @@ from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig, load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
-from yq_ml_alpha.output.artifacts import window_artifact_path
+from yq_ml_alpha.output.artifacts import window_artifact_path, save_manifest, validate_manifest
 from yq_ml_alpha.pipelines import materialize
 from yq_ml_alpha.pipelines.runtime import (
     _Progress,
@@ -19,6 +19,7 @@ from yq_ml_alpha.pipelines.runtime import (
     _predict_dates,
     _predict_write_window,
     _write_missing_coverage,
+    _release_accelerator_memory,
     build_windows,
 )
 
@@ -67,6 +68,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
             written.extend(model.write_diagnostics(context))
         progress.step("save")
         model.save(window_artifact_path(config.model.artifact_dir, window.window_id))
+        save_manifest(window_artifact_path(config.model.artifact_dir, window.window_id), config, window, dataset)
         del train_bundle, valid_bundle
         written.extend(
             _predict_write_window(
@@ -82,6 +84,8 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
             )
         )
         covered_dates.update(window.predict_dates)
+        del model
+        _release_accelerator_memory()
     written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates))
     written.extend(_aggregate_diagnostics(config))
     progress.done()
@@ -111,7 +115,10 @@ def train_config(config: MlAlphaConfig) -> list[Path]:
             paths.extend(model.write_diagnostics(context))
         progress.step("save")
         model.save(path)
+        save_manifest(path, config, window, dataset)
         paths.append(path)
+        del model, train_bundle, valid_bundle
+        _release_accelerator_memory()
     paths.extend(_aggregate_diagnostics(config))
     progress.done()
     return paths
@@ -134,6 +141,7 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
         progress.window(idx, window)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
         progress.step("load_model")
+        validate_manifest(path, config, window, dataset)
         model = model_class.load(path)
         written.extend(
             _predict_write_window(
@@ -148,6 +156,8 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
             )
         )
         covered_dates.update(window.predict_dates)
+        del model
+        _release_accelerator_memory()
     written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates))
     progress.done()
     return written

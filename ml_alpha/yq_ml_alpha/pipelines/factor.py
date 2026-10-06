@@ -6,7 +6,7 @@ from pathlib import Path
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig, PROJECT_ROOT, load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
-from yq_ml_alpha.output.artifacts import window_artifact_path
+from yq_ml_alpha.output.artifacts import window_artifact_path, save_manifest, validate_manifest
 from yq_ml_alpha.output.daily_wide_writer import DailyWideWriter
 from yq_ml_alpha.output.factor_metadata import write_factor_metadata
 from yq_ml_alpha.pipelines import materialize
@@ -87,8 +87,11 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
         resume_predict_dates: list[int] | None = None
         artifact_path = window_artifact_path(config.model.artifact_dir, window.window_id)
         if resume:
+            if artifact_path.exists():
+                validate_manifest(artifact_path, config, window, dataset)
             resume_predict_dates = writer.dates_missing_output_column(window.predict_dates)
             if not resume_predict_dates:
+                validate_manifest(artifact_path, config, window, dataset)
                 progress.step("resume_skip output_complete")
                 continue
             if artifact_path.exists():
@@ -128,6 +131,7 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
             written.extend(model.write_diagnostics(context))
         progress.step("save")
         model.save(artifact_path)
+        save_manifest(artifact_path, config, window, dataset)
         del train_bundle, valid_bundle
         written.extend(
             _predict_write_window(
@@ -163,6 +167,7 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
         progress.window(idx, window)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
         if resume and path.exists():
+            validate_manifest(path, config, window, dataset)
             progress.step("resume_skip artifact_exists")
             continue
         model = _new_model(config)
@@ -178,7 +183,10 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
             paths.extend(model.write_diagnostics(context))
         progress.step("save")
         model.save(path)
+        save_manifest(path, config, window, dataset)
         paths.append(path)
+        del model, train_bundle, valid_bundle
+        _release_accelerator_memory()
     paths.extend(_aggregate_diagnostics(config))
     progress.done()
     return paths
@@ -203,6 +211,7 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
         progress.window(idx, window)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
         progress.step("load_model")
+        validate_manifest(path, config, window, dataset)
         model = model_class.load(path)
         written.extend(
             _predict_write_window(

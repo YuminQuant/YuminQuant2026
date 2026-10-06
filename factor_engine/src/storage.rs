@@ -63,6 +63,23 @@ struct MetadataRow {
     updated_at: String,
 }
 
+struct FactorMetadataLock(PathBuf);
+
+impl FactorMetadataLock {
+    fn acquire(root: &Path) -> Result<Self> {
+        let path = root.join("factor_metadata.lock");
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+            .map_err(|error| err(format!("metadata writer active or stale lock {}: {error}", path.display())))?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for FactorMetadataLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[derive(Clone, Debug)]
 struct BarraMetadataRow {
     exposure_id: String,
@@ -175,6 +192,7 @@ impl FactorStorage {
 
     pub fn write_metadata(&self, specs: &[FactorSpec]) -> Result<()> {
         std::fs::create_dir_all(&self.factor_root)?;
+        let _lock = FactorMetadataLock::acquire(&self.factor_root)?;
         let path = self.factor_root.join("factor_metadata.parquet");
 
         let updated_at = unix_timestamp_string();
@@ -195,8 +213,28 @@ impl FactorStorage {
             });
         }
 
-        let table = metadata_rows_to_table(rows)?;
-        write_parquet(&path, &table)
+        let external_path = self.factor_root.join("factor_metadata.ml_alpha.parquet");
+        let external = if external_path.exists() {
+            read_metadata_records(&external_path)?
+        } else if path.exists() {
+            read_metadata_records(&path)?.into_iter()
+                .filter(|row| row.tags.iter().any(|tag| tag == "model_generated")).collect()
+        } else { Vec::new() };
+        let ids = rows.iter().map(|row| row.factor_id.as_str()).collect::<BTreeSet<_>>();
+        if external.iter().any(|row| ids.contains(row.factor_id.as_str())) {
+            return Err(err("Rust and ml_alpha factor metadata IDs collide"));
+        }
+        let external_rows = external.into_iter().map(|row| MetadataRow {
+            factor_id: row.factor_id, aliases_json: row.aliases_json, version: row.version,
+            output_column: row.output_column, name: row.name, asset_class: row.asset_class,
+            frequency: row.frequency, tags_json: row.tags_json, dependencies_json: row.dependencies_json,
+            description: row.description, updated_at: row.updated_at,
+        }).collect::<Vec<_>>();
+        write_parquet(&external_path, &metadata_rows_to_table(external_rows.clone())?)?;
+        write_parquet(&self.factor_root.join("factor_metadata.rust.parquet"), &metadata_rows_to_table(rows.clone())?)?;
+        rows.extend(external_rows);
+        rows.sort_by(|a, b| (&a.asset_class, &a.frequency, &a.factor_id).cmp(&(&b.asset_class, &b.frequency, &b.factor_id)));
+        write_parquet(&path, &metadata_rows_to_table(rows)?)
     }
 
     pub fn read_metadata(&self) -> Result<Vec<FactorMetadata>> {
@@ -1403,6 +1441,31 @@ mod tests {
             std::process::id(),
             nanos
         ))
+    }
+
+    #[test]
+    fn factor_metadata_refresh_preserves_ml_source_and_rejects_collisions() {
+        let root = temp_factor_root();
+        let storage = FactorStorage::new(root.clone());
+        let mut ml = factor_spec("python_factor");
+        ml.tags.push("model_generated".into());
+        // Simulate the legacy shared file before source metadata was introduced.
+        storage.write_metadata(&[ml.clone()]).unwrap();
+        std::fs::remove_file(root.join("factor_metadata.ml_alpha.parquet")).unwrap();
+        storage.write_metadata(&[factor_spec("native_factor")]).unwrap();
+        let rows = storage.read_metadata().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.factor_id == "python_factor"));
+        storage.write_metadata(&[factor_spec("new_native")]).unwrap();
+        let rows = storage.read_metadata().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(!rows.iter().any(|row| row.factor_id == "native_factor"));
+        assert!(storage.write_metadata(&[ml]).is_err());
+        assert!(!root.join("factor_metadata.lock").exists());
+        let lock = super::FactorMetadataLock::acquire(&root).unwrap();
+        assert!(storage.write_metadata(&[]).is_err());
+        drop(lock);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn raw_spec(version: &str) -> IntradayDailyRawSpec {

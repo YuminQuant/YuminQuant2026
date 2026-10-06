@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
+import json
+import os
 from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
@@ -64,6 +67,7 @@ class LogsigSignatureProvider(FeatureProvider):
         self.feature_columns = [f"logsig_{idx:04}" for idx in range(1, width + 1)]
         self._bar_cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
         self._calendar_dates: list[int] = []
+        self.feature_cache_root = Path(params["feature_cache_dir"]) if params.get("feature_cache_dir") else None
 
     def set_calendar_dates(self, dates: list[int]) -> None:
         self._calendar_dates = list(dates)
@@ -83,6 +87,17 @@ class LogsigSignatureProvider(FeatureProvider):
                     "step=insufficient_history"
                 )
             return self._empty_frame()
+        cache_path = self._feature_cache_path(trade_date)
+        fingerprint = self._source_fingerprint(source_dates)
+        if cache_path is not None and cache_path.exists():
+            manifest = cache_path.with_suffix(".json")
+            if manifest.exists() and json.loads(manifest.read_text()) == fingerprint:
+                if progress is not None:
+                    progress("step=feature_cache_hit")
+                return pd.read_parquet(cache_path)
+            # A rewritten source must invalidate the in-process bar cache too.
+            for source_date in source_dates:
+                self._bar_cache.pop(source_date, None)
         if progress is not None:
             progress(
                 f"source_days={len(source_dates)} window_steps={self.window_steps} "
@@ -134,7 +149,31 @@ class LogsigSignatureProvider(FeatureProvider):
                 f"step=signature_done backend={backend} stocks={len(output)} skipped_incomplete={skipped_incomplete} "
                 f"skipped_nonfinite={skipped_nonfinite}"
             )
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temp = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
+            output.to_parquet(temp, index=False)
+            temp.replace(cache_path)
+            manifest = cache_path.with_suffix(".json")
+            temp_manifest = manifest.with_name(f"{manifest.name}.{os.getpid()}.tmp")
+            temp_manifest.write_text(json.dumps(fingerprint), encoding="utf-8")
+            temp_manifest.replace(manifest)
         return output
+
+    def _feature_cache_path(self, trade_date: int) -> Path | None:
+        if self.feature_cache_root is None:
+            return None
+        settings = ["logsig-v1", str(self.root.resolve()), self.lookback_days, self.bar_size, self.order, self.volume_column]
+        key = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:20]
+        return self.feature_cache_root / key / f"{trade_date}.parquet"
+
+    def _source_fingerprint(self, dates: list[int]) -> list:
+        result = []
+        for date in dates:
+            path = daily_path(self.root, date)
+            stat = path.stat() if path.exists() else None
+            result.append([date, stat.st_size if stat else None, stat.st_mtime_ns if stat else None])
+        return result
 
     def _build_volume_matrix(
         self,

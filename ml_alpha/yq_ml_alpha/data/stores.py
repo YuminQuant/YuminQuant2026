@@ -55,10 +55,12 @@ def parquet_columns(path: str | Path) -> list[str]:
     return list(pq.read_schema(path).names)
 
 
-def discover_value_columns(root: str | Path) -> list[str]:
+def discover_value_columns(root: str | Path, end_date: int | None = None, excluded=()) -> list[str]:
     output = []
-    seen = set(NON_FEATURE_COLUMNS)
+    seen = set(NON_FEATURE_COLUMNS) | set(excluded)
     for path in sorted(Path(root).glob("*/*.parquet")):
+        if end_date is not None and int(path.stem) > end_date:
+            continue
         for column in parquet_columns(path):
             if column not in seen:
                 output.append(column)

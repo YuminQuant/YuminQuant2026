@@ -37,6 +37,8 @@ class DailyWideWriter:
         self.frequency = frequency
         self.base_root = Path(base_root) if base_root is not None else None
         self.write_workers = max(1, int(write_workers))
+        self._schema_dates_seen: set[int] = set()
+        self._known_columns = set(KEY_COLUMNS) | {output_id}
 
     def write(
         self,
@@ -122,13 +124,14 @@ class DailyWideWriter:
         return path
 
     def _schema_columns(self, dates: list[int]) -> list[str]:
-        columns = set(KEY_COLUMNS)
-        columns.add(self.output_id)
         for trade_date in dates:
+            if trade_date in self._schema_dates_seen:
+                continue
             path = self._path(trade_date)
             if path.exists():
-                columns.update(parquet_columns(path))
-        value_columns = sorted(column for column in columns if column not in KEY_COLUMNS)
+                self._known_columns.update(parquet_columns(path))
+            self._schema_dates_seen.add(trade_date)
+        value_columns = sorted(column for column in self._known_columns if column not in KEY_COLUMNS)
         return KEY_COLUMNS + value_columns
 
     def _load_base(self, path: Path, trade_date: int, daily: pd.DataFrame | None) -> pd.DataFrame:
@@ -213,6 +216,7 @@ def _merge_values(
         merged = base.merge(values, on=KEY_COLUMNS, how="outer", sort=False)
     merged = merged.sort_values(KEY_COLUMNS).reset_index(drop=True)
     merged["trade_date"] = merged["trade_date"].astype("int32")
+    columns = KEY_COLUMNS + sorted((set(columns) | set(merged.columns)) - set(KEY_COLUMNS))
     for column in columns:
         if column not in merged.columns:
             merged[column] = np.nan

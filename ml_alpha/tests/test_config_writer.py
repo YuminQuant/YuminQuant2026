@@ -61,7 +61,13 @@ from yq_ml_alpha.models.xgb_model import XGBoostAlphaModel
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
 from yq_ml_alpha.output.daily_wide_writer import DailyWideWriter
 from yq_ml_alpha.output.factor_metadata import write_factor_metadata
-from yq_ml_alpha.pipelines.runtime import build_windows, _split_by_validation_ratio
+from yq_ml_alpha.pipelines.runtime import build_windows as _safe_build_windows, _split_by_validation_ratio
+from dataclasses import replace
+
+
+def build_windows(config, calendar):
+    # These legacy tests isolate date sampling. Label maturity has separate tests.
+    return _safe_build_windows(replace(config, label=replace(config.label, lookahead_days=0)), calendar)
 
 
 def _skip_unless_sklearn_ready(testcase: unittest.TestCase) -> None:
@@ -739,9 +745,11 @@ artifact_dir = "data/model_workspace/r1/artifacts"
         self.assertEqual(config.label.id, "future_vwap_return_5d")
         self.assertEqual(config.sample.train_frequency, "5")
         self.assertEqual(config.sample.predict_frequency, "daily")
-        self.assertEqual(config.train_scheme.refit_frequency, "annual_end")
-        self.assertEqual(config.train_scheme.train_lookback, "4y")
-        self.assertEqual(config.train_scheme.validation_ratio, 0.25)
+        self.assertEqual(config.train_scheme.type, "static")
+        self.assertEqual(config.dates.train, (20110101, 20150930))
+        self.assertEqual(config.dates.valid, (20151001, 20151231))
+        self.assertIsNone(config.train_scheme.train_lookback)
+        self.assertIsNone(config.train_scheme.validation_ratio)
         self.assertEqual(config.model.params["base_factors"], 8)
         self.assertEqual(config.model.params["orthogonal_lambda"], 0.05)
         self.assertEqual(config.model.params["neutralize"], "barra:SIZE+sector")
@@ -1353,7 +1361,9 @@ neutralize = "none"
         self.assertTrue(kwargs["check"])
         metadata_only.assert_called_once_with([Path("factors/bar_gru_15m.toml")], None)
 
-    def test_factor_train_resume_skips_existing_artifact(self) -> None:
+    @mock.patch("yq_ml_alpha.pipelines.factor.validate_manifest")
+    @mock.patch("yq_ml_alpha.pipelines.factor.save_manifest")
+    def test_factor_train_resume_skips_existing_artifact(self, _save, _validate) -> None:
         from yq_ml_alpha.pipelines import factor as factor_pipeline
         from yq_ml_alpha.pipelines.runtime import TrainingWindow
 
@@ -1403,7 +1413,8 @@ neutralize = "none"
             fit_model.assert_called_once()
             model_instance.save.assert_called_once()
 
-    def test_factor_run_resume_skips_complete_window_and_predicts_missing_with_artifact(self) -> None:
+    @mock.patch("yq_ml_alpha.pipelines.factor.validate_manifest")
+    def test_factor_run_resume_skips_complete_window_and_predicts_missing_with_artifact(self, _validate) -> None:
         from yq_ml_alpha.pipelines import factor as factor_pipeline
         from yq_ml_alpha.pipelines.runtime import TrainingWindow
 
@@ -1659,6 +1670,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertEqual(float(bundle.tensors["bar"][0, 0, 0]), -1.0)
             self.assertEqual(float(bundle.tensors["bar"][1, 0, 0]), 1.0)
             self.assertEqual(bundle.frame["y"].tolist(), [-1.0, 1.0])
+            bundle.close()
 
     def test_bar_panel_provider_aggregates_minute_bars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

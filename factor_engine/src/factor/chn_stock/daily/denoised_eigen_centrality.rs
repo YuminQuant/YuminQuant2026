@@ -63,6 +63,7 @@ impl Factor for StockDailyDenoisedEigenCentrality {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "DFZQ",
         "cs_network",
         "correlation",

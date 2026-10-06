@@ -24,7 +24,7 @@ impl Factor for StockDailyStt {
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
-            tags: ["GFZQ", "behavioral", "salience", "turnover", "return", "neutralize", "daily"]
+            tags: ["price_volume", "GFZQ", "behavioral", "salience", "turnover", "return", "neutralize", "daily"]
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),

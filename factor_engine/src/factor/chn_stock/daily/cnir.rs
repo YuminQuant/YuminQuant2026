@@ -78,6 +78,7 @@ impl Factor for StockDailyCnir {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "KYZQ",
         "moneyflow",
         "principal",

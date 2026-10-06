@@ -62,6 +62,7 @@ impl Factor for StockDailyTractionOre {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "KYZQ",
         "cs_network",
         "overnight",

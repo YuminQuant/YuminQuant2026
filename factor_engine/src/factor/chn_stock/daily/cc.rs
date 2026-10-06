@@ -68,6 +68,7 @@ impl Factor for StockDailyCc {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "HXZQ",
         "cs_network",
         "correlation",

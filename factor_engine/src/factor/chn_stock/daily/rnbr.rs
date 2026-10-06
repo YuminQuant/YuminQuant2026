@@ -70,6 +70,7 @@ impl Factor for StockDailyRnbr {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "ZSZQ",
         "neighbor",
         "spillover",

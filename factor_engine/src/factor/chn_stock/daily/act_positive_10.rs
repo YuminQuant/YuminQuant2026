@@ -69,6 +69,7 @@ impl Factor for StockDailyActPositive10 {
 
 fn tags() -> Vec<String> {
     [
+        "price_volume",
         "KYZQ",
         "moneyflow",
         "active_buy",

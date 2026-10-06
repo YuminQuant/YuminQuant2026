@@ -4,7 +4,8 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::stock_daily_ops::is_bj_stock;
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
+use crate::factor::common::PanelColumn;
 use crate::factor::Factor;
 
 pub struct StockDailyIcc;
@@ -21,13 +22,15 @@ impl Factor for StockDailyIcc {
             name: "Implied Cost of Capital".into(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.1.0".into(),
-            tags: ["DFZQ", "analyst", "consensus", "valuation", "daily"]
+            version: "0.2.0".into(),
+            tags: ["DFZQ", "analyst", "consensus", "valuation", "daily", "neutralize", "barra", "size", "sector"]
                 .into_iter().map(str::to_string).collect(),
-            description: "Zero-dividend Easton ICC: sqrt((con_eps_fy2-con_eps_fy1)/close). EPS and unadjusted close are yuan/share; output is a decimal rate. Uses the consensus dataset's PIT fiscal-year anchor. Requires finite EPS, strictly positive EPS increase and close; negative EPS levels are allowed. Stock universe panel, excludes BJ; no rank transform, winsorization, zscore or neutralization.".into(),
+            description: "Zero-dividend Easton raw ICC: sqrt((con_eps_fy2-con_eps_fy1)/close). EPS and unadjusted close are yuan/share; raw is a decimal rate. Uses the consensus dataset's PIT fiscal-year anchor. Requires finite EPS, strictly positive EPS increase and close; negative EPS levels are allowed. Stock universe panel, excludes BJ. Final output is the daily SW L1 industry and Barra SIZE regression residual, which may be negative; missing SIZE/industry stays null. No rank transform, winsorization or final zscore.".into(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockConsensus, &["con_eps_fy1", "con_eps_fy2"]),
                 DataRequest::new(DatasetId::StockDailyPv, &["close"]),
+                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+                DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             ],
             intraday_raw_dependencies: vec![],
             lookback: Lookback { trading_days: 0 },
@@ -35,32 +38,38 @@ impl Factor for StockDailyIcc {
     }
 
     fn compute(&self, _: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let panel = data.stock_universe_panel()?;
-        let consensus = data.daily(DatasetId::StockConsensus)?;
-        let eps1 = panel.column_from_table(consensus, "con_eps_fy1")?;
-        let eps2 = panel.column_from_table(consensus, "con_eps_fy2")?;
-        let close = panel.column_from_table(data.daily(DatasetId::StockDailyPv)?, "close")?;
-        let n = panel.instruments().len();
-        let mut values = vec![None; panel.shape_len()];
-        for (day, &date) in panel.dates().iter().enumerate() {
-            if !panel.is_target_date(date) {
-                continue;
-            }
-            for (i, code) in panel.instruments().iter().enumerate() {
-                let offset = day * n + i;
-                if panel.is_present_offset(offset) && !is_bj_stock(code) {
-                    values[offset] = icc(
-                        eps1.values()[offset],
-                        eps2.values()[offset],
-                        close.values()[offset],
-                    );
-                }
+        let raw = raw_icc(data)?;
+        Ok(
+            neutralize_size_sector(&raw, data.stock_universe_panel()?, data)?
+                .to_factor_series(self.spec()),
+        )
+    }
+}
+
+fn raw_icc(data: &DataPool) -> Result<PanelColumn> {
+    let panel = data.stock_universe_panel()?;
+    let consensus = data.daily(DatasetId::StockConsensus)?;
+    let eps1 = panel.column_from_table(consensus, "con_eps_fy1")?;
+    let eps2 = panel.column_from_table(consensus, "con_eps_fy2")?;
+    let close = panel.column_from_table(data.daily(DatasetId::StockDailyPv)?, "close")?;
+    let n = panel.instruments().len();
+    let mut values = vec![None; panel.shape_len()];
+    for (day, &date) in panel.dates().iter().enumerate() {
+        if !panel.is_target_date(date) {
+            continue;
+        }
+        for (i, code) in panel.instruments().iter().enumerate() {
+            let offset = day * n + i;
+            if panel.is_present_offset(offset) && !is_bj_stock(code) {
+                values[offset] = icc(
+                    eps1.values()[offset],
+                    eps2.values()[offset],
+                    close.values()[offset],
+                );
             }
         }
-        Ok(panel
-            .column_from_values(values)?
-            .to_factor_series(self.spec()))
     }
+    panel.column_from_values(values)
 }
 
 fn icc(eps1: Option<f64>, eps2: Option<f64>, close: Option<f64>) -> Option<f64> {
@@ -110,7 +119,16 @@ mod tests {
         assert!(spec.tags.contains(&"DFZQ".into()));
         assert!(spec.tags.contains(&"analyst".into()));
         assert!(!spec.tags.contains(&"fundamental".into()));
-        assert_eq!(spec.dependencies.len(), 2);
+        assert_eq!(spec.dependencies.len(), 4);
+        assert!(spec.tags.contains(&"neutralize".into()));
+        assert!(spec
+            .dependencies
+            .iter()
+            .any(|d| d.dataset == DatasetId::StockBarraDaily));
+        assert!(spec
+            .dependencies
+            .iter()
+            .any(|d| d.dataset == DatasetId::StockSwClassification));
         assert_eq!(spec.dependencies[0].columns, ["con_eps_fy1", "con_eps_fy2"]);
         assert_eq!(spec.lookback.trading_days, 0);
     }
@@ -139,6 +157,110 @@ mod tests {
         println!("ICC 20260424: rows={}, valid={valid}", result.values.len());
         assert!(valid > 0);
         assert!(result.values.iter().all(|v| v.key.trade_date() == 20260424));
+    }
+
+    #[test]
+    fn icc_final_residual_removes_size_and_sector_and_masks_missing() {
+        let context = FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20260424,
+            end_date: 20260424,
+            load_start_date: 20260424,
+            load_dates: vec![20260424],
+            target_dates: vec![20260424],
+        };
+        let codes = || ColumnData::Utf8((1..=10).map(|i| Some(format!("{i:06}.SZ"))).collect());
+        let dates = || ColumnData::I32(vec![Some(20260424); 10]);
+        let basic = Table::new(BTreeMap::from([
+            ("ts_code".into(), codes()),
+            (
+                "list_date".into(),
+                ColumnData::I32(vec![Some(20100101); 10]),
+            ),
+            ("delist_date".into(), ColumnData::I32(vec![None; 10])),
+        ]))
+        .unwrap();
+        let consensus = Table::new(BTreeMap::from([
+            ("ts_code".into(), codes()),
+            ("trade_date".into(), dates()),
+            ("con_eps_fy1".into(), ColumnData::F64(vec![Some(1.0); 10])),
+            (
+                "con_eps_fy2".into(),
+                ColumnData::F64(
+                    (0..10)
+                        .map(|i| {
+                            let raw = 0.1
+                                + 0.01 * i as f64
+                                + 0.02 * (i / 4) as f64
+                                + 0.003 * (i as f64).sin();
+                            Some(1.0 + 25.0 * raw * raw)
+                        })
+                        .collect(),
+                ),
+            ),
+        ]))
+        .unwrap();
+        let pv = Table::new(BTreeMap::from([
+            ("ts_code".into(), codes()),
+            ("trade_date".into(), dates()),
+            ("close".into(), ColumnData::F64(vec![Some(25.0); 10])),
+        ]))
+        .unwrap();
+        let size = Table::new(BTreeMap::from([
+            ("ts_code".into(), codes()),
+            ("trade_date".into(), dates()),
+            (
+                "SIZE".into(),
+                ColumnData::F64((0..10).map(|i| (i != 8).then_some(i as f64)).collect()),
+            ),
+        ]))
+        .unwrap()
+        .take(&(0..10).rev().collect::<Vec<_>>())
+        .unwrap();
+        let sector = Table::new(BTreeMap::from([
+            ("ts_code".into(), codes()),
+            ("in_date".into(), ColumnData::I32(vec![Some(20100101); 10])),
+            ("out_date".into(), ColumnData::I32(vec![None; 10])),
+            (
+                "l1_code".into(),
+                ColumnData::Utf8(
+                    (0..10)
+                        .map(|i| (i != 9).then(|| format!("{}", i / 4)))
+                        .collect(),
+                ),
+            ),
+        ]))
+        .unwrap();
+        let data = DataPool::from_daily_tables_for_test(
+            HashMap::from([
+                (DatasetId::StockBasic, basic),
+                (DatasetId::StockConsensus, consensus),
+                (DatasetId::StockDailyPv, pv),
+                (DatasetId::StockBarraDaily, size),
+                (DatasetId::StockSwClassification, sector),
+            ]),
+            &context,
+        )
+        .unwrap();
+        let result = StockDailyIcc.compute(&context, &data).unwrap();
+        let residuals: Vec<_> = result.values.iter().map(|v| v.value).collect();
+        assert_eq!(residuals.len(), 10);
+        assert_eq!(&residuals[8..], &[None, None]);
+        assert!(residuals[..8].iter().all(Option::is_some));
+        assert!(residuals[..8].iter().flatten().any(|r| *r < 0.0));
+        for group in residuals[..8].chunks(4) {
+            assert!(group.iter().flatten().sum::<f64>().abs() < 1e-8);
+        }
+        assert!(
+            residuals[..8]
+                .iter()
+                .enumerate()
+                .map(|(i, r)| i as f64 * r.unwrap())
+                .sum::<f64>()
+                .abs()
+                < 1e-8
+        );
     }
 
     #[test]
@@ -225,7 +347,9 @@ mod tests {
             &context,
         )
         .unwrap();
-        let result = StockDailyIcc.compute(&context, &data).unwrap();
+        let result = raw_icc(&data)
+            .unwrap()
+            .to_factor_series(StockDailyIcc.spec());
         assert_eq!(result.values.len(), 4);
         for value in result.values {
             let FactorRowKey::Daily {

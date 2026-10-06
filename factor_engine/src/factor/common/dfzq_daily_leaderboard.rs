@@ -4,8 +4,8 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::{err, Result};
-use crate::factor::common::stock_daily_ops::is_bj_stock;
-use crate::factor::common::{DailyPanel, PanelColumn};
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
+use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel, PanelColumn};
 use crate::factor::Factor;
 use std::collections::VecDeque;
 
@@ -32,10 +32,14 @@ impl Factor for DailyLeaderboard {
         FactorSpec {
             id: self.0.id().into(), aliases: vec![self.0.id().to_ascii_uppercase()],
             name: match self.0 { Side::Winner => "Daily Winner Factor", Side::Loser => "Daily Loser Factor" }.into(),
-            asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.1.0".into(),
-            tags: ["DFZQ", "price_volume", "return", "leaderboard", "exponential_decay", "daily"].into_iter().map(str::to_string).collect(),
-            description: "Square root of 120-day exponentially decayed top/bottom-80 daily pct_chg membership, half-life 10 trading days. Multiplies the decayed sum by (1-decay^120)/(1-decay), as specified, not its reciprocal. Finite present non-BJ returns only, ties by ascending stock code; fewer than 80 eligible stocks selects all. Missing history is nonmembership, min_periods=1, invalid current returns are null. No neutralization, zscore or sign reversal. Shared daily partial selection and bounded sparse event queues; only requested outputs computed.".into(),
-            dependencies: vec![DataRequest::new(DatasetId::StockDailyPv, &["pct_chg"])],
+            asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.2.0".into(),
+            tags: ["DFZQ", "price_volume", "return", "leaderboard", "exponential_decay", "daily", "neutralize", "barra", "size", "sector"].into_iter().map(str::to_string).collect(),
+            description: "Square root of 120-day exponentially decayed top/bottom-80 daily pct_chg membership, half-life 10 trading days. Multiplies the decayed sum by (1-decay^120)/(1-decay), as specified, not its reciprocal. Finite present non-BJ returns only, ties by ascending stock code; fewer than 80 eligible stocks selects all. Missing history is nonmembership, min_periods=1, invalid current returns are null. Final daily SW L1 industry and Barra SIZE regression residual; missing exposures stay null. No final zscore or sign reversal. Shared daily partial selection and bounded sparse event queues; only requested outputs computed.".into(),
+            dependencies: vec![
+                DataRequest::new(DatasetId::StockDailyPv, &["pct_chg"]),
+                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+                DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
+            ],
             intraday_raw_dependencies: vec![], lookback: Lookback { trading_days: WINDOW - 1 },
         }
     }
@@ -66,10 +70,20 @@ fn compute(ids: &[String], data: &DataPool) -> Result<Vec<FactorSeries>> {
     }
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let returns = panel.column("pct_chg")?;
+    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let sector = ClassificationMap::from_table(
+        data.daily(DatasetId::StockSwClassification)?,
+        ClassificationLevel::Sector,
+    )?;
     columns(panel, &returns, &sides)?
         .into_iter()
         .zip(sides)
-        .map(|(column, side)| Ok(column.to_factor_series(DailyLeaderboard(side).spec())))
+        .map(|(column, side)| {
+            Ok(
+                neutralize_size_sector_with_inputs(&column, panel, &size, &sector)?
+                    .to_factor_series(DailyLeaderboard(side).spec()),
+            )
+        })
         .collect()
 }
 fn select(eligible: &mut [(usize, f64)], codes: &[String], side: Side) -> Vec<usize> {
@@ -165,6 +179,94 @@ mod tests {
     use super::*;
     use crate::data::{ColumnData, Table};
     use std::collections::BTreeMap;
+    #[test]
+    fn leaderboard_final_outputs_are_neutralized_and_request_independent() {
+        use std::collections::HashMap;
+        let context = FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20260424,
+            end_date: 20260424,
+            load_start_date: 20260424,
+            load_dates: vec![20260424],
+            target_dates: vec![20260424],
+        };
+        let codes =
+            || ColumnData::Utf8((0..100).map(|i| Some(format!("{:06}.SZ", i + 1))).collect());
+        let dates = || ColumnData::I32(vec![Some(20260424); 100]);
+        let pv = Table::new(BTreeMap::from([
+            ("ts_code".into(), codes()),
+            ("trade_date".into(), dates()),
+            (
+                "pct_chg".into(),
+                ColumnData::F64((0..100).map(|i| Some(i as f64)).collect()),
+            ),
+        ]))
+        .unwrap();
+        let size = Table::new(BTreeMap::from([
+            ("ts_code".into(), codes()),
+            ("trade_date".into(), dates()),
+            (
+                "SIZE".into(),
+                ColumnData::F64((0..100).map(|i| (i != 98).then_some(i as f64)).collect()),
+            ),
+        ]))
+        .unwrap()
+        .take(&(0..100).rev().collect::<Vec<_>>())
+        .unwrap();
+        let sector = Table::new(BTreeMap::from([
+            ("ts_code".into(), codes()),
+            ("in_date".into(), ColumnData::I32(vec![Some(20100101); 100])),
+            ("out_date".into(), ColumnData::I32(vec![None; 100])),
+            (
+                "l1_code".into(),
+                ColumnData::Utf8(
+                    (0..100)
+                        .map(|i| (i != 99).then(|| (i % 2).to_string()))
+                        .collect(),
+                ),
+            ),
+        ]))
+        .unwrap();
+        let data = DataPool::from_daily_tables_for_test(
+            HashMap::from([
+                (DatasetId::StockDailyPv, pv),
+                (DatasetId::StockBarraDaily, size),
+                (DatasetId::StockSwClassification, sector),
+            ]),
+            &context,
+        )
+        .unwrap();
+        let both = compute(&["dwf".into(), "dlf".into()], &data).unwrap();
+        for result in both {
+            let single = compute(&[result.spec.id.clone()], &data).unwrap();
+            let values: Vec<_> = result.values.iter().map(|v| v.value).collect();
+            assert_eq!(
+                values,
+                single[0].values.iter().map(|v| v.value).collect::<Vec<_>>()
+            );
+            assert_eq!(&values[98..], &[None, None]);
+            assert!(values[..98].iter().all(Option::is_some));
+            assert!(values[..98].iter().flatten().any(|v| *v < 0.0));
+            for sector in 0..2 {
+                assert!(
+                    (sector..98)
+                        .step_by(2)
+                        .map(|i| values[i].unwrap())
+                        .sum::<f64>()
+                        .abs()
+                        < 1e-8
+                );
+            }
+            assert!(
+                (0..98)
+                    .map(|i| i as f64 * values[i].unwrap())
+                    .sum::<f64>()
+                    .abs()
+                    < 1e-8
+            );
+        }
+    }
     #[test]
     fn leaderboard_selects_exactly_80_and_breaks_ties_by_code() {
         let codes: Vec<_> = (0..100).map(|i| format!("{i:06}.SZ")).collect();
@@ -270,6 +372,8 @@ mod tests {
             let spec = DailyLeaderboard(side).spec();
             assert!(spec.tags.contains(&"price_volume".into()));
             assert!(spec.tags.contains(&"DFZQ".into()));
+            assert!(spec.tags.contains(&"neutralize".into()));
+            assert_eq!(spec.dependencies.len(), 3);
             assert_eq!(spec.lookback.trading_days, 119);
         }
         assert_eq!(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import warnings
 
 import numpy as np
@@ -18,6 +19,7 @@ from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 from yq_ml_alpha.data.sampler import sample_dates
+from yq_ml_alpha.data.tensor_storage import TensorSpool
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
 
@@ -28,6 +30,13 @@ class DatasetBundle:
     label_column: str
     tensors: dict[str, np.ndarray] | None = None
     tensor_columns: dict[str, list[str]] | None = None
+    storage: TensorSpool | None = None
+
+    def close(self) -> None:
+        if self.storage is not None:
+            self.storage.close()
+            self.storage = None
+            self.tensors = None
 
 
 class DatasetBuilder:
@@ -94,6 +103,9 @@ class DatasetBuilder:
         for date_idx, trade_date in enumerate(dates, start=1):
             progress = _factor_sequence_progress(split_name, date_idx, total_dates, trade_date)
             sequence_dates = _sequence_dates(calendar, trade_date, sequence_frequency, sequence_length)
+            for old_date in list(feature_cache):
+                if sequence_dates and old_date < sequence_dates[0]:
+                    del feature_cache[old_date]
             if len(sequence_dates) < sequence_length:
                 progress(
                     f"step=skip insufficient_sequence got={len(sequence_dates)} required={sequence_length}"
@@ -168,6 +180,10 @@ class DatasetBuilder:
             raise TypeError("load_bar_panel requires BarPanelProvider or MultiBarPanelProvider")
         frames = []
         tensor_chunks: list[dict[str, np.ndarray]] = []
+        storage_mode = self.config.materialize.tensor_storage
+        if storage_mode not in {"mmap", "memory"}:
+            raise ValueError("materialize.tensor_storage must be mmap or memory")
+        spool = TensorSpool(Path(self.config.materialize.cache_dir) / "scratch") if storage_mode == "mmap" and include_label else None
         tensor_columns: dict[str, list[str]] | None = None
         total_dates = len(dates)
         split_name = "labeled" if include_label else "predict"
@@ -215,11 +231,14 @@ class DatasetBuilder:
             else:
                 frame = frame.reset_index(drop=True)
             frames.append(frame)
-            tensor_chunks.append(tensors)
+            if spool is not None:
+                spool.append(tensors)
+            else:
+                tensor_chunks.append(tensors)
             tensor_columns = window.tensor_columns
         if frames:
             output = pd.concat(frames, ignore_index=True)
-            output_tensors = _concat_tensor_chunks(tensor_chunks)
+            output_tensors = spool.finish() if spool is not None else _concat_tensor_chunks(tensor_chunks)
         else:
             columns = ["trade_date", "ts_code"]
             if include_label:
@@ -233,6 +252,7 @@ class DatasetBuilder:
             self.config.label.id,
             tensors=output_tensors,
             tensor_columns=tensor_columns,
+            storage=spool,
         )
 
     def _source_st_symbols_by_date(self, dates: list[int]) -> dict[int, set[str]]:
@@ -362,7 +382,14 @@ class DatasetBuilder:
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
     if config.features.type == "factor_frame":
-        return FactorFrameProvider(config.features.root, config.features.columns)
+        excluded = {config.output.id}
+        metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
+        if metadata.exists():
+            for row in pd.read_parquet(metadata, columns=["output_column", "tags_json"]).itertuples(index=False):
+                tags = json.loads(row.tags_json or "[]")
+                if "model_generated" in tags or "deprecated" in tags:
+                    excluded.add(row.output_column)
+        return FactorFrameProvider(config.features.root, config.features.columns, config.dates.train[1], excluded)
     if config.features.type == "raw_panel":
         return RawPanelProvider(config.features.root, config.features.columns)
     if config.features.type == "logsig_signature":

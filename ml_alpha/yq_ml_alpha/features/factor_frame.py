@@ -9,9 +9,9 @@ from yq_ml_alpha.features.base import FeatureProvider
 
 
 class FactorFrameProvider(FeatureProvider):
-    def __init__(self, root: str | Path, columns: list[str] | str) -> None:
+    def __init__(self, root: str | Path, columns: list[str] | str, end_date: int | None = None, excluded=()) -> None:
         self.root = Path(root)
-        self.feature_columns = discover_value_columns(self.root) if is_all_column_request(columns) else list(columns)
+        self.feature_columns = discover_value_columns(self.root, end_date, excluded) if is_all_column_request(columns) else list(columns)
 
     def load(self, trade_date: int) -> pd.DataFrame:
         frame = read_daily(self.root, trade_date, self.feature_columns)

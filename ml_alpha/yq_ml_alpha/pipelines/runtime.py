@@ -4,6 +4,7 @@ import gc
 import importlib
 import json
 import math
+import re
 import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +63,48 @@ def _predict_write_window(
 
 
 def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[TrainingWindow]:
+    windows = _build_windows(config, calendar)
+    horizon = _label_horizon(config)
+    positions = {date: idx for idx, date in enumerate(calendar.dates)}
+
+    def before(dates, boundary):
+        if boundary is None:
+            return dates
+        limit = positions[boundary]
+        return [date for date in dates if positions[date] + horizon < limit]
+
+    output = []
+    for window in windows:
+        prediction_start = window.predict_dates[0] if window.predict_dates else None
+        valid = before(window.valid_dates, prediction_start)
+        if window.valid_dates and not valid:
+            raise ValueError(f"{window.window_id}: no validation labels settle before prediction")
+        train = before(window.train_dates, valid[0] if valid else prediction_start)
+        if not train:
+            raise ValueError(f"{window.window_id}: no training labels settle before the next split")
+        output.append(TrainingWindow(window.window_id, train, valid, window.predict_dates))
+    return output
+
+
+def _label_horizon(config: MlAlphaConfig) -> int:
+    horizon = config.label.lookahead_days
+    if horizon is None:
+        match = re.fullmatch(r"future_(?:vwap|open_\d+m_vwap)_return_(\d+)d", config.label.id)
+        if match is None:
+            raise ValueError("custom label requires label.lookahead_days to prevent temporal leakage")
+        horizon = int(match.group(1)) + 1
+    if not isinstance(horizon, int) or horizon < 0:
+        raise ValueError("label.lookahead_days must be a non-negative integer")
+    return horizon
+
+
+def _settled_dates(config, calendar, dates, prediction_start):
+    positions = {date: idx for idx, date in enumerate(calendar.dates)}
+    horizon = _label_horizon(config)
+    return [date for date in dates if positions[date] + horizon < positions[prediction_start]]
+
+
+def _build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[TrainingWindow]:
     train_frequency = _train_frequency(config)
     predict_dates = _predict_dates(config, calendar)
     scheme = config.train_scheme.type.lower()
@@ -231,6 +274,7 @@ def _ratio_split_windows(
         if train_range is None:
             continue
         eligible = sample_dates(calendar, train_range, train_frequency)
+        eligible = _settled_dates(config, calendar, eligible, segment[0])
         train_dates, valid_dates = _split_by_validation_ratio(eligible, ratio)
         if not train_dates:
             continue
@@ -277,6 +321,7 @@ def _sample_count_windows(
         # returns inside the prediction segment, so train/valid samples must be
         # strictly earlier than the refit anchor.
         eligible = [date for date in train_pool if date < refit]
+        eligible = _settled_dates(config, calendar, eligible, segment[0])
         if len(eligible) < count + valid_count:
             continue
         valid_dates = eligible[-valid_count:] if valid_count > 0 else []

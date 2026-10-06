@@ -169,7 +169,9 @@ Refresh one factor metadata row with:
 python -m yq_ml_alpha factor-metadata --config factors\bar_gru_15m.toml
 ```
 
-When Rust factor metadata is rebuilt with `factor_engine -- metadata`, run `factor-metadata` afterward so the Python-generated formal factors are added back into the shared metadata file.
+Rust and Python now maintain separate source files, `factor_metadata.rust.parquet` and `factor_metadata.ml_alpha.parquet`, and publish their union to `factor_metadata.parquet`. Rust refresh preserves Python entries; duplicate identifiers across sources fail explicitly. A shared exclusive lock prevents simultaneous metadata writers. Legacy combined metadata is migrated on first refresh.
+
+Rust 和 Python 分别维护上述两个来源文件，再合并到原来的 metadata 文件。Rust 刷新不再覆盖 ML 条目；跨来源重名会报错，共享锁防止同时刷新。首次刷新会迁移旧合并表。若进程异常退出留下 `factor_metadata.lock`，必须确认没有写入进程后才能删除该锁。
 
 Or refresh the shared metadata in one step:
 
@@ -218,9 +220,9 @@ python -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
 The config uses:
 
 - label: `future_vwap_return_5d`
-- rolling window: 4 years
-- refit frequency: annual end
-- train/validation split: first 75% sampled dates for train, last 25% for validation
+- fixed training: 2011-01-01 through 2015-09-30
+- validation: 2015-10-01 through 2015-12-31
+- out-of-sample prediction: from 2016-01-01, without periodic retraining
 - sample frequency: every 5 trading days
 - prediction frequency: daily
 - model: `LogsigOrthogonalMLPAlphaModel`
@@ -229,3 +231,40 @@ The config uses:
 - model-owned Rust neutralization: `model.params.neutralize = "barra:SIZE+sector"`
 
 Base factors are model artifacts/diagnostics only. The formal factor library receives only the final neutralized `logsig_alpha_v` column.
+
+## Fixed Training And Safety / 固定训练与安全边界
+
+All four e2e configs use the same fixed training/validation dates above and are active. Machine learning remains in Python. Rust continues to provide existing feature operators and metadata interoperability only.
+
+四个 e2e 配置均采用上述固定划分，三个 GRU 配置已恢复 active。机器学习继续使用 Python，不迁移到 Rust。
+
+Train once, then predict / 先训练，再推理（从项目根目录执行 / run from repository root）：
+
+```powershell
+$env:PYTHONPATH = "$PWD\ml_alpha"
+$factors = @("bar_gru_15m", "multi_bar_gru_daily_15m", "residual_multi_bar_gru")
+foreach ($factor in $factors) {
+    python -m yq_ml_alpha factor-train --config "ml_alpha\factors\$factor.toml"
+    if ($LASTEXITCODE -ne 0) { throw "Training failed: $factor" }
+    python -m yq_ml_alpha factor-predict --config "ml_alpha\factors\$factor.toml"
+    if ($LASTEXITCODE -ne 0) { throw "Prediction failed: $factor" }
+}
+```
+
+Dates are feature dates. Training labels must settle strictly before the first validation date, and validation labels before the first prediction date. Built-in future VWAP return labels have an N+1 trading-day horizon (the 5-day label settles at t+6). Boundary samples are purged. Custom labels must declare `[label].lookahead_days`. Thus the configured date ranges are upper bounds, not a promise to include every boundary sample.
+
+这些区间指特征日。训练标签必须在验证开始前结算，验证标签必须在预测开始前结算。内置 5 日 VWAP 收益标签从 t+1 到 t+6，因此边界会剔除未结算样本。自定义标签必须设置 `[label].lookahead_days`。Logsig 预测的基因子标准化按完整交易日截面执行，不受推理 mini-batch 大小影响，也不混合不同日期。
+
+Each trained artifact has a `model.manifest.json` fingerprint covering actual training/validation dates, feature order, preprocessing, label, model settings and `data_version`. Resume and prediction reject missing/mismatched manifests; old artifacts must be retrained. Extending prediction dates alone is allowed. Set top-level `data_version` when rebuilding source data: the manifest does not hash the database contents.
+
+每次训练保存配置与特征顺序指纹；恢复和预测时校验，不会仅因输出列存在就跳过训练。旧模型没有 manifest，需要重新训练。单纯延长预测区间可以复用；重建底层数据后应修改顶层 `data_version`，指纹并不校验整库文件内容。因子特征自动发现只检查训练结束前的文件，并排除自身、deprecated 和 model_generated 列；显式列清单仍可用于有意的模型堆叠。
+
+## Resource Controls / 资源控制
+
+Labeled bar-sequence bundles default to `[materialize].tensor_storage = "mmap"`. Tensors are spooled per date into temporary float32 files under the configured cache directory, avoiding a second full concatenated tensor in RAM. Row metadata remains in memory; prediction uses bounded date chunks. Use `"memory"` to opt out. Programmatic bundle owners should call `bundle.close()` when finished, especially on Windows.
+
+带标签的 bar 序列默认使用 mmap 临时文件，按日追加 float32 tensor，避免在内存同时保留每日 tensor 和完整拼接副本。行索引仍在内存，mmap 也会使用操作系统页缓存，并不保证固定内存上限。直接使用 bundle 的调用者应在结束后调用 `close()`；CLI 正常阶段结束释放对象及临时文件。磁盘空间不足时可改为 `tensor_storage = "memory"`，但会增加内存需求。
+
+Logsig supports `features.params.feature_cache_dir` (enabled in its config). Deterministic per-date features are reused only when settings and source file sizes/mtime match. This disk cache persists across runs; remove its directory when no longer needed. It stores features, not fitted normalization or model weights. Daily output schema discovery is memoized per writer instead of rescanning all dates for every prediction chunk.
+
+Logsig 配置已启用确定性特征磁盘缓存：参数和源文件大小/修改时间一致才复用，不缓存训练标准化参数或模型权重。该缓存跨命令保留，可按需清理目录。写出 schema 每个 writer 按日期记忆，避免每个预测块重扫全区间。以上不代表已完成实际全量性能基准；训练规模和可用磁盘仍需按本机资源设置。

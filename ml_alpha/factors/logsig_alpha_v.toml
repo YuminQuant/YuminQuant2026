@@ -11,19 +11,16 @@ base_root = "data/stock_data/daily/pv"
 write_workers = 4
 
 [dates]
-train = [20110101, 20260424]
-valid = []
-predict = [20110101, 20260424]
+train = [20110101, 20150930]
+valid = [20151001, 20151231]
+predict = [20160101, 20260424]
 
 [sample]
 train_frequency = "5"
 predict_frequency = "daily"
 
 [train_scheme]
-type = "rolling"
-refit_frequency = "annual_end"
-train_lookback = "4y"
-validation_ratio = 0.25
+type = "static"
 
 [label]
 id = "future_vwap_return_5d"
@@ -51,6 +48,7 @@ bar_size = 5
 order = 10
 volume_column = "volume"
 cache_days = "auto"
+feature_cache_dir = "data/model_workspace/logsig_alpha_v/features"
 
 [materialize]
 cache_samples = false

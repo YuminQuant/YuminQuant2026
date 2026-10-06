@@ -1,5 +1,5 @@
 factor_id = "bar_gru_15m"
-tags = ["deprecated"]
+tags = []
 data_root = "data"
 
 [output]
@@ -12,19 +12,16 @@ base_root = "data/stock_data/daily/pv"
 write_workers = 4
 
 [dates]
-train = [20110101, 20260424]
-valid = []
-predict = [20110101, 20260424]
+train = [20110101, 20150930]
+valid = [20151001, 20151231]
+predict = [20160101, 20260424]
 
 [sample]
 train_frequency = "10"
 predict_frequency = "daily"
 
 [train_scheme]
-type = "rolling"
-refit_frequency = "semiannual_end"
-train_lookback = "3y"
-validation_ratio = 0.2
+type = "static"
 
 [label]
 id = "future_vwap_return_5d"

@@ -8,6 +8,8 @@ pub mod dbzq_financial_surprise;
 pub mod dbzq_intraday_volume_distribution;
 pub mod dbzq_profit_skew;
 pub mod dbzq_roic_wacc;
+pub mod dfzq_high_frequency_beta;
+pub mod dfzq_seasonal_surprise;
 pub mod earnings_reaction_gaussian;
 pub mod financial;
 pub mod financial_profit_trend;

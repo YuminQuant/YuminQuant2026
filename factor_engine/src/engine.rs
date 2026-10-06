@@ -225,7 +225,7 @@ impl Engine {
 
         let factor_batch_size = request.factor_batch_size.max(1);
         let raw_work = build_intraday_raw_work(&raw_requirements, &target_dates, &calendar)?;
-        let execution_groups = execution_groups_for_specs(request.frequency, &specs);
+        let execution_groups = execution_groups_for_factors(request.frequency, &specs, &factors);
         let execution_stages = execution_stage_names(&raw_work, &execution_groups);
         let date_batch_size = request.date_batch_size.max(1);
         let raw_date_batch_count = raw_work
@@ -237,8 +237,12 @@ impl Engine {
         let execution_plans = execution_groups
             .iter()
             .map(|group| {
-                let date_batch_count =
-                    date_batches_for_stage(&group.stage, &target_dates, date_batch_size).len();
+                let date_batch_count = date_batches_for_stage(
+                    &group.stage,
+                    &stage_dates(&group.stage, &target_dates, &calendar),
+                    date_batch_size,
+                )
+                .len();
                 let factor_batch_count =
                     provider_factor_batches(&factors, &group.factor_indices, factor_batch_size)
                         .len();
@@ -342,8 +346,10 @@ impl Engine {
                 .map(spec_calendar_lookback_days)
                 .max()
                 .unwrap_or(0);
+            let streaming = matches!(group.stage, ExecutionStage::IntradayDailyStreaming { .. });
+            let group_dates = stage_dates(&group.stage, &target_dates, &calendar);
             let date_batches =
-                date_batches_for_stage(&group.stage, &target_dates, request.date_batch_size);
+                date_batches_for_stage(&group.stage, &group_dates, request.date_batch_size);
             let provider_batches =
                 provider_factor_batches(&factors, &group.factor_indices, factor_batch_size);
             let stage_name = group.stage.name();
@@ -355,8 +361,10 @@ impl Engine {
                 let batch_end_date = *date_batch
                     .last()
                     .expect("date batches are never empty after split");
-                let batch_load_start_date =
-                    calendar.warmup_start(batch_start_date, group_max_lookback);
+                let batch_load_start_date = calendar.warmup_start(
+                    batch_start_date,
+                    if streaming { 0 } else { group_max_lookback },
+                );
                 let load_dates = calendar.open_dates_between(batch_load_start_date, batch_end_date);
                 let context = FactorContext {
                     asset_class: request.asset_class,
@@ -365,7 +373,11 @@ impl Engine {
                     end_date: batch_end_date,
                     load_start_date: batch_load_start_date,
                     load_dates,
-                    target_dates: date_batch.clone(),
+                    target_dates: date_batch
+                        .iter()
+                        .copied()
+                        .filter(|date| *date >= effective_start_date)
+                        .collect(),
                 };
                 let group_contextual_requirements = contextual_requirements_for_factor_batch(
                     &group_factors,
@@ -461,7 +473,11 @@ impl Engine {
                         })
                         .collect::<Vec<_>>();
                     let write_started = Instant::now();
-                    let written_paths = storage.write_results(&results)?;
+                    let written_paths = if context.target_dates.is_empty() {
+                        Vec::new()
+                    } else {
+                        storage.write_results(&results)?
+                    };
                     let write_ms = write_started.elapsed().as_millis();
                     output_paths.extend(written_paths);
                     if request.profile {
@@ -1538,7 +1554,11 @@ fn contextual_requirements_for_factor_batch<'a>(
 ) -> ContextualRequirements {
     let mut output = ContextualRequirements::default();
     for (factor, spec) in factors.iter().zip(specs.iter()) {
-        let lookback = spec_calendar_lookback_days(spec);
+        let lookback = if factor.streams_minute_state() {
+            0
+        } else {
+            spec_calendar_lookback_days(spec)
+        };
         let load_start_date = calendar.warmup_start(context.start_date, lookback);
         let factor_context = FactorContext {
             asset_class: context.asset_class,
@@ -1695,6 +1715,7 @@ enum ExecutionStage {
     DailyNoMinute,
     IntradayDaily { lookback: usize },
     IntradayDailyPostprocess { lookback: usize },
+    IntradayDailyStreaming { lookback: usize },
 }
 
 impl ExecutionStage {
@@ -1705,8 +1726,56 @@ impl ExecutionStage {
             Self::IntradayDailyPostprocess { lookback } => {
                 format!("intraday_daily_postprocess_lookback_{lookback}")
             }
+            Self::IntradayDailyStreaming { lookback } => {
+                format!("intraday_daily_streaming_lookback_{lookback}")
+            }
         }
     }
+}
+
+fn stage_dates(
+    stage: &ExecutionStage,
+    target_dates: &[i32],
+    calendar: &TradingCalendar,
+) -> Vec<i32> {
+    if let ExecutionStage::IntradayDailyStreaming { lookback } = stage {
+        if let (Some(first), Some(last)) = (target_dates.first(), target_dates.last()) {
+            return calendar.open_dates_between(calendar.warmup_start(*first, *lookback), *last);
+        }
+    }
+    target_dates.to_vec()
+}
+
+fn execution_groups_for_factors(
+    frequency: Frequency,
+    specs: &[FactorSpec],
+    factors: &[Box<dyn Factor>],
+) -> Vec<ExecutionGroup> {
+    let mut groups = execution_groups_for_specs(frequency, specs);
+    let mut streaming = BTreeMap::<usize, Vec<usize>>::new();
+    for group in &mut groups {
+        group.factor_indices.retain(|idx| {
+            if frequency == Frequency::Daily && factors[*idx].streams_minute_state() {
+                streaming
+                    .entry(spec_calendar_lookback_days(&specs[*idx]))
+                    .or_default()
+                    .push(*idx);
+                false
+            } else {
+                true
+            }
+        });
+    }
+    groups.retain(|group| !group.factor_indices.is_empty());
+    groups.extend(
+        streaming
+            .into_iter()
+            .map(|(lookback, factor_indices)| ExecutionGroup {
+                stage: ExecutionStage::IntradayDailyStreaming { lookback },
+                factor_indices,
+            }),
+    );
+    groups
 }
 
 fn execution_groups_for_specs(frequency: Frequency, specs: &[FactorSpec]) -> Vec<ExecutionGroup> {
@@ -1765,7 +1834,7 @@ fn date_batches_for_stage(
         ExecutionStage::DailyNoMinute | ExecutionStage::IntradayDailyPostprocess { .. } => {
             split_dates_by_chunk(target_dates, date_batch_size.max(1))
         }
-        ExecutionStage::IntradayDaily { .. } => {
+        ExecutionStage::IntradayDaily { .. } | ExecutionStage::IntradayDailyStreaming { .. } => {
             split_dates_by_chunk(target_dates, DEFAULT_DATE_BATCH_SIZE)
         }
     }
@@ -2040,6 +2109,66 @@ mod tests {
         validate_factor_series_target_dates, ExecutionStage, IntradayRawRequirement, RawProvider,
         RunRequest, SelectionResult, DEFAULT_DATE_BATCH_SIZE,
     };
+
+    #[test]
+    fn hf_beta_streaming_schedule_uses_one_day_and_keeps_shared_state() {
+        use crate::factor::common::dfzq_high_frequency_beta::{HighFrequencyBeta, Output};
+        let factors: Vec<Box<dyn Factor>> = vec![
+            Box::new(HighFrequencyBeta(Output::Continuous)),
+            Box::new(HighFrequencyBeta(Output::Jump)),
+        ];
+        let specs: Vec<_> = factors.iter().map(|f| f.spec()).collect();
+        let groups = super::execution_groups_for_factors(Frequency::Daily, &specs, &factors);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].stage,
+            ExecutionStage::IntradayDailyStreaming { lookback: 251 }
+        );
+        assert_eq!(
+            provider_factor_batches(&factors, &[0, 1], 1),
+            vec![vec![0, 1]]
+        );
+        assert!(super::raw_ids_for_specs(&specs).is_empty());
+        let calendar =
+            crate::calendar::TradingCalendar::from_open_dates(vec![20260105, 20260106, 20260107]);
+        let dates = super::stage_dates(&groups[0].stage, &[20260106, 20260107], &calendar);
+        assert_eq!(dates, vec![20260105, 20260106, 20260107]);
+        assert_eq!(
+            date_batches_for_stage(&groups[0].stage, &dates, 120).len(),
+            3
+        );
+        let refs: Vec<_> = factors.iter().map(|f| f.as_ref()).collect();
+        let mut states = BTreeMap::new();
+        for date in dates {
+            let context = FactorContext {
+                asset_class: AssetClass::Stock,
+                frequency: Frequency::Daily,
+                start_date: date,
+                end_date: date,
+                load_start_date: date,
+                load_dates: vec![date],
+                target_dates: if date == 20260105 { vec![] } else { vec![date] },
+            };
+            let requests =
+                super::contextual_requirements_for_factor_batch(&refs, &specs, &context, &calendar);
+            assert!(requests
+                .all
+                .iter()
+                .all(|r| r.resolved_dates(&context) == vec![date]));
+            let results = super::compute_factor_batch(
+                &refs,
+                &context,
+                &DataPool::default(),
+                &requests.by_provider,
+                &mut states,
+                None,
+            )
+            .unwrap();
+            assert_eq!(states.len(), 1);
+            assert_eq!(results.len(), 2);
+            validate_factor_series_target_dates(&results, &context.target_dates).unwrap();
+        }
+    }
 
     #[test]
     fn disclosure_windows_cover_main_business_and_analyst_requests() {

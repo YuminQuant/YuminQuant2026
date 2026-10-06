@@ -805,6 +805,21 @@ impl DataPool {
         context: &FactorContext,
     ) -> Result<Self> {
         let mut daily_panels = HashMap::new();
+        let mut index_daily = HashMap::new();
+        let mut index_daily_panels = HashMap::new();
+        if let Some(table) = daily.get(&DatasetId::IndexDaily) {
+            let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, code) in table.required_utf8("ts_code")?.iter().enumerate() {
+                if let Some(code) = code {
+                    groups.entry(code.clone()).or_default().push(i);
+                }
+            }
+            for (code, rows) in groups {
+                let table = table.take(&rows)?;
+                index_daily_panels.insert(code.clone(), DailyPanel::from_table(&table, context)?);
+                index_daily.insert(code, Arc::new(table));
+            }
+        }
         let stock_universe_panel = daily
             .get(&DatasetId::StockBasic)
             .map(|table| DailyPanel::from_stock_basic(table, context))
@@ -846,8 +861,8 @@ impl DataPool {
             dividend_index,
             main_business_index,
             financial_context: None,
-            index_daily: HashMap::new(),
-            index_daily_panels: HashMap::new(),
+            index_daily,
+            index_daily_panels,
             minute: HashMap::new(),
             intraday_daily_raw: None,
             intraday_daily_raw_panel: None,

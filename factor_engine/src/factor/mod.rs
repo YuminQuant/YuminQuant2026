@@ -28,6 +28,12 @@ pub enum FactorUpdatePolicy {
 pub trait Factor: Send + Sync {
     fn spec(&self) -> FactorSpec;
 
+    /// Stream one minute-data day at a time, including lookback-only warmup days.
+    /// Warmup contexts have no target dates and must return empty factor series.
+    fn streams_minute_state(&self) -> bool {
+        false
+    }
+
     fn provided_specs(&self) -> Vec<FactorSpec> {
         vec![self.spec()]
     }

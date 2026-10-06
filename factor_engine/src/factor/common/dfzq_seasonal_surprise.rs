@@ -55,14 +55,18 @@ struct State {
 
 impl Factor for SeasonalSurprise {
     fn spec(&self) -> FactorSpec {
-        FactorSpec {
+        let mut spec = FactorSpec {
             id: self.0.id().into(), aliases: vec![self.0.id().to_ascii_uppercase()], name: self.0.id().to_ascii_uppercase(),
             asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.1.0".into(),
             tags: ["DFZQ", "fundamental", "financial", "pit", "surprise", "seasonal_random_walk", "neutralize", "size", "sector", "daily"].into_iter().map(str::to_string).collect(),
             description: format!("PIT single-quarter {} seasonal random walk with drift: (X_t-X_t-4-mean(previous eight YoY differences))/sample_std(previous eight YoY differences). Excludes current difference from estimation; reads 13 consecutive quarter slots, requires >=8 finite quarterly levels, >=4 valid historical YoY pairs, and valid current/prior-year levels. Missing quarters are not compacted or zero-filled; negative levels retained. Regular statements only, no earnings express. Prior-year values use latest PIT revisions visible at the calculation date, not a dedicated current-report comparative field. Shared event-driven stock snapshots; daily SW L1/Barra SIZE neutralization, excludes BJ; no winsorization or final zscore.", self.0.column()),
             dependencies: vec![DataRequest::financial_quarters(DatasetId::StockIncome, &[self.0.column()], QUARTERS), DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]), DataRequest::new(DatasetId::StockSwClassification, &["l1_code"])],
             intraday_raw_dependencies: vec![], lookback: Lookback { trading_days: 0 },
+        };
+        if matches!(self.0, Output::Sur) {
+            spec.tags.push("deprecated".into());
         }
+        spec
     }
     fn compute_provider_key(&self) -> String {
         PROVIDER.into()
@@ -556,6 +560,10 @@ mod tests {
         );
         for kind in [Output::Sue, Output::Sur] {
             let spec = SeasonalSurprise(kind).spec();
+            assert_eq!(
+                spec.tags.contains(&"deprecated".into()),
+                matches!(kind, Output::Sur)
+            );
             assert!(
                 spec.tags.contains(&"DFZQ".into()) && spec.tags.contains(&"fundamental".into())
             );

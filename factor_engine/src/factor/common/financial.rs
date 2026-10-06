@@ -84,6 +84,20 @@ impl FinancialEventSchedule {
         }
     }
 
+    /// Annual sums become effective only after both announcement and ex-date;
+    /// unlike LTM sums they do not expire twelve months later.
+    pub fn from_annual_dividend_reader(reader: &DividendReader<'_>) -> Self {
+        Self {
+            event_dates: reader
+                .index
+                .records
+                .iter()
+                .filter(|record| record.end_date.is_some())
+                .map(|record| record.ann_date.max(record.ex_date))
+                .collect(),
+        }
+    }
+
     pub fn merge(&mut self, other: Self) {
         self.event_dates.extend(other.event_dates);
     }
@@ -356,6 +370,7 @@ pub struct DividendIndex {
 #[derive(Clone, Debug)]
 struct DividendIndexedRecord {
     ts_code: String,
+    end_date: Option<i32>,
     ann_date: i32,
     ex_date: i32,
     cash_amount: f64,
@@ -369,6 +384,11 @@ impl DividendIndex {
         let cash_div_tax = table.required_f64_cast("cash_div_tax")?;
         let ex_dates = table.required_i32_date_cast("ex_date")?;
         let base_share = table.required_f64_cast("base_share")?;
+        let end_dates = table
+            .columns
+            .contains_key("end_date")
+            .then(|| table.required_i32_date_cast("end_date"))
+            .transpose()?;
 
         let mut records = Vec::new();
         let mut event_dates = BTreeSet::new();
@@ -397,6 +417,7 @@ impl DividendIndex {
             };
             records.push(DividendIndexedRecord {
                 ts_code,
+                end_date: end_dates.as_ref().and_then(|dates| dates[idx]),
                 ann_date,
                 ex_date,
                 cash_amount: cash_div_tax * base_share,
@@ -426,6 +447,49 @@ pub struct DividendReader<'a> {
 }
 
 impl<'a> DividendReader<'a> {
+    /// Fiscal-year sums in one pass, preserving the per-stock summation order.
+    pub fn implemented_annual_sums_by_stock(
+        &self,
+        first_year: i32,
+        last_year: i32,
+        trade_date: i32,
+    ) -> BTreeMap<i32, HashMap<&'a str, f64>> {
+        let mut years: BTreeMap<_, HashMap<&str, f64>> = (first_year..=last_year)
+            .map(|year| (year, HashMap::new()))
+            .collect();
+        for record in &self.index.records {
+            if record.ann_date > trade_date || record.ex_date > trade_date {
+                continue;
+            }
+            if let Some(sums) = record
+                .end_date
+                .and_then(|end| years.get_mut(&(end / 10000)))
+            {
+                *sums.entry(record.ts_code.as_str()).or_default() += record.cash_amount;
+            }
+        }
+        years
+    }
+
+    /// Implemented cash distributions for a fiscal year, in ten thousand yuan.
+    /// Both announcement and ex-date must be known by the requested PIT date.
+    pub fn implemented_annual_sum_by_stock(
+        &self,
+        year: i32,
+        trade_date: i32,
+    ) -> HashMap<&'a str, f64> {
+        let mut sums = HashMap::new();
+        for record in &self.index.records {
+            if record.end_date.is_some_and(|end| end / 10000 == year)
+                && record.ann_date <= trade_date
+                && record.ex_date <= trade_date
+            {
+                *sums.entry(record.ts_code.as_str()).or_default() += record.cash_amount;
+            }
+        }
+        sums
+    }
+
     pub fn implemented_ltm_sum(&self, ts_code: &str, start_date: i32, trade_date: i32) -> f64 {
         self.index
             .records
@@ -1661,6 +1725,51 @@ mod tests {
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 0 },
         }
+    }
+
+    #[test]
+    fn dividend_annual_sum_respects_fiscal_year_visibility_and_units() {
+        let mut table = dividend_table(&[
+            (
+                "000001.SZ",
+                20240401,
+                "\u{5b9e}\u{65bd}",
+                0.2,
+                20240603,
+                100.0,
+            ),
+            (
+                "000001.SZ",
+                20250401,
+                "\u{5b9e}\u{65bd}",
+                0.3,
+                20250603,
+                100.0,
+            ),
+        ]);
+        table
+            .insert(
+                "end_date",
+                ColumnData::I32(vec![Some(20231231), Some(20241231)]),
+            )
+            .unwrap();
+        let index = DividendIndex::from_table(Arc::new(table)).unwrap();
+        let reader = index.reader();
+        assert!(reader
+            .implemented_annual_sum_by_stock(2023, 20240602)
+            .is_empty());
+        assert_eq!(
+            reader.implemented_annual_sum_by_stock(2023, 20250603)["000001.SZ"],
+            20.0
+        );
+        assert_eq!(
+            reader.implemented_annual_sum_by_stock(2024, 20250603)["000001.SZ"],
+            30.0
+        );
+        assert_eq!(
+            reader.implemented_ltm_sum("000001.SZ", 20240101, 20250603),
+            50.0
+        );
     }
 
     fn factor_context(dates: &[i32]) -> FactorContext {

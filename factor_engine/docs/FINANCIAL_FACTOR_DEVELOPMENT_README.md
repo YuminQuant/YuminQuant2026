@@ -353,6 +353,43 @@ picked up on the next target trading day because the engine checks
 
 财务事件 schedule 由 provider 声明的事件源构建。财报事件使用 `f_ann_date.or(ann_date)`。非交易日公告会在下一个目标交易日生效，因为引擎检查 `(last_processed_trade_date, current_trade_date]`。
 
+### UP: Event-Driven Model Reuse
+
+`unexpected_profitability` follows `FinancialEventStateDailyFast`:
+
+- Stock snapshots use `InstrumentAlignedSnapshotCache`; raw UP cross-sections use
+  `EventDrivenCrossSectionCache`. Final SIZE/industry neutralization remains daily.
+- Current and previous-year PIT dividend sums have separate caches. Each refresh
+  aggregates the five fiscal years in one scan. Dividend events, year rollover,
+  backward replay and the first date of a newly loaded batch invalidate them.
+- Rebuild raw UP on current/historical statement events, dividend changes, or
+  changes in current/historical present and nonfinancial-industry eligibility.
+- Cache each training-quarter model together with its actual ordered training
+  outcomes and predictors. Refit only when these inputs differ; cache failed fits
+  too. A current-quarter disclosure need not change last year's fitted model.
+- Revalidate each batch's first cross-section against the newly loaded panel and
+  lag-quarter market caps. Never reuse a positional vector across stock universes.
+  Prune models for quarters no longer requested. No cache is persisted to disk.
+- This exception applies to event-driven raw model inputs, not arbitrary daily
+  regressions: daily price/SIZE-dependent results must not be frozen.
+
+### SUE0 / SUR0: Seasonal Surprise
+
+`sue0` and `sur0` share the DFZQ seasonal-surprise provider. They use PIT
+single-quarter `n_income` and `revenue`, respectively. The current YoY difference
+is standardized against the eight preceding YoY differences (current observation
+excluded), using their mean drift and sample standard deviation. This requires
+up to 13 consecutive quarter slots, not 12; require at least eight finite levels
+and four valid historical YoY pairs. Current and prior-year levels are mandatory.
+Missing quarters are not compacted or filled with zero; negative values are kept.
+
+Only requested outputs are loaded/calculated. Instrument-aligned snapshots include
+all 13 quarters and the requested-output mask in the marker. Non-event days reuse
+raw snapshots; financial events and presence changes trigger checks. Final SW L1
+and SIZE neutralization stays daily. There is no PV anchor or raw disk cache.
+This implementation excludes earnings express and uses latest visible PIT revisions,
+not a dedicated prior-year comparative field from the current report.
+
 ## Missing Values / 缺失值
 
 Default behavior is conservative:

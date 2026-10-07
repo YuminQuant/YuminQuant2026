@@ -100,6 +100,7 @@ pub mod flash_crash_prob;
 pub mod flash_crash_prob_v;
 pub mod flower_hidden_forest;
 pub mod fog_clearing;
+pub mod fom;
 pub mod gamma1;
 pub mod gamma2;
 pub mod gamma3;

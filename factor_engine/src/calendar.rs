@@ -84,6 +84,18 @@ impl TradingCalendar {
     pub fn has_open_date_after(&self, date: i32, trading_days: usize) -> bool {
         self.open_date_after(date, trading_days).is_some()
     }
+
+    /// A next-month session confirms the boundary, never a truncated batch end.
+    pub fn month_end_on_or_before(&self, date: i32) -> Option<i32> {
+        let end = self.open_dates.partition_point(|d| *d <= date);
+        (0..end).rev().find_map(|i| {
+            let current = self.open_dates[i];
+            self.open_dates
+                .get(i + 1)
+                .filter(|next| **next / 100 != current / 100)
+                .map(|_| current)
+        })
+    }
 }
 
 #[cfg(test)]

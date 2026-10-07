@@ -184,6 +184,7 @@ impl Engine {
             AssetClass::Future => &self.config.future_calendar_exchange,
         };
         let calendar = TradingCalendar::load(&self.config.data_root, calendar_exchange)?;
+        let factor_calendar = Arc::new(calendar.clone());
         let Some(effective_start_date) = calendar.first_open_on_or_after(request.start_date) else {
             return Ok(empty_report(
                 request,
@@ -429,6 +430,7 @@ impl Engine {
                         financial_context.clone(),
                     )?;
                     let load_ms = load_started.elapsed().as_millis();
+                    pool.set_trading_calendar(Arc::clone(&factor_calendar));
                     let raw_ids = raw_ids_for_specs(&batch_specs);
                     if !raw_ids.is_empty() {
                         let (raw_table, mut raw_profiles) = materialize_intraday_raw_table(

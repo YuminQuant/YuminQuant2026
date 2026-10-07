@@ -68,8 +68,16 @@ struct FactorMetadataLock(PathBuf);
 impl FactorMetadataLock {
     fn acquire(root: &Path) -> Result<Self> {
         let path = root.join("factor_metadata.lock");
-        std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
-            .map_err(|error| err(format!("metadata writer active or stale lock {}: {error}", path.display())))?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| {
+                err(format!(
+                    "metadata writer active or stale lock {}: {error}",
+                    path.display()
+                ))
+            })?;
         Ok(Self(path))
     }
 }
@@ -217,23 +225,55 @@ impl FactorStorage {
         let external = if external_path.exists() {
             read_metadata_records(&external_path)?
         } else if path.exists() {
-            read_metadata_records(&path)?.into_iter()
-                .filter(|row| row.tags.iter().any(|tag| tag == "model_generated")).collect()
-        } else { Vec::new() };
-        let ids = rows.iter().map(|row| row.factor_id.as_str()).collect::<BTreeSet<_>>();
-        if external.iter().any(|row| ids.contains(row.factor_id.as_str())) {
+            read_metadata_records(&path)?
+                .into_iter()
+                .filter(|row| row.tags.iter().any(|tag| tag == "model_generated"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let ids = rows
+            .iter()
+            .map(|row| row.factor_id.as_str())
+            .collect::<BTreeSet<_>>();
+        if external
+            .iter()
+            .any(|row| ids.contains(row.factor_id.as_str()))
+        {
             return Err(err("Rust and ml_alpha factor metadata IDs collide"));
         }
-        let external_rows = external.into_iter().map(|row| MetadataRow {
-            factor_id: row.factor_id, aliases_json: row.aliases_json, version: row.version,
-            output_column: row.output_column, name: row.name, asset_class: row.asset_class,
-            frequency: row.frequency, tags_json: row.tags_json, dependencies_json: row.dependencies_json,
-            description: row.description, updated_at: row.updated_at,
-        }).collect::<Vec<_>>();
-        write_parquet(&external_path, &metadata_rows_to_table(external_rows.clone())?)?;
-        write_parquet(&self.factor_root.join("factor_metadata.rust.parquet"), &metadata_rows_to_table(rows.clone())?)?;
+        let external_rows = external
+            .into_iter()
+            .map(|row| MetadataRow {
+                factor_id: row.factor_id,
+                aliases_json: row.aliases_json,
+                version: row.version,
+                output_column: row.output_column,
+                name: row.name,
+                asset_class: row.asset_class,
+                frequency: row.frequency,
+                tags_json: row.tags_json,
+                dependencies_json: row.dependencies_json,
+                description: row.description,
+                updated_at: row.updated_at,
+            })
+            .collect::<Vec<_>>();
+        write_parquet(
+            &external_path,
+            &metadata_rows_to_table(external_rows.clone())?,
+        )?;
+        write_parquet(
+            &self.factor_root.join("factor_metadata.rust.parquet"),
+            &metadata_rows_to_table(rows.clone())?,
+        )?;
         rows.extend(external_rows);
-        rows.sort_by(|a, b| (&a.asset_class, &a.frequency, &a.factor_id).cmp(&(&b.asset_class, &b.frequency, &b.factor_id)));
+        rows.sort_by(|a, b| {
+            (&a.asset_class, &a.frequency, &a.factor_id).cmp(&(
+                &b.asset_class,
+                &b.frequency,
+                &b.factor_id,
+            ))
+        });
         write_parquet(&path, &metadata_rows_to_table(rows)?)
     }
 
@@ -1452,11 +1492,15 @@ mod tests {
         // Simulate the legacy shared file before source metadata was introduced.
         storage.write_metadata(&[ml.clone()]).unwrap();
         std::fs::remove_file(root.join("factor_metadata.ml_alpha.parquet")).unwrap();
-        storage.write_metadata(&[factor_spec("native_factor")]).unwrap();
+        storage
+            .write_metadata(&[factor_spec("native_factor")])
+            .unwrap();
         let rows = storage.read_metadata().unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|row| row.factor_id == "python_factor"));
-        storage.write_metadata(&[factor_spec("new_native")]).unwrap();
+        storage
+            .write_metadata(&[factor_spec("new_native")])
+            .unwrap();
         let rows = storage.read_metadata().unwrap();
         assert_eq!(rows.len(), 2);
         assert!(!rows.iter().any(|row| row.factor_id == "native_factor"));

@@ -1190,6 +1190,33 @@ pub struct FinancialPitReader<'a> {
 }
 
 impl<'a> FinancialPitReader<'a> {
+    /// Distinct disclosure events, including visible revisions, not just the latest version.
+    pub fn disclosure_dates_between(
+        &self,
+        ts_code: &str,
+        after_exclusive: i32,
+        until_inclusive: i32,
+    ) -> Vec<i32> {
+        let Some(periods) = self.index.by_ts_code.get(ts_code) else {
+            return Vec::new();
+        };
+        let mut dates = Vec::new();
+        for types in periods.values() {
+            for (report_type, versions) in types {
+                if !self.preference.contains(*report_type) {
+                    continue;
+                }
+                dates.extend(versions.iter().filter_map(|&idx| {
+                    let date = self.index.records[idx].disclosure_date;
+                    (date > after_exclusive && date <= until_inclusive).then_some(date)
+                }));
+            }
+        }
+        dates.sort_unstable();
+        dates.dedup();
+        dates
+    }
+
     pub fn record_for_end_date(
         &self,
         ts_code: &str,
@@ -1414,7 +1441,22 @@ pub fn previous_quarter_end_date(end_date: i32) -> Option<i32> {
     }
 }
 
-fn add_months(date: i32, months_delta: i32) -> i32 {
+/// Analyst FY anchor shared with the consensus generator; report presence is sufficient.
+pub(crate) fn analyst_fiscal_years(
+    date: i32,
+    code: &str,
+    income: &FinancialPitReader<'_>,
+) -> [i32; 4] {
+    let year = date / 10_000;
+    let switched = date % 10_000 >= 501
+        || income
+            .record_for_end_date(code, date, (year - 1) * 10_000 + 1231)
+            .is_some();
+    let base = if switched { year - 1 } else { year - 2 };
+    [base, base + 1, base + 2, base + 3]
+}
+
+pub(crate) fn add_months(date: i32, months_delta: i32) -> i32 {
     let (year, month, day) = ymd(date);
     let month_index = year * 12 + month as i32 - 1 + months_delta;
     let new_year = month_index.div_euclid(12);
@@ -1423,7 +1465,7 @@ fn add_months(date: i32, months_delta: i32) -> i32 {
     new_year * 10_000 + new_month * 100 + new_day as i32
 }
 
-fn add_days(date: i32, days_delta: i32) -> i32 {
+pub(crate) fn add_days(date: i32, days_delta: i32) -> i32 {
     if days_delta == 0 {
         return date;
     }

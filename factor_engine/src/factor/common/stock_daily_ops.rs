@@ -28,6 +28,38 @@ pub fn is_bj_stock(ts_code: &str) -> bool {
     ts_code.to_ascii_uppercase().ends_with(".BJ")
 }
 
+/// Equivalent to regression-prediction imputation followed by the same neutralization.
+pub fn neutralize_and_fill_missing(
+    raw: &[Option<f64>],
+    size: &[Option<f64>],
+    groups: &[Option<String>],
+) -> Vec<Option<f64>> {
+    if size.len() != raw.len() || groups.len() != raw.len() {
+        return vec![None; raw.len()];
+    }
+    let mut residual = crate::operators::cross_sectional::cs_neutralize_regression(
+        raw,
+        &[size],
+        Some(groups),
+        None,
+    );
+    let supported: std::collections::HashSet<&str> = residual
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.is_some_and(f64::is_finite))
+        .filter_map(|(i, _)| groups[i].as_deref())
+        .collect();
+    for i in 0..raw.len() {
+        if raw[i].filter(|v| v.is_finite()).is_none()
+            && size[i].is_some_and(f64::is_finite)
+            && groups[i].as_deref().is_some_and(|g| supported.contains(g))
+        {
+            residual[i] = Some(0.0);
+        }
+    }
+    residual
+}
+
 pub fn mask_bj(values: &PanelColumn, panel: &DailyPanel) -> Result<PanelColumn> {
     let instrument_count = panel.instruments().len();
     let instruments = panel.instruments();

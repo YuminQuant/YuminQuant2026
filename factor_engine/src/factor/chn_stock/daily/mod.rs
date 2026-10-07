@@ -998,3 +998,8 @@ pub use wq_alpha_060::StockDailyWQAlpha060;
 pub use wq_alpha_083::StockDailyWQAlpha083;
 pub use wq_alpha_100::StockDailyWQAlpha100;
 pub use wq_alpha_101::StockDailyWQAlpha101;
+pub mod fom_123mean;
+pub mod peg_diff6;
+pub mod rollingepfy_12mean;
+pub mod rollingepfy_12mean_diff3;
+pub mod rollingfyroe_resid_12mean;

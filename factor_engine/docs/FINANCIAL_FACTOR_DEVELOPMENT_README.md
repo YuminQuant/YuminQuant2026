@@ -679,3 +679,48 @@ Validation: `cargo test --manifest-path factor_engine/Cargo.toml abnormal_gross_
   reordered instruments safe.
 
 Validation: `cargo test --manifest-path factor_engine/Cargo.toml financial_profit_trend`.
+
+## DFZQ Monthly Analyst Factors
+
+All five outputs in this section are deprecated and excluded from default production.
+
+`dfzq_analyst_monthly` provides `fom_123mean`, `rollingfyroe_resid_12mean`,
+`rollingepfy_12mean`, `rollingepfy_12mean_diff3`, and `peg_diff6`.
+All five use the stock universe panel, exclude BJ, compute at confirmed trading
+month ends, and hold the final cross-section until the next month end. The full
+trading calendar, not the last date of a batch, identifies month ends.
+
+- FY1 is the prior calendar year before April 30 and the current calendar year
+  from April 30 inclusive. Consensus FY columns are remapped by absolute year,
+  using the consensus generator's separate PIT/May-1 FY0 rule. No forward fill
+  of missing consensus records is introduced.
+- FOM uses distinct annual analyst reports over the preceding 12 calendar months,
+  at least three per forecast year. Formal PIT parent net income takes precedence;
+  a disclosed but missing actual remains missing. Otherwise average the scores
+  of all latest-day reports. Take the nonmissing mean across FY1..3 and sqrt(1+x).
+  Neither earnings forecasts nor express announcements are used.
+- NP and market value are both in ten-thousand yuan; divide actual financial NP
+  by 10000. Consensus ROE and `dv_ttm` are percentages, divided by 100 for models.
+  ROE TTM uses parent NP TTM divided by average positive parent equity at q/q-4.
+  ROE change compares this value with q-4; asset growth uses the same report period.
+  RET60 uses 61 adjusted closing prices' endpoint positions (60 trading intervals).
+- ROE's eight controls are ln(MV), 1/pb, ROE TTM, asset YoY, ROE YoY change,
+  dividend yield, adjusted RET60, and min(ROE,0), with SW L1 fixed effects.
+  Complete-case OLS removes redundant control directions without adding ridge.
+- Rolling weights are (1-m/12,m/12). Missing nonzero-weight inputs invalidate
+  that roll; a zero-weight missing input is ignored. Average the valid FY1/FY2
+  rolls. Three/six-month differences compare raw historical month ends with
+  their own PIT annual mappings, not today's forecasts or neutralized outputs.
+- PEG uses decimal sqrt(FY2 NP/abs(actual FY0 NP))-1. Zero denominators and invalid
+  square roots are null; negative PE/growth are retained. The final PEG difference
+  is negated. An available formal FY1 actual replaces its consensus prediction.
+- Final processing: linearly interpolated quartiles, 1.5-IQR clipping, SW L1/SIZE
+  neutralization, missing-raw zero-residual fill only for supported exposures,
+  then cross-sectional zscore. Failed fits or missing exposures remain null.
+- Requests are output-specific. Consensus/basic/SIZE use only possible month-end
+  dates (day >=22); raw return prices are requested only for ROE. Numeric working
+  arrays hold selected month ends, output rows only target dates, and held state
+  is keyed by stock code. FOM indexes only its required report-date window; the
+  existing loader's annual source cache is still shared, not replaced here.
+
+Validation: `cargo test --release --lib --manifest-path factor_engine/Cargo.toml analyst_monthly`.

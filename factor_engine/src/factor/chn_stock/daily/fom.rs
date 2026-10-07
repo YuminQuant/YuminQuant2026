@@ -29,7 +29,7 @@ impl Factor for StockDailyFom {
             id: "fom".into(), aliases: vec!["FOM".into(), "FOM Annual 12M".into()],
             name: "Annual Forecast Optimism Monthly".into(),
             asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.1.0".into(),
-            tags: ["DFZQ", "analyst", "fundamental", "financial", "pit", "monthly_update", "daily", "neutralize", "barra", "size", "sector"].into_iter().map(str::to_string).collect(),
+            tags: ["DFZQ", "analyst", "fundamental", "financial", "pit", "monthly_update", "daily", "neutralize", "barra", "size", "sector", "deprecated"].into_iter().map(str::to_string).collect(),
             description: "Annual FOM by report count: (forecasts below current minus above current)/N, N>=3. Monthly window (anchor minus 12 calendar months, anchor]. Jan-Mar target prior year; April-Dec target current year. Prefer PIT annual n_income_attr_p/10000, otherwise average individual scores of latest-day analyst np forecasts (wan yuan). Deduplicate stock/year/date/org/author/title, last row wins. At month end neutralize valid raw FOM against SW L1 and SIZE; missing raw with valid exposures and a fitted industry gets zero residual, otherwise null. Hold final monthly values by stock code until next month end. No express/forecast or zscore. Excludes BJ. Report_date determines availability.".into(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockAnalystReport, &["np", "report_date", "quarter", "org_name", "author_name", "report_title"]),

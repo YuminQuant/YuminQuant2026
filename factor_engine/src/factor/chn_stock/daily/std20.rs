@@ -24,10 +24,17 @@ impl Factor for StockDailyStd20 {
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
-            tags: ["price_volume", "price", "return", "volatility", "general", "daily"]
-                .iter()
-                .map(|value| value.to_string())
-                .collect(),
+            tags: [
+                "price_volume",
+                "price",
+                "return",
+                "volatility",
+                "general",
+                "daily",
+            ]
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
             description: "20-day standard deviation of adjusted daily returns with min_periods=1."
                 .to_string(),
             dependencies: vec![

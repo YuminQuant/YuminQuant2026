@@ -179,6 +179,7 @@ impl FinancialBatchContext {
 
 #[derive(Clone, Debug, Default)]
 pub struct DataPool {
+    trading_calendar: Option<Arc<crate::calendar::TradingCalendar>>,
     daily: HashMap<DatasetId, Arc<Table>>,
     daily_panels: HashMap<DatasetId, DailyPanel>,
     stock_universe_panel: Option<DailyPanel>,
@@ -194,6 +195,15 @@ pub struct DataPool {
 }
 
 impl DataPool {
+    pub fn set_trading_calendar(&mut self, calendar: Arc<crate::calendar::TradingCalendar>) {
+        self.trading_calendar = Some(calendar);
+    }
+
+    pub fn trading_calendar(&self) -> Result<&crate::calendar::TradingCalendar> {
+        self.trading_calendar
+            .as_deref()
+            .ok_or_else(|| err("trading calendar not attached to data pool"))
+    }
     pub fn load(
         loader: &MarketDataLoader,
         requests: &[DataRequest],
@@ -383,6 +393,7 @@ impl DataPool {
 
     pub fn with_target_dates(&self, target_dates: &[i32]) -> Self {
         Self {
+            trading_calendar: self.trading_calendar.clone(),
             daily: self.daily.clone(),
             daily_panels: self
                 .daily_panels
@@ -415,6 +426,7 @@ impl DataPool {
     pub fn slice_dates(&self, selected_dates: &[i32]) -> Self {
         let selected = selected_dates.iter().copied().collect::<BTreeSet<_>>();
         Self {
+            trading_calendar: self.trading_calendar.clone(),
             daily: self
                 .daily
                 .iter()
@@ -491,6 +503,7 @@ impl DataPool {
         }
 
         Self {
+            trading_calendar: self.trading_calendar.clone(),
             daily: self
                 .daily
                 .iter()
@@ -718,6 +731,9 @@ impl DataPool {
     }
 
     pub fn extend(&mut self, other: Self) {
+        if other.trading_calendar.is_some() {
+            self.trading_calendar = other.trading_calendar;
+        }
         self.daily.extend(other.daily);
         self.daily_panels.extend(other.daily_panels);
         if other.stock_universe_panel.is_some() {
@@ -781,6 +797,7 @@ impl DataPool {
     #[cfg(test)]
     pub fn from_minute_tables(minute: HashMap<(DatasetId, i32), Table>) -> Self {
         Self {
+            trading_calendar: None,
             daily: HashMap::new(),
             daily_panels: HashMap::new(),
             stock_universe_panel: None,
@@ -855,6 +872,7 @@ impl DataPool {
         }
         Ok(Self {
             daily: daily_arc,
+            trading_calendar: None,
             daily_panels,
             stock_universe_panel,
             financial_pit_indexes,
@@ -1058,6 +1076,7 @@ mod tests {
         let expected = DailyPanel::from_table(&table, &context).expect("panel");
         let pool = DataPool {
             daily: HashMap::from([(DatasetId::StockDailyPv, Arc::new(table))]),
+            trading_calendar: None,
             daily_panels: HashMap::from([(DatasetId::StockDailyPv, expected.clone())]),
             stock_universe_panel: None,
             financial_pit_indexes: HashMap::new(),
@@ -1098,6 +1117,7 @@ mod tests {
         });
         let pool = DataPool {
             daily: HashMap::new(),
+            trading_calendar: None,
             daily_panels: HashMap::new(),
             stock_universe_panel: None,
             financial_pit_indexes: HashMap::new(),
@@ -1217,6 +1237,31 @@ mod tests {
         );
         assert!(panel.is_present_offset(0));
         assert!(panel.is_present_offset(1));
+    }
+
+    #[test]
+    fn fom_calendar_survives_pool_views_and_extend() {
+        let mut pool = DataPool::default();
+        pool.set_trading_calendar(Arc::new(crate::calendar::TradingCalendar::from_open_dates(
+            vec![20251231, 20260102, 20260130, 20260202],
+        )));
+        let sliced = pool.slice_dates(&[20260102]);
+        let view = sliced.view_for_requests(&[], &context());
+        assert_eq!(
+            view.trading_calendar()
+                .unwrap()
+                .month_end_on_or_before(20260102),
+            Some(20251231)
+        );
+        let mut merged = DataPool::default();
+        merged.extend(view);
+        assert_eq!(
+            merged
+                .trading_calendar()
+                .unwrap()
+                .month_end_on_or_before(20260130),
+            Some(20260130)
+        );
     }
 
     #[test]

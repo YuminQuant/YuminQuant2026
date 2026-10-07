@@ -9,6 +9,7 @@ pub mod dbzq_intraday_volume_distribution;
 pub mod dbzq_profit_skew;
 pub mod dbzq_roic_wacc;
 pub mod dfzq_analyst_coverage;
+pub mod dfzq_analyst_monthly;
 pub mod dfzq_daily_leaderboard;
 pub mod dfzq_high_frequency_beta;
 pub mod dfzq_seasonal_surprise;

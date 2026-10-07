@@ -1521,14 +1521,7 @@ where
 /// May 1 as an unconditional fallback. Record presence, not metric validity,
 /// determines disclosure; use the same inclusive PIT date as actual values.
 fn fiscal_years(trade_date: i32, ts_code: &str, financial: &ConsensusFinancialData) -> [i32; 4] {
-    let year = trade_date / 10_000;
-    let switched = trade_date % 10_000 >= 501
-        || financial
-            .income()
-            .record_for_end_date(ts_code, trade_date, (year - 1) * 10_000 + 1231)
-            .is_some();
-    let base = if switched { year - 1 } else { year - 2 };
-    [base, base + 1, base + 2, base + 3]
+    crate::factor::common::financial::analyst_fiscal_years(trade_date, ts_code, &financial.income())
 }
 
 fn parse_annual_forecast_year(value: &str) -> Option<i32> {

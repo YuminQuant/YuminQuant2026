@@ -7,9 +7,12 @@ use crate::core::{
 };
 use crate::data::{DataPool, Table};
 use crate::error::{err, Result};
-use crate::factor::common::stock_daily_ops::is_bj_stock;
+use crate::factor::common::stock_daily_ops::{
+    is_bj_stock, neutralize_and_fill_missing as neutralize_and_fill,
+};
 use crate::factor::common::{ClassificationLevel, ClassificationMap, ReportTypePreference};
 use crate::factor::{Factor, FactorUpdatePolicy};
+#[cfg(test)]
 use crate::operators::cross_sectional::cs_neutralize_regression;
 
 pub struct StockDailyFom;
@@ -159,30 +162,6 @@ fn score(rows: &[Forecast], anchor: i32, actual: Option<Option<f64>>) -> Option<
     let latest = rows.last()?.date;
     let last = &rows[rows.partition_point(|r| r.date < latest)..];
     Some(last.iter().map(|r| rank_score(r.value)).sum::<f64>() / last.len() as f64)
-}
-
-fn neutralize_and_fill(
-    raw: &[Option<f64>],
-    size: &[Option<f64>],
-    groups: &[Option<String>],
-) -> Vec<Option<f64>> {
-    let mut residual = cs_neutralize_regression(raw, &[size], Some(groups), None);
-    let supported: std::collections::HashSet<&str> = residual
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| v.is_some_and(f64::is_finite))
-        .filter_map(|(i, _)| groups[i].as_deref())
-        .collect();
-    // Prediction-imputed observations have zero residual and do not alter the fit.
-    for i in 0..raw.len() {
-        if raw[i].filter(|v| v.is_finite()).is_none()
-            && size[i].is_some_and(f64::is_finite)
-            && groups[i].as_deref().is_some_and(|g| supported.contains(g))
-        {
-            residual[i] = Some(0.0);
-        }
-    }
-    residual
 }
 
 fn compute(data: &DataPool, state: &mut State) -> Result<FactorSeries> {

@@ -33,6 +33,20 @@ pub struct DeriveBarReport {
 }
 
 impl DeriveEngine {
+    pub fn from_logsig_request(
+        request: &crate::derive::request::DeriveLogsigRequest,
+    ) -> Result<Self> {
+        Ok(Self {
+            config: EngineConfig::discover(request.project_config_path.clone())?,
+        })
+    }
+
+    pub fn run_logsig(
+        &self,
+        request: &crate::derive::request::DeriveLogsigRequest,
+    ) -> Result<crate::derive::logsig::DeriveLogsigReport> {
+        crate::derive::logsig::derive_logsig(&self.config, request)
+    }
     pub fn from_request(request: &DeriveBarRequest) -> Result<Self> {
         Ok(Self {
             config: EngineConfig::discover(request.project_config_path.clone())?,

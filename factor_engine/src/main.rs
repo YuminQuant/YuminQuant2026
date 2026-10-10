@@ -12,7 +12,9 @@ use yq_factor_engine::backtest::request::{
 use yq_factor_engine::barra::engine::DEFAULT_BARRA_MODEL;
 use yq_factor_engine::config::EngineConfig;
 use yq_factor_engine::core::{AssetClass, Frequency};
-use yq_factor_engine::derive::request::{BarSource, DEFAULT_DERIVE_DATE_BATCH_SIZE};
+use yq_factor_engine::derive::request::{
+    BarSource, DeriveLogsigRequest, DEFAULT_DERIVE_DATE_BATCH_SIZE,
+};
 use yq_factor_engine::derive::DEFAULT_CONSENSUS_DATE_BATCH_SIZE;
 use yq_factor_engine::engine::{DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE};
 use yq_factor_engine::strategy::request::StrategyRunRequest;
@@ -236,6 +238,18 @@ fn run_cli() -> Result<()> {
             let report = engine.run(&request)?;
             print_strategy_report(&report);
         }
+        "derive-logsig" => {
+            let request = parse_derive_logsig_request(&args[1..])?;
+            let engine = DeriveEngine::from_logsig_request(&request)?;
+            let report = engine.run_logsig(&request)?;
+            println!(
+                "derive-logsig complete: dates={} rows={} skipped={} missing_input_dates={:?}",
+                report.processed_dates,
+                report.total_rows,
+                report.skipped_existing_dates.len(),
+                report.missing_input_dates
+            );
+        }
         "derive-bar" => {
             let request = parse_derive_bar_request(&args[1..])?;
             let engine = DeriveEngine::from_request(&request)?;
@@ -255,6 +269,53 @@ fn run_cli() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_derive_logsig_request(args: &[String]) -> Result<DeriveLogsigRequest> {
+    let flags = parse_flags(args)?;
+    for key in flags.keys() {
+        if ![
+            "asset",
+            "start-date",
+            "end-date",
+            "threads",
+            "overwrite",
+            "project-config",
+            "config",
+        ]
+        .contains(&key.as_str())
+        {
+            return Err(yq_factor_engine::error::err(format!(
+                "unsupported derive-logsig flag: --{key}; definition is fixed at 5m/20d/order10"
+            )));
+        }
+    }
+    let date = |key: &str| -> Result<i32> {
+        parse_yyyymmdd(
+            flags
+                .get(key)
+                .ok_or_else(|| yq_factor_engine::error::err(format!("missing --{key}")))?,
+            key,
+        )
+    };
+    Ok(DeriveLogsigRequest {
+        asset_class: flags
+            .get("asset")
+            .and_then(|v| AssetClass::parse(v))
+            .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --asset stock"))?,
+        start_date: date("start-date")?,
+        end_date: date("end-date")?,
+        threads: flags
+            .get("threads")
+            .map(|v| v.parse())
+            .transpose()?
+            .unwrap_or(2),
+        overwrite: flag_bool(&flags, "overwrite", true),
+        project_config_path: flags
+            .get("project-config")
+            .or_else(|| flags.get("config"))
+            .map(PathBuf::from),
+    })
 }
 
 fn parse_derive_bar_request(args: &[String]) -> Result<DeriveBarRequest> {
@@ -1223,6 +1284,8 @@ fn print_derive_consensus_report(report: &yq_factor_engine::AnalystConsensusRepo
 }
 
 fn print_help() {
+    println!("  derive-logsig --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--threads 2] [--overwrite true|false]");
+    println!("    raw minute volume -> 5m/20d/order10 (226 columns), daily Snappy derived/stock/logsig_v; sequential dates with rolling state");
     println!("YuminQuant factor engine MVP");
     println!();
     println!("commands:");
@@ -1325,6 +1388,28 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn derive_logsig_has_fixed_definition_and_explicit_threads() {
+        let args: Vec<String> = [
+            "--asset",
+            "stock",
+            "--start-date",
+            "20260105",
+            "--end-date",
+            "20260107",
+            "--threads",
+            "2",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let request = super::parse_derive_logsig_request(&args).unwrap();
+        assert_eq!(request.threads, 2);
+        assert!(request.overwrite);
+        let mut invalid = args;
+        invalid.extend(["--order".into(), "9".into()]);
+        assert!(super::parse_derive_logsig_request(&invalid).is_err());
+    }
+
     #[test]
     fn derive_bar_accepts_column_projection() {
         let args = [

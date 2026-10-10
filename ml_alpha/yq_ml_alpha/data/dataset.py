@@ -18,6 +18,7 @@ from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvid
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
+from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
 from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.data.tensor_storage import TensorSpool
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
@@ -381,6 +382,8 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    if config.features.type == "derived_logsig":
+        return DerivedLogsigProvider(config.features.root)
     if config.features.type == "factor_frame":
         excluded = {config.output.id}
         metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"

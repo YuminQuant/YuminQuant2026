@@ -59,6 +59,15 @@ and computes order-10 lead-lag logsignatures in Rust. No Python or on-disk bars
 are needed for production. `--threads` controls within-date signature workers;
 dates are processed sequentially, not in concurrent date batches.
 
+The order-10 computation kernel caches its Lyndon projection and axis indices.
+Stock tasks reuse scratch buffers; descending-degree updates avoid full tensor
+copies while preserving the original arithmetic order. Each target still computes
+the full path: inverse-based rolling tensor removal is not used because it can
+amplify floating-point error in high-degree components.
+Input values are promoted to `f64` for volume aggregation and tensor arithmetic;
+the 226 output feature columns remain `f32` in Parquet. This precision contract
+predates the kernel optimizations.
+
 ```powershell
 cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-logsig `
   --asset stock --start-date 20110101 --end-date 20260424 --threads 2

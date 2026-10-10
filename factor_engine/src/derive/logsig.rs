@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -17,7 +18,7 @@ pub const BAR_SIZE: usize = 5;
 pub const ORDER: usize = 10;
 pub const WIDTH: usize = 226;
 const SLOTS: usize = 240 / BAR_SIZE;
-type DayVolume = BTreeMap<String, Vec<f64>>;
+type DayVolume = BTreeMap<String, Vec<f32>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct DeriveLogsigReport {
@@ -34,11 +35,23 @@ pub fn derived_logsig_path(root: &Path, date: i32) -> PathBuf {
         .join(format!("{date}.parquet"))
 }
 
-/// Chronological summation matches derive-bar, without retaining full OHLCV rows.
+/// Chronological float32 aggregation without retaining full OHLCV rows.
 fn volume_day(table: &Table) -> Result<DayVolume> {
     let codes = table.required_utf8("ts_code")?;
     let times = table.required_utf8("trade_time")?;
-    let volumes = table.required_f64_cast("vol")?;
+    let volumes: Cow<'_, [Option<f32>]> = match table.columns.get("vol") {
+        Some(ColumnData::F32(values)) => Cow::Borrowed(values),
+        Some(ColumnData::F64(values)) => {
+            Cow::Owned(values.iter().map(|v| v.map(|x| x as f32)).collect())
+        }
+        Some(ColumnData::I64(values)) => {
+            Cow::Owned(values.iter().map(|v| v.map(|x| x as f32)).collect())
+        }
+        Some(ColumnData::I32(values)) => {
+            Cow::Owned(values.iter().map(|v| v.map(|x| x as f32)).collect())
+        }
+        _ => return Err(err("missing or non-numeric logsignature volume column")),
+    };
     let mut ids = HashMap::new();
     let mut symbols = Vec::new();
     let mut rows = Vec::with_capacity(table.len);
@@ -59,7 +72,7 @@ fn volume_day(table: &Table) -> Result<DayVolume> {
         rows.push((id, minute, volume));
     }
     rows.sort_by_key(|(id, minute, _)| (*id, *minute));
-    let mut values = vec![vec![f64::NAN; SLOTS]; symbols.len()];
+    let mut values = vec![vec![f32::NAN; SLOTS]; symbols.len()];
     for (id, minute, volume) in rows {
         let slot = &mut values[id][minute / BAR_SIZE];
         if slot.is_nan() {
@@ -89,7 +102,7 @@ impl VolumeWindow {
         self.days.push_back(day);
     }
 
-    fn matrix(&self) -> (Vec<String>, Vec<f64>) {
+    fn matrix(&self) -> (Vec<String>, Vec<f32>) {
         if self.days.len() != LOOKBACK {
             return (Vec::new(), Vec::new());
         }
@@ -127,7 +140,10 @@ fn feature_table(date: i32, codes: Vec<String>, features: Vec<f32>) -> Result<Ta
             format!("logsig_{:04}", column + 1),
             ColumnData::F32(
                 (0..count)
-                    .map(|row| Some(features[row * WIDTH + column]))
+                    .map(|row| {
+                        let value = features[row * WIDTH + column];
+                        value.is_finite().then_some(value)
+                    })
                     .collect(),
             ),
         );
@@ -236,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn logsig_projection_aggregation_matches_bar() {
+    fn logsig_projection_aggregation_uses_f32_and_session_slots() {
         let mut codes = Vec::new();
         let mut times = Vec::new();
         let mut volumes = Vec::new();
@@ -271,8 +287,25 @@ mod tests {
             &["volume".into()],
         )
         .unwrap();
-        assert_eq!(day["A"], bars.iter().map(|r| r.volume).collect::<Vec<_>>());
+        assert_eq!(
+            day["A"],
+            bars.iter().map(|r| r.volume as f32).collect::<Vec<_>>()
+        );
         assert_eq!(day["A"][0], 22.);
+    }
+
+    #[test]
+    fn logsig_nonfinite_features_are_written_as_null() {
+        let mut values = vec![0.; WIDTH];
+        values[0] = f32::INFINITY;
+        values[1] = f32::NAN;
+        let table = feature_table(20260105, vec!["A".into()], values).unwrap();
+        assert_eq!(table.required_f64_cast("logsig_0001").unwrap(), vec![None]);
+        assert_eq!(table.required_f64_cast("logsig_0002").unwrap(), vec![None]);
+        assert_eq!(
+            table.required_f64_cast("logsig_0003").unwrap(),
+            vec![Some(0.)]
+        );
     }
 
     #[test]

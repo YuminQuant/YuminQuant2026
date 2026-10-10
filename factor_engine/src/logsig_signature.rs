@@ -13,14 +13,14 @@ static ORDER_TEN_KERNEL: OnceLock<Arc<SignatureKernel>> = OnceLock::new();
 #[derive(Clone, Debug)]
 struct LyndonBasis {
     words: Vec<(usize, usize)>,
-    expansions: Vec<BTreeMap<usize, f64>>,
+    expansions: Vec<BTreeMap<usize, f32>>,
 }
 
 struct SignatureKernel {
     order: usize,
     width: usize,
     offsets: Vec<usize>,
-    projection: Vec<(usize, Vec<(usize, f64)>)>,
+    projection: Vec<(usize, Vec<(usize, f32)>)>,
     suffixes: [Vec<usize>; 2],
 }
 
@@ -75,10 +75,10 @@ fn signature_kernel(order: usize) -> Result<Arc<SignatureKernel>> {
 }
 
 struct SignatureWorkspace {
-    signature: Vec<f64>,
-    scaled: Vec<f64>,
-    powers: Vec<Vec<f64>>,
-    residual: Vec<f64>,
+    signature: Vec<f32>,
+    scaled: Vec<f32>,
+    powers: Vec<Vec<f32>>,
+    residual: Vec<f32>,
 }
 
 impl SignatureWorkspace {
@@ -91,7 +91,7 @@ impl SignatureWorkspace {
         }
     }
 
-    fn compute(&mut self, volume: &[f64], kernel: &SignatureKernel, out: &mut [f32]) -> Result<()> {
+    fn compute(&mut self, volume: &[f32], kernel: &SignatureKernel, out: &mut [f32]) -> Result<()> {
         self.signature.fill(0.);
         let mut previous = clipped_log(volume[0])?;
         for &volume in &volume[1..] {
@@ -130,9 +130,9 @@ impl SignatureWorkspace {
         self.residual.fill(0.);
         for power in 1..=kernel.order {
             let coefficient = if power % 2 == 1 {
-                1. / power as f64
+                1. / power as f32
             } else {
-                -1. / power as f64
+                -1. / power as f32
             };
             for (dst, src) in self.residual.iter_mut().zip(&self.powers[power]) {
                 *dst += coefficient * src;
@@ -149,15 +149,15 @@ impl SignatureWorkspace {
 }
 
 fn append_axis_in_place(
-    signature: &mut [f64],
-    scaled: &mut [f64],
+    signature: &mut [f32],
+    scaled: &mut [f32],
     kernel: &SignatureKernel,
     axis: usize,
-    delta: f64,
+    delta: f32,
 ) {
     scaled[0] = 1.;
     for level in 1..=kernel.order {
-        scaled[level] = scaled[level - 1] * delta / level as f64;
+        scaled[level] = scaled[level - 1] * delta / level as f32;
     }
     // Descending degree preserves all lower-degree prefixes until they have been consumed.
     for level in (1..=kernel.order).rev() {
@@ -221,7 +221,7 @@ pub fn lyndon_degree_dimensions(order: usize) -> Result<Vec<usize>> {
 }
 
 pub fn logsig_signature_batch_from_volume(
-    volume: &[f64],
+    volume: &[f32],
     rows: usize,
     cols: usize,
     order: usize,
@@ -230,7 +230,7 @@ pub fn logsig_signature_batch_from_volume(
 }
 
 pub fn logsig_signature_batch_in_pool(
-    volume: &[f64],
+    volume: &[f32],
     rows: usize,
     cols: usize,
     order: usize,
@@ -305,16 +305,16 @@ fn level_offsets(order: usize) -> Result<Vec<usize>> {
 
 #[cfg(test)]
 fn compute_row(
-    volume: &[f64],
+    volume: &[f32],
     order: usize,
     tensor_width: usize,
     level_offsets: &[usize],
     basis: &LyndonBasis,
     out: &mut [f32],
 ) -> Result<()> {
-    let mut signature = vec![0.0f64; tensor_width];
-    let mut previous = vec![0.0f64; tensor_width];
-    let mut scaled = vec![0.0f64; order + 1];
+    let mut signature = vec![0.0f32; tensor_width];
+    let mut previous = vec![0.0f32; tensor_width];
+    let mut scaled = vec![0.0f32; order + 1];
     let mut previous_log = clipped_log(volume[0])?;
     for value in volume.iter().copied().skip(1) {
         let current_log = clipped_log(value)?;
@@ -350,7 +350,7 @@ fn compute_row(
     Ok(())
 }
 
-fn clipped_log(value: f64) -> Result<f64> {
+fn clipped_log(value: f32) -> Result<f32> {
     if !value.is_finite() {
         return Err(err("logsig signature volume contains non-finite value"));
     }
@@ -359,18 +359,18 @@ fn clipped_log(value: f64) -> Result<f64> {
 
 #[cfg(test)]
 fn append_axis_segment(
-    levels: &mut [f64],
-    previous: &mut [f64],
+    levels: &mut [f32],
+    previous: &mut [f32],
     level_offsets: &[usize],
-    scaled: &mut [f64],
+    scaled: &mut [f32],
     axis: usize,
-    delta: f64,
+    delta: f32,
     order: usize,
 ) {
     previous.copy_from_slice(levels);
     scaled[0] = 1.0;
     for level in 1..=order {
-        scaled[level] = scaled[level - 1] * delta / level as f64;
+        scaled[level] = scaled[level - 1] * delta / level as f32;
     }
     for level in 1..=order {
         let width = 1usize << level;
@@ -404,8 +404,8 @@ fn repeated_axis_suffix_len(word: usize, level: usize, axis: usize) -> usize {
 }
 
 #[cfg(test)]
-fn tensor_log(signature: &[f64], order: usize, level_offsets: &[usize]) -> Vec<f64> {
-    let mut powers = vec![vec![0.0f64; signature.len()]; order + 1];
+fn tensor_log(signature: &[f32], order: usize, level_offsets: &[usize]) -> Vec<f32> {
+    let mut powers = vec![vec![0.0f32; signature.len()]; order + 1];
     powers[1].copy_from_slice(signature);
     for power in 2..=order {
         for level in power..=order {
@@ -425,12 +425,12 @@ fn tensor_log(signature: &[f64], order: usize, level_offsets: &[usize]) -> Vec<f
         }
     }
 
-    let mut output = vec![0.0f64; signature.len()];
+    let mut output = vec![0.0f32; signature.len()];
     for (power, values) in powers.iter().enumerate().take(order + 1).skip(1) {
         let coefficient = if power % 2 == 1 {
-            1.0 / power as f64
+            1.0 / power as f32
         } else {
-            -1.0 / power as f64
+            -1.0 / power as f32
         };
         for (dst, src) in output.iter_mut().zip(values) {
             *dst += coefficient * src;
@@ -483,7 +483,7 @@ fn lyndon_basis(order: usize) -> Result<LyndonBasis> {
         .iter()
         .copied()
         .collect::<std::collections::HashSet<_>>();
-    let mut expansions_by_word: HashMap<(usize, usize), BTreeMap<usize, f64>> = HashMap::new();
+    let mut expansions_by_word: HashMap<(usize, usize), BTreeMap<usize, f32>> = HashMap::new();
     let mut expansions = Vec::with_capacity(words.len());
 
     for (length, word) in words.iter().copied() {
@@ -535,12 +535,12 @@ fn standard_factorization(
 }
 
 fn bracket_expansion(
-    left: &BTreeMap<usize, f64>,
+    left: &BTreeMap<usize, f32>,
     left_len: usize,
-    right: &BTreeMap<usize, f64>,
+    right: &BTreeMap<usize, f32>,
     right_len: usize,
-) -> BTreeMap<usize, f64> {
-    let mut output = BTreeMap::<usize, f64>::new();
+) -> BTreeMap<usize, f32> {
+    let mut output = BTreeMap::<usize, f32>::new();
     for (left_word, left_coeff) in left {
         for (right_word, right_coeff) in right {
             let coeff = left_coeff * right_coeff;
@@ -556,11 +556,11 @@ fn bracket_expansion(
 
 #[cfg(test)]
 fn project_tensor_log_to_lyndon(
-    tensor_log: &[f64],
+    tensor_log: &[f32],
     order: usize,
     level_offsets: &[usize],
     basis: &LyndonBasis,
-) -> Vec<f64> {
+) -> Vec<f32> {
     let mut output = Vec::with_capacity(basis.words.len());
     let mut start = 0usize;
     while start < basis.words.len() {
@@ -603,7 +603,7 @@ mod tests {
                     .map(|i| match seed {
                         0 => 0.,
                         1 => 100.,
-                        _ => (((i * 173 + seed * 31) % 1901) as f64 + 1.) * 19.7,
+                        _ => (((i * 173 + seed * 31) % 1901) as f32 + 1.) * 19.7,
                     })
                     .collect();
                 let mut reference = vec![0.; basis.words.len()];
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn batch_kernel_preserves_rows_across_partial_chunks() {
-        let volume: Vec<_> = (0..67 * 8).map(|i| (i % 23 + 1) as f64).collect();
+        let volume: Vec<_> = (0..67 * 8).map(|i| (i % 23 + 1) as f32).collect();
         let pool = ThreadPoolBuilder::new().num_threads(2).build().unwrap();
         let actual = logsig_signature_batch_in_pool(&volume, 67, 8, 5, &pool).unwrap();
         let basis = lyndon_basis(5).unwrap();
@@ -679,7 +679,7 @@ mod tests {
     #[test]
     fn two_point_lead_lag_logsignature_order_two_matches_bch() {
         let actual = logsig_signature_batch_from_volume(&[1.0, 10.0], 1, 2, 2).unwrap();
-        let delta = 10.0f64.ln() as f32;
+        let delta = 10.0f32.ln() as f32;
         assert_eq!(actual.len(), 3);
         assert_close(&actual, &[delta, delta, 0.5 * delta * delta], 1e-6);
     }
@@ -712,7 +712,7 @@ mod tests {
 
     #[test]
     fn rejects_non_finite_volume() {
-        let error = logsig_signature_batch_from_volume(&[1.0, f64::NAN], 1, 2, 2).unwrap_err();
+        let error = logsig_signature_batch_from_volume(&[1.0, f32::NAN], 1, 2, 2).unwrap_err();
         assert!(error.to_string().contains("non-finite"));
     }
 

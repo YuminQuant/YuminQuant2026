@@ -224,18 +224,26 @@ Current `derive-logsig` specifics / 当前实现：
 - `factor-materialize` rejects this provider; it is not the derived production CLI / 不再通过 Python materialize 生产此数据。
 
 The Rust kernel caches fixed order-10 structures and reuses numerical buffers.
-Descending-degree in-place updates preserve the original calculation results.
+Descending-degree in-place updates preserve arithmetic order at a fixed precision.
 Do not replace full-path computation with inverse-based rolling removal without
 new numerical validation: high-order cancellation can change the features.
 
 Rust 内核缓存固定10阶结构、复用数值缓冲，并通过倒序原地更新减少复制。
 不要未经数值验证就改成 signature 逆运算移除历史窗口；高阶抵消误差可能改变特征。
 
-Precision: minute values are promoted to `f64` for aggregation and tensor
-arithmetic, then the 226 features are stored as `f32`. This is unchanged by
-the kernel optimizations; storage dtype is not intermediate computation dtype.
-精度约定：分钟值提升为 `f64` 进行聚合和张量计算，226维特征仍以 `f32` 落盘。
-这不是此次优化引入的变化；存储精度与中间计算精度应分别判断。
+Precision: volume aggregation, tensor intermediates, Python/Rust signature input
+and the 226 output features all use `f32`. Every date computes its complete
+960-point path; only input days and scratch buffers are reused, never the previous
+date's tensor value. This avoids inverse-update error accumulation and dependence
+on the requested start date, but float32 high-order rounding can still change
+values and ranks relative to the former float64 version. Regenerate the model's
+feature dataset, update `data_version`, and retrain; rebuild the Rust extension
+before using the legacy Python signature API.
+精度约定：成交量聚合、张量中间量、Python/Rust 签名输入和226维输出均使用 `f32`。
+每天完整计算960点路径，只复用输入日和工作缓冲，不递推上一日的张量值。
+因此没有逆运算跨日误差累积或起算日依赖，但单精度高阶误差仍可能改变数值和排序。
+不要混用旧float64特征：应重建模型特征集、更新 `data_version` 并重新训练。
+旧Python签名接口需重新构建Rust扩展后使用。
 
 Other `materialize` paths may write debug samples or legacy provider caches;
 they are not automatically streaming or a replacement for Rust derived production.

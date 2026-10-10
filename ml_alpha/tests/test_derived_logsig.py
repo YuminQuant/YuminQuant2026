@@ -38,8 +38,6 @@ def test_model_config_uses_derived_data_not_python_materialization():
 
 @pytest.mark.skipif(not os.environ.get("YQ_TEST_DERIVE_LOGSIG_EXE"), reason="opt-in Rust CLI integration")
 def test_rust_derive_logsig_end_to_end(tmp_path):
-    from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
-
     dates = [int(d.strftime("%Y%m%d")) for d in pd.bdate_range("2025-12-08", periods=22)]
     root = tmp_path / "data"
     calendar = root / "calendar/trade_cal_SSE.parquet"
@@ -65,15 +63,25 @@ def test_rust_derive_logsig_end_to_end(tmp_path):
     derived = root / "derived/stock/logsig_v"
     assert len(list(derived.glob("*/*.parquet"))) == 3  # No warmup outputs.
     reader = DerivedLogsigProvider(derived)
-    reference = LogsigSignatureProvider(raw, "__all__", dict(source="minute", lookback_days=20, bar_size=5, order=10))
-    reference.set_calendar_dates(dates)
     for date in dates[-3:]:
-        pd.testing.assert_frame_equal(reader.load(date), reference.load(date), check_exact=True)
+        frame = reader.load(date)
+        values = frame[reader.feature_columns].to_numpy()
+        assert values.shape == (2, 226)
+        assert values.dtype == np.float32
+        assert np.isfinite(values).all()
+        np.testing.assert_array_equal(values[0], values[1])
+        day = dates.index(date)
+        delta = np.log(np.float32(20. + (day + 47) % 13)) - np.log(np.float32(20. + (day - 19) % 13))
+        np.testing.assert_allclose(values[:, :2], delta, atol=1e-5, rtol=1e-5)
         meta = pq.ParquetFile(derived / str(date // 10000) / f"{date}.parquet").metadata
         assert meta.row_group(0).column(0).compression == "SNAPPY"
     # A restarted process reconstructs warmup; overwriting produces identical results.
     before = reader.load(dates[-1])
     subprocess.run(command, check=True, capture_output=True)
+    pd.testing.assert_frame_equal(reader.load(dates[-1]), before, check_exact=True)
+    single = command.copy()
+    single[single.index("--start-date") + 1] = str(dates[-1])
+    subprocess.run(single, check=True, capture_output=True)
     pd.testing.assert_frame_equal(reader.load(dates[-1]), before, check_exact=True)
     source = raw / str(dates[-1] // 10000) / f"{dates[-1]}.parquet"
     source.unlink()

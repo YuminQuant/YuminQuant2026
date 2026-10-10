@@ -60,18 +60,17 @@ def test_repeated_page_and_retry_do_not_publish(tmp_path):
     assert obj.safe_sleep.call_count == 5
 
 
-def test_conflicting_query_fails_before_any_year_is_published(tmp_path):
+def test_conflicting_query_preserves_distinct_rows(tmp_path):
     obj = downloader(tmp_path)
     api(obj, [pd.DataFrame([row(end_date="20251231", ann_date="20260101"),
                              row(end_date="20251231", ann_date="20260101", mkv=200)]) , pd.DataFrame()])
     tmp_path.mkdir(exist_ok=True)
-    with pytest.raises(ValueError, match="Conflicting"):
-        obj._query_and_save("20260424", period="20251231")
-    assert not list(tmp_path.glob("*.parquet"))
+    obj._query_and_save("20260424", period="20251231")
+    assert pd.read_parquet(tmp_path / "2026.parquet").mkv.tolist() == [100., 200.]
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-def test_portfolio_rounding_duplicates_keep_precise_value_across_pages(tmp_path, reverse):
+def test_portfolio_rounding_differences_both_survive_across_pages(tmp_path, reverse):
     obj = downloader(tmp_path)
     rows = [row(ts_code="001875.OF", symbol="00981.HK", end_date="20170630",
                 ann_date="20170828", mkv=value, amount=305000., stk_mkv_ratio=3.86)
@@ -81,10 +80,10 @@ def test_portfolio_rounding_duplicates_keep_precise_value_across_pages(tmp_path,
     api(obj, [pd.DataFrame([rows[0]]), pd.DataFrame([rows[1]]), pd.DataFrame()])
     obj._query_and_save("20260424", period="20170630")
     result = pd.read_parquet(tmp_path / "2017.parquet")
-    assert len(result) == 1
-    assert result.mkv.tolist() == [2395676.18]
-    assert result.amount.tolist() == [305000.]
-    assert "rounded mkv duplicate" in obj.logger.warning.call_args.args[0]
+    assert len(result) == 2
+    assert result.mkv.tolist() == [2395676., 2395676.18]
+    assert result.amount.tolist() == [305000., 305000.]
+    assert "exact-row deduplication only" in obj.logger.warning.call_args.args[0]
 
 
 @pytest.mark.parametrize("changes", [
@@ -92,11 +91,13 @@ def test_portfolio_rounding_duplicates_keep_precise_value_across_pages(tmp_path,
     {"mkv": 2395676., "stk_mkv_ratio": 0.5}, {"mkv": None},
     {"mkv": 2395676.19},
 ])
-def test_rounding_rule_does_not_hide_real_conflicts(tmp_path, changes):
+def test_all_field_differences_survive(tmp_path, changes):
     obj = downloader(tmp_path)
     frame = obj._normalize(pd.DataFrame([row(mkv=2395676.18), row(**changes)]))
-    with pytest.raises(ValueError, match="Conflicting.*001753.OF"):
-        obj._deduplicate_query(frame)
+    assert len(obj._deduplicate_query(frame)) == 2
+    obj._merge_year(frame, 2026)
+    obj._merge_year(frame, 2026)
+    assert len(pd.read_parquet(tmp_path / "2026.parquet")) == 2
 
 
 def test_versions_share_classes_revisions_and_idempotency(tmp_path):
@@ -110,8 +111,8 @@ def test_versions_share_classes_revisions_and_idempotency(tmp_path):
     assert after.first_seen_at.equals(before.first_seen_at)
     assert not (tmp_path / "revisions").exists()
     obj._merge_year(obj._normalize(pd.DataFrame([row(mkv=300.)])), 2026)
-    assert len(pd.read_parquet(tmp_path / "2026.parquet")) == 3
-    assert pd.read_parquet(tmp_path / "revisions/2026.parquet").mkv.tolist() == [100.]
+    assert len(pd.read_parquet(tmp_path / "2026.parquet")) == 4
+    assert not (tmp_path / "revisions").exists()
 
 
 def test_cutoff_and_ann_year(tmp_path):

@@ -66,8 +66,8 @@ fn logsig_signature_batch(
     order: usize,
 ) -> PyResult<PyObject> {
     let numpy = py.import_bound("numpy")?;
-    let float64 = numpy.getattr("float64")?;
-    let array = numpy.call_method1("ascontiguousarray", (volume, float64))?;
+    let float32 = numpy.getattr("float32")?;
+    let array = numpy.call_method1("ascontiguousarray", (volume, &float32))?;
     let ndim = array.getattr("ndim")?.extract::<usize>()?;
     if ndim != 2 {
         return Err(PyValueError::new_err(format!(
@@ -83,7 +83,7 @@ fn logsig_signature_batch(
     let raw = array.call_method0("tobytes")?.extract::<Vec<u8>>()?;
     let expected_bytes = rows
         .checked_mul(cols)
-        .and_then(|count| count.checked_mul(std::mem::size_of::<f64>()))
+        .and_then(|count| count.checked_mul(std::mem::size_of::<f32>()))
         .ok_or_else(|| PyValueError::new_err("volume array is too large"))?;
     if raw.len() != expected_bytes {
         return Err(PyValueError::new_err(format!(
@@ -92,9 +92,9 @@ fn logsig_signature_batch(
         )));
     }
     let mut values = Vec::with_capacity(rows * cols);
-    for chunk in raw.chunks_exact(std::mem::size_of::<f64>()) {
-        let bytes: [u8; 8] = chunk.try_into().expect("chunks_exact yields 8 bytes");
-        values.push(f64::from_ne_bytes(bytes));
+    for chunk in raw.chunks_exact(std::mem::size_of::<f32>()) {
+        let bytes: [u8; 4] = chunk.try_into().expect("chunks_exact yields 4 bytes");
+        values.push(f32::from_ne_bytes(bytes));
     }
 
     let width = signature_width(order).map_err(|error| PyValueError::new_err(error.to_string()))?;
@@ -108,7 +108,6 @@ fn logsig_signature_batch(
         )
     };
     let buffer = PyBytes::new_bound(py, signature_bytes);
-    let float32 = numpy.getattr("float32")?;
     let output = numpy.call_method1("frombuffer", (&buffer, float32))?;
     let reshaped = output.call_method1("reshape", (rows, width))?;
     Ok(reshaped.into_py(py))

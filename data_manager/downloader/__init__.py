@@ -7,6 +7,7 @@ from .option import *
 from .hkg_stock import *
 from .usa_stock import *
 from .alternative import *
+from .fund import *
 
 from . import chn_stock
 from . import etf
@@ -16,6 +17,7 @@ from . import option
 from . import hkg_stock
 from . import usa_stock
 from . import alternative
+from . import fund
 
 __all__ = (
     ['CalendarDownloader'] + 
@@ -26,5 +28,6 @@ __all__ = (
     getattr(option, '__all__', []) + 
     getattr(hkg_stock, '__all__', []) +
     getattr(usa_stock, '__all__', []) + 
-    getattr(alternative, '__all__', [])
+    getattr(alternative, '__all__', []) +
+    getattr(fund, '__all__', [])
 )

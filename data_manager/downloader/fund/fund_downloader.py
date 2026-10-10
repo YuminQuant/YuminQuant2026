@@ -12,7 +12,7 @@ import pandas as pd
 
 from data_manager.core import BaseDownloader, ConfigManager
 from data_manager.downloader.chn_stock.fin_statement_downloader import (
-    QUARTER_SUFFIXES, _concat_preserve_schema,
+    QUARTER_SUFFIXES, _concat_preserve_schema, is_financial_statement_period,
 )
 
 PORTFOLIO_FIELDS = "ts_code,ann_date,end_date,symbol,mkv,amount,stk_mkv_ratio,stk_float_ratio".split(",")
@@ -82,11 +82,11 @@ def writer_lock(directory):
         path.unlink()
 
 
-def atomic_write(frame, path):
+def atomic_write(frame, path, compression="snappy"):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        frame.to_parquet(tmp, index=False)
+        frame.to_parquet(tmp, index=False, compression=compression)
         import pyarrow.parquet as pq
         with pq.ParquetFile(tmp) as saved:
             if saved.metadata.num_rows != len(frame) or saved.schema_arrow.names != list(frame.columns):
@@ -97,6 +97,8 @@ def atomic_write(frame, path):
 
 
 class _FundDownloader(BaseDownloader):
+    parquet_compression = "snappy"
+
     def __init__(self, endpoint, path_key, default_path, page_default, rate_default):
         config = ConfigManager().config
         super().__init__(rate_limit=config.get("api", {}).get("rate_limits", {}).get(endpoint, rate_default))
@@ -120,22 +122,39 @@ class _FundDownloader(BaseDownloader):
                 if page is None:
                     raise RuntimeError("Fund API returned None, not an empty data frame")
                 return page
-            except Exception:
+            except Exception as exc:
+                self.logger.warning(
+                    f"{self.endpoint} request failed attempt={attempt + 1}/{self.retries} "
+                    f"offset={query.get('offset', 0)} error={type(exc).__name__}"
+                )
                 if attempt + 1 == self.retries:
                     raise
                 time.sleep(min(2 ** attempt, 8))
 
     def _pages(self, **query):
         offset, seen = 0, set()
-        for _ in range(self.max_pages):
+        label = " ".join(f"{key}={value}" for key, value in query.items())
+        for page_idx in range(self.max_pages):
+            self.logger.info(
+                f"{self.endpoint} {label} page={page_idx + 1} offset={offset} "
+                f"limit={self.page_limit} fetched_rows={offset} requesting"
+            )
             page = self._request(**query, limit=self.page_limit, offset=offset)
             if page.empty:
+                self.logger.info(
+                    f"{self.endpoint} {label} page={page_idx + 1} empty result; "
+                    f"pagination complete fetched_rows={offset}"
+                )
                 return
             normalized = self._normalize(page)
             hashes = set(pd.util.hash_pandas_object(normalized, index=False).tolist())
             if not hashes - seen:
                 raise RuntimeError(f"{self.endpoint}: pagination made no progress at offset={offset}")
             seen.update(hashes)
+            self.logger.info(
+                f"{self.endpoint} {label} page={page_idx + 1} rows={len(page)} "
+                f"fetched_rows={offset + len(page)}"
+            )
             yield normalized
             offset += len(page)  # Short pages are not proof of completion.
         raise RuntimeError(f"{self.endpoint}: maximum page count exceeded")
@@ -163,7 +182,8 @@ class _FundDownloader(BaseDownloader):
                 audit_path = self.save_dir / "revisions" / path.name
                 if audit_path.exists():
                     revised = _concat_preserve_schema([pd.read_parquet(audit_path), revised])
-                atomic_write(revised.drop_duplicates(self.fields + ["first_seen_at"]), audit_path)
+                atomic_write(revised.drop_duplicates(self.fields + ["first_seen_at"]), audit_path,
+                             compression=self.parquet_compression)
                 self.logger.warning(f"{self.endpoint}: archived revised observations in {path.name}")
             incoming = _concat_preserve_schema([
                 old_index.drop(new_index.index, errors="ignore").reset_index(), new_index.reset_index(),
@@ -171,7 +191,7 @@ class _FundDownloader(BaseDownloader):
         normalized = self._normalize(incoming)
         normalized[OBSERVED] = incoming[OBSERVED]
         incoming = normalized[self.fields + OBSERVED].sort_values(key).reset_index(drop=True)
-        atomic_write(incoming, path)
+        atomic_write(incoming, path, compression=self.parquet_compression)
         self.logger.info(f"{self.endpoint} saved {len(incoming)} rows: {path}")
 
 
@@ -179,7 +199,7 @@ class FundBasicDownloader(_FundDownloader):
     fields = BASIC_FIELDS
 
     def __init__(self):
-        super().__init__("fund_basic", "fund_basic_dir", "fund_data/basic", 15000, 180)
+        super().__init__("fund_basic", "fund_basic_dir", "fund_data/basic", 15000, 500)
         self.page_limit = min(self.page_limit, 15000)
 
     def _normalize(self, frame):
@@ -188,12 +208,17 @@ class FundBasicDownloader(_FundDownloader):
     def sync(self):
         with writer_lock(self.save_dir):
             frames = []
+            completed = 0
+            self.logger.info("=== fund_basic start queries=6 ===")
             for market in ("E", "O"):
                 for status in ("D", "I", "L"):
+                    self.logger.info(f"fund_basic [{completed + 1}/6] market={market} status={status} start")
                     for page in self._pages(market=market, status=status):
                         if not (page.market.eq(market) & page.status.eq(status)).all():
                             raise ValueError("fund_basic response does not match market/status")
                         frames.append(page)
+                    completed += 1
+                    self.logger.info(f"fund_basic completed={completed}/6")
             if not frames:
                 raise RuntimeError("Empty fund universe: refusing to overwrite basic data")
             result = unique_query(_concat_preserve_schema(frames), ["ts_code"], self.fields)
@@ -207,9 +232,10 @@ class FundBasicDownloader(_FundDownloader):
 
 class FundPortfolioDownloader(_FundDownloader):
     fields = PORTFOLIO_FIELDS
+    parquet_compression = "zstd"
 
     def __init__(self):
-        super().__init__("fund_portfolio", "fund_portfolio_dir", "fund_data/portfolio", 1000, 180)
+        super().__init__("fund_portfolio", "fund_portfolio_dir", "fund_data/portfolio", 8000, 500)
 
     def _normalize(self, frame):
         result = normalize(frame, self.fields, self.fields[4:], ("ann_date", "end_date"), ("ts_code", "symbol"))
@@ -222,45 +248,63 @@ class FundPortfolioDownloader(_FundDownloader):
 
     def _query_and_save(self, cutoff, **query):
         # Stage a complete query before publishing; only one announcement year is merged at a time.
+        fetched, retained, saved = 0, 0, 0
         with TemporaryDirectory(prefix=".query-", dir=self.save_dir) as folder:
             staged = Path(folder)
             for page_idx, page in enumerate(self._pages(**query)):
+                fetched += len(page)
                 for key in ("period", "ann_date"):
                     column = "end_date" if key == "period" else key
                     if key in query and not page[column].eq(int(query[key])).all():
                         raise ValueError(f"fund_portfolio response does not match {key}")
-                page = page[page.ann_date.le(int(cutoff)) & page.end_date.le(int(cutoff))]
+                if cutoff is not None:
+                    page = page[page.ann_date.le(int(cutoff)) & page.end_date.le(int(cutoff))]
+                retained += len(page)
                 for year, rows in page.groupby(page.ann_date // 10000):
                     directory = staged / str(year)
                     directory.mkdir(exist_ok=True)
-                    rows.to_parquet(directory / f"{page_idx}.parquet", index=False)
+                    rows.to_parquet(directory / f"{page_idx}.parquet", index=False,
+                                    compression=self.parquet_compression)
             # Validate every partition before modifying any destination.
             for directory in sorted(staged.iterdir()):
                 frame = _concat_preserve_schema([pd.read_parquet(p) for p in directory.glob("*.parquet")])
                 frame = unique_query(frame, PORTFOLIO_KEY, self.fields)
-                frame.to_parquet(staged / f"{directory.name}.validated", index=False)
+                frame.to_parquet(staged / f"{directory.name}.validated", index=False,
+                                 compression=self.parquet_compression)
             for path in sorted(staged.glob("*.validated")):
-                self._merge_year(pd.read_parquet(path), int(path.stem))
+                frame = pd.read_parquet(path)
+                self.logger.info(f"fund_portfolio merging ann_year={path.stem} incoming_rows={len(frame)}")
+                self._merge_year(frame, int(path.stem))
+                saved += len(frame)
+        self.logger.info(
+            f"fund_portfolio query complete {query} fetched_rows={fetched} "
+            f"retained_rows={retained} unique_rows={saved} cutoff={cutoff}"
+        )
+        if not retained:
+            self.logger.info("fund_portfolio no rows eligible for cutoff; nothing written")
 
-    def sync(self, mode="historical", start_year=2009, start_date=None, end_date=None, lookback_days=None):
+    def sync(self, mode="historical", start_year=2009, target_date=None, end_date=None):
         end = parse_date(end_date or today())
         with writer_lock(self.save_dir):
             if mode == "historical":
                 if not 1900 <= int(start_year) <= end.year:
                     raise ValueError("Invalid history start year")
-                for year in range(int(start_year), end.year + 1):
-                    for suffix in QUARTER_SUFFIXES:
-                        period = f"{year}{suffix}"
-                        if parse_date(period) <= end:
-                            self._query_and_save(end.strftime("%Y%m%d"), period=period)
+                periods = [f"{year}{suffix}" for year in range(int(start_year), end.year + 1)
+                           for suffix in QUARTER_SUFFIXES if parse_date(f"{year}{suffix}") <= end]
+                self.logger.info(f"=== historical fund_portfolio start periods={len(periods)} ===")
+                for idx, period in enumerate(periods, 1):
+                    self.logger.info(f"fund_portfolio [{idx}/{len(periods)}] period={period} start completed={idx - 1}/{len(periods)}")
+                    self._query_and_save(end.strftime("%Y%m%d"), period=period)
+                    self.logger.info(f"fund_portfolio period={period} complete completed={idx}/{len(periods)}")
             elif mode == "incremental":
-                begin = parse_date(start_date or end.strftime("%Y%m%d"))
-                days = self.lookback_days if lookback_days is None else int(lookback_days)
-                if begin > end or days < 0:
-                    raise ValueError("Invalid incremental date range/lookback")
-                begin -= timedelta(days=days)
-                while begin <= end:
-                    self._query_and_save(end.strftime("%Y%m%d"), ann_date=begin.strftime("%Y%m%d"))
-                    begin += timedelta(days=1)
+                period = str(target_date or today())
+                if not is_financial_statement_period(period):
+                    self.logger.info(f"fund_portfolio skip {period}: not a financial statement period")
+                    return
+                self.logger.info(f"fund_portfolio [1/1] period={period} start completed=0/1")
+                # A period is not a disclosure cutoff: later announcements belong to it too.
+                self._query_and_save(end_date, period=period)
+                self.logger.info(f"fund_portfolio period={period} complete completed=1/1")
             else:
                 raise ValueError(f"Unknown fund download mode: {mode}")
+            self.logger.info(f"=== {mode} fund_portfolio complete ===")

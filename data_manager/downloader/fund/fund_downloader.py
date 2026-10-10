@@ -112,21 +112,23 @@ class _FundDownloader(BaseDownloader):
             raise ValueError("Invalid fund retry/page/lookback settings")
         self.save_dir = Path(self.base_data_dir) / config["paths"].get(path_key, default_path)
 
+    def _request(self, **query):
+        for attempt in range(self.retries):
+            self.safe_sleep()  # Every attempt consumes the rate budget.
+            try:
+                page = getattr(self.pro, self.endpoint)(**query, fields=",".join(self.fields))
+                if page is None:
+                    raise RuntimeError("Fund API returned None, not an empty data frame")
+                return page
+            except Exception:
+                if attempt + 1 == self.retries:
+                    raise
+                time.sleep(min(2 ** attempt, 8))
+
     def _pages(self, **query):
         offset, seen = 0, set()
         for _ in range(self.max_pages):
-            for attempt in range(self.retries):
-                self.safe_sleep()  # Every request, including retries, consumes the rate budget.
-                try:
-                    page = getattr(self.pro, self.endpoint)(**query, fields=",".join(self.fields),
-                                                             limit=self.page_limit, offset=offset)
-                    if page is None:
-                        raise RuntimeError("Fund API returned None, not an empty data frame")
-                    break
-                except Exception:
-                    if attempt + 1 == self.retries:
-                        raise
-                    time.sleep(min(2 ** attempt, 8))
+            page = self._request(**query, limit=self.page_limit, offset=offset)
             if page.empty:
                 return
             normalized = self._normalize(page)
@@ -137,6 +139,40 @@ class _FundDownloader(BaseDownloader):
             yield normalized
             offset += len(page)  # Short pages are not proof of completion.
         raise RuntimeError(f"{self.endpoint}: maximum page count exceeded")
+
+    def _merge_partition(self, incoming, path, key):
+        """Keep disclosure versions and archive corrections without summing observations."""
+        stamp = datetime.now(timezone.utc).isoformat()
+        incoming = incoming.copy()
+        incoming["first_seen_at"] = stamp
+        incoming["last_seen_at"] = stamp
+        if path.exists():
+            old = pd.read_parquet(path)
+            if not set(self.fields + OBSERVED).issubset(old.columns):
+                raise ValueError(f"Invalid existing fund schema: {path}")
+            old_index = old.set_index(key, verify_integrity=True)
+            new_index = incoming.set_index(key, verify_integrity=True)
+            common = old_index.index.intersection(new_index.index)
+            values = [c for c in self.fields if c not in key]
+            left, right = old_index.loc[common, values], new_index.loc[common, values]
+            equal = (left.eq(right) | (left.isna() & right.isna())).all(axis=1)
+            unchanged = common[equal.to_numpy()]
+            new_index.loc[unchanged, "first_seen_at"] = old_index.loc[unchanged, "first_seen_at"]
+            revised = old_index.loc[common[~equal.to_numpy()]].reset_index()
+            if not revised.empty:
+                audit_path = self.save_dir / "revisions" / path.name
+                if audit_path.exists():
+                    revised = _concat_preserve_schema([pd.read_parquet(audit_path), revised])
+                atomic_write(revised.drop_duplicates(self.fields + ["first_seen_at"]), audit_path)
+                self.logger.warning(f"{self.endpoint}: archived revised observations in {path.name}")
+            incoming = _concat_preserve_schema([
+                old_index.drop(new_index.index, errors="ignore").reset_index(), new_index.reset_index(),
+            ])
+        normalized = self._normalize(incoming)
+        normalized[OBSERVED] = incoming[OBSERVED]
+        incoming = normalized[self.fields + OBSERVED].sort_values(key).reset_index(drop=True)
+        atomic_write(incoming, path)
+        self.logger.info(f"{self.endpoint} saved {len(incoming)} rows: {path}")
 
 
 class FundBasicDownloader(_FundDownloader):
@@ -161,6 +197,7 @@ class FundBasicDownloader(_FundDownloader):
             if not frames:
                 raise RuntimeError("Empty fund universe: refusing to overwrite basic data")
             result = unique_query(_concat_preserve_schema(frames), ["ts_code"], self.fields)
+            result = self._normalize(result)
             result = result.sort_values("ts_code").reset_index(drop=True)
             result["fetch_date"] = np.int32(today())
             atomic_write(result, self.save_dir / "snapshots" / f"{today()}.parquet")
@@ -181,36 +218,7 @@ class FundPortfolioDownloader(_FundDownloader):
         return result
 
     def _merge_year(self, incoming, year):
-        path = self.save_dir / f"{year}.parquet"
-        stamp = datetime.now(timezone.utc).isoformat()
-        incoming = incoming.copy()
-        incoming["first_seen_at"] = stamp
-        incoming["last_seen_at"] = stamp
-        if path.exists():
-            old = pd.read_parquet(path)
-            if not set(self.fields + OBSERVED).issubset(old.columns):
-                raise ValueError(f"Invalid existing fund schema: {path}")
-            old_index = old.set_index(PORTFOLIO_KEY, verify_integrity=True)
-            new_index = incoming.set_index(PORTFOLIO_KEY, verify_integrity=True)
-            common = old_index.index.intersection(new_index.index)
-            values = [c for c in self.fields if c not in PORTFOLIO_KEY]
-            left, right = old_index.loc[common, values], new_index.loc[common, values]
-            equal = (left.eq(right) | (left.isna() & right.isna())).all(axis=1)
-            unchanged = common[equal.to_numpy()]
-            new_index.loc[unchanged, "first_seen_at"] = old_index.loc[unchanged, "first_seen_at"]
-            revised = old_index.loc[common[~equal.to_numpy()]].reset_index()
-            if not revised.empty:
-                audit_path = self.save_dir / "revisions" / f"{year}.parquet"
-                if audit_path.exists():
-                    revised = _concat_preserve_schema([pd.read_parquet(audit_path), revised])
-                revised = revised.drop_duplicates(self.fields + ["first_seen_at"])
-                atomic_write(revised, audit_path)
-                self.logger.warning(f"fund_portfolio revised existing keys in {year}; archived old observations")
-            incoming = _concat_preserve_schema([old_index.drop(new_index.index, errors="ignore").reset_index(),
-                                               new_index.reset_index()])
-        incoming = incoming[self.fields + OBSERVED].sort_values(PORTFOLIO_KEY).reset_index(drop=True)
-        atomic_write(incoming, path)
-        self.logger.info(f"fund_portfolio saved {len(incoming)} rows: {path}")
+        self._merge_partition(incoming, self.save_dir / f"{year}.parquet", PORTFOLIO_KEY)
 
     def _query_and_save(self, cutoff, **query):
         # Stage a complete query before publishing; only one announcement year is merged at a time.

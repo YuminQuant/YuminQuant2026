@@ -27,6 +27,13 @@ from data_manager import (
     FutureMinuteDownloader,
     FundBasicDownloader,
     FundPortfolioDownloader,
+    FundCompanyDownloader,
+    FundManagerDownloader,
+    FundBenchmarkDownloader,
+    FundShareDownloader,
+    FundNavDownloader,
+    FundDividendDownloader,
+    FundFactorProDownloader,
     HKBasicDownloader,
     HKCalendarDownloader,
     IncomeDownloader,
@@ -464,9 +471,24 @@ def update_fund_portfolio(args, logger):
     ))
 
 
+def update_fund_dated(args, logger, downloader_class):
+    end_date = args.end_date or bj_today()
+    run_task(logger, downloader_class.__name__, lambda: downloader_class().sync(
+        mode="incremental", start_date=args.start_date or end_date,
+        end_date=end_date, lookback_days=args.fund_ann_lookback_days,
+    ))
+
+
 GROUPS = {
     "fund_basic": update_fund_basic,
     "fund_portfolio": update_fund_portfolio,
+    "fund_company": lambda args, logger: run_task(logger, "fund_company", lambda: FundCompanyDownloader().sync()),
+    "fund_benchmark": lambda args, logger: run_task(logger, "fund_benchmark", lambda: FundBenchmarkDownloader().sync()),
+    "fund_manager": lambda args, logger: update_fund_dated(args, logger, FundManagerDownloader),
+    "fund_share": lambda args, logger: update_fund_dated(args, logger, FundShareDownloader),
+    "fund_nav": lambda args, logger: update_fund_dated(args, logger, FundNavDownloader),
+    "fund_div": lambda args, logger: update_fund_dated(args, logger, FundDividendDownloader),
+    "fund_factor_pro": lambda args, logger: update_fund_dated(args, logger, FundFactorProDownloader),
     "calendar": update_calendar,
     "static": lambda args, logger: update_static_all(logger),
     "stock_static": lambda args, logger: update_stock_static(logger),

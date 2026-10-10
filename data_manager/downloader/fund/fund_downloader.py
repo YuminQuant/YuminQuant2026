@@ -246,6 +246,31 @@ class FundPortfolioDownloader(_FundDownloader):
     def _merge_year(self, incoming, year):
         self._merge_partition(incoming, self.save_dir / f"{year}.parquet", PORTFOLIO_KEY)
 
+    def _deduplicate_query(self, frame):
+        frame = frame.drop_duplicates(self.fields).reset_index(drop=True)
+        duplicates = frame[frame.duplicated(PORTFOLIO_KEY, keep=False)]
+        drop_indexes = []
+        other_fields = [column for column in self.fields if column != "mkv"]
+        for key, group in duplicates.groupby(PORTFOLIO_KEY, sort=False, dropna=False):
+            values = group.mkv.to_numpy(dtype=float, na_value=np.nan)
+            precise = np.unique(values[np.isfinite(values) & (values != np.round(values))])
+            # Vendor sometimes publishes both whole-yuan and decimal-yuan versions.
+            if (len(group[other_fields].drop_duplicates()) == 1
+                    and np.isfinite(values).all() and len(precise) == 1
+                    and ((values == precise[0]) | (values == np.round(precise[0]))).all()):
+                keep = group.index[values == precise[0]][0]
+                drop_indexes.extend(index for index in group.index if index != keep)
+                self.logger.warning(
+                    f"fund_portfolio rounded mkv duplicate key={key} "
+                    f"values={values.tolist()} retained_mkv={precise[0]} (no summation)"
+                )
+            else:
+                raise ValueError(
+                    f"Conflicting fund rows within one query: key={dict(zip(PORTFOLIO_KEY, key))}; "
+                    f"records={group[self.fields].to_dict('records')}"
+                )
+        return frame.drop(index=drop_indexes)
+
     def _query_and_save(self, cutoff, **query):
         # Stage a complete query before publishing; only one announcement year is merged at a time.
         fetched, retained, saved = 0, 0, 0
@@ -268,7 +293,7 @@ class FundPortfolioDownloader(_FundDownloader):
             # Validate every partition before modifying any destination.
             for directory in sorted(staged.iterdir()):
                 frame = _concat_preserve_schema([pd.read_parquet(p) for p in directory.glob("*.parquet")])
-                frame = unique_query(frame, PORTFOLIO_KEY, self.fields)
+                frame = self._deduplicate_query(frame)
                 frame.to_parquet(staged / f"{directory.name}.validated", index=False,
                                  compression=self.parquet_compression)
             for path in sorted(staged.glob("*.validated")):

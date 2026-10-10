@@ -518,6 +518,8 @@ GROUPS = {
 DEFAULT_GROUPS = [
     "calendar",
     "stock_static",
+    "fund_basic",
+    "fund_portfolio",
     "stock_daily",
     "stock_minute",
     "stock_derived_bar",

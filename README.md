@@ -18,6 +18,8 @@ YuminQuant is licensed under the Apache License, Version 2.0. See [LICENSE](LICE
 
 See [Fund Data / 基金数据接入](docs/fund_data.md) for all public-fund interfaces, historical initialization, date-based incremental updates, revision auditing and pagination safeguards. Initialization defaults to basic/portfolio; additional sources are opt-in.
 
+默认增量更新也包含 `fund_basic` 和 `fund_portfolio`，其他基金接口不默认开启。Default incremental updates also include `fund_basic` and `fund_portfolio`; other fund interfaces remain opt-in.
+
 ```text
 YuminQuant/
   data_manager/          # Python downloaders and Tushare client

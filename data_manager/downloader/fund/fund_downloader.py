@@ -244,32 +244,33 @@ class FundPortfolioDownloader(_FundDownloader):
         return result
 
     def _merge_year(self, incoming, year):
-        self._merge_partition(incoming, self.save_dir / f"{year}.parquet", PORTFOLIO_KEY)
+        path = self.save_dir / f"{year}.parquet"
+        incoming = self._normalize(incoming)
+        stamp = datetime.now(timezone.utc).isoformat()
+        incoming["first_seen_at"] = stamp
+        incoming["last_seen_at"] = stamp
+        if path.exists():
+            old = pd.read_parquet(path)
+            if not set(self.fields + OBSERVED).issubset(old.columns):
+                raise ValueError(f"Invalid existing fund schema: {path}")
+            incoming = _concat_preserve_schema([old[self.fields + OBSERVED], incoming])
+        # Observation timestamps are provenance, not part of raw-record identity.
+        merged = incoming.groupby(self.fields, dropna=False, as_index=False, sort=False).agg(
+            first_seen_at=("first_seen_at", "min"), last_seen_at=("last_seen_at", "max"))
+        result = self._normalize(merged)
+        result[OBSERVED] = merged[OBSERVED]
+        result = result.sort_values(self.fields).reset_index(drop=True)
+        atomic_write(result, path, compression=self.parquet_compression)
+        self.logger.info(f"fund_portfolio saved {len(result)} rows: {path}")
 
     def _deduplicate_query(self, frame):
         frame = frame.drop_duplicates(self.fields).reset_index(drop=True)
         duplicates = frame[frame.duplicated(PORTFOLIO_KEY, keep=False)]
-        drop_indexes = []
-        other_fields = [column for column in self.fields if column != "mkv"]
-        for key, group in duplicates.groupby(PORTFOLIO_KEY, sort=False, dropna=False):
-            values = group.mkv.to_numpy(dtype=float, na_value=np.nan)
-            precise = np.unique(values[np.isfinite(values) & (values != np.round(values))])
-            # Vendor sometimes publishes both whole-yuan and decimal-yuan versions.
-            if (len(group[other_fields].drop_duplicates()) == 1
-                    and np.isfinite(values).all() and len(precise) == 1
-                    and ((values == precise[0]) | (values == np.round(precise[0]))).all()):
-                keep = group.index[values == precise[0]][0]
-                drop_indexes.extend(index for index in group.index if index != keep)
-                self.logger.warning(
-                    f"fund_portfolio rounded mkv duplicate key={key} "
-                    f"values={values.tolist()} retained_mkv={precise[0]} (no summation)"
-                )
-            else:
-                raise ValueError(
-                    f"Conflicting fund rows within one query: key={dict(zip(PORTFOLIO_KEY, key))}; "
-                    f"records={group[self.fields].to_dict('records')}"
-                )
-        return frame.drop(index=drop_indexes)
+        if not duplicates.empty:
+            keys = len(duplicates[PORTFOLIO_KEY].drop_duplicates())
+            self.logger.warning(f"fund_portfolio retained {len(duplicates)} distinct rows across "
+                                f"{keys} conflicting keys; exact-row deduplication only")
+        return frame
 
     def _query_and_save(self, cutoff, **query):
         # Stage a complete query before publishing; only one announcement year is merged at a time.

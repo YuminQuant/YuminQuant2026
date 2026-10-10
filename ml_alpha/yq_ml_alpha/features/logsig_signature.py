@@ -7,6 +7,7 @@ import os
 from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
+from bisect import bisect_right
 from typing import Any, Callable
 
 import numpy as np
@@ -14,6 +15,7 @@ import pandas as pd
 
 from yq_ml_alpha.data.stores import daily_path
 from yq_ml_alpha.features.base import FeatureProvider
+from yq_ml_alpha.features.logsig_minute_state import MinuteVolumeWindow
 
 ProgressCallback = Callable[[str], None]
 
@@ -33,7 +35,7 @@ def logsignature_width(order: int) -> int:
 
 
 class LogsigSignatureProvider(FeatureProvider):
-    """Compute Logsig-Alpha-v signature features from cached 5m bar files."""
+    """Persist volume logsignatures from raw minutes or legacy derived bars."""
 
     def __init__(
         self,
@@ -43,6 +45,9 @@ class LogsigSignatureProvider(FeatureProvider):
     ) -> None:
         params = dict(params or {})
         self.root = Path(root)
+        self.source = str(params.get("source", "bar"))
+        if self.source not in {"minute", "bar"}:
+            raise ValueError("logsignature source must be minute or bar")
         self.lookback_days = int(params.get("lookback_days", 20))
         self.bar_size = int(params.get("bar_size", 5))
         self.order = int(params.get("order", 10))
@@ -67,6 +72,7 @@ class LogsigSignatureProvider(FeatureProvider):
         self.feature_columns = [f"logsig_{idx:04}" for idx in range(1, width + 1)]
         self._bar_cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
         self._calendar_dates: list[int] = []
+        self._minute_state = MinuteVolumeWindow(self.root, self.bar_size)
         self.feature_cache_root = Path(params["feature_cache_dir"]) if params.get("feature_cache_dir") else None
         self.read_only = bool(params.get("read_only", False))
         if self.read_only and self.feature_cache_root is None:
@@ -82,6 +88,8 @@ class LogsigSignatureProvider(FeatureProvider):
         self._trim_cache()
 
     def load(self, trade_date: int, progress: ProgressCallback | None = None) -> pd.DataFrame:
+        if self.source == "minute" and not self._calendar_dates:
+            raise ValueError("raw-minute logsignature requires a trading calendar; missing dates must not be skipped")
         source_dates = self._source_dates(trade_date)
         cache_path = self._feature_cache_path(trade_date)
         fingerprint = self._source_fingerprint(source_dates)
@@ -113,6 +121,21 @@ class LogsigSignatureProvider(FeatureProvider):
                 f"source_days={len(source_dates)} window_steps={self.window_steps} "
                 f"order={self.order} width={len(self.feature_columns)} cache_days={self.cache_days} step=read"
             )
+        if self.source == "minute":
+            ts_codes, volume_matrix = self._minute_state.matrix(source_dates, fingerprint)
+        else:
+            ts_codes, volume_matrix = self._load_bar_window(source_dates, progress)
+        if not ts_codes:
+            return self._store_features(trade_date, self._empty_frame(), fingerprint)
+        data, backend = _signature_batch_from_volume(volume_matrix, self.order, progress)
+        output = pd.DataFrame(data, columns=self.feature_columns)
+        output.insert(0, "ts_code", ts_codes)
+        output.insert(0, "trade_date", np.int32(trade_date))
+        if progress is not None:
+            progress(f"step=signature_done backend={backend} stocks={len(output)}")
+        return self._store_features(trade_date, output, fingerprint)
+
+    def _load_bar_window(self, source_dates: list[int], progress: ProgressCallback | None):
         daily_frames = []
         for day_idx, source_date in enumerate(source_dates, start=1):
             frame = self._load_bar_day(
@@ -126,7 +149,7 @@ class LogsigSignatureProvider(FeatureProvider):
             if frame.empty:
                 if progress is not None:
                     progress(f"source {day_idx}/{len(source_dates)} date={source_date} step=empty")
-                return self._store_features(trade_date, self._empty_frame(), fingerprint)
+                return [], np.empty((0, self.window_steps))
             daily_frames.append(frame)
         if progress is not None:
             progress(f"step=matrix_start source_days={len(daily_frames)}")
@@ -143,23 +166,7 @@ class LogsigSignatureProvider(FeatureProvider):
                 f"shape={volume_matrix.shape[0]}x{volume_matrix.shape[1] if volume_matrix.ndim == 2 else 0} "
                 f"skipped_incomplete={skipped_incomplete} skipped_nonfinite={skipped_nonfinite}"
             )
-        if not ts_codes:
-            if progress is not None:
-                progress(
-                    f"step=signature_done stocks=0 skipped_incomplete={skipped_incomplete} "
-                    f"skipped_nonfinite={skipped_nonfinite}"
-                )
-            return self._store_features(trade_date, self._empty_frame(), fingerprint)
-        data, backend = _signature_batch_from_volume(volume_matrix, self.order, progress)
-        output = pd.DataFrame(data, columns=self.feature_columns)
-        output.insert(0, "ts_code", ts_codes)
-        output.insert(0, "trade_date", np.int32(trade_date))
-        if progress is not None:
-            progress(
-                f"step=signature_done backend={backend} stocks={len(output)} skipped_incomplete={skipped_incomplete} "
-                f"skipped_nonfinite={skipped_nonfinite}"
-            )
-        return self._store_features(trade_date, output, fingerprint)
+        return ts_codes, volume_matrix
 
     def _store_features(self, trade_date: int, output: pd.DataFrame, fingerprint: list) -> pd.DataFrame:
         cache_path = self._feature_cache_path(trade_date)
@@ -178,6 +185,8 @@ class LogsigSignatureProvider(FeatureProvider):
         if self.feature_cache_root is None:
             return None
         settings = ["logsig-v1", str(self.root.resolve()), self.lookback_days, self.bar_size, self.order, self.volume_column]
+        if self.source == "minute":
+            settings[0] = "logsig-minute-v1"
         key = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:20]
         return self.feature_cache_root / key / f"{trade_date}.parquet"
 
@@ -239,8 +248,8 @@ class LogsigSignatureProvider(FeatureProvider):
 
     def _source_dates(self, trade_date: int) -> list[int]:
         if self._calendar_dates:
-            history = [date for date in self._calendar_dates if date <= trade_date]
-            return history[-self.lookback_days :]
+            end = bisect_right(self._calendar_dates, trade_date)
+            return self._calendar_dates[max(0, end - self.lookback_days):end]
         candidates = sorted(int(path.stem) for path in self.root.glob("*/*.parquet"))
         history = [date for date in candidates if date <= trade_date]
         return history[-self.lookback_days :]

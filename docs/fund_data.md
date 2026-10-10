@@ -33,18 +33,22 @@ These commands perform real downloads. Basic/company/benchmark are current snaps
 python scripts/init_fund_data.py --start-year 2009 --end-date 20260424
 # Portfolio only / 只下载持仓
 python scripts/init_fund_data.py --datasets portfolio --start-year 2009 --end-date 20260424
-# Incremental updates / 增量更新
-python scripts/update_incremental.py --groups fund_basic fund_portfolio --start-date 20260401 --end-date 20260424
-# Exact announcement interval / 不额外回看公告日期
-python scripts/update_incremental.py --groups fund_portfolio --start-date 20260401 --end-date 20260424 --fund-ann-lookback-days 0
+# Refresh a report period / 按报告期增量重拉（包含查询时已可得的后续公告）
+python scripts/update_incremental.py --groups fund_basic fund_portfolio --start-date 20260331 --end-date 20260331
+# Refresh all quarter-end periods in range / 重拉区间内季度报告期
+python scripts/update_incremental.py --groups fund_portfolio --start-date 20250101 --end-date 20260331
 # Optional sources / 其他接口需显式选择
 python scripts/init_fund_data.py --datasets company manager benchmark share nav dividend factor_pro --start-year 2009 --end-date 20260424
 python scripts/update_incremental.py --groups fund_company fund_manager fund_benchmark fund_share fund_nav fund_div fund_factor_pro --start-date 20260401 --end-date 20260424
 ```
 
-`fund_basic` 和 `fund_portfolio` 已加入 DEFAULT_GROUPS，运行默认增量更新时会自动刷新基础快照和公告持仓。其他基金组仍需显式指定，`--groups all` 会包含全部基金组。持仓增量不传起日时，以结束日为起点再回看默认 7 个自然日，不默认重拉全部历史。没有持久化完成游标，重跑依靠幂等合并；更早的迟到或修订需扩大公告范围或重拉报告期。
+`fund_basic` 和 `fund_portfolio` 已加入 DEFAULT_GROUPS。基础快照每次刷新；持仓与三大财报使用相同调度：不传日期时使用当天，仅处理区间内 `0331/0630/0930/1231` 报告期，其他日期打印 skip。增量通过 `period` 重拉，不按 ann_date 查询、不使用 7 日回看；`--fund-ann-lookback-days` 只影响其他日期型基金接口。其他基金组仍需显式指定，`--groups all` 包含全部组。没有持久化完成游标，后续披露或修订通过重拉对应报告期补齐。
 
-`fund_basic` and `fund_portfolio` are included in DEFAULT_GROUPS: default incremental runs refresh the basic snapshot and disclosed holdings automatically. Other fund groups remain opt-in; explicit `--groups all` includes all of them. Without a start date, incremental portfolio updates start at the end date minus the configured lookback. There is no persistent completion cursor; retries are idempotent. Older corrections require a wider interval or a historical period refresh.
+Both sources are in DEFAULT_GROUPS. Basic refreshes on every run; portfolio follows statement scheduling: default dates are today, and only quarter-end dates within the range trigger period refreshes. Other dates log a skip. Portfolio no longer queries by announcement date or applies the seven-day overlap; that option remains for other dated fund sources. Refresh the same period again to capture later disclosures or corrections. Other fund groups remain opt-in except explicit `--groups all`.
+
+历史按季度 period 分页下载，`--end-date` 同时约束报告期和公告日。增量入口 `sync(mode="incremental", target_date="20260331")` 中 target_date 是报告期，不是披露截止日，默认保留供应商当前返回的该期全部公告；所以今天重拉旧报告期，会纳入报告期之后的公告。调度脚本的 start/end 只选择报告期，不作为增量公告过滤条件。直接调用 sync 时可另传 end_date 作为可选公告截止日。
+
+History enumerates quarterly periods and applies the explicit history cutoff to both report and announcement dates. Incremental target_date selects a report period, not an announcement cutoff; later announcements returned by the vendor remain included. Script start/end dates select periods only. Direct sync calls may optionally pass a separate end_date cutoff.
 
 历史 CLI 默认仍只下载 basic/portfolio。新增日期型接口逐自然日查询（公告和净值不限定交易日），内存仅合并当前查询及当前分区，不积累全历史。经理/分红以 ann_date 查询；规模/技术面以 trade_date 查询；净值以 nav_date 查询。增量均回看配置的 7 天；更早修订需要扩大区间。净值的截止日期限制 nav_date，不删除晚于 nav_date 的 ann_date；后续 PIT 必须额外检查公告日。
 
@@ -63,6 +67,10 @@ data/fund_data/portfolio/{ann_year}.parquet
 data/fund_data/portfolio/revisions/{ann_year}.parquet
 ```
 
+持仓按 ann_date 年份保存，与三大财报分区一致，不改成每日小文件。主文件、修订文件及分页暂存均使用 ZSTD 压缩；读取兼容原有 Parquet，已有文件仅在下次合并写入时转换压缩方式，不主动全库重写。保留 float64 数值和 Int32 日期，不为了压缩降低数值精度。
+
+Portfolio uses announcement-year partitions, matching statements rather than daily files. Main, revision and staged Parquet files use ZSTD. Existing files remain readable and switch compression on their next merge; there is no automatic full-store rewrite or numeric precision reduction.
+
 Basic 遍历 `market=E/O`、`status=D/I/L`，保留已退市/到期基金；保存官方全部字段和本地 `fetch_date`，同一天快照重跑覆盖。基金名称、管理人和当前类型不是历史 PIT 字段，不能倒推历史。此接口没有可靠的统一份额组合 ID。
 
 Basic covers both markets and all three statuses, including expired/delisted funds. All documented fields and the local fetch date are retained. Same-day snapshots are replaced. Current names, managers and types are not historically point-in-time, and no reliable share-class portfolio identifier is supplied.
@@ -73,17 +81,23 @@ Portfolio preserves fund/stock keys, announcement/report dates, market value in 
 
 ## 分页与故障 / Pagination And Failures
 
-配置 `api.page_limits.fund_basic=15000`（按官方上限限制），`fund_portfolio=1000` 是请求值，不是已确认的服务端上限。`offset` 按实际返回行数递增，即使短页也继续请求到空页。整页无新增记录或达到 max_pages 就报错，不把重复页当作完成。每次请求及重试均经过 BaseDownloader 限速；异常耗尽重试后传播，不转成空表。None 响应也不是正常结束。
+进度沿用 QuantLogger，同时输出到控制台和 `data_sync.log`：报告期显示 `[当前/总数]` 和 `completed`，每页显示 offset、limit、返回行数及当前查询累计 fetched_rows，空页明确提示结束。查询完成另报 cutoff 过滤后 retained_rows 和去重后 unique_rows；这些不是年度文件总行数。请求前先打印进度，失败重试打印 attempt；阻塞中的单次网络请求不额外启动心跳线程。
+
+Progress uses QuantLogger for both console and `data_sync.log`: period position/completion, per-page offset/limit/rows, cumulative fetched rows per query, and explicit empty-page messages. Completion includes cutoff-retained and deduplicated incoming rows, distinct from the total stored yearly rows. Requests log before network IO and retries log attempt counts; there is no background heartbeat during a blocked request.
+
+配置 `api.page_limits.fund_basic=15000`，`fund_portfolio=8000`。2026-10-10 实测全市场 period=20251231：不传 limit/offset 返回 8000 行，请求 10000 仍返回 8000；offset=7995 的跨页重叠五行一致。此为当前账号实测，不保证未来服务端上限不变。`offset` 按实际返回行数递增，即使短页也继续请求到空页。整页无新增记录或达到 max_pages 就报错，不把重复页当作完成。每次请求及重试均经过 BaseDownloader 限速；异常耗尽重试后传播，不转成空表。None 响应也不是正常结束。
+
+Portfolio now requests 8000 rows per page. A live 20251231-period query on 2026-10-10 returned 8000 rows both without pagination arguments and with limit=10000; an offset=7995 overlap check confirmed continuity. This is an observed account-specific limit, not a permanent API guarantee.
 
 Offset advances by actual returned rows and stops only on an empty frame. No-progress pages and page limits fail loudly. Every attempt is throttled; exhausted retries propagate. Live validation of basic/portfolio checks a bounded sample only, not full-history completeness. Newly added APIs have only been syntax-checked; their server-side pagination still needs validation before large downloads. Company is the documented single-response, no-parameter exception.
 
-新增分页请求值：manager/benchmark 5000，share 2000，factor_pro 8000；nav/dividend 默认请求 1000（不是宣称服务端上限）。每页继续到空页，拒绝静默截断。技术面因子默认每分钟 30 次，其余 180 次，均附加 90% 安全系数；权限不足直接报错，需按账号等级配置。全空列保留，缺列报错，非有限数值转空，不填零。
+新增分页请求值：manager/benchmark 5000，share 2000，factor_pro 8000；nav/dividend 默认请求 1000（不是宣称服务端上限）。每页继续到空页，拒绝静默截断。基金接口统一配置每分钟 500 次，附加 90% 安全系数；权限不足直接报错，需按账号等级配置。全空列保留，缺列报错，非有限数值转空，不填零。
 
-New page sizes are 5000 for managers/benchmarks, 2000 for shares, 8000 for technical factors, and a configurable requested 1000 for NAV/dividends. Technical factors default to 30 calls/minute; other sources default to 180, with the existing safety margin. All-null columns are preserved, missing columns fail, and nonfinite numeric values become null rather than zero.
+New page sizes are 5000 for managers/benchmarks, 2000 for shares, 8000 for technical factors, and a configurable requested 1000 for NAV/dividends. Fund interfaces are configured for 500 calls/minute with the existing safety margin; adjust for account permissions. All-null columns are preserved, missing columns fail, and nonfinite numeric values become null rather than zero.
 
-`api.rate_limits.fund_basic/fund_portfolio` 默认每分钟 180 次，BaseDownloader 另有 90% 安全系数；按账号权限调整。`fund_download.retries=3`、`max_pages=100000`、`ann_lookback_days=7` 可配置。
+`api.rate_limits.fund_basic/fund_portfolio` 默认每分钟 500 次，BaseDownloader 另有 90% 安全系数，每请求等待约 0.133 秒；按账号权限调整。`fund_download.retries=3`、`max_pages=100000`、`ann_lookback_days=7` 可配置。
 
-Rate settings default to 180 calls/minute with the existing 90% safety factor; configure them for your account. Retry count, maximum pages and announcement lookback are independently configurable.
+Rate settings default to 500 calls/minute with the existing 90% safety factor (about 0.133 seconds of sleep per attempt); configure them for your account. Retry count, maximum pages and announcement lookback are independently configurable.
 
 分页持仓按公告年暂存到临时目录，整次查询完成、各年冲突检查通过后才合并；只合并一个公告年，不载入全部历史。每个文件校验行数/schema 后原子替换，下载目录持有排他锁。多个年份不是整体事务；磁盘故障可能已有某年成功写入，重跑可以补齐，不记录虚假的整体成功。异常退出的锁只能在确认无写入进程后手动清理。
 

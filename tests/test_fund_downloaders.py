@@ -70,6 +70,35 @@ def test_conflicting_query_fails_before_any_year_is_published(tmp_path):
     assert not list(tmp_path.glob("*.parquet"))
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_portfolio_rounding_duplicates_keep_precise_value_across_pages(tmp_path, reverse):
+    obj = downloader(tmp_path)
+    rows = [row(ts_code="001875.OF", symbol="00981.HK", end_date="20170630",
+                ann_date="20170828", mkv=value, amount=305000., stk_mkv_ratio=3.86)
+            for value in [2395676.18, 2395676.00]]
+    if reverse:
+        rows.reverse()
+    api(obj, [pd.DataFrame([rows[0]]), pd.DataFrame([rows[1]]), pd.DataFrame()])
+    obj._query_and_save("20260424", period="20170630")
+    result = pd.read_parquet(tmp_path / "2017.parquet")
+    assert len(result) == 1
+    assert result.mkv.tolist() == [2395676.18]
+    assert result.amount.tolist() == [305000.]
+    assert "rounded mkv duplicate" in obj.logger.warning.call_args.args[0]
+
+
+@pytest.mark.parametrize("changes", [
+    {"mkv": 2395677.}, {"mkv": 2395676., "amount": 11.},
+    {"mkv": 2395676., "stk_mkv_ratio": 0.5}, {"mkv": None},
+    {"mkv": 2395676.19},
+])
+def test_rounding_rule_does_not_hide_real_conflicts(tmp_path, changes):
+    obj = downloader(tmp_path)
+    frame = obj._normalize(pd.DataFrame([row(mkv=2395676.18), row(**changes)]))
+    with pytest.raises(ValueError, match="Conflicting.*001753.OF"):
+        obj._deduplicate_query(frame)
+
+
 def test_versions_share_classes_revisions_and_idempotency(tmp_path):
     obj = downloader(tmp_path)
     initial = obj._normalize(pd.DataFrame([row(), row(ann_date="20260421"), row(ts_code="001754.OF")]))

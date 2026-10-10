@@ -105,9 +105,9 @@ Portfolio pages are staged on disk. All query partitions are checked before publ
 
 ## 重复持仓与 PIT / Duplicates And PIT
 
-业务键是 `(ts_code, symbol, end_date, ann_date)`。完全重复行只留一条，不求和。同次查询同键数值冲突直接报错。不同公告日分别保留；同键跨次发生修订时，将旧行写入 revisions，再用新值更新主表。相同值重跑保留 first_seen_at 并更新 last_seen_at。未返回旧行时，不删除它，更不推断持仓清零。
+业务键是 `(ts_code, symbol, end_date, ann_date)`。完全重复行只留一条，不求和。持仓同次查询唯一精度例外：除 mkv 外所有字段（含缺失状态）相同，且 mkv 只有一个带小数的有限值及其四舍五入整数值时，保留带小数原记录并 warning 输出键和金额。实测 20170630 的 001875.OF/00981.HK 有 2395676.18 和 2395676.00 两种市值。其他同键冲突仍报错，并附具体键和记录。不同公告日分别保留；同键跨次发生修订时，将旧行写入 revisions，再用新值更新主表。相同值重跑保留 first_seen_at 并更新 last_seen_at。未返回旧行时，不删除它，更不推断持仓清零。
 
-Exact duplicates are removed without summing. Conflicting values within a query fail. Different disclosure dates remain separate. Later same-key corrections archive the prior observed row before replacement. Absence from a response never implies zero holdings. A/C share classes remain separate raw records; downstream aggregation must resolve portfolio identity before summing.
+Exact duplicates are removed without summing. Portfolio permits one narrow precision exception: all other fields, including missingness, must match; mkv must contain one finite fractional value and its rounded integer. The fractional original is retained independently of page order, with a warning containing the key and amounts. All other conflicts still fail with diagnostic records. Different disclosure dates remain separate. Later same-key corrections archive the prior observed row before replacement. Absence from a response never implies zero holdings. A/C share classes remain separate raw records; downstream aggregation must resolve portfolio identity before summing.
 
 后续 PIT 至少要求 `ann_date <= trade_date`，不能把后披露的持仓提前并入截面，也不能直接对所有公告版本求和。主表是供应商最新观察版本，不保证严格历史原貌；revisions 只能帮助恢复本地采集开始后的变化，无法恢复供应商之前已经覆盖的历史。基础表的 fetch_date 也不等于公告日期。
 

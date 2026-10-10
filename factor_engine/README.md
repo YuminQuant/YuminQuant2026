@@ -61,12 +61,16 @@ dates are processed sequentially, not in concurrent date batches.
 
 The order-10 computation kernel caches its Lyndon projection and axis indices.
 Stock tasks reuse scratch buffers; descending-degree updates avoid full tensor
-copies while preserving the original arithmetic order. Each target still computes
+copies while preserving arithmetic order within the selected precision. Each target computes
 the full path: inverse-based rolling tensor removal is not used because it can
 amplify floating-point error in high-degree components.
-Input values are promoted to `f64` for volume aggregation and tensor arithmetic;
-the 226 output feature columns remain `f32` in Parquet. This precision contract
-predates the kernel optimizations.
+Volume aggregation and all tensor intermediates use `f32`, as do the 226 output
+feature columns. Full-window computation has no cross-date numerical recurrence:
+restarts and different requested start dates do not accumulate different inverse
+errors. Float32 high-order rounding still differs from the former float64 values
+and can change cross-sectional ranks. Regenerate a consistent feature dataset and
+retrain rather than silently mixing the numerical versions. Non-finite output is
+written as null, not infinity.
 
 ```powershell
 cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-logsig `

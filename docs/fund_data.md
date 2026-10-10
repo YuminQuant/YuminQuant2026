@@ -42,9 +42,9 @@ python scripts/init_fund_data.py --datasets company manager benchmark share nav 
 python scripts/update_incremental.py --groups fund_company fund_manager fund_benchmark fund_share fund_nav fund_div fund_factor_pro --start-date 20260401 --end-date 20260424
 ```
 
-新增组不加入 DEFAULT_GROUPS，但显式 `--groups all` 会包含基金组。持仓增量不传起日时，以结束日为起点再回看默认 7 个自然日，不默认重拉全部历史。没有持久化完成游标，重跑依靠幂等合并；更早的迟到或修订需扩大公告范围或重拉报告期。
+`fund_basic` 和 `fund_portfolio` 已加入 DEFAULT_GROUPS，运行默认增量更新时会自动刷新基础快照和公告持仓。其他基金组仍需显式指定，`--groups all` 会包含全部基金组。持仓增量不传起日时，以结束日为起点再回看默认 7 个自然日，不默认重拉全部历史。没有持久化完成游标，重跑依靠幂等合并；更早的迟到或修订需扩大公告范围或重拉报告期。
 
-The groups are opt-in, except explicit `--groups all`. Without a start date, incremental portfolio updates start at the end date minus the configured lookback. There is no persistent completion cursor; retries are idempotent. Older corrections require a wider interval or a historical period refresh.
+`fund_basic` and `fund_portfolio` are included in DEFAULT_GROUPS: default incremental runs refresh the basic snapshot and disclosed holdings automatically. Other fund groups remain opt-in; explicit `--groups all` includes all of them. Without a start date, incremental portfolio updates start at the end date minus the configured lookback. There is no persistent completion cursor; retries are idempotent. Older corrections require a wider interval or a historical period refresh.
 
 历史 CLI 默认仍只下载 basic/portfolio。新增日期型接口逐自然日查询（公告和净值不限定交易日），内存仅合并当前查询及当前分区，不积累全历史。经理/分红以 ann_date 查询；规模/技术面以 trade_date 查询；净值以 nav_date 查询。增量均回看配置的 7 天；更早修订需要扩大区间。净值的截止日期限制 nav_date，不删除晚于 nav_date 的 ann_date；后续 PIT 必须额外检查公告日。
 

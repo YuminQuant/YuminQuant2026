@@ -223,6 +223,20 @@ Current `derive-logsig` specifics / 当前实现：
 - `derived_logsig` provider reads files only, fails on missing files/columns / 模型端只读，缺文件或列报错。
 - `factor-materialize` rejects this provider; it is not the derived production CLI / 不再通过 Python materialize 生产此数据。
 
+The Rust kernel caches fixed order-10 structures and reuses numerical buffers.
+Descending-degree in-place updates preserve the original calculation results.
+Do not replace full-path computation with inverse-based rolling removal without
+new numerical validation: high-order cancellation can change the features.
+
+Rust 内核缓存固定10阶结构、复用数值缓冲，并通过倒序原地更新减少复制。
+不要未经数值验证就改成 signature 逆运算移除历史窗口；高阶抵消误差可能改变特征。
+
+Precision: minute values are promoted to `f64` for aggregation and tensor
+arithmetic, then the 226 features are stored as `f32`. This is unchanged by
+the kernel optimizations; storage dtype is not intermediate computation dtype.
+精度约定：分钟值提升为 `f64` 进行聚合和张量计算，226维特征仍以 `f32` 落盘。
+这不是此次优化引入的变化；存储精度与中间计算精度应分别判断。
+
 Other `materialize` paths may write debug samples or legacy provider caches;
 they are not automatically streaming or a replacement for Rust derived production.
 Inspect the selected provider rather than generalizing from logsignature.

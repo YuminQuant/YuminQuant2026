@@ -7,6 +7,7 @@ from yq_ml_alpha.config import MlAlphaConfig, load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.pipelines.runtime import _load_bundle, _predict_frequency, _train_frequency
+from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 
 
 def run(config_path: str | Path) -> list[Path]:
@@ -15,6 +16,8 @@ def run(config_path: str | Path) -> list[Path]:
 
 
 def run_config(config: MlAlphaConfig) -> list[Path]:
+    if config.features.type == "logsig_signature":
+        return materialize_logsignature(config)
     if not config.materialize.cache_samples:
         raise ValueError("set [materialize].cache_samples = true to write debug sample cache")
     calendar = TradingCalendar.load(config.data_root)
@@ -34,4 +37,28 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
         path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(path, index=False)
         outputs.append(path)
+    return outputs
+
+
+def materialize_logsignature(config: MlAlphaConfig) -> list[Path]:
+    """Persist one feature date at a time; never assemble training samples here."""
+    calendar = TradingCalendar.load(config.data_root)
+    params = dict(config.features.params, read_only=False)
+    if not params.get("feature_cache_dir"):
+        raise ValueError("logsignature materialization requires feature_cache_dir")
+    provider = LogsigSignatureProvider(config.features.root, config.features.columns, params)
+    provider.set_calendar_dates(calendar.dates)
+    dates = set(sample_dates(calendar, config.dates.train, _train_frequency(config)))
+    if config.dates.valid is not None:
+        dates.update(sample_dates(calendar, config.dates.valid, _train_frequency(config)))
+    if config.dates.predict is not None:
+        dates.update(sample_dates(calendar, config.dates.predict, _predict_frequency(config)))
+    dates = sorted(dates)
+    provider.set_cache_days_for_target_dates(dates)
+    outputs = []
+    for index, date in enumerate(dates, 1):
+        frame = provider.load(date)
+        print(f"logsignature materialize [{index}/{len(dates)}] date={date} rows={len(frame)}", flush=True)
+        outputs.append(provider._feature_cache_path(date))
+        del frame
     return outputs

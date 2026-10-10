@@ -9,6 +9,7 @@ pub struct DeriveBarRequest {
     pub asset_class: AssetClass,
     pub source: BarSource,
     pub bar_size: usize,
+    pub columns: Option<Vec<String>>,
     pub start_date: i32,
     pub end_date: i32,
     pub overwrite: bool,

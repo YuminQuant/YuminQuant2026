@@ -296,6 +296,7 @@ fn parse_derive_bar_request(args: &[String]) -> Result<DeriveBarRequest> {
         None => DEFAULT_DERIVE_DATE_BATCH_SIZE,
     };
     Ok(DeriveBarRequest {
+        columns: flags.get("columns").map(|value| parse_csv_values(value)),
         asset_class,
         source,
         bar_size,
@@ -1319,10 +1320,35 @@ fn print_help() {
     println!("  --project-config D:/path/to/config.toml (project config)");
     println!("  --detail true|false (strategy-run minute detail output; default false)");
     println!("  --overwrite true|false (derive-bar default true)");
+    println!("  --columns volume,amount,... (derive-bar: project minute inputs and replace output with selected fields; keys always included)");
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn derive_bar_accepts_column_projection() {
+        let args = [
+            "--asset",
+            "stock",
+            "--source",
+            "minute",
+            "--bar-size",
+            "5",
+            "--start-date",
+            "20260105",
+            "--end-date",
+            "20260105",
+            "--columns",
+            "volume,vwap",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let request = super::parse_derive_bar_request(&args).unwrap();
+        assert_eq!(request.columns.unwrap(), vec!["volume", "vwap"]);
+        let request = super::parse_derive_bar_request(&args[..10]).unwrap();
+        assert!(request.columns.is_none());
+    }
     #[test]
     fn run_include_deprecated_requires_explicit_factor_ids() {
         let mut args: Vec<String> = [

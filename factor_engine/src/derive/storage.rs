@@ -5,7 +5,7 @@ use parquet::basic::Compression;
 
 use crate::data::parquet_io::{read_parquet, write_parquet_with_compression};
 use crate::data::{ColumnData, Table};
-use crate::derive::bar::DerivedBarRow;
+use crate::derive::bar::{selected_bar_columns, DerivedBarRow, BAR_KEY_COLUMNS};
 use crate::error::{err, Result};
 
 pub fn derived_stock_bar_path(data_root: &Path, bar_size: usize, trade_date: i32) -> PathBuf {
@@ -19,7 +19,17 @@ pub fn derived_stock_bar_path(data_root: &Path, bar_size: usize, trade_date: i32
 }
 
 pub fn write_bar_rows(path: &Path, rows: &[DerivedBarRow]) -> Result<()> {
-    write_derived_parquet(path, &bar_rows_table(rows)?)
+    write_bar_rows_selected(path, rows, &selected_bar_columns(None)?)
+}
+
+pub fn write_bar_rows_selected(
+    path: &Path,
+    rows: &[DerivedBarRow],
+    columns: &[String],
+) -> Result<()> {
+    selected_bar_columns(Some(columns))?;
+    let table = bar_rows_table(rows, columns)?;
+    write_derived_parquet(path, &table)
 }
 
 /// Shared production default for derived datasets, including bars and consensus.
@@ -144,61 +154,33 @@ fn align_column(column: &ColumnData, indices: &[Option<usize>]) -> ColumnData {
     }
 }
 
-fn bar_rows_table(rows: &[DerivedBarRow]) -> Result<Table> {
-    Table::new(BTreeMap::from([
-        (
-            "trade_date".to_string(),
-            ColumnData::I32(rows.iter().map(|row| Some(row.trade_date)).collect()),
-        ),
-        (
-            "trade_time".to_string(),
-            ColumnData::Utf8(
-                rows.iter()
-                    .map(|row| Some(row.trade_time.clone()))
-                    .collect(),
-            ),
-        ),
-        (
-            "bar_index".to_string(),
-            ColumnData::I32(rows.iter().map(|row| Some(row.bar_index)).collect()),
-        ),
-        (
-            "ts_code".to_string(),
-            ColumnData::Utf8(rows.iter().map(|row| Some(row.ts_code.clone())).collect()),
-        ),
-        (
-            "open".to_string(),
-            ColumnData::F32(rows.iter().map(|row| Some(row.open as f32)).collect()),
-        ),
-        (
-            "high".to_string(),
-            ColumnData::F32(rows.iter().map(|row| Some(row.high as f32)).collect()),
-        ),
-        (
-            "low".to_string(),
-            ColumnData::F32(rows.iter().map(|row| Some(row.low as f32)).collect()),
-        ),
-        (
-            "close".to_string(),
-            ColumnData::F32(rows.iter().map(|row| Some(row.close as f32)).collect()),
-        ),
-        (
-            "volume".to_string(),
-            ColumnData::F64(rows.iter().map(|row| Some(row.volume)).collect()),
-        ),
-        (
-            "amount".to_string(),
-            ColumnData::F64(rows.iter().map(|row| Some(row.amount)).collect()),
-        ),
-        (
-            "vwap".to_string(),
-            ColumnData::F64(rows.iter().map(|row| row.vwap).collect()),
-        ),
-        (
-            "minute_count".to_string(),
-            ColumnData::I32(rows.iter().map(|row| Some(row.minute_count)).collect()),
-        ),
-    ]))
+fn bar_rows_table(rows: &[DerivedBarRow], columns: &[String]) -> Result<Table> {
+    let mut output = BTreeMap::new();
+    for name in BAR_KEY_COLUMNS
+        .iter()
+        .copied()
+        .chain(columns.iter().map(String::as_str))
+    {
+        let values = match name {
+            "trade_date" => ColumnData::I32(rows.iter().map(|r| Some(r.trade_date)).collect()),
+            "trade_time" => {
+                ColumnData::Utf8(rows.iter().map(|r| Some(r.trade_time.clone())).collect())
+            }
+            "bar_index" => ColumnData::I32(rows.iter().map(|r| Some(r.bar_index)).collect()),
+            "ts_code" => ColumnData::Utf8(rows.iter().map(|r| Some(r.ts_code.clone())).collect()),
+            "open" => ColumnData::F32(rows.iter().map(|r| Some(r.open as f32)).collect()),
+            "high" => ColumnData::F32(rows.iter().map(|r| Some(r.high as f32)).collect()),
+            "low" => ColumnData::F32(rows.iter().map(|r| Some(r.low as f32)).collect()),
+            "close" => ColumnData::F32(rows.iter().map(|r| Some(r.close as f32)).collect()),
+            "volume" => ColumnData::F64(rows.iter().map(|r| Some(r.volume)).collect()),
+            "amount" => ColumnData::F64(rows.iter().map(|r| Some(r.amount)).collect()),
+            "vwap" => ColumnData::F64(rows.iter().map(|r| r.vwap).collect()),
+            "minute_count" => ColumnData::I32(rows.iter().map(|r| Some(r.minute_count)).collect()),
+            _ => return Err(err(format!("unknown derive-bar column: {name}"))),
+        };
+        output.insert(name.to_string(), values);
+    }
+    Table::new(output)
 }
 
 #[cfg(test)]
@@ -206,6 +188,41 @@ mod tests {
     use super::*;
     use crate::data::parquet_io::read_parquet;
     use parquet::file::reader::{FileReader, SerializedFileReader};
+
+    #[test]
+    fn selected_bar_storage_omits_unrequested_fields() {
+        let path =
+            std::env::temp_dir().join(format!("yq-bar-selected-{}.parquet", std::process::id()));
+        let row = DerivedBarRow {
+            trade_date: 20260105,
+            trade_time: "09:35:00".into(),
+            bar_index: 0,
+            ts_code: "000001.SZ".into(),
+            open: 1.0,
+            high: 2.0,
+            low: 1.0,
+            close: 2.0,
+            volume: 30.0,
+            amount: 45.0,
+            vwap: Some(1.5),
+            minute_count: 5,
+        };
+        write_bar_rows_selected(&path, &[row], &["volume".into()]).unwrap();
+        let table = read_parquet(&path, None).unwrap();
+        assert_eq!(table.columns.len(), 5);
+        assert!(BAR_KEY_COLUMNS
+            .iter()
+            .all(|key| table.columns.contains_key(*key)));
+        assert_eq!(table.required_f64_cast("volume").unwrap(), vec![Some(30.0)]);
+        assert!(!table.columns.contains_key("close"));
+        let reader = SerializedFileReader::new(std::fs::File::open(&path).unwrap()).unwrap();
+        assert!(reader.metadata().row_groups().iter().all(|g| g
+            .columns()
+            .iter()
+            .all(|c| c.compression() == Compression::SNAPPY)));
+        drop(reader);
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn consensus_table(codes: &[&str], name: &str, values: Vec<Option<f64>>) -> Table {
         Table::new(BTreeMap::from([

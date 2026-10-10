@@ -68,6 +68,9 @@ class LogsigSignatureProvider(FeatureProvider):
         self._bar_cache: OrderedDict[int, pd.DataFrame] = OrderedDict()
         self._calendar_dates: list[int] = []
         self.feature_cache_root = Path(params["feature_cache_dir"]) if params.get("feature_cache_dir") else None
+        self.read_only = bool(params.get("read_only", False))
+        if self.read_only and self.feature_cache_root is None:
+            raise ValueError("read_only logsignature requires feature_cache_dir")
 
     def set_calendar_dates(self, dates: list[int]) -> None:
         self._calendar_dates = list(dates)
@@ -80,15 +83,22 @@ class LogsigSignatureProvider(FeatureProvider):
 
     def load(self, trade_date: int, progress: ProgressCallback | None = None) -> pd.DataFrame:
         source_dates = self._source_dates(trade_date)
+        cache_path = self._feature_cache_path(trade_date)
+        fingerprint = self._source_fingerprint(source_dates)
+        if self.read_only:
+            manifest = cache_path.with_suffix(".json")
+            if not cache_path.exists() or not manifest.exists():
+                raise FileNotFoundError(f"Missing logsignature features for {trade_date}; run factor-materialize first")
+            if json.loads(manifest.read_text()) != fingerprint:
+                raise ValueError(f"Stale logsignature features for {trade_date}; rerun factor-materialize")
+            return pd.read_parquet(cache_path)
         if len(source_dates) < self.lookback_days:
             if progress is not None:
                 progress(
                     f"source_days={len(source_dates)}/{self.lookback_days} cache_days={self.cache_days} "
                     "step=insufficient_history"
                 )
-            return self._empty_frame()
-        cache_path = self._feature_cache_path(trade_date)
-        fingerprint = self._source_fingerprint(source_dates)
+            return self._store_features(trade_date, self._empty_frame(), fingerprint)
         if cache_path is not None and cache_path.exists():
             manifest = cache_path.with_suffix(".json")
             if manifest.exists() and json.loads(manifest.read_text()) == fingerprint:
@@ -116,7 +126,7 @@ class LogsigSignatureProvider(FeatureProvider):
             if frame.empty:
                 if progress is not None:
                     progress(f"source {day_idx}/{len(source_dates)} date={source_date} step=empty")
-                return self._empty_frame()
+                return self._store_features(trade_date, self._empty_frame(), fingerprint)
             daily_frames.append(frame)
         if progress is not None:
             progress(f"step=matrix_start source_days={len(daily_frames)}")
@@ -139,7 +149,7 @@ class LogsigSignatureProvider(FeatureProvider):
                     f"step=signature_done stocks=0 skipped_incomplete={skipped_incomplete} "
                     f"skipped_nonfinite={skipped_nonfinite}"
                 )
-            return self._empty_frame()
+            return self._store_features(trade_date, self._empty_frame(), fingerprint)
         data, backend = _signature_batch_from_volume(volume_matrix, self.order, progress)
         output = pd.DataFrame(data, columns=self.feature_columns)
         output.insert(0, "ts_code", ts_codes)
@@ -149,6 +159,10 @@ class LogsigSignatureProvider(FeatureProvider):
                 f"step=signature_done backend={backend} stocks={len(output)} skipped_incomplete={skipped_incomplete} "
                 f"skipped_nonfinite={skipped_nonfinite}"
             )
+        return self._store_features(trade_date, output, fingerprint)
+
+    def _store_features(self, trade_date: int, output: pd.DataFrame, fingerprint: list) -> pd.DataFrame:
+        cache_path = self._feature_cache_path(trade_date)
         if cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             temp = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")

@@ -38,19 +38,9 @@ cross_section_transform = "none"
 feature_fill_value = 0.0
 
 [features]
-type = "logsig_signature"
-root = "data/stock_data/minute"
+type = "derived_logsig"
+root = "data/derived/stock/logsig_v"
 columns = "__all__"
-
-[features.params]
-source = "minute"
-lookback_days = 20
-bar_size = 5
-order = 10
-volume_column = "volume"
-cache_days = "auto"
-feature_cache_dir = "data/model_workspace/logsig_alpha_v/features"
-read_only = true
 
 [materialize]
 cache_samples = false

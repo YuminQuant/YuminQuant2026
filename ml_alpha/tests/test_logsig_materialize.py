@@ -50,6 +50,7 @@ def test_empty_date_is_persisted_and_readable(tmp_path):
 
 def test_materialize_releases_each_date_and_does_not_load_labels(tmp_path):
     config = load_config(Path(__file__).parents[1] / "factors/logsig_alpha_v.toml")
+    config = replace(config, features=replace(config.features, type="logsig_signature"))
     config = replace(config, dates=DatesConfig((1, 2), (3, 3), (4, 5)), sample=SampleConfig("daily", "daily"))
     config.features.params["feature_cache_dir"] = str(tmp_path / "features")
     previous = []

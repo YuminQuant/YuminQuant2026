@@ -64,6 +64,16 @@ pub fn logsig_signature_batch_from_volume(
     cols: usize,
     order: usize,
 ) -> Result<Vec<f32>> {
+    logsig_signature_batch_in_pool(volume, rows, cols, order, logsig_thread_pool())
+}
+
+pub fn logsig_signature_batch_in_pool(
+    volume: &[f64],
+    rows: usize,
+    cols: usize,
+    order: usize,
+    pool: &ThreadPool,
+) -> Result<Vec<f32>> {
     if rows == 0 {
         return Ok(Vec::new());
     }
@@ -83,7 +93,7 @@ pub fn logsig_signature_batch_from_volume(
     let level_offsets = level_offsets(order)?;
     let basis = lyndon_basis(order)?;
     let mut output = vec![0.0f32; rows * logsig_width];
-    logsig_thread_pool().install(|| {
+    pool.install(|| {
         output
             .par_chunks_mut(logsig_width)
             .zip(volume.par_chunks(cols))

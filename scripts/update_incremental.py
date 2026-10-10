@@ -25,6 +25,8 @@ from data_manager import (
     FutureDailyDownloader,
     FutureLimitDownloader,
     FutureMinuteDownloader,
+    FundBasicDownloader,
+    FundPortfolioDownloader,
     HKBasicDownloader,
     HKCalendarDownloader,
     IncomeDownloader,
@@ -450,7 +452,21 @@ def update_option(args, logger):
         run_task(logger, name, fn)
 
 
+def update_fund_basic(args, logger):
+    run_task(logger, "fund_basic", lambda: FundBasicDownloader().sync())
+
+
+def update_fund_portfolio(args, logger):
+    end_date = args.end_date or bj_today()
+    run_task(logger, "fund_portfolio", lambda: FundPortfolioDownloader().sync(
+        mode="incremental", start_date=args.start_date or end_date,
+        end_date=end_date, lookback_days=args.fund_ann_lookback_days,
+    ))
+
+
 GROUPS = {
+    "fund_basic": update_fund_basic,
+    "fund_portfolio": update_fund_portfolio,
     "calendar": update_calendar,
     "static": lambda args, logger: update_static_all(logger),
     "stock_static": lambda args, logger: update_stock_static(logger),
@@ -493,6 +509,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Incrementally update local parquet data from Tushare."
     )
+    parser.add_argument("--fund-ann-lookback-days", type=int, default=None,
+                        help="Extra natural days before fund portfolio start date; default: configured value or 7.")
     parser.add_argument(
         "--groups",
         nargs="+",
@@ -502,7 +520,7 @@ def parse_args():
     )
     parser.add_argument(
         "--start-date",
-        help="YYYYMMDD. If omitted, each group uses its own historical start and skips local dates already present.",
+        help="YYYYMMDD. Most groups default to their historical start; fund_portfolio defaults to end-date plus its announcement lookback.",
     )
     parser.add_argument(
         "--end-date",

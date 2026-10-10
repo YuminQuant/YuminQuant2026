@@ -5,6 +5,8 @@ tushare_token = "YOUR_TUSHARE_TOKEN"
 
 # Configure per-interface rate limits according to your Tushare permission level.
 [api.rate_limits]
+fund_basic = 180
+fund_portfolio = 180
 trade_cal = 500
 stock_basic = 500
 stock_st = 500
@@ -54,6 +56,8 @@ us_adjfactor = 500
 us_financial = 500
 
 [api.page_limits]
+fund_basic = 15000
+fund_portfolio = 1000
 stock_st = 1000
 stock_daily_pv = 6000
 stock_adj_factor = 6000
@@ -101,6 +105,8 @@ us_adjfactor = 15000
 us_financial = 10000
 
 [paths]
+fund_basic_dir = "fund_data/basic"
+fund_portfolio_dir = "fund_data/portfolio"
 base_data_dir = "D:/yuminwu_workspace/Internship/YuminQuant/data"
 calendar_dir = "calendar"
 stock_info_dir = "stock_data/info"
@@ -161,3 +167,8 @@ us_cashflow_dir = "usa_stock_data/cashflow"
 
 [exchanges]
 supported = ["SSE", "SZSE", "CFFEX", "SHFE", "CZCE", "DCE", "INE", "GFEX"]
+
+[fund_download]
+retries = 3
+max_pages = 100000
+ann_lookback_days = 7

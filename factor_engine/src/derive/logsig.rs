@@ -22,7 +22,6 @@ type DayVolume = BTreeMap<String, Vec<f32>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct DeriveLogsigReport {
-    pub output_files: Vec<PathBuf>,
     pub processed_dates: usize,
     pub missing_input_dates: Vec<i32>,
     pub skipped_existing_dates: Vec<i32>,
@@ -216,7 +215,6 @@ pub fn derive_logsig(
             let _ = std::fs::remove_file(&temp);
         }
         result?;
-        report.output_files.push(path);
         report.processed_dates += 1;
         report.total_rows += count;
         progress.tick(format!("date={date} rows={count}"));

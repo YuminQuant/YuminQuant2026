@@ -50,6 +50,36 @@ Important flags:
 
 ## 派生数据 / Derived Data
 
+### Logsignature Volume Features
+
+`derive-logsig` produces the fixed 226-dimensional volume logsignature dataset
+directly from raw minute Parquet columns `ts_code`, `trade_time`, and `vol`.
+It aggregates 5-minute volumes in memory, retains a 20-trading-day rolling state,
+and computes order-10 lead-lag logsignatures in Rust. No Python or on-disk bars
+are needed for production. `--threads` controls within-date signature workers;
+dates are processed sequentially, not in concurrent date batches.
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-logsig `
+  --asset stock --start-date 20110101 --end-date 20260424 --threads 2
+```
+
+Output: `data/derived/stock/logsig_v/{year}/{trade_date}.parquet`, Snappy,
+with `trade_date`, `ts_code`, and `logsig_0001` through `logsig_0226` (float32).
+The first target automatically loads 19 warmup trading days; warmup is never
+written. A stock needs all 48 bar slots on all 20 dates; missing source days
+remain missing rather than being replaced by older dates. Empty results retain
+the full schema. Each completed date replaces its file atomically. Default
+`--overwrite true` rebuilds requested dates; `--overwrite false` skips existing
+files without freshness checks. Rerun affected dates after source revisions.
+
+The model reads this dataset with `features.type = "derived_logsig"`. Model
+weights/diagnostics remain in `model_workspace`, and final model factor values
+remain in the formal factor library. No industry/SIZE neutralization is applied
+to these 226 input features; the model's final score retains its neutralization.
+
+### Minute Bars
+
 `derive-bar` 会基于原始 1min 数据生成可复用的股票分钟派生 bar。该命令会并行处理多个交易日；
 `--date-batch-size N` 用于控制并发日期数量，默认值为 `20`。
 

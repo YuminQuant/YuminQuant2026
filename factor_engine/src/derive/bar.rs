@@ -280,7 +280,7 @@ fn finite(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
 }
 
-fn minute_index(trade_time: &str) -> Option<usize> {
+pub(super) fn minute_index(trade_time: &str) -> Option<usize> {
     let (hour, minute) = parse_hour_minute(trade_time)?;
     let minutes = hour * 60 + minute;
     let morning_start = 9 * 60 + 31;

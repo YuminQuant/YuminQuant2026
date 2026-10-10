@@ -1,6 +1,7 @@
 pub mod analyst;
 pub mod bar;
 pub mod engine;
+pub mod logsig;
 pub mod request;
 pub mod storage;
 

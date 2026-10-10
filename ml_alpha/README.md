@@ -190,40 +190,40 @@ For a formal factor such as `logsig_alpha_v`, `factor_id`, `name`, and `output_c
 
 ### Minute Input And Rolling State
 
-The default config reads raw minute Parquets directly; no derived bar production is required:
+Rust `derive-logsig` reads raw minute Parquets directly; no derived bar production is required:
 
 ```text
 data/stock_data/minute/{year}/{YYYYMMDD}.parquet
 ```
 
-With `features.params.source = "minute"`, the reader projects only `ts_code`, `trade_time`, and `vol`. It aggregates finite minute volume in the 09:31-11:30 and 13:01-15:00 sessions into 48 five-minute bars in memory. As in `derive-bar --columns volume`, duplicate minute records are included and incomplete five-minute groups may be summed; a stock must have all 48 finite bar values in every one of the 20 trading days. The 09:30 record is excluded. Missing days are not skipped or replaced with older days.
+The Rust reader projects only `ts_code`, `trade_time`, and `vol`. It aggregates finite minute volume in the 09:31-11:30 and 13:01-15:00 sessions into 48 five-minute bars in memory. As in `derive-bar --columns volume`, duplicate minute records are included and incomplete five-minute groups may be summed; a stock must have all 48 finite bar values in every one of the 20 trading days. The 09:30 record is excluded. Missing days are not skipped or replaced with older days.
 
-Date-keyed rolling state retains only sorted stock codes and compact 48-value arrays for the required 20 days. Overlapping dates are reused; old days are evicted. Source revisions invalidate the affected day. The first target or a restarted process warms up its required window. Sparse training targets and backward replay are supported. Raw minute tables are released after daily aggregation. This is incremental input/state maintenance, not an O(1) signature algorithm: each target still computes its signature over the full 960-point path.
+Rolling state retains only sorted stock codes and compact 48-value arrays for the required 20 trading days. Overlapping dates are reused; old days are evicted. Each run automatically reads 19 warmup sessions before its first target, without writing warmup output. Raw minute tables are released after daily aggregation. This is incremental input/state maintenance, not an O(1) signature algorithm: each target still computes its signature over the full 960-point path.
 
-`source = "bar"` remains available for legacy data and equivalence benchmarks, with `features.root` pointing to the derived bar directory. The two sources have separate feature-cache keys. For other consumers, `derive-bar --columns volume` still supports projected input/output; omitting --columns generates all fields. It is no longer a prerequisite for this factor.
+The old Python `logsig_signature` provider remains available for reference tests; it is not used by the production model config. `derive-bar` is not a prerequisite.
 
-The 20-day order-10 lead-lag volume logsignatures are produced separately with `factor-materialize`. Python builds an aligned `N x 960` volume matrix from rolling state and calls the unchanged Rust extension for `log(max(volume, 1)) -> lead-lag -> tensor signature -> Lyndon-basis logsignature`. The provider returns `trade_date`, `ts_code`, and `logsig_0001` through `logsig_0226`; the old Numba tensor-signature path remains only as a compatibility fallback and is logged as such.
+Rust builds an aligned `N x 960` volume matrix and computes `log(max(volume, 1)) -> lead-lag -> tensor signature -> Lyndon-basis logsignature`. Each daily Snappy Parquet contains `trade_date`, `ts_code`, and `logsig_0001` through `logsig_0226`. The production command has no Python/Numba fallback and requires no Python extension.
 
-Rust logsignature computation uses a small dedicated thread pool by default (`3` threads). Override it before launching training when needed:
+The derived dataset has a fixed definition (5-minute volume, 20 trading days, order 10). Its canonical path is:
 
-```powershell
-$env:YQ_LOGSIG_THREADS="2"
+```text
+data/derived/stock/logsig_v/{year}/{YYYYMMDD}.parquet
 ```
 
 ### Materialize, Then Train
 
-The following commands run from the `ml_alpha` directory, using the existing Python 3.8.3 GPU environment. No new environment or repeated installation is needed.
+Run from the repository root. Rust processes dates sequentially and uses `--threads` for within-date signature calculation (default 2). Training uses the existing Python 3.8.3 GPU environment.
 
 ```powershell
 $py = "D:\Users\Devin\anaconda383\python.exe"
-$env:YQ_LOGSIG_THREADS = "2"
-& $py -m yq_ml_alpha factor-materialize --config factors\logsig_alpha_v.toml
-& $py -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
+cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-logsig `
+  --asset stock --start-date 20110101 --end-date 20260424 --threads 2
+& $py -m yq_ml_alpha factor-run --config ml_alpha\factors\logsig_alpha_v.toml
 ```
 
-Materialization handles the union of configured training, validation and prediction dates, one date at a time. It writes feature Parquets under `data/model_workspace/logsig_alpha_v/features/<settings-key>/`, releasing each date's result; only bounded rolling state remains in memory. No labels or training sample frames are loaded. Valid existing feature files are reused; empty dates are persisted too.
+The Rust command writes every requested trading day separately and releases its result. Only bounded rolling state remains in memory. No labels or training samples are loaded. Default `--overwrite true` recomputes and replaces requested dates atomically; `--overwrite false` skips existing output files without checking freshness. After correcting source minute data, rerun the affected dates with overwrite enabled. Missing/incomplete windows produce an empty file with the full schema; missing source dates are reported.
 
-The factor config sets `features.params.read_only = true`: training and prediction only read persisted features and fail on missing or stale files with instructions to materialize first. Source fingerprints detect rewritten minute files. Training still loads the sampled training/validation feature tables into CPU memory; this change separates feature production, not the model's in-memory training algorithm. Prediction loads and writes date batches as before. `cache_samples=false` does not disable the daily feature store.
+The factor config uses `features.type = "derived_logsig"`: training/prediction only project the 226 persisted features and keys. Missing files or columns fail explicitly; there is no implicit recomputation or source fingerprint validation. `factor-materialize` rejects this config and directs users to Rust `derive-logsig`. Training still loads sampled training/validation feature tables into CPU memory; prediction uses date batches as before. `model_workspace` remains for model artifacts, diagnostics and optional temporary sample caches, not the canonical derived features.
 
 For an opt-in small real-data equivalence/performance comparison, run `tests/benchmark_logsig_minute.py` from the repository root with the Python 3.8.3 interpreter and a new `--scratch` directory. Its default is five target sessions (20110104-20110110) plus 19 warmup sessions. It uses hard links to input data in the isolated directory, generates real Rust volume bars, compares both paths twice with reversed ordering, checks all feature values, and reports wall time and peak process RSS. It neither trains a model nor writes formal factors. Recycle the scratch directory after checking results; never remove the source data.
 

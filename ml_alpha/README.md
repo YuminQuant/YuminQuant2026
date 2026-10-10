@@ -23,6 +23,7 @@ Use explicit model/factor commands only:
 ```powershell
 python -m yq_ml_alpha model-run --config models\mdl_000001.toml
 python -m yq_ml_alpha factor-run --config factors\bar_gru_15m.toml
+python -m yq_ml_alpha factor-materialize --config factors\logsig_alpha_v.toml
 python -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
 python -m yq_ml_alpha factor-metadata
 python -m yq_ml_alpha factor-metadata-all
@@ -192,7 +193,7 @@ For a formal factor such as `logsig_alpha_v`, `factor_id`, `name`, and `output_c
 First generate 5-minute stock bars if they do not exist:
 
 ```powershell
-cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 5 --start-date 20110101 --end-date 20260424
+cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 5 --columns volume --start-date 20101201 --end-date 20260424 --date-batch-size 1
 ```
 
 `logsig_alpha_v` reads those bars from:
@@ -201,7 +202,9 @@ cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- derive-bar --
 data/derived/stock/bar/5m/{year}/{YYYYMMDD}.parquet
 ```
 
-The 20-day order-10 lead-lag volume logsignatures are computed on demand. Python reads the 5-minute bars with column projection, builds an aligned `N x 960` volume matrix, and calls the Rust extension for `log(max(volume, 1)) -> lead-lag -> tensor signature -> Lyndon-basis logsignature`. The provider returns `trade_date`, `ts_code`, and `logsig_0001` through `logsig_0226`; the old Numba tensor-signature path remains only as a compatibility fallback and is logged as such.
+`--columns` selects bar value fields (open, high, low, close, volume, amount, vwap, minute_count). Keys are always written. The minute Parquet reader projects only the required source fields: volume needs vol; vwap needs vol and amount. Rows are validated only against these inputs. Without --columns, the full schema and existing row validation are retained. Output remains Snappy compressed. An overwrite replaces the daily file, including its schema; it does not merge old fields. Use the full schema if other consumers need price fields. `--overwrite false` skips existing files regardless of schema.
+
+The 20-day order-10 lead-lag volume logsignatures are produced separately with `factor-materialize`. Python reads the 5-minute bars with column projection, builds an aligned `N x 960` volume matrix, and calls the Rust extension for `log(max(volume, 1)) -> lead-lag -> tensor signature -> Lyndon-basis logsignature`. The provider returns `trade_date`, `ts_code`, and `logsig_0001` through `logsig_0226`; the old Numba tensor-signature path remains only as a compatibility fallback and is logged as such.
 
 Rust logsignature computation uses a small dedicated thread pool by default (`3` threads). Override it before launching training when needed:
 
@@ -209,13 +212,20 @@ Rust logsignature computation uses a small dedicated thread pool by default (`3`
 $env:YQ_LOGSIG_THREADS="2"
 ```
 
-### Train And Materialize
+### Materialize, Then Train
+
+The following commands run from the `ml_alpha` directory, using the existing Python 3.8.3 GPU environment. No new environment or repeated installation is needed.
 
 ```powershell
-D:\Users\Devin\anaconda383\python.exe -m pip install maturin
-D:\Users\Devin\anaconda383\python.exe -m maturin develop --manifest-path ..\factor_engine\python\yq_factor_engine_py\Cargo.toml
-python -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
+$py = "D:\Users\Devin\anaconda383\python.exe"
+$env:YQ_LOGSIG_THREADS = "2"
+& $py -m yq_ml_alpha factor-materialize --config factors\logsig_alpha_v.toml
+& $py -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
 ```
+
+Materialization handles the union of configured training, validation and prediction dates, one date at a time. It writes feature Parquets under `data/model_workspace/logsig_alpha_v/features/<settings-key>/`, releasing each date's result; only the bounded source-bar cache remains in memory. No labels or training sample frames are loaded. Valid existing feature files are reused; empty dates are persisted too.
+
+The factor config sets `features.params.read_only = true`: training and prediction only read persisted features and fail on missing or stale files with instructions to materialize first. Source fingerprints detect rewritten bars. Training still loads the sampled training/validation feature tables into CPU memory; this change separates feature production, not the model's in-memory training algorithm. Prediction loads and writes date batches as before. `cache_samples=false` does not disable the daily feature store.
 
 The config uses:
 

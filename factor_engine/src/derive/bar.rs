@@ -7,6 +7,57 @@ pub const ALLOWED_STOCK_MINUTE_BAR_SIZES: &[usize] = &[
     2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80, 120,
 ];
 
+pub const BAR_VALUE_COLUMNS: &[&str] = &[
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "vwap",
+    "minute_count",
+];
+pub const BAR_KEY_COLUMNS: &[&str] = &["trade_date", "trade_time", "bar_index", "ts_code"];
+
+pub fn selected_bar_columns(columns: Option<&[String]>) -> Result<Vec<String>> {
+    let columns = columns
+        .map(|v| v.to_vec())
+        .unwrap_or_else(|| BAR_VALUE_COLUMNS.iter().map(|s| s.to_string()).collect());
+    if columns.is_empty() {
+        return Err(err("derive-bar --columns must not be empty"));
+    }
+    let mut selected = Vec::new();
+    for column in columns {
+        if !BAR_VALUE_COLUMNS.contains(&column.as_str()) {
+            return Err(err(format!("unknown derive-bar column: {column}")));
+        }
+        if !selected.contains(&column) {
+            selected.push(column);
+        }
+    }
+    Ok(selected)
+}
+
+pub fn bar_source_columns(columns: &[String]) -> Vec<String> {
+    let mut source = Vec::new();
+    for column in columns {
+        let dependencies: Vec<&str> = match column.as_str() {
+            "volume" => vec!["vol"],
+            "vwap" => vec!["vol", "amount"],
+            "minute_count" => vec![],
+            name => vec![name],
+        };
+        for name in dependencies {
+            if !source.iter().any(|s| s == name) {
+                source.push(name.to_string());
+            }
+        }
+    }
+    // Explicit keys also make a minute_count-only projection nonempty.
+    source.extend(["ts_code".to_string(), "trade_time".to_string()]);
+    source
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DerivedBarRow {
     pub trade_date: i32,
@@ -118,15 +169,40 @@ pub fn derive_stock_minute_bars(
     trade_date: i32,
     bar_size: usize,
 ) -> Result<Vec<DerivedBarRow>> {
+    derive_stock_minute_bars_selected(table, trade_date, bar_size, &selected_bar_columns(None)?)
+}
+
+pub fn derive_stock_minute_bars_selected(
+    table: &Table,
+    trade_date: i32,
+    bar_size: usize,
+    columns: &[String],
+) -> Result<Vec<DerivedBarRow>> {
     validate_stock_minute_bar_size(bar_size)?;
+    selected_bar_columns(Some(columns))?;
     let ts_codes = table.required_utf8("ts_code")?;
     let trade_times = table.required_utf8("trade_time")?;
-    let opens = table.required_f64_cast("open")?;
-    let highs = table.required_f64_cast("high")?;
-    let lows = table.required_f64_cast("low")?;
-    let closes = table.required_f64_cast("close")?;
-    let volumes = table.required_f64_cast("vol")?;
-    let amounts = table.required_f64_cast("amount")?;
+    let source = bar_source_columns(columns);
+    let read = |name: &str| -> Result<Vec<Option<f64>>> {
+        if source.iter().any(|c| c == name) {
+            table.required_f64_cast(name)
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let value = |values: &[Option<f64>], idx| {
+        if values.is_empty() {
+            Some(0.0)
+        } else {
+            finite(values[idx])
+        }
+    };
+    let opens = read("open")?;
+    let highs = read("high")?;
+    let lows = read("low")?;
+    let closes = read("close")?;
+    let volumes = read("vol")?;
+    let amounts = read("amount")?;
 
     let mut rows = Vec::with_capacity(table.len);
     for idx in 0..table.len {
@@ -139,22 +215,22 @@ pub fn derive_stock_minute_bars(
         let Some(minute_index) = minute_index(trade_time) else {
             continue;
         };
-        let Some(open) = finite(opens[idx]) else {
+        let Some(open) = value(&opens, idx) else {
             continue;
         };
-        let Some(high) = finite(highs[idx]) else {
+        let Some(high) = value(&highs, idx) else {
             continue;
         };
-        let Some(low) = finite(lows[idx]) else {
+        let Some(low) = value(&lows, idx) else {
             continue;
         };
-        let Some(close) = finite(closes[idx]) else {
+        let Some(close) = value(&closes, idx) else {
             continue;
         };
-        let Some(volume) = finite(volumes[idx]) else {
+        let Some(volume) = value(&volumes, idx) else {
             continue;
         };
-        let Some(amount) = finite(amounts[idx]) else {
+        let Some(amount) = value(&amounts, idx) else {
             continue;
         };
         rows.push(MinuteRow {
@@ -247,6 +323,7 @@ fn bar_end_label(bar_index: usize, bar_size: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{bar_source_columns, derive_stock_minute_bars_selected, selected_bar_columns};
     use std::collections::BTreeMap;
 
     use crate::data::{ColumnData, Table};
@@ -254,6 +331,38 @@ mod tests {
         bar_end_label, bars_per_stock_session, derive_stock_minute_bars,
         validate_stock_minute_bar_size,
     };
+
+    #[test]
+    fn selected_volume_needs_no_prices_or_amount() {
+        let selected = selected_bar_columns(Some(&["volume".into()])).unwrap();
+        assert_eq!(
+            bar_source_columns(&selected),
+            vec!["vol", "ts_code", "trade_time"]
+        );
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".into(),
+                ColumnData::Utf8(vec![Some("000001.SZ".into()); 2]),
+            ),
+            (
+                "trade_time".into(),
+                ColumnData::Utf8(vec![Some("09:31:00".into()), Some("09:32:00".into())]),
+            ),
+            ("vol".into(), ColumnData::F64(vec![Some(2.0), Some(3.0)])),
+        ]))
+        .unwrap();
+        let rows = derive_stock_minute_bars_selected(&table, 20260105, 5, &selected).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].volume, 5.0);
+        assert_eq!(rows[0].minute_count, 2);
+        assert!(derive_stock_minute_bars(&table, 20260105, 5).is_err());
+        assert!(selected_bar_columns(Some(&["bad".into()])).is_err());
+        assert!(selected_bar_columns(Some(&[])).is_err());
+        assert_eq!(
+            bar_source_columns(&["vwap".into()]),
+            vec!["vol", "amount", "ts_code", "trade_time"]
+        );
+    }
 
     #[test]
     fn validates_stock_minute_bar_size() {
@@ -324,6 +433,13 @@ mod tests {
         .unwrap();
 
         let rows = derive_stock_minute_bars(&table, 20260424, 3).unwrap();
+        let selected = vec!["volume".into(), "vwap".into()];
+        let mut projected = table.clone();
+        let source = bar_source_columns(&selected);
+        projected.columns.retain(|name, _| source.contains(name));
+        let sparse = derive_stock_minute_bars_selected(&projected, 20260424, 3, &selected).unwrap();
+        assert_eq!(sparse[0].volume, rows[0].volume);
+        assert_eq!(sparse[0].vwap, rows[0].vwap);
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         assert_eq!(row.trade_date, 20260424);

@@ -9,9 +9,12 @@ use crate::data::{DataCatalog, MarketDataLoader, Table};
 use crate::derive::analyst::{
     derive_analyst_consensus, AnalystConsensusReport, AnalystConsensusRequest,
 };
-use crate::derive::bar::{derive_stock_minute_bars, validate_stock_minute_bar_size};
+use crate::derive::bar::{
+    bar_source_columns, derive_stock_minute_bars_selected, selected_bar_columns,
+    validate_stock_minute_bar_size,
+};
 use crate::derive::request::{BarSource, DeriveBarRequest};
-use crate::derive::storage::{derived_stock_bar_path, write_bar_rows};
+use crate::derive::storage::{derived_stock_bar_path, write_bar_rows_selected};
 use crate::error::{err, Result};
 use crate::progress::ProgressBar;
 
@@ -52,14 +55,8 @@ impl DeriveEngine {
             .with_stock_ci_classification_path(self.config.stock_ci_classification_path.clone());
         let progress = ProgressBar::new("derive-bar", dates.len(), true);
 
-        let columns = vec![
-            "open".to_string(),
-            "high".to_string(),
-            "low".to_string(),
-            "close".to_string(),
-            "vol".to_string(),
-            "amount".to_string(),
-        ];
+        let selected = selected_bar_columns(request.columns.as_deref())?;
+        let columns = bar_source_columns(&selected);
         let mut report = DeriveBarReport::default();
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(request.date_batch_size)
@@ -146,9 +143,10 @@ fn derive_one_stock_minute_bar_date(
     let Some(table) = table else {
         return Ok(DeriveDateOutcome::MissingInput { trade_date });
     };
-    let rows = derive_stock_minute_bars(&table, trade_date, request.bar_size)?;
+    let selected = selected_bar_columns(request.columns.as_deref())?;
+    let rows = derive_stock_minute_bars_selected(&table, trade_date, request.bar_size, &selected)?;
     let row_count = rows.len();
-    write_bar_rows(&output_path, &rows)?;
+    write_bar_rows_selected(&output_path, &rows, &selected)?;
     Ok(DeriveDateOutcome::Written {
         trade_date,
         output_path,

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -8,11 +8,173 @@ use crate::error::{err, Result};
 
 const DEFAULT_LOGSIG_THREADS: usize = 3;
 static LOGSIG_THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
+static ORDER_TEN_KERNEL: OnceLock<Arc<SignatureKernel>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 struct LyndonBasis {
     words: Vec<(usize, usize)>,
     expansions: Vec<BTreeMap<usize, f64>>,
+}
+
+struct SignatureKernel {
+    order: usize,
+    width: usize,
+    offsets: Vec<usize>,
+    projection: Vec<(usize, Vec<(usize, f64)>)>,
+    suffixes: [Vec<usize>; 2],
+}
+
+impl SignatureKernel {
+    fn new(order: usize) -> Result<Self> {
+        let width = tensor_signature_width(order)?;
+        let offsets = level_offsets(order)?;
+        let basis = lyndon_basis(order)?;
+        let projection = basis
+            .words
+            .iter()
+            .zip(&basis.expansions)
+            .map(|(&(degree, word), expansion)| {
+                (
+                    offsets[degree] + word,
+                    expansion
+                        .iter()
+                        .map(|(&w, &c)| (offsets[degree] + w, c))
+                        .collect(),
+                )
+            })
+            .collect();
+        let mut suffixes = [vec![0; width], vec![0; width]];
+        for axis in 0..2 {
+            for level in 1..=order {
+                for word in 0..1usize << level {
+                    suffixes[axis][offsets[level] + word] =
+                        repeated_axis_suffix_len(word, level, axis);
+                }
+            }
+        }
+        Ok(Self {
+            order,
+            width,
+            offsets,
+            projection,
+            suffixes,
+        })
+    }
+}
+
+fn signature_kernel(order: usize) -> Result<Arc<SignatureKernel>> {
+    if order == 10 {
+        if let Some(kernel) = ORDER_TEN_KERNEL.get() {
+            return Ok(Arc::clone(kernel));
+        }
+        let kernel = Arc::new(SignatureKernel::new(order)?);
+        let _ = ORDER_TEN_KERNEL.set(Arc::clone(&kernel));
+        return Ok(Arc::clone(ORDER_TEN_KERNEL.get().unwrap()));
+    }
+    Ok(Arc::new(SignatureKernel::new(order)?))
+}
+
+struct SignatureWorkspace {
+    signature: Vec<f64>,
+    scaled: Vec<f64>,
+    powers: Vec<Vec<f64>>,
+    residual: Vec<f64>,
+}
+
+impl SignatureWorkspace {
+    fn new(kernel: &SignatureKernel) -> Self {
+        Self {
+            signature: vec![0.; kernel.width],
+            scaled: vec![0.; kernel.order + 1],
+            powers: vec![vec![0.; kernel.width]; kernel.order + 1],
+            residual: vec![0.; kernel.width],
+        }
+    }
+
+    fn compute(&mut self, volume: &[f64], kernel: &SignatureKernel, out: &mut [f32]) -> Result<()> {
+        self.signature.fill(0.);
+        let mut previous = clipped_log(volume[0])?;
+        for &volume in &volume[1..] {
+            let current = clipped_log(volume)?;
+            let delta = current - previous;
+            previous = current;
+            if delta.abs() <= 1e-15 {
+                continue;
+            }
+            append_axis_in_place(&mut self.signature, &mut self.scaled, kernel, 0, delta);
+            append_axis_in_place(&mut self.signature, &mut self.scaled, kernel, 1, delta);
+        }
+        self.project(kernel, out);
+        Ok(())
+    }
+
+    fn project(&mut self, kernel: &SignatureKernel, out: &mut [f32]) {
+        let offsets = &kernel.offsets;
+        self.powers[1].copy_from_slice(&self.signature);
+        for power in 2..=kernel.order {
+            let (before, after) = self.powers.split_at_mut(power);
+            let previous = &before[power - 1];
+            let current = &mut after[0];
+            for level in power..=kernel.order {
+                for word in 0..1usize << level {
+                    let mut value = 0.;
+                    for prefix_len in 1..=level - (power - 1) {
+                        let suffix_len = level - prefix_len;
+                        value += self.signature[offsets[prefix_len] + (word >> suffix_len)]
+                            * previous[offsets[suffix_len] + (word & ((1usize << suffix_len) - 1))];
+                    }
+                    current[offsets[level] + word] = value;
+                }
+            }
+        }
+        self.residual.fill(0.);
+        for power in 1..=kernel.order {
+            let coefficient = if power % 2 == 1 {
+                1. / power as f64
+            } else {
+                -1. / power as f64
+            };
+            for (dst, src) in self.residual.iter_mut().zip(&self.powers[power]) {
+                *dst += coefficient * src;
+            }
+        }
+        for (dst, (word, expansion)) in out.iter_mut().zip(&kernel.projection) {
+            let coefficient = self.residual[*word];
+            *dst = coefficient as f32;
+            for &(index, value) in expansion {
+                self.residual[index] -= coefficient * value;
+            }
+        }
+    }
+}
+
+fn append_axis_in_place(
+    signature: &mut [f64],
+    scaled: &mut [f64],
+    kernel: &SignatureKernel,
+    axis: usize,
+    delta: f64,
+) {
+    scaled[0] = 1.;
+    for level in 1..=kernel.order {
+        scaled[level] = scaled[level - 1] * delta / level as f64;
+    }
+    // Descending degree preserves all lower-degree prefixes until they have been consumed.
+    for level in (1..=kernel.order).rev() {
+        let offset = kernel.offsets[level];
+        for word in (axis..1usize << level).step_by(2) {
+            let mut value = signature[offset + word];
+            for repeat in 1..=kernel.suffixes[axis][offset + word] {
+                let prefix = if repeat == level {
+                    1.
+                } else {
+                    signature[kernel.offsets[level - repeat] + (word >> repeat)]
+                };
+                value += prefix * scaled[repeat];
+            }
+            signature[offset + word] = value;
+        }
+    }
 }
 
 pub fn logsig_thread_count() -> usize {
@@ -88,18 +250,22 @@ pub fn logsig_signature_batch_in_pool(
             volume.len()
         )));
     }
-    let tensor_width = tensor_signature_width(order)?;
-    let logsig_width = logsignature_width(order)?;
-    let level_offsets = level_offsets(order)?;
-    let basis = lyndon_basis(order)?;
+    let kernel = signature_kernel(order)?;
+    let logsig_width = kernel.projection.len();
     let mut output = vec![0.0f32; rows * logsig_width];
     pool.install(|| {
         output
-            .par_chunks_mut(logsig_width)
-            .zip(volume.par_chunks(cols))
-            .try_for_each(|(out, row)| {
-                compute_row(row, order, tensor_width, &level_offsets, &basis, out)
-            })
+            .par_chunks_mut(logsig_width * 64)
+            .zip(volume.par_chunks(cols * 64))
+            .try_for_each_init(
+                || SignatureWorkspace::new(&kernel),
+                |workspace, (out, rows)| -> Result<()> {
+                    for (out, row) in out.chunks_mut(logsig_width).zip(rows.chunks(cols)) {
+                        workspace.compute(row, &kernel, out)?;
+                    }
+                    Ok(())
+                },
+            )
     })?;
     Ok(output)
 }
@@ -137,6 +303,7 @@ fn level_offsets(order: usize) -> Result<Vec<usize>> {
     Ok(offsets)
 }
 
+#[cfg(test)]
 fn compute_row(
     volume: &[f64],
     order: usize,
@@ -190,6 +357,7 @@ fn clipped_log(value: f64) -> Result<f64> {
     Ok(value.max(1.0).ln())
 }
 
+#[cfg(test)]
 fn append_axis_segment(
     levels: &mut [f64],
     previous: &mut [f64],
@@ -235,6 +403,7 @@ fn repeated_axis_suffix_len(word: usize, level: usize, axis: usize) -> usize {
     count
 }
 
+#[cfg(test)]
 fn tensor_log(signature: &[f64], order: usize, level_offsets: &[usize]) -> Vec<f64> {
     let mut powers = vec![vec![0.0f64; signature.len()]; order + 1];
     powers[1].copy_from_slice(signature);
@@ -385,6 +554,7 @@ fn bracket_expansion(
     output
 }
 
+#[cfg(test)]
 fn project_tensor_log_to_lyndon(
     tensor_log: &[f64],
     order: usize,
@@ -419,6 +589,57 @@ fn project_tensor_log_to_lyndon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reusable_kernel_matches_reference_bitwise() {
+        for order in [1, 2, 5, 10] {
+            let width = tensor_signature_width(order).unwrap();
+            let offsets = level_offsets(order).unwrap();
+            let basis = lyndon_basis(order).unwrap();
+            let kernel = signature_kernel(order).unwrap();
+            let mut workspace = SignatureWorkspace::new(&kernel);
+            for seed in 0..6 {
+                let volume: Vec<_> = (0..960)
+                    .map(|i| match seed {
+                        0 => 0.,
+                        1 => 100.,
+                        _ => (((i * 173 + seed * 31) % 1901) as f64 + 1.) * 19.7,
+                    })
+                    .collect();
+                let mut reference = vec![0.; basis.words.len()];
+                let mut actual = reference.clone();
+                compute_row(&volume, order, width, &offsets, &basis, &mut reference).unwrap();
+                workspace.compute(&volume, &kernel, &mut actual).unwrap();
+                assert_eq!(
+                    actual.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    reference.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    "order={order} seed={seed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn batch_kernel_preserves_rows_across_partial_chunks() {
+        let volume: Vec<_> = (0..67 * 8).map(|i| (i % 23 + 1) as f64).collect();
+        let pool = ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        let actual = logsig_signature_batch_in_pool(&volume, 67, 8, 5, &pool).unwrap();
+        let basis = lyndon_basis(5).unwrap();
+        let offsets = level_offsets(5).unwrap();
+        for (row, out) in volume.chunks(8).zip(actual.chunks(basis.words.len())) {
+            let mut expected = vec![0.; basis.words.len()];
+            compute_row(
+                row,
+                5,
+                tensor_signature_width(5).unwrap(),
+                &offsets,
+                &basis,
+                &mut expected,
+            )
+            .unwrap();
+            assert_eq!(out, expected);
+        }
+    }
 
     #[test]
     fn width_matches_order_ten_lyndon_dimension() {

@@ -188,23 +188,21 @@ For a formal factor such as `logsig_alpha_v`, `factor_id`, `name`, and `output_c
 
 `logsig_alpha_v` is a formal end-to-end factor using volume-path signature features and an orthogonal MLP.
 
-### Prepare 5-Minute Bars
+### Minute Input And Rolling State
 
-First generate 5-minute stock bars if they do not exist:
-
-```powershell
-cargo run --release --manifest-path ..\factor_engine\Cargo.toml -- derive-bar --asset stock --source minute --bar-size 5 --columns volume --start-date 20101201 --end-date 20260424 --date-batch-size 1
-```
-
-`logsig_alpha_v` reads those bars from:
+The default config reads raw minute Parquets directly; no derived bar production is required:
 
 ```text
-data/derived/stock/bar/5m/{year}/{YYYYMMDD}.parquet
+data/stock_data/minute/{year}/{YYYYMMDD}.parquet
 ```
 
-`--columns` selects bar value fields (open, high, low, close, volume, amount, vwap, minute_count). Keys are always written. The minute Parquet reader projects only the required source fields: volume needs vol; vwap needs vol and amount. Rows are validated only against these inputs. Without --columns, the full schema and existing row validation are retained. Output remains Snappy compressed. An overwrite replaces the daily file, including its schema; it does not merge old fields. Use the full schema if other consumers need price fields. `--overwrite false` skips existing files regardless of schema.
+With `features.params.source = "minute"`, the reader projects only `ts_code`, `trade_time`, and `vol`. It aggregates finite minute volume in the 09:31-11:30 and 13:01-15:00 sessions into 48 five-minute bars in memory. As in `derive-bar --columns volume`, duplicate minute records are included and incomplete five-minute groups may be summed; a stock must have all 48 finite bar values in every one of the 20 trading days. The 09:30 record is excluded. Missing days are not skipped or replaced with older days.
 
-The 20-day order-10 lead-lag volume logsignatures are produced separately with `factor-materialize`. Python reads the 5-minute bars with column projection, builds an aligned `N x 960` volume matrix, and calls the Rust extension for `log(max(volume, 1)) -> lead-lag -> tensor signature -> Lyndon-basis logsignature`. The provider returns `trade_date`, `ts_code`, and `logsig_0001` through `logsig_0226`; the old Numba tensor-signature path remains only as a compatibility fallback and is logged as such.
+Date-keyed rolling state retains only sorted stock codes and compact 48-value arrays for the required 20 days. Overlapping dates are reused; old days are evicted. Source revisions invalidate the affected day. The first target or a restarted process warms up its required window. Sparse training targets and backward replay are supported. Raw minute tables are released after daily aggregation. This is incremental input/state maintenance, not an O(1) signature algorithm: each target still computes its signature over the full 960-point path.
+
+`source = "bar"` remains available for legacy data and equivalence benchmarks, with `features.root` pointing to the derived bar directory. The two sources have separate feature-cache keys. For other consumers, `derive-bar --columns volume` still supports projected input/output; omitting --columns generates all fields. It is no longer a prerequisite for this factor.
+
+The 20-day order-10 lead-lag volume logsignatures are produced separately with `factor-materialize`. Python builds an aligned `N x 960` volume matrix from rolling state and calls the unchanged Rust extension for `log(max(volume, 1)) -> lead-lag -> tensor signature -> Lyndon-basis logsignature`. The provider returns `trade_date`, `ts_code`, and `logsig_0001` through `logsig_0226`; the old Numba tensor-signature path remains only as a compatibility fallback and is logged as such.
 
 Rust logsignature computation uses a small dedicated thread pool by default (`3` threads). Override it before launching training when needed:
 
@@ -223,9 +221,11 @@ $env:YQ_LOGSIG_THREADS = "2"
 & $py -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
 ```
 
-Materialization handles the union of configured training, validation and prediction dates, one date at a time. It writes feature Parquets under `data/model_workspace/logsig_alpha_v/features/<settings-key>/`, releasing each date's result; only the bounded source-bar cache remains in memory. No labels or training sample frames are loaded. Valid existing feature files are reused; empty dates are persisted too.
+Materialization handles the union of configured training, validation and prediction dates, one date at a time. It writes feature Parquets under `data/model_workspace/logsig_alpha_v/features/<settings-key>/`, releasing each date's result; only bounded rolling state remains in memory. No labels or training sample frames are loaded. Valid existing feature files are reused; empty dates are persisted too.
 
-The factor config sets `features.params.read_only = true`: training and prediction only read persisted features and fail on missing or stale files with instructions to materialize first. Source fingerprints detect rewritten bars. Training still loads the sampled training/validation feature tables into CPU memory; this change separates feature production, not the model's in-memory training algorithm. Prediction loads and writes date batches as before. `cache_samples=false` does not disable the daily feature store.
+The factor config sets `features.params.read_only = true`: training and prediction only read persisted features and fail on missing or stale files with instructions to materialize first. Source fingerprints detect rewritten minute files. Training still loads the sampled training/validation feature tables into CPU memory; this change separates feature production, not the model's in-memory training algorithm. Prediction loads and writes date batches as before. `cache_samples=false` does not disable the daily feature store.
+
+For an opt-in small real-data equivalence/performance comparison, run `tests/benchmark_logsig_minute.py` from the repository root with the Python 3.8.3 interpreter and a new `--scratch` directory. Its default is five target sessions (20110104-20110110) plus 19 warmup sessions. It uses hard links to input data in the isolated directory, generates real Rust volume bars, compares both paths twice with reversed ordering, checks all feature values, and reports wall time and peak process RSS. It neither trains a model nor writes formal factors. Recycle the scratch directory after checking results; never remove the source data.
 
 The config uses:
 

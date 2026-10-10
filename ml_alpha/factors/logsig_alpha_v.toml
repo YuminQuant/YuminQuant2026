@@ -39,10 +39,11 @@ feature_fill_value = 0.0
 
 [features]
 type = "logsig_signature"
-root = "data/derived/stock/bar/5m"
+root = "data/stock_data/minute"
 columns = "__all__"
 
 [features.params]
+source = "minute"
 lookback_days = 20
 bar_size = 5
 order = 10

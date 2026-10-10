@@ -14,9 +14,9 @@ YuminQuant is licensed under the Apache License, Version 2.0. See [LICENSE](LICE
 
 ## 模块总览 / Module Map
 
-基金基础信息及公告持仓下载见 [基金数据接入 / Fund Data](docs/fund_data.md)，支持历史初始化、按自然日公告增量、修订审计和严格分页保护。
+公募基金基础信息、持仓、管理人、经理、业绩基准、规模、净值、分红及技术面接口见 [基金数据接入 / Fund Data](docs/fund_data.md)，支持历史初始化、自然日增量、修订审计和严格分页保护。默认仍只初始化 basic/portfolio，其他数据显式选择。
 
-See [Fund Data / 基金数据接入](docs/fund_data.md) for historical initialization, announcement-date incremental updates, revision auditing and pagination safeguards.
+See [Fund Data / 基金数据接入](docs/fund_data.md) for all public-fund interfaces, historical initialization, date-based incremental updates, revision auditing and pagination safeguards. Initialization defaults to basic/portfolio; additional sources are opt-in.
 
 ```text
 YuminQuant/

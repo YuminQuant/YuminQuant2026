@@ -105,13 +105,13 @@ Portfolio pages are staged on disk. All query partitions are checked before publ
 
 ## 重复持仓与 PIT / Duplicates And PIT
 
-业务键是 `(ts_code, symbol, end_date, ann_date)`。完全重复行只留一条，不求和。持仓同次查询唯一精度例外：除 mkv 外所有字段（含缺失状态）相同，且 mkv 只有一个带小数的有限值及其四舍五入整数值时，保留带小数原记录并 warning 输出键和金额。实测 20170630 的 001875.OF/00981.HK 有 2395676.18 和 2395676.00 两种市值。其他同键冲突仍报错，并附具体键和记录。不同公告日分别保留；同键跨次发生修订时，将旧行写入 revisions，再用新值更新主表。相同值重跑保留 first_seen_at 并更新 last_seen_at。未返回旧行时，不删除它，更不推断持仓清零。
+持仓仅按全部 8 个原始字段删除完全重复行；first_seen_at/last_seen_at 不参与重复判断。同一个 `(ts_code, symbol, end_date, ann_date)` 下不同金额、股数或比例全部保留，包括整数与小数精度差异；打印 warning，不求和、不选最大值、不覆盖旧记录。同次查询和跨次年度合并遵守相同规则。相同原始记录重跑保留最早 first_seen_at 并更新 last_seen_at。不同版本直接共存于主表，不再新增 revisions 文件；旧 revisions 属于旧实现，重建时可一并归档。
 
-Exact duplicates are removed without summing. Portfolio permits one narrow precision exception: all other fields, including missingness, must match; mkv must contain one finite fractional value and its rounded integer. The fractional original is retained independently of page order, with a warning containing the key and amounts. All other conflicts still fail with diagnostic records. Different disclosure dates remain separate. Later same-key corrections archive the prior observed row before replacement. Absence from a response never implies zero holdings. A/C share classes remain separate raw records; downstream aggregation must resolve portfolio identity before summing.
+Portfolio deduplicates only identical values across all eight source fields, excluding local observation timestamps. Same-key differences, including rounding differences, remain in the main table without summing, selecting maxima or overwriting earlier values. The rule applies within queries and across annual merges. Repeated identical rows retain their earliest first_seen_at and latest last_seen_at. No new portfolio revisions files are produced; old revision files belong to the previous implementation. Consumers must explicitly resolve ambiguity rather than assume four-key uniqueness.
 
-后续 PIT 至少要求 `ann_date <= trade_date`，不能把后披露的持仓提前并入截面，也不能直接对所有公告版本求和。主表是供应商最新观察版本，不保证严格历史原貌；revisions 只能帮助恢复本地采集开始后的变化，无法恢复供应商之前已经覆盖的历史。基础表的 fetch_date 也不等于公告日期。
+后续 PIT 至少要求 `ann_date <= trade_date`，不能把后披露的持仓提前并入截面，也不能直接对所有公告版本或同键不同记录求和。主表保存本地已观察到的不同记录，不保证严格历史原貌。观察时间不等于供应商修订时间，基础表的 fetch_date 也不等于公告日期。
 
-Future readers must filter by disclosure date and select versions rather than summing all announcements. The main table reflects latest observed vendor values, not a guaranteed vintage archive. Revision audit only covers changes observed since local collection began; it cannot reconstruct earlier overwritten vendor history.
+Future readers must filter by disclosure date and resolve versions rather than summing every distinct row. The main table retains locally observed records, not a guaranteed vintage archive. Local observation timestamps cannot establish vendor revision order or recover previously overwritten history.
 
 ## 验证 / Validation
 

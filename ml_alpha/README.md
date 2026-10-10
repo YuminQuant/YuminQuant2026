@@ -2,6 +2,16 @@
 
 `ml_alpha` separates model experiments from formal end-to-end factors.
 
+## Developer Handoff / 开发交接
+
+See [Development Workflow (中文 / English)](docs/DEVELOPMENT_README.md) before
+adding or changing a model, feature provider, derived dataset, or factor config.
+It covers directory ownership, runnable commands, TOML configuration, model
+interfaces, performance conventions, leakage controls, and the handoff checklist.
+
+新增或修改模型、特征、派生数据和因子配置前，请先阅读上述双语开发文档。
+本文保留现有功能的详细说明；开发流程与交接清单集中在该文档中。
+
 ## Configuration Layers
 
 - `models/*.toml`: model or experiment configs. These write signals to `data/models`.
@@ -18,15 +28,19 @@ Current formal factor configs:
 
 ## CLI
 
-Use explicit model/factor commands only:
+Use explicit model/factor commands only. Run these from the repository root
+with the existing Python 3.8.3 environment; do not execute every example blindly:
 
 ```powershell
-python -m yq_ml_alpha model-run --config models\mdl_000001.toml
-python -m yq_ml_alpha factor-run --config factors\bar_gru_15m.toml
-python -m yq_ml_alpha factor-materialize --config factors\logsig_alpha_v.toml
-python -m yq_ml_alpha factor-run --config factors\logsig_alpha_v.toml
-python -m yq_ml_alpha factor-metadata
-python -m yq_ml_alpha factor-metadata-all
+$py = "D:\Users\Devin\anaconda383\python.exe"
+& $py -m yq_ml_alpha model-run --config ml_alpha\models\mdl_000001.toml
+& $py -m yq_ml_alpha factor-run --config ml_alpha\factors\bar_gru_15m.toml
+# Produce logsignature derived features separately before training.
+cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-logsig `
+  --asset stock --start-date 20110101 --end-date 20260424 --threads 2
+& $py -m yq_ml_alpha factor-run --config ml_alpha\factors\logsig_alpha_v.toml
+& $py -m yq_ml_alpha factor-metadata
+& $py -m yq_ml_alpha factor-metadata-all
 ```
 
 Available commands:

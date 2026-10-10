@@ -464,11 +464,14 @@ def update_fund_basic(args, logger):
 
 
 def update_fund_portfolio(args, logger):
+    start_date = args.start_date or bj_today()
     end_date = args.end_date or bj_today()
-    run_task(logger, "fund_portfolio", lambda: FundPortfolioDownloader().sync(
-        mode="incremental", start_date=args.start_date or end_date,
-        end_date=end_date, lookback_days=args.fund_ann_lookback_days,
-    ))
+    for date in iter_calendar_dates(start_date, end_date):
+        if not is_financial_statement_period(date):
+            logger.info(f"skip fund_portfolio {date}: not a financial statement period")
+            continue
+        run_task(logger, f"fund_portfolio_incremental_{date}",
+                 lambda d=date: FundPortfolioDownloader().sync(mode="incremental", target_date=d))
 
 
 def update_fund_dated(args, logger, downloader_class):
@@ -534,7 +537,7 @@ def parse_args():
         description="Incrementally update local parquet data from Tushare."
     )
     parser.add_argument("--fund-ann-lookback-days", type=int, default=None,
-                        help="Extra natural days before fund portfolio start date; default: configured value or 7.")
+                        help="Extra lookback for other dated fund sources; not used by period-based fund_portfolio.")
     parser.add_argument(
         "--groups",
         nargs="+",
@@ -544,7 +547,7 @@ def parse_args():
     )
     parser.add_argument(
         "--start-date",
-        help="YYYYMMDD. Most groups default to their historical start; fund_portfolio defaults to end-date plus its announcement lookback.",
+        help="YYYYMMDD. Financial statements and fund_portfolio default to today and select quarter-end periods in the range.",
     )
     parser.add_argument(
         "--end-date",

@@ -44,14 +44,14 @@ class FundCompanyDownloader(_FundSnapshotDownloader):
     paginated = False  # Official contract: no inputs, one complete response.
 
     def __init__(self):
-        super().__init__("fund_company", "fund_company_dir", "fund_data/company", 1000, 180)
+        super().__init__("fund_company", "fund_company_dir", "fund_data/company", 1000, 500)
 
 
 class FundBenchmarkDownloader(_FundSnapshotDownloader):
     fields = "ts_code,symbol,name,fullname,bmk_level,bmk_type,bmk_src,idx_type".split(",")
 
     def __init__(self):
-        super().__init__("mkt_idx_bmk", "fund_benchmark_dir", "fund_data/benchmark", 5000, 180)
+        super().__init__("mkt_idx_bmk", "fund_benchmark_dir", "fund_data/benchmark", 5000, 500)
         self.page_limit = min(self.page_limit, 5000)
 
 
@@ -99,7 +99,7 @@ class FundManagerDownloader(_FundDatedDownloader):
     annual = True
 
     def __init__(self):
-        super().__init__("fund_manager", "fund_manager_dir", "fund_data/manager", 5000, 180)
+        super().__init__("fund_manager", "fund_manager_dir", "fund_data/manager", 5000, 500)
         self.page_limit = min(self.page_limit, 5000)
 
 
@@ -108,7 +108,7 @@ class FundShareDownloader(_FundDatedDownloader):
     numeric = ("fd_share",)
 
     def __init__(self):
-        super().__init__("fund_share", "fund_share_dir", "fund_data/share", 2000, 180)
+        super().__init__("fund_share", "fund_share_dir", "fund_data/share", 2000, 500)
         self.page_limit = min(self.page_limit, 2000)
 
 
@@ -119,7 +119,7 @@ class FundNavDownloader(_FundDatedDownloader):
     date_field = "nav_date"
 
     def __init__(self):
-        super().__init__("fund_nav", "fund_nav_dir", "fund_data/nav", 1000, 180)
+        super().__init__("fund_nav", "fund_nav_dir", "fund_data/nav", 1000, 500)
 
 
 class FundDividendDownloader(_FundDatedDownloader):
@@ -131,7 +131,7 @@ class FundDividendDownloader(_FundDatedDownloader):
     annual = True
 
     def __init__(self):
-        super().__init__("fund_div", "fund_div_dir", "fund_data/dividend", 1000, 180)
+        super().__init__("fund_div", "fund_div_dir", "fund_data/dividend", 1000, 500)
 
 
 class FundFactorProDownloader(_FundDatedDownloader):
@@ -149,5 +149,5 @@ class FundFactorProDownloader(_FundDatedDownloader):
     numeric = tuple(fields[3:])
 
     def __init__(self):
-        super().__init__("fund_factor_pro", "fund_factor_pro_dir", "fund_data/factor_pro", 8000, 30)
+        super().__init__("fund_factor_pro", "fund_factor_pro_dir", "fund_data/factor_pro", 8000, 500)
         self.page_limit = min(self.page_limit, 8000)

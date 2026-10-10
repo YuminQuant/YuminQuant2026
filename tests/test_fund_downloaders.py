@@ -37,7 +37,7 @@ def api(obj, pages):
 def test_short_pages_offset_actual_and_duplicates(tmp_path):
     obj = downloader(tmp_path)
     api(obj, [pd.DataFrame([row(), row()]), pd.DataFrame([row(symbol="000002.SZ")]), pd.DataFrame()])
-    obj.sync(mode="incremental", start_date="20260420", end_date="20260420", lookback_days=0)
+    obj.sync(mode="incremental", target_date="20260331")
     assert [c.kwargs["offset"] for c in obj.pro.fund_portfolio.call_args_list] == [0, 2, 3]
     assert obj.safe_sleep.call_count == 3
     result = pd.read_parquet(tmp_path / "2026.parquet")
@@ -50,11 +50,11 @@ def test_repeated_page_and_retry_do_not_publish(tmp_path):
     obj = downloader(tmp_path)
     api(obj, [pd.DataFrame([row()]), pd.DataFrame([row()])])
     with pytest.raises(RuntimeError, match="no progress"):
-        obj.sync(mode="incremental", start_date="20260420", end_date="20260420", lookback_days=0)
+        obj.sync(mode="incremental", target_date="20260331")
     assert not list(tmp_path.glob("*.parquet"))
     api(obj, [pd.DataFrame([row()]), RuntimeError("failure"), RuntimeError("failure")])
     with patch("data_manager.downloader.fund.fund_downloader.time.sleep"), pytest.raises(RuntimeError, match="failure"):
-        obj.sync(mode="incremental", start_date="20260420", end_date="20260420", lookback_days=0)
+        obj.sync(mode="incremental", target_date="20260331")
     assert not list(tmp_path.glob("*.parquet"))
     assert not list(tmp_path.glob(".query-*"))
     assert obj.safe_sleep.call_count == 5
@@ -94,11 +94,13 @@ def test_cutoff_and_ann_year(tmp_path):
     assert not (tmp_path / "2025.parquet").exists()
 
 
-def test_incremental_calendar_days_and_history_periods(tmp_path):
+def test_incremental_report_periods_and_history_periods(tmp_path):
     obj = downloader(tmp_path)
     obj._query_and_save = Mock()
-    obj.sync(mode="incremental", start_date="20260420", end_date="20260420", lookback_days=2)
-    assert [c.kwargs["ann_date"] for c in obj._query_and_save.call_args_list] == ["20260418", "20260419", "20260420"]
+    obj.sync(mode="incremental", target_date="20260420")
+    obj._query_and_save.assert_not_called()
+    obj.sync(mode="incremental", target_date="20260331")
+    obj._query_and_save.assert_called_once_with(None, period="20260331")
     obj._query_and_save.reset_mock()
     obj.sync(start_year=2025, end_date="20260424")
     assert [c.kwargs["period"] for c in obj._query_and_save.call_args_list] == ["20250331", "20250630", "20250930", "20251231", "20260331"]
@@ -128,9 +130,9 @@ def test_schema_dates_filter_validation(tmp_path):
         obj._normalize(pd.DataFrame([row()]).drop(columns="mkv"))
     with pytest.raises(ValueError, match="Invalid fund date"):
         obj._normalize(pd.DataFrame([row(ann_date=None)]))
-    api(obj, [pd.DataFrame([row(ann_date="20260421")]), pd.DataFrame()])
+    api(obj, [pd.DataFrame([row(end_date="20251231")]), pd.DataFrame()])
     with pytest.raises(ValueError, match="does not match"):
-        obj.sync(mode="incremental", start_date="20260420", end_date="20260420", lookback_days=0)
+        obj.sync(mode="incremental", target_date="20260331")
 
 
 def test_atomic_failure_and_lock(tmp_path):
@@ -171,17 +173,54 @@ def test_basic_failure_preserves_previous_table(tmp_path):
     assert pd.read_parquet(path).sentinel.tolist() == [42]
 
 
-def test_incremental_groups_are_opt_in_and_dispatch_without_network():
+def test_incremental_groups_defaults_and_dispatch_without_network():
     from types import SimpleNamespace
     from scripts import update_incremental as incremental
     assert "fund_basic" in incremental.GROUPS
     assert "fund_portfolio" in incremental.GROUPS
-    assert "fund_basic" not in incremental.DEFAULT_GROUPS
-    assert "fund_portfolio" not in incremental.DEFAULT_GROUPS
-    args = SimpleNamespace(start_date="20260418", end_date="20260420", fund_ann_lookback_days=0)
+    assert {g for g in incremental.DEFAULT_GROUPS if g.startswith("fund_")} == {"fund_basic", "fund_portfolio"}
+    args = SimpleNamespace(start_date="20260330", end_date="20260401", fund_ann_lookback_days=7)
     with patch.object(incremental, "FundBasicDownloader") as basic, patch.object(incremental, "FundPortfolioDownloader") as portfolio:
         incremental.update_fund_basic(args, Mock())
         incremental.update_fund_portfolio(args, Mock())
         basic.return_value.sync.assert_called_once_with()
         portfolio.return_value.sync.assert_called_once_with(
-            mode="incremental", start_date="20260418", end_date="20260420", lookback_days=0)
+            mode="incremental", target_date="20260331")
+
+
+def test_period_refresh_keeps_later_disclosures_and_compresses(tmp_path):
+    import pyarrow.parquet as pq
+    obj = downloader(tmp_path)
+    api(obj, [pd.DataFrame([row(ann_date="20260430")]), pd.DataFrame()])
+    obj.sync(mode="incremental", target_date="20260331")
+    path = tmp_path / "2026.parquet"
+    assert pd.read_parquet(path).ann_date.tolist() == [20260430]
+    assert obj.pro.fund_portfolio.call_args_list[0].kwargs["period"] == "20260331"
+    assert "ann_date" not in obj.pro.fund_portfolio.call_args_list[0].kwargs
+    with pq.ParquetFile(path) as parquet:
+        assert all(parquet.metadata.row_group(0).column(i).compression == "ZSTD"
+                   for i in range(parquet.metadata.num_columns))
+
+
+def test_progress_logs_include_pages_empty_and_period_completion(tmp_path):
+    obj = downloader(tmp_path)
+    api(obj, [pd.DataFrame([row()]), pd.DataFrame()])
+    obj.sync(start_year=2026, end_date="20260424")
+    messages = "\n".join(c.args[0] for c in obj.logger.info.call_args_list)
+    assert "[1/1] period=20260331 start completed=0/1" in messages
+    assert "page=1 offset=0 limit=1000 fetched_rows=0 requesting" in messages
+    assert "page=1 rows=1 fetched_rows=1" in messages
+    assert "page=2 empty result; pagination complete fetched_rows=1" in messages
+    assert "retained_rows=1 unique_rows=1" in messages
+    assert "period=20260331 complete completed=1/1" in messages
+
+
+def test_empty_query_logs_and_does_not_write(tmp_path):
+    obj = downloader(tmp_path)
+    api(obj, [pd.DataFrame()])
+    obj.sync(start_year=2026, end_date="20260424")
+    messages = "\n".join(c.args[0] for c in obj.logger.info.call_args_list)
+    assert "empty result" in messages
+    assert "nothing written" in messages
+    assert "completed=1/1" in messages
+    assert not list(tmp_path.glob("*.parquet"))

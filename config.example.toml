@@ -5,15 +5,15 @@ tushare_token = "YOUR_TUSHARE_TOKEN"
 
 # Configure per-interface rate limits according to your Tushare permission level.
 [api.rate_limits]
-fund_basic = 180
-fund_portfolio = 180
-fund_company = 180
-fund_manager = 180
-mkt_idx_bmk = 180
-fund_share = 180
-fund_nav = 180
-fund_div = 180
-fund_factor_pro = 30
+fund_basic = 500
+fund_portfolio = 500
+fund_company = 500
+fund_manager = 500
+mkt_idx_bmk = 500
+fund_share = 500
+fund_nav = 500
+fund_div = 500
+fund_factor_pro = 500
 trade_cal = 500
 stock_basic = 500
 stock_st = 500
@@ -26,8 +26,8 @@ stock_moneyflow = 480
 stock_minute = 500
 etf_basic = 480
 etf_index = 480
-fund_daily = 480
-fund_adj = 480
+fund_daily = 500
+fund_adj = 500
 etf_share_size = 480
 etf_minute = 480
 index_basic = 480
@@ -64,7 +64,7 @@ us_financial = 500
 
 [api.page_limits]
 fund_basic = 15000
-fund_portfolio = 1000
+fund_portfolio = 8000
 fund_manager = 5000
 mkt_idx_bmk = 5000
 fund_share = 2000

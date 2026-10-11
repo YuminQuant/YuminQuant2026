@@ -18,6 +18,11 @@ data/strategy/{asset_class}/{strategy_id}/holdings.parquet
 
 宽表输出会保留已有无关列，只更新本次计算列。Wide parquet outputs preserve unrelated existing columns and overwrite only selected columns.
 
+基金持仓共享索引、事件状态机和 `traction20d` 开发规则见
+[基金持仓因子开发说明](docs/FUND_HOLDINGS_FACTOR_DEVELOPMENT_README.md)。
+For shared fund holdings indexes, event state and `traction20d`, see the
+[fund holdings development guide](docs/FUND_HOLDINGS_FACTOR_DEVELOPMENT_README.md).
+
 ## 基础命令 / Core Commands
 
 ```powershell

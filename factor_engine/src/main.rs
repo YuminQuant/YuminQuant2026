@@ -1055,14 +1055,15 @@ fn print_report(label: &str, report: &yq_factor_engine::RunReport) {
             }
             if let Some(financial) = &batch.financial_context {
                 println!(
-                    "    financial_context builds={} source_rows={} source_cols={} pit_records={} mainbz_records={} dividend_records={} analyst_records={}",
+                    "    financial_context builds={} source_rows={} source_cols={} pit_records={} mainbz_records={} dividend_records={} analyst_records={} fund_portfolio_records={}",
                     financial.builds,
                     financial.source_rows,
                     financial.source_columns,
                     financial.pit_records,
                     financial.main_business_records,
                     financial.dividend_records,
-                    financial.analyst_records
+                    financial.analyst_records,
+                    financial.fund_portfolio_records
                 );
             }
             for factor in &batch.factors {
@@ -1195,14 +1196,15 @@ fn print_barra_report(label: &str, report: &yq_factor_engine::BarraRunReport) {
             );
             if let Some(financial) = &batch.financial_context {
                 println!(
-                    "    financial_context builds={} source_rows={} source_cols={} pit_records={} mainbz_records={} dividend_records={} analyst_records={}",
+                    "    financial_context builds={} source_rows={} source_cols={} pit_records={} mainbz_records={} dividend_records={} analyst_records={} fund_portfolio_records={}",
                     financial.builds,
                     financial.source_rows,
                     financial.source_columns,
                     financial.pit_records,
                     financial.main_business_records,
                     financial.dividend_records,
-                    financial.analyst_records
+                    financial.analyst_records,
+                    financial.fund_portfolio_records
                 );
             }
             for exposure in &batch.factors {

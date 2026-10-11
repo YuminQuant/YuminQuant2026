@@ -8,6 +8,7 @@ use crate::data::parquet_io::read_parquet;
 use crate::data::table::{ColumnData, Table};
 use crate::error::{err, Result};
 use crate::factor::common::FinancialPitIndex;
+use crate::data::FundPortfolioIndex;
 
 #[derive(Clone, Debug)]
 pub struct MarketDataLoader {
@@ -98,6 +99,7 @@ impl DisclosureTableCache {
             entry.table = Arc::new(project_table_columns(&entry.table, &ordered_columns)?);
             entry.loaded_columns = kept_columns;
             entry.pit_index = None;
+            entry.fund_index = None;
         }
         Ok(())
     }
@@ -135,6 +137,7 @@ impl DisclosureTableCache {
                     loaded_columns: merged_columns.into_iter().collect(),
                     file_stamp,
                     pit_index: None,
+                    fund_index: None,
                 },
             );
         }
@@ -182,6 +185,15 @@ impl DisclosureTableCache {
         }
         Ok(Arc::clone(entry.pit_index.as_ref().unwrap()))
     }
+
+    pub fn fund_index_for_source(&mut self, source: &Arc<Table>) -> Result<Arc<FundPortfolioIndex>> {
+        let entry = self.yearly_tables.values_mut().find(|entry| Arc::ptr_eq(&entry.table, source))
+            .ok_or_else(|| err("fund portfolio source is not owned by disclosure cache"))?;
+        if entry.fund_index.is_none() {
+            entry.fund_index = Some(Arc::new(FundPortfolioIndex::from_table(Arc::clone(source))?));
+        }
+        Ok(Arc::clone(entry.fund_index.as_ref().unwrap()))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -196,11 +208,35 @@ struct DisclosureCacheEntry {
     loaded_columns: BTreeSet<String>,
     file_stamp: (u64, std::time::SystemTime),
     pit_index: Option<Arc<FinancialPitIndex>>,
+    fund_index: Option<Arc<FundPortfolioIndex>>,
 }
 
 impl MarketDataLoader {
     pub fn new(catalog: DataCatalog) -> Self {
         Self { catalog }
+    }
+
+    pub fn load_fund_portfolio_sources_cached(
+        &self, requested_columns: &[String], start_date: i32, end_date: i32,
+        cache: &mut DisclosureTableCache,
+    ) -> Result<Vec<Arc<Table>>> {
+        let columns = with_required_columns(requested_columns, crate::data::FUND_PORTFOLIO_COLUMNS);
+        self.catalog.daily_year_files(DatasetId::FundPortfolio, start_date, end_date)
+            .into_iter().map(|file| cache.load_year_source(DatasetId::FundPortfolio, file, &columns)).collect()
+    }
+
+    pub fn fund_portfolio_history_files_before(&self, year: i32) -> Result<Vec<PathBuf>> {
+        let directory = self.catalog.data_root().join("fund_data").join("portfolio");
+        if !directory.exists() { return Err(err(format!("fund portfolio directory not found: {}", directory.display()))); }
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(directory)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|extension| extension == "parquet")
+                && file_stem_year(&path).is_some_and(|source_year| source_year < year)
+            { files.push(path); }
+        }
+        files.sort();
+        Ok(files)
     }
 
     pub fn load_daily(
@@ -929,7 +965,7 @@ fn is_financial_statement_dataset(dataset: DatasetId) -> bool {
 }
 
 fn is_cached_disclosure_dataset(dataset: DatasetId) -> bool {
-    is_financial_statement_dataset(dataset) || dataset == DatasetId::StockAnalystReport
+    is_financial_statement_dataset(dataset) || matches!(dataset, DatasetId::StockAnalystReport | DatasetId::FundPortfolio)
 }
 
 fn file_stem_year(path: &std::path::Path) -> Option<i32> {
@@ -1015,6 +1051,66 @@ mod tests {
     use crate::data::table::ColumnData;
 
     use super::*;
+
+    #[test]
+    fn fund_portfolio_annual_sources_and_indexes_are_shared_and_evicted() {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_fund_cache_test_{unique}"));
+        let path = root.join("fund_data").join("portfolio").join("2026.parquet");
+        let source_table = crate::data::fund_portfolio::tests::table(&[
+            ("F", 20260420, 20260331, "000001.SZ", 10.),
+            ("F", 20260520, 20260331, "000001.SZ", 20.),
+        ]);
+        write_parquet(&path, &source_table).unwrap();
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let mut cache = DisclosureTableCache::default();
+        let source = loader.load_fund_portfolio_sources_cached(&["mkv".into()], 20260401, 20260430, &mut cache).unwrap().remove(0);
+        let index = cache.fund_index_for_source(&source).unwrap();
+        let weak = Arc::downgrade(&source);
+        let weak_index = Arc::downgrade(&index);
+        let next = loader.load_fund_portfolio_sources_cached(&["mkv".into()], 20260501, 20260531, &mut cache).unwrap().remove(0);
+        let next_index = cache.fund_index_for_source(&next).unwrap();
+        assert!(Arc::ptr_eq(&source, &next));
+        assert!(Arc::ptr_eq(&index, &next_index));
+        assert_eq!(cache.len(), 1);
+        cache.retain_disclosure_windows(&HashMap::new());
+        assert_eq!(cache.len(), 0);
+        assert!(weak_index.upgrade().is_some());
+        drop((source, next, index, next_index));
+        assert!(weak.upgrade().is_none());
+        assert!(weak_index.upgrade().is_none());
+        let mut missing = source_table;
+        missing.columns.remove("stk_float_ratio");
+        write_parquet(&path, &missing).unwrap();
+        let source = loader.load_fund_portfolio_sources_cached(&[], 20260401, 20260430, &mut cache).unwrap().remove(0);
+        assert!(cache.fund_index_for_source(&source).is_err());
+        drop((source, cache));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fund_portfolio_bootstrap_streams_older_years_and_retains_no_old_sources() {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_fund_bootstrap_test_{unique}"));
+        for (year, code) in [(2020, "OLD"), (2025, "RECENT"), (2026, "FUTURE")] {
+            let path = root.join("fund_data").join("portfolio").join(format!("{year}.parquet"));
+            write_parquet(&path, &crate::data::fund_portfolio::tests::table(&[
+                (code, year*10000+420, (year-1)*10000+1231, "000001.SZ", 10.),
+            ])).unwrap();
+        }
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        let mut cache = DisclosureTableCache::default();
+        let sources = loader.load_fund_portfolio_sources_cached(&[], 20260101, 20260105, &mut cache).unwrap();
+        let partitions = sources.iter().map(|s| cache.fund_index_for_source(s)).collect::<Result<Vec<_>>>().unwrap();
+        let history = loader.fund_portfolio_history_files_before(2026).unwrap();
+        let index = crate::data::FundPortfolioBatchIndex::new(partitions, history, 20260105);
+        let mut funds = Vec::new();
+        index.reader().bootstrap_until(20260105, |group| { funds.push(group.fund_code().to_string()); Ok(()) }).unwrap();
+        assert_eq!(funds, vec!["OLD", "RECENT"]);
+        assert_eq!(cache.len(), 1);
+        drop((index, cache, sources));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn financial_disclosure_years_follow_mandatory_disclosure_windows() {
@@ -1439,7 +1535,12 @@ mod tests {
             .remove(0);
         let pruned_index = cache.financial_index_for_source(&pruned_source).unwrap();
         assert!(!Arc::ptr_eq(&new_index, &pruned_index));
+        let old_modified = fs::metadata(&path).unwrap().modified().unwrap();
         write_parquet(&path, &table.take(&[0, 0]).unwrap()).unwrap();
+        // Equal-size rewrites can share a filesystem timestamp during a fast test.
+        fs::OpenOptions::new().write(true).open(&path).unwrap().set_times(
+            fs::FileTimes::new().set_modified(old_modified + std::time::Duration::from_secs(2)),
+        ).unwrap();
         let changed_source = loader
             .load_financial_sources_cached(
                 DatasetId::StockIncome,

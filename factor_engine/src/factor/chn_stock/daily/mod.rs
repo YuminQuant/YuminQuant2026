@@ -437,6 +437,7 @@ pub mod total_cost_ratio_surplus_reserve_ts_resid;
 pub mod tps;
 pub mod tps_turbo;
 pub mod traction_lud;
+pub mod traction20d;
 pub mod traction_ore;
 pub mod traction_si;
 pub mod trcf;

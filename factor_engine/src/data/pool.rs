@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::core::{DataRequest, DatasetId, FactorContext, Frequency};
 use crate::data::loader::{DisclosureTableCache, MarketDataLoader};
 use crate::data::table::Table;
-use crate::data::{SourceRows, SourceRowsReader};
+use crate::data::{SourceRows, SourceRowsReader, FundPortfolioBatchIndex, FundPortfolioReader};
 use crate::error::{err, Result};
 use crate::factor::common::{
     DailyPanel, DividendIndex, DividendReader, FinancialPitIndex, FinancialPitReader,
@@ -19,6 +19,7 @@ pub struct FinancialBatchProfile {
     pub main_business_records: usize,
     pub dividend_records: usize,
     pub analyst_records: usize,
+    pub fund_portfolio_records: usize,
     pub builds: usize,
 }
 
@@ -28,6 +29,7 @@ pub struct FinancialBatchContext {
     dividend_index: Option<Arc<DividendIndex>>,
     main_business_index: Option<Arc<MainBusinessIndex>>,
     analyst_report: Option<Arc<SourceRows>>,
+    fund_portfolio: Option<Arc<FundPortfolioBatchIndex>>,
     profile: FinancialBatchProfile,
 }
 
@@ -59,6 +61,7 @@ impl FinancialBatchContext {
         let mut dividend_index = None;
         let mut main_business_index = None;
         let mut analyst_report = None;
+        let mut fund_portfolio = None;
         let mut profile = FinancialBatchProfile {
             builds: 1,
             ..Default::default()
@@ -67,6 +70,16 @@ impl FinancialBatchContext {
         for (dataset, (columns, financial_quarters)) in grouped {
             let columns = columns.into_iter().collect::<Vec<_>>();
             match dataset {
+                DatasetId::FundPortfolio => {
+                    let sources = loader.load_fund_portfolio_sources_cached(&columns, context.load_start_date, context.end_date, disclosure_cache)?;
+                    profile.source_rows += sources.iter().map(|table| table.len).sum::<usize>();
+                    profile.source_columns += sources.iter().map(|table| table.columns.len()).sum::<usize>();
+                    let partitions = sources.iter().map(|source| disclosure_cache.fund_index_for_source(source)).collect::<Result<Vec<_>>>()?;
+                    let history = loader.fund_portfolio_history_files_before(context.load_start_date / 10000)?;
+                    let index = Arc::new(FundPortfolioBatchIndex::new(partitions, history, context.end_date));
+                    profile.fund_portfolio_records = index.len();
+                    fund_portfolio = Some(index);
+                }
                 DatasetId::StockIncome
                 | DatasetId::StockBalanceSheet
                 | DatasetId::StockCashFlow => {
@@ -152,6 +165,7 @@ impl FinancialBatchContext {
             dividend_index,
             main_business_index,
             analyst_report,
+            fund_portfolio,
             profile,
         })))
     }
@@ -184,10 +198,15 @@ impl FinancialBatchContext {
         self.profile.clone()
     }
 
+    pub fn fund_portfolio_reader(&self) -> Option<FundPortfolioReader<'_>> {
+        self.fund_portfolio.as_ref().map(|index| index.reader())
+    }
+
     pub fn indexed_row_count(&self) -> usize {
         self.profile.pit_records
             + self.profile.main_business_records
             + self.profile.dividend_records
+            + self.profile.fund_portfolio_records
     }
 }
 
@@ -558,6 +577,11 @@ impl DataPool {
         Ok(self.daily(DatasetId::StockAnalystReport)?.into())
     }
 
+    pub fn fund_portfolio_reader(&self) -> Result<FundPortfolioReader<'_>> {
+        self.financial_context.as_ref().and_then(|context| context.fund_portfolio_reader())
+            .ok_or_else(|| err("fund portfolio index not loaded"))
+    }
+
     pub fn daily(&self, dataset: DatasetId) -> Result<&Table> {
         self.daily
             .get(&dataset)
@@ -817,6 +841,7 @@ impl DataPool {
         let mut financial_pit_indexes = HashMap::new();
         let mut dividend_index = None;
         let mut main_business_index = None;
+        let mut fund_portfolio = None;
         for (dataset, table) in daily {
             let table = Arc::new(table);
             if matches!(
@@ -835,6 +860,13 @@ impl DataPool {
                 main_business_index =
                     Some(Arc::new(MainBusinessIndex::from_table(Arc::clone(&table))?));
             }
+            if dataset == DatasetId::FundPortfolio {
+                fund_portfolio = Some(Arc::new(FundPortfolioBatchIndex::new(
+                    vec![Arc::new(crate::data::FundPortfolioIndex::from_table(Arc::clone(&table))?)],
+                    vec![], context.end_date,
+                )));
+                continue;
+            }
             daily_arc.insert(dataset, table);
         }
         Ok(Self {
@@ -845,7 +877,9 @@ impl DataPool {
             financial_pit_indexes,
             dividend_index,
             main_business_index,
-            financial_context: None,
+            financial_context: fund_portfolio.map(|index| Arc::new(FinancialBatchContext {
+                fund_portfolio: Some(index), ..Default::default()
+            })),
             index_daily,
             index_daily_panels,
             minute: HashMap::new(),
@@ -913,6 +947,7 @@ fn is_financial_context_dataset(dataset: DatasetId) -> bool {
             | DatasetId::StockDividend
             | DatasetId::StockMainBusiness
             | DatasetId::StockAnalystReport
+            | DatasetId::FundPortfolio
     )
 }
 
@@ -929,6 +964,20 @@ mod tests {
     use crate::data::ColumnData;
 
     use super::*;
+
+    #[test]
+    fn fund_portfolio_shared_context_survives_request_views_without_raw_clone() {
+        let ctx = context();
+        let table = crate::data::fund_portfolio::tests::table(&[("F", 20260101, 20251231, "000001.SZ", 10.)]);
+        let pool = DataPool::from_daily_tables_for_test(HashMap::from([(DatasetId::FundPortfolio, table)]), &ctx).unwrap();
+        assert!(pool.daily(DatasetId::FundPortfolio).is_err());
+        let child = pool.with_target_dates(&ctx.target_dates).view_for_requests(&[
+            DataRequest::new(DatasetId::FundPortfolio, crate::data::FUND_PORTFOLIO_COLUMNS),
+        ], &ctx);
+        assert!(Arc::ptr_eq(pool.financial_context.as_ref().unwrap(), child.financial_context.as_ref().unwrap()));
+        assert_eq!(child.fund_portfolio_reader().unwrap().disclosures_between(None, 20260102).len(), 1);
+        assert_eq!(child.loaded_table_row_count(), 0);
+    }
 
     fn context() -> FactorContext {
         FactorContext {
@@ -1076,6 +1125,7 @@ mod tests {
             dividend_index: None,
             main_business_index: None,
             analyst_report: None,
+            fund_portfolio: None,
             profile: FinancialBatchProfile {
                 pit_records: 1,
                 builds: 1,

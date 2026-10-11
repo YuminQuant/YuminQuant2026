@@ -103,6 +103,11 @@ impl DataCatalog {
                     .join("chn_stock_data")
                     .join("analyst_report")
                     .join(format!("{}.parquet", year)),
+                DatasetId::FundPortfolio => self
+                    .data_root
+                    .join("fund_data")
+                    .join("portfolio")
+                    .join(format!("{}.parquet", year)),
                 DatasetId::FutureDaily => self
                     .data_root
                     .join("future_data")

@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, DailyPanel, FinancialEventMarker,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, DailyPanel, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
@@ -165,10 +165,11 @@ fn slow_profit_columns(
         let should_recompute = last_processed_trade_date.is_none()
             || schedule.has_event_after_until(last_processed_trade_date, trade_date);
         if should_recompute {
-            current_snapshots = cached_financial_stock_snapshots_for_date(
+            current_snapshots = routed_financial_stock_snapshots_for_date(
                 panel,
                 trade_date,
                 cache,
+                &FinancialStockEventRoute::new(&[income]),
                 |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
                 |trade_date, ts_code, _| profit_skew_marker(ts_code, trade_date, income, needs),
                 |trade_date, ts_code, _| profit_skew_snapshot(ts_code, trade_date, income, needs),

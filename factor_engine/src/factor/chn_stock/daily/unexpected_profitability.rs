@@ -10,7 +10,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, ClassificationLevel, ClassificationMap,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, ClassificationLevel, ClassificationMap,
     DividendReader, EventDrivenCrossSectionCache, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, ReportTypePreference,
@@ -471,20 +471,22 @@ fn compute(data: &DataPool, state: &mut State) -> Result<FactorSeries> {
         let historical_changed = last_historical_date.is_none()
             || schedule.has_event_after_until(last_historical_date, historical_date);
         if current_changed {
-            current = cached_financial_stock_snapshots_for_date(
+            current = routed_financial_stock_snapshots_for_date(
                 &panel,
                 date,
                 &mut state.current,
+                &FinancialStockEventRoute::new(&[&readers.income, &readers.balance, &readers.cash]),
                 |_, code, _| is_bj_stock(code),
                 |_, code, _| readers.marker(code, date),
                 |_, code, _| readers.snapshot(code, date),
             );
         }
         if historical_changed {
-            past = cached_financial_stock_snapshots_for_date(
+            past = routed_financial_stock_snapshots_for_date(
                 &panel,
                 date,
                 &mut state.historical,
+                &FinancialStockEventRoute::new(&[&readers.income, &readers.balance, &readers.cash]).at_date(historical_date),
                 |_, code, _| is_bj_stock(code),
                 |_, code, _| readers.marker(code, historical_date),
                 |_, code, _| readers.snapshot(code, historical_date),

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::factor::common::cached_financial_stock_snapshots_for_date;
 use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
     Lookback,
@@ -6,7 +8,7 @@ use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, ClassificationLevel, ClassificationMap,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, ClassificationLevel, ClassificationMap,
     FinancialEventMarker, FinancialEventMarkerBuilder, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, ReportTypePreference,
 };
@@ -175,10 +177,11 @@ fn compute(
                 })
         });
         if refresh {
-            snapshots = cached_financial_stock_snapshots_for_date(
+            snapshots = routed_financial_stock_snapshots_for_date(
                 &panel,
                 date,
                 cache,
+                &FinancialStockEventRoute::new(&[&readers.income, &readers.balance, &readers.cash]).at_date(period.0).with_key(period.1 as i64),
                 |_, code, offset| is_bj_stock(code) || !panel.is_present_offset(offset),
                 |_, code, _| readers.marker(code, period.0, period.1),
                 |_, code, _| readers.snapshot(code, period.0, period.1),

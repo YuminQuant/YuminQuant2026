@@ -3,6 +3,8 @@ pub mod loader;
 pub mod parquet_io;
 pub mod pool;
 pub mod table;
+pub mod source_rows;
+pub use source_rows::{SourceRows, SourceRowsReader};
 
 pub use catalog::DataCatalog;
 pub use loader::{

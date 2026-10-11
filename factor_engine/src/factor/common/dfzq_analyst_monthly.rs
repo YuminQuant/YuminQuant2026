@@ -300,7 +300,8 @@ struct Reports<'a> {
     values: HashMap<(&'a str, i32), Vec<(i32, f64)>>,
 }
 impl<'a> Reports<'a> {
-    fn new(table: &'a Table, lower: i32, upper: i32) -> Result<Self> {
+    fn new(table: impl Into<crate::data::SourceRowsReader<'a>>, lower: i32, upper: i32) -> Result<Self> {
+        let table = table.into();
         let codes = table.required_utf8("ts_code")?;
         let dates = table.required_i32_date_cast("report_date")?;
         let years = table.required_utf8("quarter")?;
@@ -549,7 +550,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
     };
     let reports = if outputs.contains(&Output::Fom) && !anchors.is_empty() {
         Some(Reports::new(
-            data.daily(DatasetId::StockAnalystReport)?,
+            data.analyst_report_reader()?,
             add_months(*anchors.first().unwrap(), -12),
             *anchors.last().unwrap(),
         )?)

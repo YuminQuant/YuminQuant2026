@@ -7,6 +7,7 @@ use crate::data::catalog::DataCatalog;
 use crate::data::parquet_io::read_parquet;
 use crate::data::table::{ColumnData, Table};
 use crate::error::{err, Result};
+use crate::factor::common::FinancialPitIndex;
 
 #[derive(Clone, Debug)]
 pub struct MarketDataLoader {
@@ -96,6 +97,7 @@ impl DisclosureTableCache {
             let ordered_columns = kept_columns.iter().cloned().collect::<Vec<_>>();
             entry.table = Arc::new(project_table_columns(&entry.table, &ordered_columns)?);
             entry.loaded_columns = kept_columns;
+            entry.pit_index = None;
         }
         Ok(())
     }
@@ -108,10 +110,11 @@ impl DisclosureTableCache {
     ) -> Result<DisclosureCacheKey> {
         let key = DisclosureCacheKey { dataset, file };
         let requested = columns.iter().cloned().collect::<BTreeSet<_>>();
-        let should_reload = self
-            .yearly_tables
-            .get(&key)
-            .is_none_or(|entry| !requested.is_subset(&entry.loaded_columns));
+        let metadata = std::fs::metadata(&key.file)?;
+        let file_stamp = (metadata.len(), metadata.modified()?);
+        let should_reload = self.yearly_tables.get(&key).is_none_or(|entry| {
+            !requested.is_subset(&entry.loaded_columns) || entry.file_stamp != file_stamp
+        });
         if should_reload {
             let merged_columns = self
                 .yearly_tables
@@ -130,6 +133,8 @@ impl DisclosureTableCache {
                 DisclosureCacheEntry {
                     table: Arc::new(table),
                     loaded_columns: merged_columns.into_iter().collect(),
+                    file_stamp,
+                    pit_index: None,
                 },
             );
         }
@@ -162,6 +167,21 @@ impl DisclosureTableCache {
             .map(|entry| Arc::clone(&entry.table))
             .ok_or_else(|| err("disclosure cache entry disappeared unexpectedly"))
     }
+
+    pub fn financial_index_for_source(
+        &mut self,
+        source: &Arc<Table>,
+    ) -> Result<Arc<FinancialPitIndex>> {
+        let entry = self
+            .yearly_tables
+            .values_mut()
+            .find(|entry| Arc::ptr_eq(&entry.table, source))
+            .ok_or_else(|| err("financial source is not owned by disclosure cache"))?;
+        if entry.pit_index.is_none() {
+            entry.pit_index = Some(Arc::new(FinancialPitIndex::from_table(Arc::clone(source))?));
+        }
+        Ok(Arc::clone(entry.pit_index.as_ref().unwrap()))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -174,6 +194,8 @@ struct DisclosureCacheKey {
 struct DisclosureCacheEntry {
     table: Arc<Table>,
     loaded_columns: BTreeSet<String>,
+    file_stamp: (u64, std::time::SystemTime),
+    pit_index: Option<Arc<FinancialPitIndex>>,
 }
 
 impl MarketDataLoader {
@@ -475,6 +497,65 @@ impl MarketDataLoader {
             return empty_disclosure_table(&columns);
         }
         Ok(table)
+    }
+
+    pub fn load_stock_main_business_sources_cached(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+        quarters: usize,
+        cache: &mut DisclosureTableCache,
+    ) -> Result<Vec<Arc<Table>>> {
+        let columns = with_required_columns(
+            requested_columns,
+            &[
+                "ts_code",
+                "end_date",
+                "bz_type",
+                "bz_item",
+                "bz_sales",
+                "update_flag",
+            ],
+        );
+        let years = financial_disclosure_years_for_range(start_date, end_date, quarters);
+        let file_start_year = years.iter().next().copied().unwrap_or(end_date / 10_000);
+        let end_year = years
+            .iter()
+            .next_back()
+            .copied()
+            .unwrap_or(end_date / 10_000);
+        let files = self.catalog.daily_year_files(
+            DatasetId::StockMainBusiness,
+            file_start_year * 10_000 + 101,
+            end_year * 10_000 + 12_31,
+        );
+        files
+            .into_iter()
+            .map(|file| cache.load_year_source(DatasetId::StockMainBusiness, file, &columns))
+            .collect()
+    }
+
+    pub fn load_stock_analyst_sources_cached(
+        &self,
+        requested_columns: &[String],
+        start_date: i32,
+        end_date: i32,
+        cache: &mut DisclosureTableCache,
+    ) -> Result<Vec<Arc<Table>>> {
+        let columns = with_required_columns(
+            requested_columns,
+            &["ts_code", "report_date", "quarter", "rd"],
+        );
+        let files = self.catalog.daily_year_files(
+            DatasetId::StockAnalystReport,
+            prior_year_start(start_date),
+            end_date,
+        );
+        files
+            .into_iter()
+            .map(|file| cache.load_year_source(DatasetId::StockAnalystReport, file, &columns))
+            .collect()
     }
 
     pub fn load_stock_main_business_cached(
@@ -1099,7 +1180,10 @@ mod tests {
             .expect("time")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_financial_cache_test_{unique}"));
-        let path = root.join("chn_stock_data").join("income").join("2020.parquet");
+        let path = root
+            .join("chn_stock_data")
+            .join("income")
+            .join("2020.parquet");
         let table = Table::new(BTreeMap::from([
             (
                 "ts_code".to_string(),
@@ -1148,6 +1232,20 @@ mod tests {
                 &mut cache,
             )
             .expect("load early financial");
+        let source = loader
+            .load_financial_sources_cached(
+                DatasetId::StockIncome,
+                &["ebit".into()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .unwrap()
+            .remove(0);
+        let index = cache.financial_index_for_source(&source).unwrap();
+        let weak_index = Arc::downgrade(&index);
+        let weak_source = Arc::downgrade(&source);
         let later = loader
             .load_financial_cached(
                 DatasetId::StockIncome,
@@ -1162,10 +1260,42 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert_eq!(early.len, 1);
         assert_eq!(later.len, 2);
+        let source_again = loader
+            .load_financial_sources_cached(
+                DatasetId::StockIncome,
+                &["ebit".into()],
+                20200301,
+                20200331,
+                0,
+                &mut cache,
+            )
+            .unwrap()
+            .remove(0);
+        let index_again = cache.financial_index_for_source(&source_again).unwrap();
+        assert!(Arc::ptr_eq(&source, &source_again));
+        assert!(Arc::ptr_eq(&index, &index_again));
+        let early_view = FinancialPitIndex::from_partitions(vec![index.clone()], 20200131);
+        let late_view = FinancialPitIndex::from_partitions(vec![index_again.clone()], 20200331);
+        assert_eq!(early_view.len(), 1);
+        assert_eq!(late_view.len(), 2);
         assert_eq!(
             later.required_f64_cast("ebit").expect("ebit"),
             vec![Some(10.0), Some(20.0)]
         );
+
+        cache.retain_disclosure_windows(&HashMap::new());
+        assert_eq!(cache.len(), 0);
+        assert!(weak_index.upgrade().is_some()); // live batch still owns the source
+        drop((
+            early_view,
+            late_view,
+            index,
+            index_again,
+            source,
+            source_again,
+        ));
+        assert!(weak_index.upgrade().is_none());
+        assert!(weak_source.upgrade().is_none());
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -1177,7 +1307,10 @@ mod tests {
             .expect("time")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_financial_cache_superset_test_{unique}"));
-        let path = root.join("chn_stock_data").join("income").join("2020.parquet");
+        let path = root
+            .join("chn_stock_data")
+            .join("income")
+            .join("2020.parquet");
         let table = Table::new(BTreeMap::from([
             (
                 "ts_code".to_string(),
@@ -1215,6 +1348,18 @@ mod tests {
                 &mut cache,
             )
             .expect("load ebit");
+        let old_source = loader
+            .load_financial_sources_cached(
+                DatasetId::StockIncome,
+                &["ebit".into()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .unwrap()
+            .remove(0);
+        let old_index = cache.financial_index_for_source(&old_source).unwrap();
         let revenue = loader
             .load_financial_cached(
                 DatasetId::StockIncome,
@@ -1225,6 +1370,34 @@ mod tests {
                 &mut cache,
             )
             .expect("load revenue");
+        let new_source = loader
+            .load_financial_sources_cached(
+                DatasetId::StockIncome,
+                &["revenue".into()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .unwrap()
+            .remove(0);
+        let new_index = cache.financial_index_for_source(&new_source).unwrap();
+        assert!(!Arc::ptr_eq(&old_index, &new_index));
+        let subset = loader
+            .load_financial_sources_cached(
+                DatasetId::StockIncome,
+                &["ebit".into()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .unwrap()
+            .remove(0);
+        assert!(Arc::ptr_eq(
+            &new_index,
+            &cache.financial_index_for_source(&subset).unwrap()
+        ));
 
         assert_eq!(cache.len(), 1);
         assert!(ebit.columns.contains_key("ebit"));
@@ -1253,6 +1426,36 @@ mod tests {
             .expect("prune disclosure cache columns");
         let profiles = cache.profiles();
         assert_eq!(profiles[0].loaded_columns, 7);
+        let pruned_source = loader
+            .load_financial_sources_cached(
+                DatasetId::StockIncome,
+                &["ebit".into()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .unwrap()
+            .remove(0);
+        let pruned_index = cache.financial_index_for_source(&pruned_source).unwrap();
+        assert!(!Arc::ptr_eq(&new_index, &pruned_index));
+        write_parquet(&path, &table.take(&[0, 0]).unwrap()).unwrap();
+        let changed_source = loader
+            .load_financial_sources_cached(
+                DatasetId::StockIncome,
+                &["ebit".into()],
+                20200101,
+                20200131,
+                0,
+                &mut cache,
+            )
+            .unwrap()
+            .remove(0);
+        assert_eq!(changed_source.len, 2);
+        assert!(!Arc::ptr_eq(
+            &pruned_index,
+            &cache.financial_index_for_source(&changed_source).unwrap()
+        ));
 
         fs::remove_dir_all(root).expect("cleanup");
     }
@@ -1334,13 +1537,22 @@ mod tests {
             .expect("time")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_financial_prune_test_{unique}"));
-        let income_2023 = root.join("chn_stock_data").join("income").join("2023.parquet");
-        let income_2024 = root.join("chn_stock_data").join("income").join("2024.parquet");
+        let income_2023 = root
+            .join("chn_stock_data")
+            .join("income")
+            .join("2023.parquet");
+        let income_2024 = root
+            .join("chn_stock_data")
+            .join("income")
+            .join("2024.parquet");
         let analyst_2023 = root
             .join("chn_stock_data")
             .join("analyst_report")
             .join("2023.parquet");
-        let mainbz_2023 = root.join("chn_stock_data").join("mainbz").join("2023.parquet");
+        let mainbz_2023 = root
+            .join("chn_stock_data")
+            .join("mainbz")
+            .join("2023.parquet");
         let financial = Table::new(BTreeMap::from([
             (
                 "ts_code".to_string(),

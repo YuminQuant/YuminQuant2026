@@ -13,7 +13,7 @@ use crate::factor::common::stock_daily_ops::{
 };
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
@@ -618,10 +618,11 @@ fn financial_ext_snapshot_columns(
             continue;
         }
         let total_mv_values = total_mv.values();
-        let daily_snapshots = cached_financial_stock_snapshots_for_date(
+        let daily_snapshots = routed_financial_stock_snapshots_for_date(
             panel,
             trade_date,
             cache,
+            &FinancialStockEventRoute::new(&[income, balance, cashflow]),
             |_, ts_code, offset| !panel.is_present_offset(offset) || is_bj_stock(ts_code),
             |date, ts_code, _| {
                 financial_ext_snapshot_marker(ts_code, date, income, balance, cashflow)

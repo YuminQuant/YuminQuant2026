@@ -9,7 +9,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, ClassificationLevel, ClassificationMap,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, ClassificationLevel, ClassificationMap,
     FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, ReportTypePreference,
 };
@@ -212,10 +212,11 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
             || presence_changed
             || schedule.has_event_after_until(previous_day.map(|prev| panel.dates()[prev]), date)
         {
-            snapshots = cached_financial_stock_snapshots_for_date(
+            snapshots = routed_financial_stock_snapshots_for_date(
                 &panel,
                 date,
                 &mut state.snapshots,
+                &FinancialStockEventRoute::new(&[&reader]).with_key(mask),
                 |_, code, offset| is_bj_stock(code) || !panel.is_present_offset(offset),
                 |date, code, _| marker(&reader, code, date, mask),
                 |date, code, _| snapshot(&reader, code, date, &requested),

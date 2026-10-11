@@ -11,7 +11,7 @@ use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, financial_event_trade_dates, ClassificationLevel,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, financial_event_trade_dates, ClassificationLevel,
     ClassificationMap, DailyPanel, DividendReader, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialRecordView,
@@ -991,10 +991,11 @@ fn hazq_snapshots_for_date(
     cache: &mut InstrumentAlignedSnapshotCache<HazqComparableSnapshot>,
     trade_date: i32,
 ) -> Vec<Option<HazqComparableSnapshot>> {
-    cached_financial_stock_snapshots_for_date(
+    routed_financial_stock_snapshots_for_date(
         inputs.panel,
         trade_date,
         cache,
+        &FinancialStockEventRoute::new(&[&inputs.income, &inputs.balance, &inputs.cashflow]),
         |_, _, offset| !inputs.panel.is_present_offset(offset),
         |trade_date, ts_code, _| {
             hazq_snapshot_marker(

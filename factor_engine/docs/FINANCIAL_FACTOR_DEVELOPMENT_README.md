@@ -5,6 +5,30 @@ dividend, and analyst event workflow used by `factor_engine`.
 
 本文档定义 `factor_engine` 当前的 PIT 财报、主营业务、分红和分析师事件型因子开发规则。
 
+## Shared Query Performance / 共享查询性能
+
+- 单股票 LTM 分红通过 `DividendReader::implemented_ltm_sum` 查询股票行索引，不扫描其他股票；保留原始行顺序、公告日和除息日过滤，以及原有浮点求和顺序。
+- 主营业务 `industry_update0_fingerprint` 在不可变 index 构建时按股票和报告期预计算，后续 marker 查询直接复用；新 batch/index 自然重建，不保留跨版本失效的指纹。
+- PIT 版本按公告日降序、修正标记降序排列，用二分定位首个可见版本。`ReportTypePreference` 顺序和同日版本选择规则不变。
+- 跨 batch 股票重排时移动 snapshot 所有权，不深拷贝其内容。新增股票保持空状态，移出股票的状态释放；日常返回 snapshot 的现有接口仍保留。
+
+Single-stock LTM dividend queries use a stock row index and preserve source-row summation order. Main-business fingerprints are computed once per immutable index and reused by marker queries. PIT version lookup uses binary search without changing report-type priority or same-day revision ordering. Instrument remapping moves snapshots instead of cloning their payloads; newly added instruments remain empty and removed instruments are released.
+
+### Annual Sources And Routing / 年度源表与股票事件路由
+
+- 三大报表的年度 PIT 索引随 `DisclosureTableCache` 的年度 source 有界保留，跨 date-batch 复用版本排序和股票事件列表。batch context 只组合年度索引引用、报告期键和当批可见上界，不复制报告记录或拼接 filtered table。
+- 年度版本定位使用每只股票一个紧凑有序行索引，先二分定位 `(end_date, report_type)` 区间，再二分选择公告日可见版本；不为每个报告期和报表类型分配多层树节点。稳定排序保留完全相同版本键的原始行优先级，去重后的日期数组释放多余容量。
+- 查询仍显式传入 PIT 日期，使用 `min(query_date, batch_end_date)`；`report_type` 优先级、`f_ann_date.or(ann_date)` 和同日 `update_flag` 规则不变。年度 source 含未来行，不代表这些行已可见。
+- 年份离开所需窗口时淘汰年度表及索引；列扩展/裁剪或文件大小、修改时间变化时重建对应索引。仍被当批 context 引用的 source 在最后一个使用者释放后回收。
+- 主营业务通过 `source_idx + row_idx` 读取年度表，分析师通过 `data.analyst_report_reader()` 读取多 source 行选择；不再构造合并的 batch 明细表。字符串借用原表，必要的数值列和 provider 专用解析结果仍有工作内存，不是零分配。
+- 股票路由先按股票和所需 report type 二分检查事件，未变化时跳过 marker 查表。分红路由包含公告、除息、LTM 到期（含闰年边界）；主营业务路由包含 source 版本。换 batch/source、股票重新进入样本、查询日期倒退时重新核验 marker，marker 未变仍不重算慢公式。
+
+Statement annual PIT indexes live with bounded yearly sources and are reused across date batches. Batch contexts compose references and enforce an upper visibility bound; they do not append financial tables or copy report records. Queries retain explicit as-of dates and unchanged report-type/revision priorities. Source eviction releases the index when its last consumer finishes; column changes and file size/mtime changes invalidate the corresponding annual index.
+
+Each stock uses one compact sorted row-index array rather than a tree per report period and report type. Binary searches first locate the `(end_date, report_type)` range, then select the visible disclosure version. Stable sorting preserves original row precedence on exact ties. Deduplicated date arrays release spare capacity; annual index reuse still has a bounded resident-memory cost and must be evaluated separately from batch panel/output memory.
+
+Main-business rows reference yearly sources directly. Analyst consumers use `data.analyst_report_reader()` over shared source-row selections, borrowing strings while retaining necessary numeric/provider working buffers. These two batch views are rebuilt per date batch; their underlying annual tables are reused. Stock routing skips marker queries for unaffected stocks, but checks dividend expiry, source changes, universe reentry and historical-query clocks. Formula, global event schedule, raw replay and downstream cross-sectional semantics remain unchanged.
+
 ## Core Rule / 核心规则
 
 Financial/event-style stock factors must not use `StockDailyPv` as an output
@@ -205,11 +229,11 @@ replay the latest final factor cross-section onto the same explicit panel.
 ## Slow Snapshot Cache / 慢指标缓存
 
 For stock-level slow formulas, prefer provider-state caching:
-`InstrumentAlignedSnapshotCache<T>` plus `cached_financial_stock_snapshots_for_date(...)`.
+`InstrumentAlignedSnapshotCache<T>` plus `routed_financial_stock_snapshots_for_date(...)`.
 This cache is aligned by `ts_code`, not by raw vector position, so changing
 batch order or instrument order does not shift financial values across stocks.
 
-股票级慢指标公式优先使用 provider-state 缓存：`InstrumentAlignedSnapshotCache<T>` + `cached_financial_stock_snapshots_for_date(...)`。该缓存按 `ts_code` 对齐，而不是按原始数组位置对齐，因此 batch 或股票顺序变化不会导致财务指标错位。
+股票级慢指标公式优先使用 provider-state 缓存：`InstrumentAlignedSnapshotCache<T>` + `routed_financial_stock_snapshots_for_date(...)`。该缓存按 `ts_code` 对齐，而不是按原始数组位置对齐，因此 batch 或股票顺序变化不会导致财务指标错位。
 
 Cache only stock-level slow snapshots. Do not cache daily fast variables:
 
@@ -246,13 +270,13 @@ fn slow_marker(
     balance: &FinancialPitReader<'_>,
 ) -> Option<FinancialEventMarker> {
     let mut builder = FinancialEventMarkerBuilder::new();
-    builder.include_latest_ttm(
+    builder.include_reader_latest_ttm(
         FinancialStatementDataset::Income,
         income,
         ts_code,
         trade_date,
     );
-    builder.include_latest_annual(
+    builder.include_reader_latest_annual(
         FinancialStatementDataset::BalanceSheet,
         balance,
         ts_code,
@@ -277,15 +301,27 @@ fn slow_snapshot(
     })
 }
 
-let snapshots = cached_financial_stock_snapshots_for_date(
+let route = FinancialStockEventRoute::new(&[&income, &balance]);
+let snapshots = routed_financial_stock_snapshots_for_date(
     panel,
     trade_date,
     &mut state.slow_cache,
+    &route,
     |_, _ts_code, offset| !panel.is_present_offset(offset),
     |trade_date, ts_code, _| slow_marker(ts_code, trade_date, &income, &balance),
     |trade_date, ts_code, _| slow_snapshot(ts_code, trade_date, &income, &balance),
 );
 ```
+
+Route declaration / 路由声明:
+
+- Declare all statement readers in `FinancialStockEventRoute::new(&[&income, &balance, ...])`; their report-type preferences also apply to routing.
+- For dividend-dependent snapshots add `.with_dividend(&dividend)`; for main-business snapshots add `.with_main_business(&mainbz)`. Keep the corresponding synthetic markers too.
+- Use `.at_date(historical_date)` when closures query a historical PIT clock. A changing calendar anchor or formula/request mask also needs `.with_key(key)` and a matching marker dependency.
+- With no stock event, neither `marker_fn` nor `compute_fn` runs. On source/batch changes markers are revalidated; unchanged markers keep existing snapshots. `skip_fn` still runs each call and clears excluded stocks.
+- The lower-level `cached_financial_stock_snapshots_for_date` remains available for formulas whose invalidation cannot be fully declared: it always checks markers. Never use an incomplete route to skip synthetic events.
+
+声明全部财报 reader（包括 report type 口径）；分红和主营业务分别补 `with_dividend`、`with_main_business`，同时保留对应 synthetic marker。历史 PIT 查询使用 `at_date`，日历锚点或公式/请求集合变化要同时进入 `with_key` 和 marker。无股票事件时跳过 marker 和慢公式；batch/source 变化时先核验 marker，未变化的 snapshot 仍复用。排除条件每次检查，股票退出时清缓存。无法完整声明失效条件时使用底层逐次 marker 检查接口，不得漏报依赖。
 
 Callback roles:
 
@@ -446,7 +482,7 @@ factor/chn_stock/daily/link_new.rs
 
 1. Declare exact `DataRequest`s. Do not add `StockDailyPv.close` as an anchor.
 2. Use `let panel = data.stock_universe_panel()?;` for financial/event stock factors.
-3. Use `data.financial_reader(...)`, `data.main_business_reader()`, `data.dividend_reader()`, or `data.daily(DatasetId::StockAnalystReport)` as appropriate.
+3. Use `data.financial_reader(...)`, `data.main_business_reader()`, `data.dividend_reader()`, or `data.analyst_report_reader()` as appropriate.
 4. Put stock-level slow snapshots in provider state with `InstrumentAlignedSnapshotCache<T>`.
 5. Include every PIT record chain and synthetic event in the marker.
 6. Use `compute_financial_event_snapshot_streaming_on_panel(...)` for pure event replay.
@@ -456,7 +492,7 @@ factor/chn_stock/daily/link_new.rs
 
 1. 精确声明 `DataRequest`，不得把 `StockDailyPv.close` 当锚点。
 2. 财务/事件型股票因子使用 `let panel = data.stock_universe_panel()?;`。
-3. 按需使用 `data.financial_reader(...)`、`data.main_business_reader()`、`data.dividend_reader()` 或 `data.daily(DatasetId::StockAnalystReport)`。
+3. 按需使用 `data.financial_reader(...)`、`data.main_business_reader()`、`data.dividend_reader()` 或 `data.analyst_report_reader()`。
 4. 股票级慢 snapshot 放进 provider state，使用 `InstrumentAlignedSnapshotCache<T>`。
 5. marker 覆盖所有 PIT 记录链和 synthetic event。
 6. 纯事件回放使用 `compute_financial_event_snapshot_streaming_on_panel(...)`。

@@ -10,10 +10,10 @@ use crate::barra::{BarraExposure, BarraSharedCache};
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, FinancialEventMarker, FinancialEventMarkerBuilder,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialPitReader, FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn,
     ReportTypePreference,
 };
@@ -93,7 +93,7 @@ impl StockDailyBarraCne6Growth {
             DatasetId::StockBalanceSheet,
             ReportTypePreference::balance_sheet_consolidated(),
         )?;
-        let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
+        let analyst_records = parse_analyst_records(data.analyst_report_reader()?)?;
         let analyst_by_stock = index_analyst_records(&analyst_records);
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
@@ -138,10 +138,11 @@ fn historical_growth_columns(
         if !panel.is_target_date(trade_date) {
             continue;
         }
-        let snapshots = cached_financial_stock_snapshots_for_date(
+        let snapshots = routed_financial_stock_snapshots_for_date(
             panel,
             trade_date,
             cache,
+            &FinancialStockEventRoute::new(&[income, balance]),
             |_, _, offset| !panel.is_present_offset(offset),
             |trade_date, ts_code, _| growth_marker(ts_code, trade_date, income, balance),
             |trade_date, ts_code, _| growth_snapshot(ts_code, trade_date, income, balance),
@@ -255,7 +256,8 @@ struct AnalystRecord {
     eps: f64,
 }
 
-fn parse_analyst_records(table: &Table) -> Result<Vec<AnalystRecord>> {
+fn parse_analyst_records<'a>(table: impl Into<crate::data::SourceRowsReader<'a>>) -> Result<Vec<AnalystRecord>> {
+    let table = table.into();
     let ts_codes = table.required_utf8("ts_code")?;
     let report_dates = table.required_i32_date_cast("report_date")?;
     let quarters = table.required_utf8("quarter")?;

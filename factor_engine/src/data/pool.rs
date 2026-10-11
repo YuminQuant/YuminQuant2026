@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::core::{DataRequest, DatasetId, FactorContext, Frequency};
 use crate::data::loader::{DisclosureTableCache, MarketDataLoader};
 use crate::data::table::Table;
+use crate::data::{SourceRows, SourceRowsReader};
 use crate::error::{err, Result};
 use crate::factor::common::{
     DailyPanel, DividendIndex, DividendReader, FinancialPitIndex, FinancialPitReader,
@@ -26,7 +27,7 @@ pub struct FinancialBatchContext {
     financial_pit_indexes: HashMap<DatasetId, Arc<FinancialPitIndex>>,
     dividend_index: Option<Arc<DividendIndex>>,
     main_business_index: Option<Arc<MainBusinessIndex>>,
-    analyst_report: Option<Arc<Table>>,
+    analyst_report: Option<Arc<SourceRows>>,
     profile: FinancialBatchProfile,
 }
 
@@ -82,10 +83,14 @@ impl FinancialBatchContext {
                         .iter()
                         .map(|table| table.columns.len())
                         .sum::<usize>();
-                    let index = Arc::new(FinancialPitIndex::from_source_tables(
-                        sources,
-                        Some(context.end_date),
-                    )?);
+                    let partitions = sources
+                        .iter()
+                        .map(|source| disclosure_cache.financial_index_for_source(source))
+                        .collect::<Result<Vec<_>>>()?;
+                    let index = Arc::new(FinancialPitIndex::from_partitions(
+                        partitions,
+                        context.end_date,
+                    ));
                     profile.pit_records += index.len();
                     financial_pit_indexes.insert(dataset, index);
                 }
@@ -103,31 +108,40 @@ impl FinancialBatchContext {
                     dividend_index = Some(index);
                 }
                 DatasetId::StockMainBusiness => {
-                    let table = loader.load_stock_main_business_cached(
+                    let sources = loader.load_stock_main_business_sources_cached(
                         &columns,
                         context.start_date,
                         context.end_date,
                         financial_quarters.unwrap_or(8),
                         disclosure_cache,
                     )?;
-                    profile.source_rows += table.len;
-                    profile.source_columns += table.columns.len();
-                    let table = Arc::new(table);
-                    let index = Arc::new(MainBusinessIndex::from_table(Arc::clone(&table))?);
+                    profile.source_rows += sources.iter().map(|table| table.len).sum::<usize>();
+                    profile.source_columns += sources
+                        .iter()
+                        .map(|table| table.columns.len())
+                        .sum::<usize>();
+                    let index = Arc::new(MainBusinessIndex::from_source_tables(
+                        sources,
+                        context.end_date,
+                    )?);
                     profile.main_business_records = index.len();
                     main_business_index = Some(index);
                 }
                 DatasetId::StockAnalystReport => {
-                    let table = loader.load_stock_analyst_report_cached(
+                    let sources = loader.load_stock_analyst_sources_cached(
                         &columns,
                         context.load_start_date,
                         context.end_date,
                         disclosure_cache,
                     )?;
-                    profile.analyst_records = table.len;
-                    profile.source_rows += table.len;
-                    profile.source_columns += table.columns.len();
-                    analyst_report = Some(Arc::new(table));
+                    profile.source_rows += sources.iter().map(|table| table.len).sum::<usize>();
+                    profile.source_columns += sources
+                        .iter()
+                        .map(|table| table.columns.len())
+                        .sum::<usize>();
+                    let rows = SourceRows::new(sources, "report_date", i32::MIN, context.end_date)?;
+                    profile.analyst_records = rows.len();
+                    analyst_report = Some(Arc::new(rows));
                 }
                 _ => {}
             }
@@ -162,7 +176,7 @@ impl FinancialBatchContext {
             .map(|index| index.reader())
     }
 
-    pub fn analyst_report(&self) -> Option<&Table> {
+    pub fn analyst_report(&self) -> Option<&SourceRows> {
         self.analyst_report.as_deref()
     }
 
@@ -229,6 +243,10 @@ impl DataPool {
         disclosure_cache: &mut DisclosureTableCache,
         financial_context: Option<Arc<FinancialBatchContext>>,
     ) -> Result<Self> {
+        let financial_context = match financial_context {
+            Some(context) => Some(context),
+            None => FinancialBatchContext::build(loader, requests, context, disclosure_cache)?,
+        };
         let mut grouped: HashMap<
             (DatasetId, Option<String>, Option<usize>),
             (BTreeSet<String>, Option<usize>, BTreeSet<i32>),
@@ -258,7 +276,8 @@ impl DataPool {
                 .entry(DatasetId::StockBasic)
                 .or_insert_with(|| Arc::new(table));
         }
-        for ((dataset, entity_id, bar_size), (columns, financial_quarters, load_dates)) in grouped {
+        for ((dataset, entity_id, bar_size), (columns, _financial_quarters, load_dates)) in grouped
+        {
             let columns = columns.into_iter().collect::<Vec<_>>();
             let load_dates = load_dates.into_iter().collect::<Vec<_>>();
             if pool.financial_context.is_some() && is_financial_context_dataset(dataset) {
@@ -302,60 +321,6 @@ impl DataPool {
                     loader.load_barra_daily(context.asset_class, "CNE6", &columns, &load_dates)?;
                 let panel = DailyPanel::from_table(&table, context)?;
                 pool.daily_panels.insert(dataset, panel);
-                pool.daily.insert(dataset, Arc::new(table));
-                continue;
-            }
-            if matches!(
-                dataset,
-                DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow
-            ) {
-                let table = loader.load_financial_cached(
-                    dataset,
-                    &columns,
-                    context.start_date,
-                    context.end_date,
-                    financial_quarters.unwrap_or(0),
-                    disclosure_cache,
-                )?;
-                let table = Arc::new(table);
-                let index = FinancialPitIndex::from_table(Arc::clone(&table))?;
-                pool.financial_pit_indexes.insert(dataset, Arc::new(index));
-                pool.daily.insert(dataset, table);
-                continue;
-            }
-            if dataset == DatasetId::StockDividend {
-                let table = loader.load_stock_dividend(
-                    &columns,
-                    context.load_start_date,
-                    context.end_date,
-                )?;
-                let table = Arc::new(table);
-                let index = DividendIndex::from_table(Arc::clone(&table))?;
-                pool.dividend_index = Some(Arc::new(index));
-                pool.daily.insert(dataset, table);
-                continue;
-            }
-            if dataset == DatasetId::StockMainBusiness {
-                let table = loader.load_stock_main_business_cached(
-                    &columns,
-                    context.start_date,
-                    context.end_date,
-                    financial_quarters.unwrap_or(8),
-                    disclosure_cache,
-                )?;
-                let table = Arc::new(table);
-                let index = MainBusinessIndex::from_table(Arc::clone(&table))?;
-                pool.main_business_index = Some(Arc::new(index));
-                pool.daily.insert(dataset, table);
-                continue;
-            }
-            if dataset == DatasetId::StockAnalystReport {
-                let table = loader.load_stock_analyst_report_cached(
-                    &columns,
-                    context.load_start_date,
-                    context.end_date,
-                    disclosure_cache,
-                )?;
                 pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
@@ -582,16 +547,18 @@ impl DataPool {
         }
     }
 
-    pub fn daily(&self, dataset: DatasetId) -> Result<&Table> {
-        if dataset == DatasetId::StockAnalystReport {
-            if let Some(table) = self
-                .financial_context
-                .as_ref()
-                .and_then(|context| context.analyst_report())
-            {
-                return Ok(table);
-            }
+    pub fn analyst_report_reader(&self) -> Result<SourceRowsReader<'_>> {
+        if let Some(rows) = self
+            .financial_context
+            .as_ref()
+            .and_then(|context| context.analyst_report())
+        {
+            return Ok(rows.reader());
         }
+        Ok(self.daily(DatasetId::StockAnalystReport)?.into())
+    }
+
+    pub fn daily(&self, dataset: DatasetId) -> Result<&Table> {
         self.daily
             .get(&dataset)
             .map(Arc::as_ref)
@@ -1168,6 +1135,62 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![false, true, true, true, true, false]
         );
+    }
+
+    #[test]
+    fn analyst_multi_source_context_is_shared_by_retarget_and_request_views() {
+        let table = |date| {
+            Arc::new(
+                Table::new(std::collections::BTreeMap::from([
+                    ("report_date".into(), ColumnData::I32(vec![Some(date)])),
+                    (
+                        "ts_code".into(),
+                        ColumnData::Utf8(vec![Some("000001.SZ".into())]),
+                    ),
+                    ("np".into(), ColumnData::F64(vec![Some(date as f64)])),
+                ]))
+                .unwrap(),
+            )
+        };
+        let shared = Arc::new(
+            SourceRows::new(
+                vec![table(20251231), table(20260101), table(20270101)],
+                "report_date",
+                i32::MIN,
+                20260101,
+            )
+            .unwrap(),
+        );
+        let mut pool = DataPool::default();
+        pool.financial_context = Some(Arc::new(FinancialBatchContext {
+            analyst_report: Some(shared.clone()),
+            ..Default::default()
+        }));
+        let child = pool.with_target_dates(&[20260101]);
+        let scoped = child.view_for_requests(
+            &[DataRequest::new(DatasetId::StockAnalystReport, &["np"])],
+            &context(),
+        );
+        assert!(Arc::ptr_eq(
+            pool.financial_context.as_ref().unwrap(),
+            scoped.financial_context.as_ref().unwrap()
+        ));
+        assert!(scoped.daily(DatasetId::StockAnalystReport).is_err());
+        assert_eq!(
+            scoped
+                .analyst_report_reader()
+                .unwrap()
+                .required_i32_date_cast("report_date")
+                .unwrap(),
+            vec![Some(20251231), Some(20260101)]
+        );
+        let weak = Arc::downgrade(&shared);
+        drop(shared);
+        drop(child);
+        drop(pool);
+        assert!(weak.upgrade().is_some());
+        drop(scoped);
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]

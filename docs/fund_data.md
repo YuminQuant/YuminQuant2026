@@ -105,6 +105,10 @@ Portfolio pages are staged on disk. All query partitions are checked before publ
 
 ## 重复持仓与 PIT / Duplicates And PIT
 
+持仓范围仅保留股票代码 `symbol` 以 `.SH` 或 `.SZ` 结尾的记录，基金代码 `ts_code` 不受此规则限制（`.OF` 基金仍保留）。历史和增量均在分页读取后、暂存和年度合并前过滤；分页 offset 始终按接口原始返回行数递增，即使整页被过滤也继续下一页。年度合并也会过滤旧文件中的非 SH/SZ 行。
+
+Portfolio retains only stock `symbol` values ending in `.SH` or `.SZ`; fund `ts_code` is not filtered, so `.OF` funds remain eligible. Both history and incremental downloads filter before staging/merging, while pagination offsets advance by unfiltered response counts even when an entire page is excluded. Annual merges also filter legacy non-SH/SZ rows.
+
 持仓仅按全部 8 个原始字段删除完全重复行；first_seen_at/last_seen_at 不参与重复判断。同一个 `(ts_code, symbol, end_date, ann_date)` 下不同金额、股数或比例全部保留，包括整数与小数精度差异；打印 warning，不求和、不选最大值、不覆盖旧记录。同次查询和跨次年度合并遵守相同规则。相同原始记录重跑保留最早 first_seen_at 并更新 last_seen_at。不同版本直接共存于主表，不再新增 revisions 文件；旧 revisions 属于旧实现，重建时可一并归档。
 
 Portfolio deduplicates only identical values across all eight source fields, excluding local observation timestamps. Same-key differences, including rounding differences, remain in the main table without summing, selecting maxima or overwriting earlier values. The rule applies within queries and across annual merges. Repeated identical rows retain their earliest first_seen_at and latest last_seen_at. No new portfolio revisions files are produced; old revision files belong to the previous implementation. Consumers must explicitly resolve ambiguity rather than assume four-key uniqueness.

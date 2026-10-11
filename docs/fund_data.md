@@ -75,9 +75,9 @@ Basic 遍历 `market=E/O`、`status=D/I/L`，保留已退市/到期基金；保�
 
 Basic covers both markets and all three statuses, including expired/delisted funds. All documented fields and the local fetch date are retained. Same-day snapshots are replaced. Current names, managers and types are not historically point-in-time, and no reliable share-class portfolio identifier is supplied.
 
-Portfolio 官方字段：`ts_code` 是基金代码，`symbol` 是股票代码，`ann_date` 是公告日，`end_date` 是持仓报告期；`mkv` 为元，`amount` 为股。`stk_mkv_ratio`、`stk_float_ratio` 保留供应商原始比例，不擅自除以 100 或解释未核实的分母。增加 UTC `first_seen_at/last_seen_at` 记录本地观察时间。
+Portfolio 只输出接口的 8 个原始字段：ts_code、ann_date、end_date、symbol、mkv、amount、stk_mkv_ratio、stk_float_ratio。不增加本地观察时间；比例为 0 的记录保留。
 
-Portfolio preserves fund/stock keys, announcement/report dates, market value in yuan, shares, and original vendor ratios. No guessed ratio scaling is applied. UTC first/last observation timestamps are ingestion provenance, not disclosure dates. Numeric values are float64; date columns are nullable Int32 YYYYMMDD; all-null columns are retained. Missing schema columns or invalid key dates fail explicitly; nonfinite numeric values become null, not zero.
+Portfolio outputs only the eight source fields listed above. No local observation timestamps are added. Zero ratios and all-null source columns remain preserved; numeric values use float64 and dates use nullable Int32 YYYYMMDD.
 
 ## 分页与故障 / Pagination And Failures
 
@@ -99,9 +99,9 @@ New page sizes are 5000 for managers/benchmarks, 2000 for shares, 8000 for techn
 
 Rate settings default to 500 calls/minute with the existing 90% safety factor (about 0.133 seconds of sleep per attempt); configure them for your account. Retry count, maximum pages and announcement lookback are independently configurable.
 
-分页持仓按公告年暂存到临时目录，整次查询完成、各年冲突检查通过后才合并；只合并一个公告年，不载入全部历史。每个文件校验行数/schema 后原子替换，下载目录持有排他锁。多个年份不是整体事务；磁盘故障可能已有某年成功写入，重跑可以补齐，不记录虚假的整体成功。异常退出的锁只能在确认无写入进程后手动清理。
+分页持仓按公告年暂存，查询完成后逐年合并，直接 drop_duplicates；不生成额外 validated 中间文件，不做观察时间 groupby 聚合。最终 ZSTD 文件校验后原子替换，下载目录持有排他锁。多年份不是整体事务，重跑可幂等补齐。
 
-Portfolio pages are staged on disk. All query partitions are checked before publication; only one announcement year is merged at a time. Each file is validated and atomically replaced under an exclusive directory lock. Multi-year publication is not one transaction; reruns repair partial publication after storage failures. Basic is a small table and is assembled in memory. Deduplication hashes are retained only for the current query.
+Pages are staged by announcement year, then merged with drop_duplicates after the query completes. No extra validated intermediate files or observation-time groupby are used. ZSTD output is validated and atomically replaced under a directory lock; multi-year publication is not one transaction.
 
 ## 重复持仓与 PIT / Duplicates And PIT
 
@@ -109,9 +109,9 @@ Portfolio pages are staged on disk. All query partitions are checked before publ
 
 Portfolio retains only stock `symbol` values ending in `.SH` or `.SZ`; fund `ts_code` is not filtered, so `.OF` funds remain eligible. Both history and incremental downloads filter before staging/merging, while pagination offsets advance by unfiltered response counts even when an entire page is excluded. Annual merges also filter legacy non-SH/SZ rows.
 
-持仓仅按全部 8 个原始字段删除完全重复行；first_seen_at/last_seen_at 不参与重复判断。同一个 `(ts_code, symbol, end_date, ann_date)` 下不同金额、股数或比例全部保留，包括整数与小数精度差异；打印 warning，不求和、不选最大值、不覆盖旧记录。同次查询和跨次年度合并遵守相同规则。相同原始记录重跑保留最早 first_seen_at 并更新 last_seen_at。不同版本直接共存于主表，不再新增 revisions 文件；旧 revisions 属于旧实现，重建时可一并归档。
+持仓合并采用 concat + drop_duplicates，仅删除全部 8 个原始字段相同的记录；同键不同值全部保留，不求和、不取最大值。无本地观察时间、冲突扫描或修订表。旧文件若有辅助列，合并读取时仅投影原始 8 列，写出不再携带辅助列。
 
-Portfolio deduplicates only identical values across all eight source fields, excluding local observation timestamps. Same-key differences, including rounding differences, remain in the main table without summing, selecting maxima or overwriting earlier values. The rule applies within queries and across annual merges. Repeated identical rows retain their earliest first_seen_at and latest last_seen_at. No new portfolio revisions files are produced; old revision files belong to the previous implementation. Consumers must explicitly resolve ambiguity rather than assume four-key uniqueness.
+Portfolio uses concat + drop_duplicates across all eight source fields. Distinct same-key records remain untouched. There are no local observation times, conflict scans or revision tables. Existing files are read with an eight-column projection, so legacy helper columns are omitted on write.
 
 后续 PIT 至少要求 `ann_date <= trade_date`，不能把后披露的持仓提前并入截面，也不能直接对所有公告版本或同键不同记录求和。主表保存本地已观察到的不同记录，不保证严格历史原貌。观察时间不等于供应商修订时间，基础表的 fetch_date 也不等于公告日期。
 

@@ -250,31 +250,12 @@ class FundPortfolioDownloader(_FundDownloader):
     def _merge_year(self, incoming, year):
         path = self.save_dir / f"{year}.parquet"
         incoming = self._filter_exchanges(self._normalize(incoming))
-        stamp = datetime.now(timezone.utc).isoformat()
-        incoming["first_seen_at"] = stamp
-        incoming["last_seen_at"] = stamp
         if path.exists():
-            old = pd.read_parquet(path)
-            if not set(self.fields + OBSERVED).issubset(old.columns):
-                raise ValueError(f"Invalid existing fund schema: {path}")
-            incoming = _concat_preserve_schema([self._filter_exchanges(old[self.fields + OBSERVED]), incoming])
-        # Observation timestamps are provenance, not part of raw-record identity.
-        merged = incoming.groupby(self.fields, dropna=False, as_index=False, sort=False).agg(
-            first_seen_at=("first_seen_at", "min"), last_seen_at=("last_seen_at", "max"))
-        result = self._normalize(merged)
-        result[OBSERVED] = merged[OBSERVED]
-        result = result.sort_values(self.fields).reset_index(drop=True)
+            old = pd.read_parquet(path, columns=self.fields)
+            incoming = pd.concat([self._filter_exchanges(old), incoming], ignore_index=True)
+        result = incoming[self.fields].drop_duplicates().sort_values(PORTFOLIO_KEY).reset_index(drop=True)
         atomic_write(result, path, compression=self.parquet_compression)
         self.logger.info(f"fund_portfolio saved {len(result)} rows: {path}")
-
-    def _deduplicate_query(self, frame):
-        frame = frame.drop_duplicates(self.fields).reset_index(drop=True)
-        duplicates = frame[frame.duplicated(PORTFOLIO_KEY, keep=False)]
-        if not duplicates.empty:
-            keys = len(duplicates[PORTFOLIO_KEY].drop_duplicates())
-            self.logger.warning(f"fund_portfolio retained {len(duplicates)} distinct rows across "
-                                f"{keys} conflicting keys; exact-row deduplication only")
-        return frame
 
     def _query_and_save(self, cutoff, **query):
         # Stage a complete query before publishing; only one announcement year is merged at a time.
@@ -298,16 +279,12 @@ class FundPortfolioDownloader(_FundDownloader):
                     directory.mkdir(exist_ok=True)
                     rows.to_parquet(directory / f"{page_idx}.parquet", index=False,
                                     compression=self.parquet_compression)
-            # Validate every partition before modifying any destination.
+            # Download completes before merging one announcement-year partition at a time.
             for directory in sorted(staged.iterdir()):
                 frame = _concat_preserve_schema([pd.read_parquet(p) for p in directory.glob("*.parquet")])
-                frame = self._deduplicate_query(frame)
-                frame.to_parquet(staged / f"{directory.name}.validated", index=False,
-                                 compression=self.parquet_compression)
-            for path in sorted(staged.glob("*.validated")):
-                frame = pd.read_parquet(path)
-                self.logger.info(f"fund_portfolio merging ann_year={path.stem} incoming_rows={len(frame)}")
-                self._merge_year(frame, int(path.stem))
+                frame = frame[self.fields].drop_duplicates()
+                self.logger.info(f"fund_portfolio merging ann_year={directory.name} incoming_rows={len(frame)}")
+                self._merge_year(frame, int(directory.name))
                 saved += len(frame)
         self.logger.info(
             f"fund_portfolio query complete {query} fetched_rows={fetched} "

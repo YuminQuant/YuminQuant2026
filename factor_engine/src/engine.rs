@@ -1938,10 +1938,10 @@ fn context_for_provider_requests(
             dates.extend(request.resolved_dates(context));
         }
     }
-    // Fund event outputs use the universe grid, not sparse market-input dates.
+    // Universe-backed outputs keep the daily grid even when market inputs are sparse.
     if requirements
         .iter()
-        .any(|request| request.dataset == DatasetId::FundPortfolio)
+        .any(|request| crate::data::pool::needs_stock_universe(request.dataset))
     {
         dates.extend(context.load_dates.iter().copied());
     }

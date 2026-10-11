@@ -844,7 +844,7 @@ fn is_financial_context_dataset(dataset: DatasetId) -> bool {
     )
 }
 
-fn needs_stock_universe(dataset: DatasetId) -> bool {
+pub(crate) fn needs_stock_universe(dataset: DatasetId) -> bool {
     is_financial_context_dataset(dataset)
         || matches!(dataset, DatasetId::StockConsensus | DatasetId::StockBasic)
 }

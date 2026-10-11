@@ -30,11 +30,11 @@ impl Factor for StockDailyCCafr {
             name: "Corrected Consistent Analyst Forecast Revisions".into(),
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
-            version: "0.1.0".into(),
+            version: "0.2.0".into(),
             tags: ["CICC", "analyst", "forecast_revision", "monthly_update", "daily",
                 "neutralize", "barra", "size", "sector"]
                 .into_iter().map(str::to_string).collect(),
-            description: "Month-end C_CAFR approximation with institutions as analysts. Use absolute annual Q4 forecast year equal to the anchor calendar year, not consensus FY labels. Deduplicate stock/date/org/author/title/year (last finite source row wins), average distinct same-day reports by institution, then subtract its strictly previous valid dated forecast for the same stock/year. New revisions must be in (anchor minus six calendar months, anchor]; the strictly previous prediction must be in (anchor minus twelve calendar months, anchor]; retain all revision events including zeros/negative forecasts, no percentage scaling or clipping. Mean weights: 0.5^(calendar age/90) times institution's deduplicated non-BJ A-share report count in (anchor minus twelve months, anchor], across all forecast years and without np filtering. Divide weighted mean by UNWEIGHTED population standard deviation, >=2 events, zero deviation null. Multiply by max(0,1-age_latest_NONZERO_revision/180). SW L1 + Barra SIZE neutralize at month-end, without fill, winsorization or extra zscore; hold FINAL values by stock code daily. Compact report/revision index built once per date-batch over shared annual sources; no PV anchor or disk intermediates.".into(),
+            description: "Month-end C_CAFR approximation with institutions as analysts. Use annual Q4 forecasts for the previous calendar year through April 30 (inclusive), switching to the anchor calendar year from May 1. Deduplicate stock/date/org/author/title/year (last finite source row wins), average distinct same-day reports by institution, then subtract its strictly previous valid dated forecast for the same stock/year. New revisions must be in (anchor minus six calendar months, anchor]; the strictly previous prediction must be in (anchor minus twelve calendar months, anchor]; retain all revision events including zeros/negative forecasts, no percentage scaling or clipping. Mean weights: 0.5^(calendar age/90) times institution's deduplicated non-BJ A-share report count in (anchor minus twelve months, anchor], across all forecast years and without np filtering. Divide weighted mean by UNWEIGHTED population standard deviation, >=2 events, zero deviation null. Multiply by max(0,1-age_latest_NONZERO_revision/180). SW L1 + Barra SIZE neutralize at month-end, without fill, winsorization or extra zscore; hold FINAL values by stock code daily. Compact report/revision index built once per date-batch over shared annual sources; no PV anchor or disk intermediates.".into(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockAnalystReport,
                     &["np", "report_date", "quarter", "org_name", "author_name", "report_title"]),
@@ -136,6 +136,10 @@ fn annual_year(value: &str) -> Option<i32> {
         .flatten()
 }
 
+fn forecast_year(anchor: i32) -> i32 {
+    anchor / 10000 - i32::from(anchor % 10000 <= 430)
+}
+
 fn report_index(
     reader: SourceRowsReader<'_>,
     codes: &[String],
@@ -181,7 +185,10 @@ fn report_index(
         ) else {
             continue;
         };
-        if date > lower_forecasts && year >= first_anchor / 10000 && year <= end_date / 10000 {
+        if date > lower_forecasts
+            && year >= forecast_year(first_anchor)
+            && year <= forecast_year(end_date)
+        {
             predictions.insert((code, org, year, date, author, title), profit);
         }
     }
@@ -331,7 +338,7 @@ fn compute(context: &FactorContext, data: &DataPool, state: &mut State) -> Resul
                     .map(|counts| counts.between(add_months(anchor, -12), anchor))
                     .collect();
                 let weights = time_weights(anchor);
-                let stocks = index.revisions.get(&(anchor / 10000));
+                let stocks = index.revisions.get(&forecast_year(anchor));
                 let mut groups = sectors
                     .as_ref()
                     .unwrap()

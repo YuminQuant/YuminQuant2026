@@ -98,6 +98,7 @@ pub mod ex_rtn_min_val;
 pub mod f_momentum_80pec;
 pub mod fcffic;
 pub mod fin_quality_stability;
+pub mod foa;
 pub mod firstcov;
 pub mod flash_crash_prob;
 pub mod flash_crash_prob_v;

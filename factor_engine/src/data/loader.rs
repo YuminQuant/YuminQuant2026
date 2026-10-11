@@ -398,6 +398,11 @@ impl MarketDataLoader {
         read_parquet(&file, Some(&columns))
     }
 
+    pub fn load_fund_basic(&self, requested_columns: &[String]) -> Result<Table> {
+        let columns = with_required_columns(requested_columns, &["ts_code"]);
+        read_parquet(&self.catalog.fund_basic_file(), Some(&columns))
+    }
+
     pub fn load_financial(
         &self,
         dataset: DatasetId,
@@ -1267,6 +1272,30 @@ mod tests {
         assert!(!loaded.columns.contains_key("name"));
 
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn foa_fund_basic_loader_projects_columns_and_requires_source() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("yq_foa_fund_basic_{unique}"));
+        let loader = MarketDataLoader::new(DataCatalog::new(root.clone()));
+        assert!(loader.load_fund_basic(&["fund_type".into()]).is_err());
+        let table = Table::new(BTreeMap::from([
+            ("ts_code".into(), ColumnData::Utf8(vec![Some("F".into())])),
+            ("fund_type".into(), ColumnData::Utf8(vec![Some("stock".into())])),
+            ("name".into(), ColumnData::Utf8(vec![Some("Example".into())])),
+        ]))
+        .unwrap();
+        write_parquet(&root.join("fund_data/basic/fund_basic.parquet"), &table).unwrap();
+        let loaded = loader.load_fund_basic(&["fund_type".into()]).unwrap();
+        assert_eq!(loaded.len, 1);
+        assert!(loaded.columns.contains_key("ts_code"));
+        assert!(loaded.columns.contains_key("fund_type"));
+        assert!(!loaded.columns.contains_key("name"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -264,6 +264,10 @@ impl DataCatalog {
         path.exists().then_some(path)
     }
 
+    pub fn fund_basic_file(&self) -> PathBuf {
+        self.data_root.join("fund_data/basic/fund_basic.parquet")
+    }
+
     pub fn barra_daily_file(
         &self,
         asset_class: AssetClass,

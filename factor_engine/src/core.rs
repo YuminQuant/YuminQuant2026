@@ -73,6 +73,7 @@ pub enum DatasetId {
     StockAnalystReport,
     StockConsensus,
     StockBasic,
+    FundBasic,
     FundPortfolio,
     StockMinute1m,
     StockDerivedBar,
@@ -100,6 +101,7 @@ impl DatasetId {
             | Self::StockAnalystReport
             | Self::StockConsensus
             | Self::StockBasic
+            | Self::FundBasic
             | Self::FundPortfolio
             | Self::StockMinute1m
             | Self::StockDerivedBar
@@ -126,6 +128,7 @@ impl DatasetId {
             | Self::StockAnalystReport
             | Self::StockConsensus
             | Self::StockBasic
+            | Self::FundBasic
             | Self::FundPortfolio
             | Self::StockSwClassification
             | Self::StockCiClassification
@@ -153,6 +156,7 @@ impl DatasetId {
             Self::StockAnalystReport => "stock.analyst_report",
             Self::StockConsensus => "stock.consensus",
             Self::StockBasic => "stock.basic",
+            Self::FundBasic => "fund.basic",
             Self::FundPortfolio => "fund.portfolio",
             Self::StockMinute1m => "stock.minute.1m",
             Self::StockDerivedBar => "stock.derived.bar",

@@ -78,6 +78,10 @@ For monthly factors, consume disclosures through the selected month-end only.
 
 ## Traction20d Rules / Traction20d 口径
 
+`traction20d` is deprecated; its historical factor-library column has been removed.
+The implementation below remains as a development reference, not an active
+tag-selection target. `traction20d` 已弃用，历史因子列已清理；以下保留为开发参考。
+
 - The object is **each fund's top ten stock holdings**, not each stock's top
   ten shareholders. Current SH/SZ-only storage gives an A-share top-ten
   approximation; funds are counted independently by `ts_code`.
@@ -141,13 +145,71 @@ For monthly factors, consume disclosures through the selected month-end only.
   最终值按股票代码缓存，当天在市才回放；新上市且无缓存股票为空，退市后
   不输出。月间已发生、但晚于上月末的公告不能用于重建上月末截面。
 
+## FOA Rules / FOA 口径
+
+`foa` combines a half-year ownership change signal and a quarterly overweight
+residual. Compute only at completed trading month-ends and hold the **final**
+cross-section by stock code between anchors; do not re-neutralize every day.
+`lookback.trading_days=32` covers initialization at the previous month-end.
+Sparse market inputs must not reduce the daily universe output grid.
+
+`foa` 将半年持仓超配变化与季度超配回归残差合成。仅在已完成交易月末计算，
+月间按股票代码持有最终截面，不每天重新中性化。首次预读32个交易日覆盖上个
+月末；市值和 Barra 的稀疏取数日期不能代替日频 universe 输出日期。
+
+- Declare projected `FundBasic` columns `fund_type/invest_type/name`; its source
+  is `data/fund_data/basic/fund_basic.parquet`, a current classification snapshot.
+  Keep stock/mixed funds, **including enhanced index funds**; exclude passive
+  index, ETF/feeder and QDII. Ignore current fund survival status, and count
+  each fund/share-class code independently. Declare the existing eight
+  `FundPortfolio` columns, `StockDailyBasic.total_mv`, and Barra
+  `VOLATILITY/MOMENTUM/SIZE`. No PV anchor or industry exposure is required.
+  当前分类近似筛选股票型/混合型，保留增强指数；排除被动指数、ETF/联接、QDII，
+  不按当前存续状态剔除历史基金，各份额代码分别统计。
+- Select the latest common visible quarterly report period, then each fund's
+  latest disclosure for that period, taking the ten largest valid SH/SZ stock
+  holdings by `mkv`. Half-year full holdings use the confirmed source heuristic:
+  June 30 reports announced on/after August 1, December 31 reports on/after
+  February 1 next year. Holding count does not determine report type.
+  季度分支取最新共同季度及各基金该期最新可见披露的十大；全持仓按8/1、次年2/1
+  日期近似识别，不用持仓数量区分季度与半年披露。
+- For report period `p`, use market caps from the last open date at/before `p`.
+  `FOP_i = (H_i / sum(H)) / (MV_i / sum(MV)) - 1`; both normalized denominators
+  use stocks with valid positive market caps from the legal SH/SZ universe.
+  An unheld stock with a valid cap has FOP=-1. Fund `mkv` and market cap units
+  cancel within their separately normalized weights.
+  用报告期末前最后交易日总市值构造市场权重，合法非BJ股票参与分母。
+- Half-year FOC uses the latest visible half-year period and its immediately
+  preceding half-year. Only funds with valid full holdings in **both** periods
+  contribute to either aggregate. `FOC=(1+FOP_now)/(1+FOP_old)-1`; missing prior
+  holdings or a zero prior ownership weight gives null, not zero.
+  两期共同有效基金构造两个持仓池；上期无持仓导致分母为零时为空。
+- Equal-weight OLS with intercept residualizes quarterly FOP against
+  `VOLATILITY`, `MOMENTUM`, `SIZE`; **no industry neutralization**. Separately
+  cross-sectionally zscore FOC and quarterly residuals, then average them.
+  Both standardized components must be valid; no extra final neutralization.
+  季度超配对三个暴露做带截距等权回归；与半年变化分别标准化后等权平均，
+  严格要求两个子项有效，不加行业回归或合成后的二次回归。
+- Filter nonstandard codes/BJ. Exact duplicates contribute once; matching
+  original numeric fields permit `mkv` rounding differences up to 0.5, using
+  their maximum deterministically. Larger differences or other numeric
+  conflicts invalidate the whole fund disclosure and clear its old contribution.
+  Market and holdings aggregation use stable ordering for batch reproducibility.
+  同键冲突清空该次基金贡献；固定汇总顺序保证跨 batch 可重复。
+- State retains only eligible codes, current quarterly snapshots, two half-year
+  snapshots, at most three report-end market-cap maps, and the current final
+  cross-section. Historical sources bootstrap one announcement year at a time,
+  then release; future announcements never enter the selected monthly anchor.
+  状态有界保留必要快照和最终截面；历史原表逐年释放，不无界累计。
+
 ## Run And Tags / 运行与标签
 
 ```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors traction20d --date-batch-size 120 --profile
+cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20160101 --end-date 20260424 --factors foa --date-batch-size 120 --profile
 ```
 
-`traction20d` uses `KYZQ, alternative, cs_network` (not `fundamental`).
+`foa` uses `KYZQ, alternative` (not `fundamental`).
+`traction20d` retains `KYZQ, alternative, cs_network, deprecated`.
 `mainbz_mom_resvol` additionally has `alternative`; its existing fundamental
 tag and calculation are unchanged. 基金持仓因子不进入 fundamental 标签选集；
 主营业务因子补充 alternative 标签，不改变原有公式和其他标签。

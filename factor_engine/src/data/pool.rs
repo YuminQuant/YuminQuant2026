@@ -335,6 +335,11 @@ impl DataPool {
                 pool.daily.insert(dataset, Arc::new(table));
                 continue;
             }
+            if dataset == DatasetId::FundBasic {
+                let table = loader.load_fund_basic(&columns)?;
+                pool.daily.insert(dataset, Arc::new(table));
+                continue;
+            }
             if dataset == DatasetId::StockBarraDaily {
                 let table =
                     loader.load_barra_daily(context.asset_class, "CNE6", &columns, &load_dates)?;

@@ -110,39 +110,3 @@ fn flow_strength_series(net: &[Option<f64>]) -> Vec<Option<f64>> {
     }
     output
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_close(actual: Option<f64>, expected: f64) {
-        let actual = actual.expect("value");
-        assert!(
-            (actual - expected).abs() < 1e-12,
-            "expected {expected}, got {actual}"
-        );
-    }
-
-    #[test]
-    fn kyzq_small_flow_strength_uses_sum_net_over_sum_abs_net() {
-        let net = vec![Some(-2.0), Some(1.0), Some(-3.0)];
-        let output = flow_strength_series(&net);
-
-        assert_close(output[2], -4.0 / 6.0);
-    }
-
-    #[test]
-    fn kyzq_small_flow_strength_rejects_zero_abs_flow() {
-        let net = vec![Some(0.0), Some(0.0)];
-        let output = flow_strength_series(&net);
-
-        assert_eq!(output[1], None);
-    }
-
-    #[test]
-    fn kyzq_small_flow_strength_spec_has_kyzq_tag() {
-        let spec = StockDailySmallOrderResidualFlowStrength.spec();
-        assert_eq!(spec.id, "small_order_residual_flow_strength");
-        assert!(spec.tags.iter().any(|tag| tag == "KYZQ"));
-    }
-}

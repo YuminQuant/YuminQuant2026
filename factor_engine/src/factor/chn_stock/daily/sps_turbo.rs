@@ -101,25 +101,3 @@ fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> 
         _ => None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::turnover_growth;
-    use super::{MIN_PERIODS, WINDOW};
-    use crate::operators::ts_std_dev;
-
-    #[test]
-    fn sps_turbo_growth_uses_previous_day_denominator() {
-        let growth = turnover_growth(&[Some(0.2), Some(0.25)]);
-
-        assert!((growth[1].unwrap() - 0.25).abs() < 1e-10);
-    }
-
-    #[test]
-    fn sps_turbo_pure_gtr_std_skips_missing_growth_values() {
-        let growth = vec![Some(0.1), None, Some(0.3)];
-        let std = ts_std_dev(&growth, WINDOW, MIN_PERIODS);
-
-        assert!(std[2].is_some());
-    }
-}

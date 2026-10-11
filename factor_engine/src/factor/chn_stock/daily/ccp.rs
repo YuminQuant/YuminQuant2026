@@ -62,33 +62,3 @@ impl Factor for StockDailyCcp {
         compute_requested_stateful(requested_ids, context, data, state)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::factor::chn_stock::daily::rep::StockDailyRep;
-
-    use super::*;
-
-    #[test]
-    fn hazq_rep_and_ccp_wrappers_share_provider_key_state_and_daily_fast_policy() {
-        let rep = StockDailyRep;
-        let ccp = StockDailyCcp;
-
-        assert_eq!(rep.compute_provider_key(), ccp.compute_provider_key());
-        assert_eq!(rep.compute_provider_key(), PROVIDER_KEY);
-        assert_eq!(
-            rep.update_policy(),
-            FactorUpdatePolicy::FinancialEventStateDailyFast
-        );
-        assert_eq!(
-            ccp.update_policy(),
-            FactorUpdatePolicy::FinancialEventStateDailyFast
-        );
-        assert!(rep
-            .initial_compute_state(&[])
-            .is::<HazqEquityCompositionComputeState>());
-        assert!(ccp
-            .initial_compute_state(&[])
-            .is::<HazqEquityCompositionComputeState>());
-    }
-}

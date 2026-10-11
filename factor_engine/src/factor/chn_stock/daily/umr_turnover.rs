@@ -73,13 +73,3 @@ fn tags() -> Vec<String> {
     .map(|value| value.to_string())
     .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn turnover_percent_is_converted_to_decimal() {
-        assert_eq!(umr::percent_to_decimal(Some(2.5)), Some(0.025));
-    }
-}

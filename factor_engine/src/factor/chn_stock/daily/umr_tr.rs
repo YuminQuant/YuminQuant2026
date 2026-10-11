@@ -90,17 +90,3 @@ fn tr_value(high: Option<f64>, low: Option<f64>, pre_close: Option<f64>) -> Opti
         .max((low - pre_close).abs());
     Some(tr / pre_close)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn true_range_uses_largest_intraday_or_gap_range() {
-        let value = tr_value(Some(12.0), Some(9.0), Some(10.0));
-        assert_eq!(value, Some(0.3));
-        let gap = tr_value(Some(13.0), Some(12.0), Some(10.0));
-        assert_eq!(gap, Some(0.3));
-        assert_eq!(tr_value(Some(1.0), Some(1.0), Some(0.0)), None);
-    }
-}

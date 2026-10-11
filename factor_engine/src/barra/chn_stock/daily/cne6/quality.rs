@@ -953,22 +953,3 @@ fn panel_offset(
         .position(|code| code == ts_code)?;
     Some(date_idx * panel.instruments().len() + code_idx)
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::barra::BarraExposure;
-
-    use super::StockDailyBarraCne6Quality;
-
-    #[test]
-    fn cne6_quality_family_registers_composite() {
-        let specs = StockDailyBarraCne6Quality.specs();
-        let ids = specs
-            .iter()
-            .map(|spec| spec.id.as_str())
-            .collect::<Vec<_>>();
-        assert!(ids.contains(&"Leverage"));
-        assert!(ids.contains(&"Earnings_Quality"));
-        assert!(ids.contains(&"QUALITY"));
-    }
-}

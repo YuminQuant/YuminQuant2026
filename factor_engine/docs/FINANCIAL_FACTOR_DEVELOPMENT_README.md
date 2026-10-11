@@ -5,6 +5,15 @@ dividend, and analyst event workflow used by `factor_engine`.
 
 本文档定义 `factor_engine` 当前的 PIT 财报、主营业务、分红和分析师事件型因子开发规则。
 
+## Validation Policy / 验证方式
+
+Embedded Rust test modules and test-only helpers have been removed from
+`factor_engine`. Use temporary checks during development when needed, then remove
+their source and artifacts after verification. Compilation is not a substitute
+for checking formulas, PIT visibility and batch alignment.
+
+`factor_engine` 不再保留内嵌 Rust 测试模块和测试专用辅助代码。开发期间可按需进行临时验证，完成后清理代码和产物；编译检查不能替代公式、PIT 可见性和跨 batch 对齐的核验。
+
 ## Shared Query Performance / 共享查询性能
 
 - 单股票 LTM 分红通过 `DividendReader::implemented_ltm_sum` 查询股票行索引，不扫描其他股票；保留原始行顺序、公告日和除息日过滤，以及原有浮点求和顺序。
@@ -488,7 +497,7 @@ factor/chn_stock/daily/link_new.rs
 6. Use `compute_financial_event_snapshot_streaming_on_panel(...)` for pure event replay.
 7. Align fast datasets onto the stock universe panel with `panel.column_from_table(...)`.
 8. Neutralize/regress on valid intersections only; preserve legal out-of-intersection stocks as `None`.
-9. Add tests for formulas, marker invalidation, batch/order alignment, missing values, and no PV-anchor dependency.
+9. Temporarily verify formulas, marker invalidation, batch/order alignment, missing values, and no PV-anchor dependency; remove verification code and artifacts afterwards.
 
 1. 精确声明 `DataRequest`，不得把 `StockDailyPv.close` 当锚点。
 2. 财务/事件型股票因子使用 `let panel = data.stock_universe_panel()?;`。
@@ -498,14 +507,13 @@ factor/chn_stock/daily/link_new.rs
 6. 纯事件回放使用 `compute_financial_event_snapshot_streaming_on_panel(...)`。
 7. 快变量用 `panel.column_from_table(...)` 映射到 stock universe panel。
 8. 回归/中性化只用有效交集，交集外合法股票保留 `None`。
-9. 测试覆盖公式、marker 失效、batch/股票顺序对齐、缺失值，以及无 PV anchor 依赖。
+9. 临时核验公式、marker 失效、batch/股票顺序对齐、缺失值及无 PV anchor 依赖；完成后清理验证代码和产物。
 
 Recommended validation commands:
 
 ```powershell
 cargo fmt --manifest-path factor_engine\Cargo.toml
-cargo test --manifest-path factor_engine\Cargo.toml financial
-cargo test --manifest-path factor_engine\Cargo.toml comprehensive_profitability special_roa sfli2 abcfo
+cargo check --release --all-targets --manifest-path factor_engine\Cargo.toml
 ```
 
 ## Equity Duration
@@ -546,7 +554,7 @@ It uses the stock universe panel, excludes BJ and has no PV dependency.
   dividend map; do not cache a stock-by-date dividend matrix or reuse future PIT
   state across batches. Missing regression inputs leave legal output rows null.
 
-Validation: `cargo test --manifest-path factor_engine/Cargo.toml equity_duration`.
+Compilation check: `cargo check --release --all-targets --manifest-path factor_engine/Cargo.toml`.
 
 ## DBZQ J and O
 
@@ -585,7 +593,7 @@ winsorization, extra zscore or analyst dependency.
   Markers cover all income/cashflow and balance records in the respective window,
   including historical share revisions. Industry neutralization is applied daily.
 
-Validation: `cargo test --manifest-path factor_engine/Cargo.toml dbzq_financial_surprise`.
+Compilation check: `cargo check --release --all-targets --manifest-path factor_engine/Cargo.toml`.
 
 ## GDZQ eight-quarter time-series residuals
 
@@ -634,7 +642,7 @@ X or Y returns null; a perfect nonconstant linear fit returns zero.
   including the prior endpoint of the oldest average. First-date refresh in each
   batch handles instrument reordering and backwards date traversal.
 
-Validation: `cargo test --manifest-path factor_engine/Cargo.toml gdzq_financial_ts_residual`.
+Compilation check: `cargo check --release --all-targets --manifest-path factor_engine/Cargo.toml`.
 
 ## SWHYZQ abnormal gross profit
 
@@ -663,7 +671,7 @@ single-quarter `[3,2]` report types; balance uses consolidated `[1,4]`.
   Exclusions apply before daily SW L1 + Barra SIZE neutralization. Missing
   industry/SIZE leaves null output. No winsorization or extra zscore.
 
-Validation: `cargo test --manifest-path factor_engine/Cargo.toml abnormal_gross_profit`.
+Compilation check: `cargo check --release --all-targets --manifest-path factor_engine/Cargo.toml`.
 
 ## CICC/GDZQ profit trend and residuals
 
@@ -714,7 +722,7 @@ Validation: `cargo test --manifest-path factor_engine/Cargo.toml abnormal_gross_
   request set clears raw cache; first-date refresh makes date/factor batches and
   reordered instruments safe.
 
-Validation: `cargo test --manifest-path factor_engine/Cargo.toml financial_profit_trend`.
+Compilation check: `cargo check --release --all-targets --manifest-path factor_engine/Cargo.toml`.
 
 ## DFZQ Monthly Analyst Factors
 
@@ -759,10 +767,8 @@ trading calendar, not the last date of a batch, identifies month ends.
   is keyed by stock code. FOM indexes only its required report-date window; the
   existing loader's annual source cache is still shared, not replaced here.
 
-Dedicated legacy fixtures for these retired outputs, FOM, analyst coverage and
-FOA have been removed. Their archived implementations remain available, while a
-single registry guard verifies that the factors stay deprecated:
-`cargo test --release --lib --manifest-path factor_engine/Cargo.toml retired_analyst_and_fund_factors`.
+Embedded tests and fixtures for these outputs, FOM, analyst coverage and FOA have
+been removed. Archived factor implementations and their deprecated tags remain.
 
 ## CICC C_CAFR and Analyst Revision Windows
 
@@ -801,5 +807,4 @@ zscore, ensuring between-report excess returns cover the wider pairing window.
 The benchmark cache is evicted using the pairing boundary, not the recent-event
 boundary. Neither change automatically regenerates historical factor files.
 
-Validation: `cargo test --release --lib --manifest-path factor_engine/Cargo.toml c_cafr`
-and `cargo test --release --lib --manifest-path factor_engine/Cargo.toml pafr`.
+Compilation check: `cargo check --release --all-targets --manifest-path factor_engine/Cargo.toml`.

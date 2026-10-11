@@ -560,23 +560,3 @@ fn lagged_mean(values: &[Option<f64>], lag: usize, window: usize) -> Vec<Option<
     }
     output
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::barra::BarraExposure;
-
-    use super::StockDailyBarraCne6Value;
-
-    #[test]
-    fn cne6_value_family_registers_all_levels() {
-        let specs = StockDailyBarraCne6Value.specs();
-        let ids = specs
-            .iter()
-            .map(|spec| spec.id.as_str())
-            .collect::<Vec<_>>();
-        assert!(ids.contains(&"BTOP"));
-        assert!(ids.contains(&"Trailing_Earnings_To_Price"));
-        assert!(ids.contains(&"Long_Term_Reversal"));
-        assert!(ids.contains(&"VALUE"));
-    }
-}

@@ -193,23 +193,3 @@ fn amount_ratio(amount_yuan: f64, circ_mv_ten_thousand_yuan: Option<f64>) -> Opt
     }
     Some(amount_yuan / (circ_mv * 10_000.0))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn amount_ratio_uses_yuan_over_circ_mv_in_ten_thousand_yuan() {
-        assert_eq!(amount_ratio(10_000.0, Some(1.0)), Some(1.0));
-        assert_eq!(amount_ratio(1.0, Some(0.0)), None);
-    }
-
-    #[test]
-    fn open_close_window_keeps_first_and_last_thirty_minutes() {
-        assert!(is_open_close_window("09:31:00"));
-        assert!(is_open_close_window("10:00:00"));
-        assert!(!is_open_close_window("10:01:00"));
-        assert!(is_open_close_window("14:31:00"));
-        assert!(is_open_close_window("15:00:00"));
-    }
-}

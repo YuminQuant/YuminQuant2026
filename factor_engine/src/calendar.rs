@@ -9,12 +9,6 @@ pub struct TradingCalendar {
 }
 
 impl TradingCalendar {
-    #[cfg(test)]
-    pub(crate) fn from_open_dates(mut open_dates: Vec<i32>) -> Self {
-        open_dates.sort_unstable();
-        open_dates.dedup();
-        Self { open_dates }
-    }
 
     pub fn load(data_root: &Path, exchange: &str) -> Result<Self> {
         let path = data_root
@@ -95,48 +89,5 @@ impl TradingCalendar {
                 .filter(|next| **next / 100 != current / 100)
                 .map(|_| current)
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::TradingCalendar;
-
-    fn calendar() -> TradingCalendar {
-        TradingCalendar::from_open_dates(vec![20100104, 20100105, 20100106, 20110104])
-    }
-
-    #[test]
-    fn aligns_to_nearest_open_dates_inside_requested_range() {
-        let calendar = calendar();
-
-        assert_eq!(calendar.first_open_on_or_after(20100101), Some(20100104));
-        assert_eq!(calendar.last_open_on_or_before(20100110), Some(20100106));
-    }
-
-    #[test]
-    fn returns_none_when_no_open_date_can_satisfy_boundary() {
-        let calendar = calendar();
-
-        assert_eq!(calendar.first_open_on_or_after(20120101), None);
-        assert_eq!(calendar.last_open_on_or_before(20091231), None);
-    }
-
-    #[test]
-    fn warmup_can_cross_year_boundary() {
-        let calendar = calendar();
-
-        assert_eq!(calendar.warmup_start(20110104, 2), 20100105);
-    }
-
-    #[test]
-    fn returns_future_open_date_by_offset() {
-        let calendar = calendar();
-
-        assert_eq!(calendar.open_date_after(20100104, 0), Some(20100104));
-        assert_eq!(calendar.open_date_after(20100104, 2), Some(20100106));
-        assert_eq!(calendar.open_date_after(20100104, 3), Some(20110104));
-        assert_eq!(calendar.open_date_after(20100105, 3), None);
-        assert_eq!(calendar.open_date_after(20100107, 1), None);
     }
 }

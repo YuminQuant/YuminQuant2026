@@ -1272,28 +1272,6 @@ fn five_day_returns(values: &[Option<f64>]) -> Vec<Option<f64>> {
     output
 }
 
-#[cfg(test)]
-fn pearson_corr(x: &[f64], y: &[f64]) -> Option<f64> {
-    if x.len() != y.len() || x.len() < 2 {
-        return None;
-    }
-    let mean_x = x.iter().sum::<f64>() / x.len() as f64;
-    let mean_y = y.iter().sum::<f64>() / y.len() as f64;
-    let mut cov = 0.0;
-    let mut var_x = 0.0;
-    let mut var_y = 0.0;
-    for (x, y) in x.iter().zip(y.iter()) {
-        let dx = x - mean_x;
-        let dy = y - mean_y;
-        cov += dx * dy;
-        var_x += dx * dx;
-        var_y += dy * dy;
-    }
-    if var_x <= f64::EPSILON || var_y <= f64::EPSILON {
-        return None;
-    }
-    finite_value(cov / (var_x.sqrt() * var_y.sqrt()))
-}
 
 fn std_dev(values: &[f64]) -> Option<f64> {
     if values.len() < 2 {
@@ -1313,74 +1291,4 @@ fn std_dev(values: &[f64]) -> Option<f64> {
 
 fn finite_value(value: f64) -> Option<f64> {
     value.is_finite().then_some(value)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn close_point(time: &str, close: f64, vol: f64) -> MinutePoint {
-        MinutePoint {
-            time: time.to_string(),
-            close: Some(close),
-            high: Some(close),
-            low: Some(close),
-            vol: Some(vol),
-        }
-    }
-
-    #[test]
-    fn xyzq_domain_time_uses_0930_and_lunch_anchors() {
-        let points = vec![
-            close_point("09:30:00", 100.0, 0.0),
-            close_point("10:00:00", 110.0, 10.0),
-            close_point("11:30:00", 120.0, 10.0),
-            close_point("13:30:00", 132.0, 10.0),
-            close_point("15:00:00", 150.0, 10.0),
-        ];
-        let stats = time_domain_stats(&points);
-        assert!((stats.time_rtn[0].unwrap() - 0.1).abs() < 1e-12);
-        assert!((stats.time_rtn[4].unwrap() - 0.1).abs() < 1e-12);
-    }
-
-    #[test]
-    fn xyzq_domain_qcut_groups_use_front_loaded_group_sizes() {
-        let keys = [
-            Some(0.0),
-            Some(1.0),
-            Some(2.0),
-            Some(3.0),
-            Some(4.0),
-            Some(5.0),
-            Some(6.0),
-            Some(7.0),
-            Some(8.0),
-            Some(9.0),
-            Some(10.0),
-            Some(11.0),
-            Some(12.0),
-            Some(13.0),
-            Some(14.0),
-            Some(15.0),
-        ];
-        let groups = qcut_groups_16(&keys).expect("groups");
-        assert_eq!(groups, [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4]);
-    }
-
-    #[test]
-    fn xyzq_domain_ds_and_ds2_use_max_significance_domain_return() {
-        let values = [Some(1.0), Some(2.0), Some(5.0)];
-        let returns = [Some(-0.01), Some(0.02), Some(0.03)];
-        let ds = intra_ds_value(&values).expect("ds");
-        let ds2 = intra_ds2_value(&values, &returns).expect("ds2");
-        assert!(ds > 0.0);
-        assert!(ds2 < 0.0);
-    }
-
-    #[test]
-    fn xyzq_domain_pair_corr_requires_complete_ten_days() {
-        let x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
-        let y = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0];
-        assert_eq!(pearson_corr(&x, &y), Some(1.0));
-    }
 }

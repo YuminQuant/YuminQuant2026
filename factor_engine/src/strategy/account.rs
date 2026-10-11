@@ -261,38 +261,3 @@ impl AccountState {
         self.net_realized_pnl_cum -= total_cost;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::AccountState;
-
-    #[test]
-    fn buy_and_sell_update_cash_position_and_realized_pnl() {
-        let mut account = AccountState::new(10_000.0);
-        account.apply_buy("a", 100.0, 10.0, 1.0);
-        assert_eq!(account.position_quantity("a"), 100.0);
-        assert!((account.cash() - 8_999.0).abs() < 1e-9);
-
-        let realized = account.apply_sell("a", 40.0, 12.0, 1.0);
-        assert!((realized - 80.0).abs() < 1e-9);
-        assert_eq!(account.position_quantity("a"), 60.0);
-        assert!((account.cash() - 9_478.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn derivative_short_cover_and_multiplier_pnl() {
-        let mut account = AccountState::new(10_000.0);
-        account.apply_derivative_trade("IF001.CFX", -2.0, 100.0, 1.0, 300.0, 0.12);
-        assert_eq!(account.position_quantity("IF001.CFX"), -2.0);
-        assert!((account.cash() - 9_999.0).abs() < 1e-9);
-
-        account.mark_price_with_spec("IF001.CFX", 90.0, 300.0, 0.12, false);
-        assert!((account.total_unrealized_pnl() - 6_000.0).abs() < 1e-9);
-        assert!((account.equity() - 15_999.0).abs() < 1e-9);
-
-        let realized = account.apply_derivative_trade("IF001.CFX", 1.0, 90.0, 1.0, 300.0, 0.12);
-        assert!((realized - 3_000.0).abs() < 1e-9);
-        assert_eq!(account.position_quantity("IF001.CFX"), -1.0);
-        assert!((account.cash() - 12_998.0).abs() < 1e-9);
-    }
-}

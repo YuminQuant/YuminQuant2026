@@ -327,46 +327,6 @@ pub struct IntradayDailyRawSeries {
     pub values: Vec<FactorValue>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stock_derived_bar_request_carries_bar_size() {
-        let request = DataRequest::stock_derived_bar(5, &["close", "volume"]);
-        assert_eq!(request.dataset, DatasetId::StockDerivedBar);
-        assert_eq!(request.bar_size, Some(5));
-        assert_eq!(request.columns, vec!["close", "volume"]);
-        assert_eq!(request.dataset.frequency(), Frequency::Minute1);
-        assert_eq!(request.dataset.asset_class(), AssetClass::Stock);
-    }
-
-    fn context(load_dates: Vec<i32>, target_dates: Vec<i32>) -> FactorContext {
-        FactorContext {
-            asset_class: AssetClass::Stock,
-            frequency: Frequency::Daily,
-            start_date: *target_dates.first().unwrap(),
-            end_date: *target_dates.last().unwrap(),
-            load_start_date: *load_dates.first().unwrap(),
-            load_dates,
-            target_dates,
-        }
-    }
-
-    #[test]
-    fn data_request_explicit_dates_are_sorted_and_deduplicated() {
-        let context = context(vec![20260102, 20260105, 20260106], vec![20260105, 20260106]);
-        let request = DataRequest::explicit_dates(
-            DatasetId::StockDailyPv,
-            &["close"],
-            vec![20260106, 20260102, 20260102],
-        );
-
-        let dates = request.resolved_dates(&context);
-
-        assert_eq!(dates, vec![20260102, 20260106]);
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct Lookback {

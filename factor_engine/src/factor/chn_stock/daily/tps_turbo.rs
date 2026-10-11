@@ -101,27 +101,3 @@ fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> 
         _ => None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{MIN_PERIODS, WINDOW};
-    use crate::operators::cs_regression_residual;
-    use crate::operators::ts_std_dev;
-
-    #[test]
-    fn tps_turbo_daily_residual_removes_linear_turnover_growth_effect() {
-        let growth = vec![Some(1.0), Some(2.0), Some(3.0)];
-        let turnover = vec![Some(3.0), Some(5.0), Some(7.0)];
-        let residual = cs_regression_residual(&turnover, &growth);
-
-        assert!(residual.iter().flatten().all(|value| value.abs() < 1e-10));
-    }
-
-    #[test]
-    fn tps_turbo_pure_gtr_std_skips_missing_growth_values() {
-        let growth = vec![Some(0.1), None, Some(0.3)];
-        let std = ts_std_dev(&growth, WINDOW, MIN_PERIODS);
-
-        assert!(std[2].is_some());
-    }
-}

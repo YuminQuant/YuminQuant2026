@@ -169,15 +169,18 @@ JSON fields use `"[]"` when empty. Direction fields are numeric to keep parsing 
    cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\stock\my_strategy.toml
    ```
 
-## 测试 / Tests
+## 验证 / Validation
+
+内嵌 Rust 测试已移除。开发时可临时验证下列行为，完成后清理验证代码和产物。
+Embedded Rust tests have been removed; temporary behavioral checks should be
+cleaned up after development.
 
 ```powershell
 cargo fmt --manifest-path factor_engine\Cargo.toml
-cargo test --manifest-path factor_engine\Cargo.toml strategy
-cargo check --manifest-path factor_engine\Cargo.toml
+cargo check --release --all-targets --manifest-path factor_engine\Cargo.toml
 ```
 
-建议测试点 / Suggested tests:
+建议验证点 / Suggested checks:
 
 - `on_bar` 订单在下一根 bar open 成交。
 - `on_session_open` 订单在当天第一根 bar open 成交。

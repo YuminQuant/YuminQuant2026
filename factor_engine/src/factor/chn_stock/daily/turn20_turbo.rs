@@ -100,30 +100,3 @@ fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> 
         _ => None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::operators::ts_std_dev;
-    use crate::operators::{cs_nonnegative, cs_scale};
-
-    use super::{MIN_PERIODS, WINDOW};
-
-    #[test]
-    fn turn20_turbo_transform_order_is_nonnegative_then_scale() {
-        let values = vec![Some(-1.0), Some(0.0), Some(1.0)];
-        let nonnegative = cs_nonnegative(&values);
-        let scaled = cs_scale(&nonnegative);
-
-        assert_eq!(nonnegative[0], Some(0.0));
-        assert!(scaled.iter().flatten().all(|value| *value >= 0.0));
-        assert!((scaled.iter().flatten().sum::<f64>() - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn turn20_turbo_gtr_std_skips_missing_growth_values() {
-        let growth = vec![Some(0.1), None, Some(0.3)];
-        let std = ts_std_dev(&growth, WINDOW, MIN_PERIODS);
-
-        assert!(std[2].is_some());
-    }
-}

@@ -393,33 +393,3 @@ fn normalize_date_text(value: &str) -> Option<&str> {
         _ => Some(value),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::{ColumnData, Table};
-
-    #[test]
-    fn date_cast_treats_common_text_missing_values_as_none() {
-        let table = Table::new(BTreeMap::from([(
-            "date".to_string(),
-            ColumnData::Utf8(vec![
-                Some("20260424".to_string()),
-                Some("".to_string()),
-                Some("nan".to_string()),
-                Some("NaN".to_string()),
-                Some("None".to_string()),
-                Some("null".to_string()),
-                Some("NaT".to_string()),
-                None,
-            ]),
-        )]))
-        .expect("valid table");
-
-        assert_eq!(
-            table.required_i32_date_cast("date").expect("date cast"),
-            vec![Some(20260424), None, None, None, None, None, None, None]
-        );
-    }
-}

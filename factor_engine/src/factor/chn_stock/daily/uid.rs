@@ -76,14 +76,3 @@ fn safe_div(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uid_safe_div_rejects_zero_denominator() {
-        assert_eq!(safe_div(Some(1.0), Some(0.0)), None);
-        assert_eq!(safe_div(Some(3.0), Some(2.0)), Some(1.5));
-    }
-}

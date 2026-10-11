@@ -58,7 +58,7 @@ impl Factor for StockDailyTraction20d {
         FactorSpec {
             id: "traction20d".into(), aliases: vec![], name: "traction20d".into(),
             asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.2.0".into(),
-            tags: ["KYZQ", "alternative", "cs_network", "fund_holdings", "pit", "traction", "momentum", "monthly_update", "neutralize", "sector", "daily"].into_iter().map(str::to_string).collect(),
+            tags: ["deprecated", "KYZQ", "alternative", "cs_network", "fund_holdings", "pit", "traction", "momentum", "monthly_update", "neutralize", "sector", "daily"].into_iter().map(str::to_string).collect(),
             description: "KYZQ fund top-ten A-share holdings traction computed at each completed trading month-end using PIT disclosures, current 20-day mean turnover and available compounded adjusted returns (min_periods=1). Neutralize own Alpha and SW L1 without SIZE; replay the final cross-section by stock code until next month-end. Mid-month starts reconstruct the previous month-end, not a start-date snapshot.".into(),
             dependencies: vec![
                 DataRequest::new(DatasetId::FundPortfolio, FUND_PORTFOLIO_COLUMNS),

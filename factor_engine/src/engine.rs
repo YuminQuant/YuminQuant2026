@@ -1938,6 +1938,13 @@ fn context_for_provider_requests(
             dates.extend(request.resolved_dates(context));
         }
     }
+    // Fund event outputs use the universe grid, not sparse market-input dates.
+    if requirements
+        .iter()
+        .any(|request| request.dataset == DatasetId::FundPortfolio)
+    {
+        dates.extend(context.load_dates.iter().copied());
+    }
     let load_dates = if dates.is_empty() {
         context.load_dates.clone()
     } else {
@@ -2119,6 +2126,37 @@ mod tests {
         validate_factor_series_target_dates, ExecutionStage, IntradayRawRequirement, RawProvider,
         RunRequest, SelectionResult, DEFAULT_DATE_BATCH_SIZE,
     };
+
+    #[test]
+    fn foa_sparse_market_requests_preserve_daily_output_and_warmup_grid() {
+        let context = FactorContext {
+            asset_class: AssetClass::Stock,
+            frequency: Frequency::Daily,
+            start_date: 20260102,
+            end_date: 20260202,
+            load_start_date: 20251231,
+            load_dates: vec![20251231, 20260102, 20260105, 20260130, 20260202],
+            target_dates: vec![20260102, 20260105, 20260130, 20260202],
+        };
+        let requests = crate::factor::chn_stock::daily::foa::create()
+            .requirements_for_context(&context);
+        let provider = super::context_for_provider_requests(&context, &requests);
+        assert!(context
+            .load_dates
+            .iter()
+            .all(|date| provider.load_dates.contains(date)));
+        assert_eq!(provider.target_dates, context.target_dates);
+        let market = requests
+            .iter()
+            .find(|r| r.dataset == DatasetId::StockDailyBasic)
+            .unwrap();
+        assert!(!market.resolved_dates(&provider).contains(&20260105));
+        let exposure = requests
+            .iter()
+            .find(|r| r.dataset == DatasetId::StockBarraDaily)
+            .unwrap();
+        assert!(!exposure.resolved_dates(&provider).contains(&20260105));
+    }
 
     #[test]
     fn hf_beta_streaming_schedule_uses_one_day_and_keeps_shared_state() {

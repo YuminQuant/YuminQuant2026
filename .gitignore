@@ -10,6 +10,7 @@ config.toml
 *.log
 
 # Python caches and environments
+/tests/
 __pycache__/
 *.py[cod]
 *$py.class

@@ -759,4 +759,47 @@ trading calendar, not the last date of a batch, identifies month ends.
   is keyed by stock code. FOM indexes only its required report-date window; the
   existing loader's annual source cache is still shared, not replaced here.
 
-Validation: `cargo test --release --lib --manifest-path factor_engine/Cargo.toml analyst_monthly`.
+Dedicated legacy fixtures for these retired outputs, FOM, analyst coverage and
+FOA have been removed. Their archived implementations remain available, while a
+single registry guard verifies that the factors stay deprecated:
+`cargo test --release --lib --manifest-path factor_engine/Cargo.toml retired_analyst_and_fund_factors`.
+
+## CICC C_CAFR and Analyst Revision Windows
+
+`c_cafr` uses analyst report details, not the derived consensus table. It carries
+`CICC` and `analyst` tags and does not require financial statement PIT inputs.
+Compute at confirmed trading month ends, neutralize with SW L1 + Barra SIZE,
+then hold the FINAL cross-section daily until the next month end. No winsorization,
+missing-value fill or extra zscore is applied. Exclude BJ and invalid stock codes;
+use the stock universe panel, without a PV anchor.
+
+- Match institution (`org_name`), stock and absolute annual forecast year equal
+  to the month-end calendar year. Deduplicate stock/date/org/author/title/year,
+  retaining the last finite source value, and average distinct same-day forecasts
+  before comparing with the strictly previous valid dated forecast.
+- New revisions must be in `(anchor - 6 calendar months, anchor]`; the previous
+  forecast must be in `(anchor - 12 calendar months, anchor]`. The recent-event
+  window and the pairing window are separate. Retain negative predictions and
+  zero revisions; use the profit AMOUNT difference, without clipping or scaling.
+- Revision weights are `0.5^(calendar age / 90) * N_org`, where `N_org` counts
+  deduplicated reports over the last 12 calendar months across legal non-BJ stocks,
+  regardless of forecast year or valid predicted profit. Count multi-year rows of
+  the same report once. Divide the weighted mean by the UNWEIGHTED population
+  standard deviation of revisions; require at least two events and positive std.
+- Multiply by `max(0, 1 - age_latest_nonzero_revision / 180)`. Zero revisions
+  participate in the mean/std but do not refresh this penalty clock.
+- Build one compact report-count/revision index per batch from projected shared
+  annual source rows. Month-end queries bound all report dates to their own anchor;
+  later reports must not affect an earlier cross-section. State holds only final
+  stock-code-keyed values and dates; do not retain full report sources in state.
+
+`pafr` and `pafr_zscore` remain deprecated. Their new revision window is still
+`(T - 90 calendar days, T]`, but the previous forecast may now be anywhere in
+`(T - 12 calendar months, T]`. All other definitions remain unchanged. Price
+lookback is 270 trading sessions for PAFR and 522 for its 252-session historical
+zscore, ensuring between-report excess returns cover the wider pairing window.
+The benchmark cache is evicted using the pairing boundary, not the recent-event
+boundary. Neither change automatically regenerates historical factor files.
+
+Validation: `cargo test --release --lib --manifest-path factor_engine/Cargo.toml c_cafr`
+and `cargo test --release --lib --manifest-path factor_engine/Cargo.toml pafr`.

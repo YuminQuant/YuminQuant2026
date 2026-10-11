@@ -12,8 +12,6 @@ use crate::factor::common::stock_daily_ops::{
 };
 use crate::factor::common::{ClassificationLevel, ClassificationMap, ReportTypePreference};
 use crate::factor::{Factor, FactorUpdatePolicy};
-#[cfg(test)]
-use crate::operators::cross_sectional::cs_neutralize_regression;
 
 pub struct StockDailyFom;
 pub fn create() -> Box<dyn Factor> {
@@ -234,89 +232,4 @@ fn compute(data: &DataPool, state: &mut State) -> Result<FactorSeries> {
     Ok(panel
         .column_from_values(values)?
         .to_factor_series(StockDailyFom.spec()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn fom_neutralization_fill_supported_exposures_only() {
-        let raw = [Some(1.0), Some(3.0), Some(2.0), None, None, None, None];
-        let size = [
-            Some(1.0),
-            Some(2.0),
-            Some(3.0),
-            Some(4.0),
-            None,
-            Some(2.0),
-            Some(2.0),
-        ];
-        let groups = [
-            Some("a"),
-            Some("a"),
-            Some("a"),
-            Some("a"),
-            Some("a"),
-            Some("b"),
-            None,
-        ]
-        .map(|g| g.map(str::to_string));
-        let result = neutralize_and_fill(&raw, &size, &groups);
-        let original = cs_neutralize_regression(&raw, &[&size], Some(&groups), None);
-        assert_eq!(&result[..3], &original[..3]);
-        assert_eq!(result[3], Some(0.0));
-        assert_eq!(&result[4..], &[None, None, None]);
-        let filled = [Some(1.0), Some(3.0), Some(2.0), Some(3.0), None, None, None];
-        let explicit = cs_neutralize_regression(&filled, &[&size], Some(&groups), None);
-        for i in 0..4 {
-            assert!((result[i].unwrap() - explicit[i].unwrap()).abs() < 1e-10);
-        }
-        assert!(neutralize_and_fill(&[None; 7], &size, &groups)
-            .iter()
-            .all(Option::is_none));
-    }
-    #[test]
-    fn fom_formula_ties_actual_and_latest_multiple_reports() {
-        let rows = [
-            Forecast {
-                date: 20250101,
-                value: 1.0,
-            },
-            Forecast {
-                date: 20250201,
-                value: 2.0,
-            },
-            Forecast {
-                date: 20250201,
-                value: 4.0,
-            },
-        ];
-        assert_eq!(score(&rows, 20250228, None), Some(1.0 / 3.0));
-        assert_eq!(score(&rows, 20250228, Some(Some(3.0))), Some(1.0 / 3.0));
-        assert_eq!(score(&rows, 20250228, Some(Some(2.0))), Some(0.0));
-        assert_eq!(score(&rows, 20250228, Some(None)), None);
-        assert_eq!(score(&rows[..2], 20250228, None), None);
-        assert_eq!(score(&rows, 20260101, None), None);
-    }
-    #[test]
-    fn fom_calendar_switch_and_no_false_batch_end() {
-        let c = crate::calendar::TradingCalendar::from_open_dates(vec![
-            20250331, 20250401, 20250429, 20250506, 20250530, 20250603,
-        ]);
-        assert_eq!(c.month_end_on_or_before(20250401), Some(20250331));
-        assert_eq!(c.month_end_on_or_before(20250428), Some(20250331));
-        assert_eq!(c.month_end_on_or_before(20250429), Some(20250429));
-        assert_eq!(c.month_end_on_or_before(20250603), Some(20250530));
-        assert_eq!(year_for_anchor(20250331), 2024);
-        assert_eq!(year_for_anchor(20250429), 2025);
-        assert_eq!(window_start(20240229), 20230228);
-        let spec = StockDailyFom.spec();
-        for tag in ["DFZQ", "analyst", "fundamental"] {
-            assert!(spec.tags.contains(&tag.into()));
-        }
-        assert!(!spec
-            .dependencies
-            .iter()
-            .any(|d| d.dataset == DatasetId::StockDailyPv));
-    }
 }

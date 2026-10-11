@@ -147,6 +147,10 @@ tag-selection target. `traction20d` 已弃用，历史因子列已清理；以�
 
 ## FOA Rules / FOA 口径
 
+`foa` is deprecated and excluded from default tag selection. Its historical
+factor column has been cleared; the following rules remain as a reference.
+`foa` 已弃用并清理历史因子列，以下口径仅作为开发参考。
+
 `foa` combines a half-year ownership change signal and a quarterly overweight
 residual. Compute only at completed trading month-ends and hold the **final**
 cross-section by stock code between anchors; do not re-neutralize every day.
@@ -204,11 +208,10 @@ Sparse market inputs must not reduce the daily universe output grid.
 
 ## Run And Tags / 运行与标签
 
-```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20160101 --end-date 20260424 --factors foa --date-batch-size 120 --profile
-```
+Both fund-holdings factors below are deprecated; do not include them in production.
+以下两个基金持仓因子均已弃用，不再作为生产目标。
 
-`foa` uses `KYZQ, alternative` (not `fundamental`).
+`foa` retains `KYZQ, alternative, deprecated` (not `fundamental`).
 `traction20d` retains `KYZQ, alternative, cs_network, deprecated`.
 `mainbz_mom_resvol` additionally has `alternative`; its existing fundamental
 tag and calculation are unchanged. 基金持仓因子不进入 fundamental 标签选集；

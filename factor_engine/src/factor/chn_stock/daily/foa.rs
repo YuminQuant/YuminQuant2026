@@ -47,7 +47,7 @@ impl Factor for StockDailyFoa {
         FactorSpec {
             id: "foa".into(), aliases: vec!["FOA".into()], name: "Fund holdings alpha".into(),
             asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.1.0".into(),
-            tags: ["KYZQ", "alternative", "fund_holdings", "pit", "monthly_update", "neutralize", "barra", "daily"].into_iter().map(str::to_string).collect(),
+            tags: ["deprecated", "KYZQ", "alternative", "fund_holdings", "pit", "monthly_update", "neutralize", "barra", "daily"].into_iter().map(str::to_string).collect(),
             description: "Approximate KYZQ FOA: month-end PIT fund top-ten FOP residualized against VOLATILITY/MOMENTUM/SIZE (no industry), combined equally after cross-sectional zscore with common-fund half-year FOC. Both components required. Fund classification is a current snapshot; enhanced index funds included, passive/ETF/feeder/QDII excluded; share classes counted independently. Full disclosures approximated by Aug 1/Feb 1 cutoffs, with report-end market weights. Hold final values by stock code until next completed month-end.".into(),
             dependencies: vec![
                 DataRequest::new(DatasetId::FundPortfolio, FUND_PORTFOLIO_COLUMNS),
@@ -911,6 +911,7 @@ mod tests {
         let factor = StockDailyFoa;
         assert!(factor.spec().tags.iter().any(|t| t == "KYZQ"));
         assert!(factor.spec().tags.iter().any(|t| t == "alternative"));
+        assert!(factor.spec().tags.iter().any(|t| t == "deprecated"));
         assert!(!factor.spec().dependencies.iter().any(|d| matches!(
             d.dataset,
             DatasetId::StockDailyPv | DatasetId::StockSwClassification

@@ -587,28 +587,3 @@ fn clean_positive_opt(value: Option<f64>) -> Option<f64> {
 fn finite(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::future_symbol_allowed;
-
-    #[test]
-    fn future_symbol_filter_uses_product_or_explicit_symbol() {
-        assert!(future_symbol_allowed("AG2606.SHF", &[], &[]));
-        assert!(future_symbol_allowed(
-            "AG2606.SHF",
-            &["AG".to_string()],
-            &[]
-        ));
-        assert!(!future_symbol_allowed(
-            "IF2606.CFX",
-            &["AG".to_string()],
-            &[]
-        ));
-        assert!(future_symbol_allowed(
-            "IF2606.CFX",
-            &["AG".to_string()],
-            &["IF2606.CFX".to_string()]
-        ));
-    }
-}

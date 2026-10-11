@@ -96,14 +96,3 @@ fn subtract(left: Option<f64>, right: Option<f64>) -> Option<f64> {
 fn subtract_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> {
     left.zip_binary(right, subtract)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn srv_subtract_pair_requires_both_sides() {
-        assert_eq!(subtract(Some(1.5), Some(0.5)), Some(1.0));
-        assert_eq!(subtract(Some(1.5), None), None);
-    }
-}

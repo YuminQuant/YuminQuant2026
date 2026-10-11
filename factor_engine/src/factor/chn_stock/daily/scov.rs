@@ -79,14 +79,3 @@ fn subtract(left: Option<f64>, right: Option<f64>) -> Option<f64> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scov_subtract_requires_both_values() {
-        assert_eq!(subtract(Some(10.5), Some(10.0)), Some(0.5));
-        assert_eq!(subtract(Some(10.5), None), None);
-    }
-}

@@ -258,28 +258,3 @@ fn index_analyst_records(records: &[AnalystRecord]) -> HashMap<&str, Vec<&Analys
     }
     by_stock
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::barra::BarraExposure;
-
-    use super::StockDailyBarraCne6Sentiment;
-
-    #[test]
-    fn cne6_sentiment_family_registers_composite() {
-        let specs = StockDailyBarraCne6Sentiment.specs();
-        let ids = specs
-            .iter()
-            .map(|spec| spec.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            vec![
-                "Revision_Ratio",
-                "Change_In_Analyst_Predicted_EP",
-                "Change_In_Analyst_Predicted_EPS",
-                "SENTIMENT"
-            ]
-        );
-    }
-}

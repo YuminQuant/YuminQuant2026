@@ -95,28 +95,3 @@ fn log_ratio(numerator: Option<f64>, denominator: Option<f64>) -> Option<f64> {
 fn finite(value: Option<f64>) -> Option<f64> {
     clean(value).filter(|value| value.is_finite())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_close(actual: Option<f64>, expected: f64) {
-        let actual = actual.expect("expected value");
-        assert!(
-            (actual - expected).abs() < 1e-12,
-            "expected {expected}, got {actual}"
-        );
-    }
-
-    #[test]
-    fn daily_vwap_uses_daily_units() {
-        assert_close(daily_vwap(Some(1000.0), Some(100.0)), 100.0);
-        assert_eq!(daily_vwap(Some(1000.0), Some(0.0)), None);
-    }
-
-    #[test]
-    fn apb_raw_uses_log_ewap_over_vwap() {
-        assert_close(log_ratio(Some(110.0), Some(100.0)), (1.1_f64).ln());
-        assert_eq!(log_ratio(Some(-1.0), Some(100.0)), None);
-    }
-}

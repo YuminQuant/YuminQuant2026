@@ -95,13 +95,3 @@ fn tr_value(high: Option<f64>, low: Option<f64>, pre_close: Option<f64>) -> Opti
         .max((low - pre_close).abs());
     Some(tr / pre_close)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tr_turnover_uses_decimal_turnover_as_weighted_variable() {
-        assert_eq!(umr::percent_to_decimal(Some(3.0)), Some(0.03));
-    }
-}

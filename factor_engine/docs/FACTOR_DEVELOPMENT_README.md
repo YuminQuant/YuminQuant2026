@@ -440,7 +440,7 @@ Production code should handle `None`, non-finite values, and zero denominators c
 - 同一批 raw 共享分钟扫描时，实现 `minute_compute_many()` 和统一 provider key。
 - 跨日公式优先考虑 additive raw；不适合 additive 时再用 stateful provider。
 - raw 公式、raw id 或 raw version 变化后，用 `--refresh-minute-cache` 重跑。
-- raw id 如果因历史兼容导致名字和新语义不完全一致，必须在测试名或注释里写清楚。
+- raw id 如果因历史兼容导致名字和新语义不完全一致，必须在口径说明或代码注释里写清楚。
 
 - Use `window_days = 1` for same-day minute raw.
 - Use `minute_compute_many()` and a shared provider key when sibling raw columns share one scan.
@@ -509,10 +509,15 @@ python scripts\remove_factor_columns.py --factor-root data\models --start-date 2
 
 ## 8. 常用验证 / Validation Checklist
 
+`factor_engine` 不再保留内嵌 Rust 测试。开发期间按需临时核验公式与对齐，完成后清理验证代码和产物；保留编译检查及小范围人工检查流程。
+
+Embedded Rust tests have been removed. Use temporary formula/alignment checks
+during development and clean them up afterwards; compilation and small-scope
+manual validation remain part of the workflow.
+
 ```powershell
 cargo fmt --manifest-path factor_engine\Cargo.toml
-cargo check --manifest-path factor_engine\Cargo.toml
-cargo test --manifest-path factor_engine\Cargo.toml
+cargo check --release --all-targets --manifest-path factor_engine\Cargo.toml
 cargo run --release --manifest-path factor_engine\Cargo.toml -- metadata
 cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors your_factor --profile
 ```

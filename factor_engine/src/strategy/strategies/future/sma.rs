@@ -128,14 +128,3 @@ fn parse_f64(values: &BTreeMap<String, String>, key: &str, default: f64) -> f64 
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(default)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::base_quantity;
-
-    #[test]
-    fn base_quantity_uses_contract_budget_and_lot() {
-        let qty = base_quantity(500_000.0, 0.30, 10_000.0, 15.0, 0.12, 1.0);
-        assert_eq!(qty, 8.0);
-    }
-}

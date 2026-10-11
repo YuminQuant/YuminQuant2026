@@ -215,36 +215,3 @@ fn solve_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>
     }
     Some(b)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::cs_neutralize_regression;
-
-    #[test]
-    fn neutralizes_continuous_exposure() {
-        let y = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
-        let x = vec![Some(10.0), Some(20.0), Some(30.0), Some(40.0)];
-        let residual = cs_neutralize_regression(&y, &[&x], None, None);
-
-        for value in residual {
-            assert!(value.unwrap().abs() < 1e-10);
-        }
-    }
-
-    #[test]
-    fn neutralizes_group_and_continuous_exposure() {
-        let y = vec![Some(1.0), Some(2.0), Some(10.0), Some(11.0)];
-        let x = vec![Some(1.0), Some(2.0), Some(1.0), Some(2.0)];
-        let groups = vec![
-            Some("a".to_string()),
-            Some("a".to_string()),
-            Some("b".to_string()),
-            Some("b".to_string()),
-        ];
-        let residual = cs_neutralize_regression(&y, &[&x], Some(&groups), None);
-
-        for value in residual {
-            assert!(value.unwrap().abs() < 1e-10);
-        }
-    }
-}

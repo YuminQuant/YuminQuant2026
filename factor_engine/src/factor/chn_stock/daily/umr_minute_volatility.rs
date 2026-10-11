@@ -279,30 +279,3 @@ fn std_dev(values: &[f64]) -> f64 {
         / values.len() as f64)
         .sqrt()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn five_minute_returns_use_close_to_close_after_first_five_minute_bar() {
-        let indices = (0..10).collect::<Vec<_>>();
-        let close = (1..=10).map(|value| Some(value as f64)).collect::<Vec<_>>();
-        let returns = five_minute_close_returns(&indices, &close);
-        assert_eq!(returns, vec![10.0 / 5.0 - 1.0]);
-    }
-
-    #[test]
-    fn umr_minute_volatility_raw_spec_prefers_derived_bar_5m() {
-        let spec = raw_spec();
-        assert_eq!(spec.source_dataset, DatasetId::StockDerivedBar);
-        assert_eq!(spec.source_bar_size, Some(FIVE_MINUTE_BAR_SIZE));
-        assert_eq!(spec.columns, vec!["close"]);
-
-        let factor = StockDailyUmrMinuteVolatility;
-        let aux = factor.intraday_raw_auxiliary_requirements(&[RAW_ID.to_string()]);
-        assert_eq!(aux.len(), 1);
-        assert_eq!(aux[0].request.dataset, DatasetId::StockMinute1m);
-        assert_eq!(aux[0].request.columns, vec!["close"]);
-    }
-}

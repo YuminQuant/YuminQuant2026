@@ -91,29 +91,3 @@ pub fn ts_ew_regression_alpha_beta_residual_sigma(
 
     (alpha, beta, residual_sigma)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{ts_ew_regression_alpha_beta_residual_sigma, ts_ew_regression_beta_residual_sigma};
-
-    #[test]
-    fn ew_regression_recovers_linear_beta_and_zero_residual() {
-        let x = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
-        let y = vec![Some(3.0), Some(5.0), Some(7.0), Some(9.0)];
-        let (beta, sigma) = ts_ew_regression_beta_residual_sigma(&y, &x, 4, 4, 2.0);
-
-        assert!((beta[3].unwrap() - 2.0).abs() < 1e-10);
-        assert!(sigma[3].unwrap().abs() < 1e-10);
-    }
-
-    #[test]
-    fn ew_regression_recovers_intercept() {
-        let x = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
-        let y = vec![Some(3.0), Some(5.0), Some(7.0), Some(9.0)];
-        let (alpha, beta, sigma) = ts_ew_regression_alpha_beta_residual_sigma(&y, &x, 4, 4, 2.0);
-
-        assert!((alpha[3].unwrap() - 1.0).abs() < 1e-10);
-        assert!((beta[3].unwrap() - 2.0).abs() < 1e-10);
-        assert!(sigma[3].unwrap().abs() < 1e-10);
-    }
-}

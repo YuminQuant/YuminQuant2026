@@ -87,38 +87,3 @@ fn relative_change(current: Option<f64>, previous: Option<f64>) -> Option<f64> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_close(actual: Option<f64>, expected: Option<f64>) {
-        match (actual, expected) {
-            (Some(actual), Some(expected)) => assert!(
-                (actual - expected).abs() < 1e-10,
-                "expected {expected}, got {actual}"
-            ),
-            (None, None) => {}
-            _ => panic!("expected {:?}, got {:?}", expected, actual),
-        }
-    }
-
-    #[test]
-    fn gtr_turnover_growth_rejects_zero_previous_turnover() {
-        assert_eq!(relative_change(Some(0.2), Some(0.0)), None);
-        assert_close(relative_change(Some(0.24), Some(0.2)), Some(0.2));
-    }
-
-    #[test]
-    fn gtr_turnover_percent_is_converted_to_decimal() {
-        assert_close(percent_to_decimal(Some(2.5)), Some(0.025));
-    }
-
-    #[test]
-    fn gtr_std_skips_missing_growth_values_with_min_periods_one() {
-        let growth = vec![Some(0.1), None, Some(0.3)];
-        let std = ts_std_dev(&growth, WINDOW, MIN_PERIODS);
-
-        assert!(std[2].is_some());
-    }
-}

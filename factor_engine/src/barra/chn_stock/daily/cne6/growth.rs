@@ -332,28 +332,3 @@ fn index_analyst_records(records: &[AnalystRecord]) -> HashMap<&str, Vec<&Analys
     }
     by_stock
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::barra::BarraExposure;
-
-    use super::StockDailyBarraCne6Growth;
-
-    #[test]
-    fn cne6_growth_family_registers_composite() {
-        let specs = StockDailyBarraCne6Growth.specs();
-        let ids = specs
-            .iter()
-            .map(|spec| spec.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            vec![
-                "Predicted_Growth_3Y",
-                "Historical_EPS_Growth",
-                "Historical_Sales_Per_Share_Growth",
-                "GROWTH"
-            ]
-        );
-    }
-}

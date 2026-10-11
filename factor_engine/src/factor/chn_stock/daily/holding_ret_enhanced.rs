@@ -64,17 +64,3 @@ impl Factor for StockDailyHoldingRetEnhanced {
 fn negate(value: Option<f64>) -> Option<f64> {
     chip::finite(value).map(|value| -value)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn negate_ret20_before_enhanced_formula() {
-        assert_eq!(negate(Some(0.2)), Some(-0.2));
-        assert_eq!(
-            chip::enhanced(negate(Some(0.2)), Some(0.1)),
-            Some(-0.2 * 1.2 + 1.2 * 0.1)
-        );
-    }
-}

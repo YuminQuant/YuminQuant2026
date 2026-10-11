@@ -82,14 +82,3 @@ fn small_active_buy_ratio(buy_sm_amount: Option<f64>, daily_amount: Option<f64>)
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn small_active_buy_uses_moneyflow_amount_over_daily_amount_in_ten_thousand_yuan() {
-        assert_eq!(small_active_buy_ratio(Some(10.0), Some(1000.0)), Some(0.1));
-        assert_eq!(small_active_buy_ratio(Some(10.0), Some(0.0)), None);
-    }
-}

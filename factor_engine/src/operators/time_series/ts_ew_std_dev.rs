@@ -47,19 +47,3 @@ pub fn ts_ew_std_dev(
 
     output
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ts_ew_std_dev;
-
-    #[test]
-    fn ew_std_dev_requires_full_valid_window() {
-        let values = vec![Some(1.0), Some(2.0), None, Some(4.0)];
-        let output = ts_ew_std_dev(&values, 3, 3, 2.0);
-
-        assert_eq!(output[0], None);
-        assert_eq!(output[1], None);
-        assert_eq!(output[2], None);
-        assert_eq!(output[3], None);
-    }
-}

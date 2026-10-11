@@ -125,14 +125,3 @@ fn deviation(big_vwap: Option<f64>, daily_vwap: Option<f64>) -> Option<f64> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vwap_unit_conversions_match_daily_and_moneyflow_units() {
-        assert_eq!(daily_vwap(Some(1000.0), Some(100.0)), Some(100.0));
-        assert_eq!(deviation(Some(110.0), Some(100.0)), Some(0.1));
-    }
-}

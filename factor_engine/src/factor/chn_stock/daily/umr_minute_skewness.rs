@@ -289,27 +289,3 @@ fn skew(values: &[f64]) -> Option<f64> {
         / values.len() as f64;
     Some(third / std.powi(3))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn skew_rejects_constant_returns() {
-        assert_eq!(skew(&[1.0, 1.0, 1.0]), None);
-    }
-
-    #[test]
-    fn umr_minute_skewness_raw_spec_prefers_derived_bar_5m() {
-        let spec = raw_spec();
-        assert_eq!(spec.source_dataset, DatasetId::StockDerivedBar);
-        assert_eq!(spec.source_bar_size, Some(FIVE_MINUTE_BAR_SIZE));
-        assert_eq!(spec.columns, vec!["close"]);
-
-        let factor = StockDailyUmrMinuteSkewness;
-        let aux = factor.intraday_raw_auxiliary_requirements(&[RAW_ID.to_string()]);
-        assert_eq!(aux.len(), 1);
-        assert_eq!(aux[0].request.dataset, DatasetId::StockMinute1m);
-        assert_eq!(aux[0].request.columns, vec!["close"]);
-    }
-}

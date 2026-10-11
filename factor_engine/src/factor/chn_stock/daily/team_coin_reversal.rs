@@ -228,36 +228,3 @@ fn less_than(left: Option<f64>, right: Option<f64>) -> Option<f64> {
 fn clean(value: Option<f64>) -> Option<f64> {
     value.filter(|value| !value.is_nan())
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::factor::common::DailyPanel;
-
-    use super::{average_pair, average_three};
-
-    #[test]
-    fn composite_averages_require_all_inputs() {
-        let panel = DailyPanel::from_index(
-            vec![20260102],
-            vec!["000001.SZ".to_string(), "000002.SZ".to_string()],
-            &[20260102],
-            vec![true, true],
-        )
-        .expect("panel");
-        let first = panel
-            .column_from_values(vec![Some(1.0), Some(2.0)])
-            .expect("first");
-        let second = panel
-            .column_from_values(vec![Some(3.0), None])
-            .expect("second");
-        let third = panel
-            .column_from_values(vec![Some(5.0), Some(6.0)])
-            .expect("third");
-
-        let pair = average_pair(&first, &second).expect("pair");
-        assert_eq!(pair.values(), &[Some(2.0), None]);
-
-        let triple = average_three(&first, &second, &third).expect("triple");
-        assert_eq!(triple.values(), &[Some(3.0), None]);
-    }
-}

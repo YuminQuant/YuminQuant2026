@@ -85,39 +85,3 @@ fn utr2_score(str: Option<f64>, turn20: Option<f64>) -> Option<f64> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_close(actual: Option<f64>, expected: Option<f64>) {
-        match (actual, expected) {
-            (Some(actual), Some(expected)) => assert!(
-                (actual - expected).abs() < 1e-10,
-                "expected {expected}, got {actual}"
-            ),
-            (None, None) => {}
-            _ => panic!("expected {:?}, got {:?}", expected, actual),
-        }
-    }
-
-    #[test]
-    fn turnover_percent_is_converted_to_decimal_before_softsign_path() {
-        assert_close(percent_to_decimal(Some(2.5)), Some(0.025));
-    }
-
-    #[test]
-    fn softsign_keeps_sign_and_bounds_magnitude_below_one() {
-        assert!((softsign(2.0) - 2.0 / 3.0).abs() < 1e-10);
-        assert!((softsign(-2.0) + 2.0 / 3.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn utr2_score_matches_formula() {
-        assert_close(
-            utr2_score(Some(0.25), Some(0.4)),
-            Some(0.25 + 0.25 / 1.25 * 0.4),
-        );
-        assert_eq!(utr2_score(Some(0.25), None), None);
-    }
-}

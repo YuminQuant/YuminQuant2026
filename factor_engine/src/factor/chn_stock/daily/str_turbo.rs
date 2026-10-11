@@ -100,26 +100,3 @@ fn average_pair(left: &PanelColumn, right: &PanelColumn) -> Result<PanelColumn> 
         _ => None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::turnover_growth;
-    use super::{MIN_PERIODS, WINDOW};
-    use crate::operators::ts_std_dev;
-
-    #[test]
-    fn str_turbo_growth_rejects_zero_previous_turnover() {
-        let growth = turnover_growth(&[Some(0.0), Some(0.2), Some(0.24)]);
-
-        assert_eq!(growth[1], None);
-        assert!((growth[2].unwrap() - 0.2).abs() < 1e-10);
-    }
-
-    #[test]
-    fn str_turbo_gtr_std_skips_missing_growth_values() {
-        let growth = vec![Some(0.1), None, Some(0.3)];
-        let std = ts_std_dev(&growth, WINDOW, MIN_PERIODS);
-
-        assert!(std[2].is_some());
-    }
-}

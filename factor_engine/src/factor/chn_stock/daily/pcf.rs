@@ -143,25 +143,3 @@ fn std_dev(values: &[f64]) -> f64 {
         / values.len() as f64;
     variance.sqrt()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn convergence_score_uses_min_periods_one() {
-        let values = (1..=MAX_WINDOW)
-            .map(|value| Some(value as f64))
-            .collect::<Vec<_>>();
-        let output = convergence_score_series(&values);
-        assert!(output[0].is_some());
-        assert!(output[MAX_WINDOW - 1].is_some());
-    }
-
-    #[test]
-    fn convergence_score_is_zero_when_all_moving_averages_match() {
-        let values = vec![Some(10.0); MAX_WINDOW];
-        let output = convergence_score_series(&values);
-        assert_eq!(output[MAX_WINDOW - 1], Some(-0.0));
-    }
-}

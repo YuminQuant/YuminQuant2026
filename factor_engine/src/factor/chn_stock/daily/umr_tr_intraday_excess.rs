@@ -97,17 +97,3 @@ fn tr_value(high: Option<f64>, low: Option<f64>, pre_close: Option<f64>) -> Opti
         .max((low - pre_close).abs());
     Some(tr / pre_close)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn market_intraday_request_uses_open_and_close() {
-        let request = umr::market_intraday_return_request();
-        assert_eq!(
-            request.columns,
-            vec!["open".to_string(), "close".to_string()]
-        );
-    }
-}

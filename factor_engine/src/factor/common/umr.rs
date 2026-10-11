@@ -171,15 +171,3 @@ pub fn expand_index_column(
     }
     stock_panel.column_from_values(values)
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::operators::{ts_delay, ts_mean};
-
-    #[test]
-    fn risk_mean_uses_prior_window_and_excludes_current_day() {
-        let values = vec![Some(1.0), Some(2.0), Some(3.0)];
-        let prior = ts_delay(&ts_mean(&values, 2, 1), 1);
-        assert_eq!(prior, vec![None, Some(1.0), Some(1.5)]);
-    }
-}

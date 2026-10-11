@@ -43,7 +43,7 @@ def test_rust_derive_logsig_end_to_end(tmp_path):
     calendar = root / "calendar/trade_cal_SSE.parquet"
     calendar.parent.mkdir(parents=True)
     pd.DataFrame({"cal_date": np.array(dates, dtype="int32"), "is_open": [1] * len(dates)}).to_parquet(calendar, index=False)
-    raw = root / "stock_data/minute"
+    raw = root / "chn_stock_data/minute"
     for day, date in enumerate(dates):
         rows = []
         for stock in ["000002.SZ", "000001.SZ"]:

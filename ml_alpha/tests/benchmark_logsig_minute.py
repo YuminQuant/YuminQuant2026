@@ -20,7 +20,7 @@ def worker(args):
     dates = TradingCalendar.load(data).dates
     targets = [d for d in dates if args.start <= d <= args.end]
     source = args.worker
-    root = data / "stock_data/minute" if source == "minute" else scratch / "data/derived/stock/bar/5m"
+    root = data / "chn_stock_data/minute" if source == "minute" else scratch / "data/derived/stock/bar/5m"
     provider = LogsigSignatureProvider(root, "__all__", dict(source=source, lookback_days=20,
         bar_size=5, order=10, feature_cache_dir=scratch / args.output, read_only=False))
     provider.set_calendar_dates(dates)
@@ -70,7 +70,7 @@ def benchmark(args):
     sources = calendar.between(warmup, targets[-1])
     # Hard links permit a genuinely isolated Rust derive-bar run without copying large raw files.
     for date in sources:
-        relative = Path(f"stock_data/minute/{date//10000}/{date}.parquet")
+        relative = Path(f"chn_stock_data/minute/{date//10000}/{date}.parquet")
         target = scratch / "data" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         os.link(data / relative, target)

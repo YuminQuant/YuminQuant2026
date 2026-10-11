@@ -274,9 +274,9 @@ def main(argv=None):
         return path if path.is_absolute() else root / path
 
     inputs = {
-        "forecasts": source("analyst_report_dir", "stock_data/analyst_report"),
-        "income": source("fin_income_dir", "stock_data/income"),
-        "size": source("stock_daily_basic_dir", "stock_data/daily/basic"),
+        "forecasts": source("analyst_report_dir", "chn_stock_data/analyst_report"),
+        "income": source("fin_income_dir", "chn_stock_data/income"),
+        "size": source("stock_daily_basic_dir", "chn_stock_data/daily/basic"),
         "industry": source(f"index_member_{args.industry}_dir", f"index_data/member_{args.industry}") / f"{args.industry}_members.parquet",
     }
     audit = {}

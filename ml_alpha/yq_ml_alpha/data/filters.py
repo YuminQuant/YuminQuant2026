@@ -21,7 +21,7 @@ class TradeFilters:
 
         path = (
             self.data_root
-            / "stock_data"
+            / "chn_stock_data"
             / "daily"
             / "trade_filter"
             / str(trade_date // 10000)

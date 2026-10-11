@@ -7,7 +7,7 @@ id = "logsig_alpha_v"
 root = "data/factors"
 asset = "stock"
 frequency = "daily"
-base_root = "data/stock_data/daily/pv"
+base_root = "data/chn_stock_data/daily/pv"
 write_workers = 4
 
 [dates]

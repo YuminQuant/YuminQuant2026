@@ -25,7 +25,7 @@ def parse_args():
 def analyst_report_dir():
     config = ConfigManager().config
     base_data_dir = config["paths"]["base_data_dir"]
-    sub_dir = config["paths"].get("analyst_report_dir", "stock_data/analyst_report")
+    sub_dir = config["paths"].get("analyst_report_dir", "chn_stock_data/analyst_report")
     return os.path.join(base_data_dir, sub_dir)
 
 

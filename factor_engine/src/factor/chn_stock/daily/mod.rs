@@ -22,6 +22,7 @@ pub mod bet_cagr_csv_std;
 pub mod biz_tax_surchg_assets_gauss_resid;
 pub mod brave_peak_climb;
 pub mod c_cafr;
+pub mod cgva;
 pub mod capex_cip_yoy_gauss_resid;
 pub mod cash_equ_oth_comp_income_yoy_gauss_resid;
 pub mod cash_sales_inventory_turnover_ts_resid;

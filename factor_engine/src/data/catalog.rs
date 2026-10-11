@@ -45,62 +45,62 @@ impl DataCatalog {
             let path = match dataset {
                 DatasetId::StockDailyPv => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("daily")
                     .join("pv")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockDailyBasic => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("daily")
                     .join("basic")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockDailyLimit => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("daily")
                     .join("limit")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockAdjFactor => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("daily")
                     .join("adj_factor")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockMoneyflow => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("daily")
                     .join("moneyflow")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockIncome => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("income")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockBalanceSheet => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("balancesheet")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockCashFlow => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("cashflow")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockDividend => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("dividend")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockMainBusiness => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("mainbz")
                     .join(format!("{}.parquet", year)),
                 DatasetId::StockAnalystReport => self
                     .data_root
-                    .join("stock_data")
+                    .join("chn_stock_data")
                     .join("analyst_report")
                     .join(format!("{}.parquet", year)),
                 DatasetId::FutureDaily => self
@@ -122,35 +122,35 @@ impl DataCatalog {
         let path = match dataset {
             DatasetId::StockDailyPv => self
                 .data_root
-                .join("stock_data")
+                .join("chn_stock_data")
                 .join("daily")
                 .join("pv")
                 .join(year.to_string())
                 .join(format!("{}.parquet", trade_date)),
             DatasetId::StockDailyBasic => self
                 .data_root
-                .join("stock_data")
+                .join("chn_stock_data")
                 .join("daily")
                 .join("basic")
                 .join(year.to_string())
                 .join(format!("{}.parquet", trade_date)),
             DatasetId::StockDailyLimit => self
                 .data_root
-                .join("stock_data")
+                .join("chn_stock_data")
                 .join("daily")
                 .join("limit")
                 .join(year.to_string())
                 .join(format!("{}.parquet", trade_date)),
             DatasetId::StockAdjFactor => self
                 .data_root
-                .join("stock_data")
+                .join("chn_stock_data")
                 .join("daily")
                 .join("adj_factor")
                 .join(year.to_string())
                 .join(format!("{}.parquet", trade_date)),
             DatasetId::StockMoneyflow => self
                 .data_root
-                .join("stock_data")
+                .join("chn_stock_data")
                 .join("daily")
                 .join("moneyflow")
                 .join(year.to_string())
@@ -214,7 +214,7 @@ impl DataCatalog {
         let path = match dataset {
             DatasetId::StockMinute1m => self
                 .data_root
-                .join("stock_data")
+                .join("chn_stock_data")
                 .join("minute")
                 .join(year.to_string())
                 .join(format!("{}.parquet", trade_date)),
@@ -253,7 +253,7 @@ impl DataCatalog {
     pub fn stock_basic_file(&self) -> Option<PathBuf> {
         let path = self
             .data_root
-            .join("stock_data")
+            .join("chn_stock_data")
             .join("info")
             .join("stock_basic.parquet");
         path.exists().then_some(path)

@@ -120,7 +120,7 @@ class OutputConfig:
     root: Path = Path("data/models")
     asset: str = "stock"
     frequency: str = "daily"
-    base_root: Path = Path("data/stock_data/daily/pv")
+    base_root: Path = Path("data/chn_stock_data/daily/pv")
     write_workers: int = 4
     write_metadata: bool = True
 
@@ -266,7 +266,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             root=output_root,
             asset=str(output.get("asset", "stock")).strip().lower(),
             frequency=str(output.get("frequency", "daily")).strip().lower(),
-            base_root=_project_path(output.get("base_root", data_root / "stock_data" / "daily" / "pv")),
+            base_root=_project_path(output.get("base_root", data_root / "chn_stock_data" / "daily" / "pv")),
             write_workers=max(1, int(output.get("write_workers", 4))),
             write_metadata=bool(output.get("write_metadata", True)),
         ),

@@ -32,7 +32,7 @@ exclude_bj = true
 
 [features]
 type = "raw_panel"
-root = "data/stock_data/daily/pv"
+root = "data/chn_stock_data/daily/pv"
 columns = ["open", "high", "low", "close", "vol", "amount"]
 
 [materialize]

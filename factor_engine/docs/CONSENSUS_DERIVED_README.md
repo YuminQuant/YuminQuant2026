@@ -118,7 +118,7 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-consensus
 Analyst detail data / 分析师明细：
 
 - Dataset: `StockAnalystReport`
-- Local path: `data/stock_data/analyst_report/{year}.parquet`
+- Local path: `data/chn_stock_data/analyst_report/{year}.parquet`
 - Main fields used:
   - `ts_code`
   - `report_date`

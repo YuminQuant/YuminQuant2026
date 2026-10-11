@@ -19,13 +19,13 @@ class StockTradeFilterBuilder:
         self.logger = QuantLogger()
         self.base_data_dir = self.config["paths"]["base_data_dir"]
         paths = self.config["paths"]
-        self.pv_dir = self._full_path(paths.get("stock_daily_pv_dir", "stock_data/daily/pv"))
+        self.pv_dir = self._full_path(paths.get("stock_daily_pv_dir", "chn_stock_data/daily/pv"))
         self.limit_dir = self._full_path(
-            paths.get("stock_daily_limit_dir", "stock_data/daily/limit")
+            paths.get("stock_daily_limit_dir", "chn_stock_data/daily/limit")
         )
-        self.st_dir = self._full_path(paths.get("st_list_dir", "stock_data/daily/st_list"))
+        self.st_dir = self._full_path(paths.get("st_list_dir", "chn_stock_data/daily/st_list"))
         self.save_dir = self._full_path(
-            paths.get("stock_trade_filter_dir", "stock_data/daily/trade_filter")
+            paths.get("stock_trade_filter_dir", "chn_stock_data/daily/trade_filter")
         )
         self.cal_file = os.path.join(
             self.base_data_dir,

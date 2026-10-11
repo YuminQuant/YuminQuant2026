@@ -724,7 +724,7 @@ fn load_trade_filter_masks(
         .collect::<BTreeMap<_, _>>();
     let root = config
         .data_root
-        .join("stock_data")
+        .join("chn_stock_data")
         .join("daily")
         .join("trade_filter");
     let mut masks = HashMap::new();

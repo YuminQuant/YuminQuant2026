@@ -65,14 +65,14 @@ class ForecastBiasTests(unittest.TestCase):
     def test_cli_outputs(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            for name in ["stock_data/analyst_report", "stock_data/income", "stock_data/daily/basic", "index_data/member_ci"]:
+            for name in ["chn_stock_data/analyst_report", "chn_stock_data/income", "chn_stock_data/daily/basic", "index_data/member_ci"]:
                 (root / name).mkdir(parents=True)
             pd.DataFrame({"ts_code": ["A"], "report_date": [20250102], "quarter": ["2024Q4"],
                           "org_name": ["org"], "author_name": ["author"], "report_title": ["title"],
-                          "create_time": ["2025-01-03 20:00:00"], "np": [12.]}).to_parquet(root / "stock_data/analyst_report/2025.parquet")
+                          "create_time": ["2025-01-03 20:00:00"], "np": [12.]}).to_parquet(root / "chn_stock_data/analyst_report/2025.parquet")
             pd.DataFrame({"ts_code": ["A"], "end_date": [20241231], "ann_date": [20250301], "f_ann_date": [None],
-                          "report_type": [1], "update_flag": [0], "n_income_attr_p": [100000.]}).to_parquet(root / "stock_data/income/2025.parquet")
-            pd.DataFrame({"ts_code": ["A"], "trade_date": [20250102], "total_mv": [100.]}).to_parquet(root / "stock_data/daily/basic/20250102.parquet")
+                          "report_type": [1], "update_flag": [0], "n_income_attr_p": [100000.]}).to_parquet(root / "chn_stock_data/income/2025.parquet")
+            pd.DataFrame({"ts_code": ["A"], "trade_date": [20250102], "total_mv": [100.]}).to_parquet(root / "chn_stock_data/daily/basic/20250102.parquet")
             pd.DataFrame({"ts_code": ["A"], "l1_code": ["CI1"], "l1_name": ["Industry"],
                           "in_date": [20200101], "out_date": [None]}).to_parquet(root / "index_data/member_ci/ci_members.parquet")
             output = root / "results"

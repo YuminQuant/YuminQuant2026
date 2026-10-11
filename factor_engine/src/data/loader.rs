@@ -1051,7 +1051,7 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_stock_basic_loader_test_{unique}"));
         let path = root
-            .join("stock_data")
+            .join("chn_stock_data")
             .join("info")
             .join("stock_basic.parquet");
         let table = Table::new(BTreeMap::from([
@@ -1099,7 +1099,7 @@ mod tests {
             .expect("time")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_financial_cache_test_{unique}"));
-        let path = root.join("stock_data").join("income").join("2020.parquet");
+        let path = root.join("chn_stock_data").join("income").join("2020.parquet");
         let table = Table::new(BTreeMap::from([
             (
                 "ts_code".to_string(),
@@ -1177,7 +1177,7 @@ mod tests {
             .expect("time")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_financial_cache_superset_test_{unique}"));
-        let path = root.join("stock_data").join("income").join("2020.parquet");
+        let path = root.join("chn_stock_data").join("income").join("2020.parquet");
         let table = Table::new(BTreeMap::from([
             (
                 "ts_code".to_string(),
@@ -1265,7 +1265,7 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_analyst_between_test_{unique}"));
         let path = root
-            .join("stock_data")
+            .join("chn_stock_data")
             .join("analyst_report")
             .join("2024.parquet");
         let table = Table::new(BTreeMap::from([
@@ -1334,13 +1334,13 @@ mod tests {
             .expect("time")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_financial_prune_test_{unique}"));
-        let income_2023 = root.join("stock_data").join("income").join("2023.parquet");
-        let income_2024 = root.join("stock_data").join("income").join("2024.parquet");
+        let income_2023 = root.join("chn_stock_data").join("income").join("2023.parquet");
+        let income_2024 = root.join("chn_stock_data").join("income").join("2024.parquet");
         let analyst_2023 = root
-            .join("stock_data")
+            .join("chn_stock_data")
             .join("analyst_report")
             .join("2023.parquet");
-        let mainbz_2023 = root.join("stock_data").join("mainbz").join("2023.parquet");
+        let mainbz_2023 = root.join("chn_stock_data").join("mainbz").join("2023.parquet");
         let financial = Table::new(BTreeMap::from([
             (
                 "ts_code".to_string(),
@@ -1543,12 +1543,12 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_daily_date_loader_test_{unique}"));
         let yearly_path = root
-            .join("stock_data")
+            .join("chn_stock_data")
             .join("daily")
             .join("pv")
             .join("2026.parquet");
         let daily_path = root
-            .join("stock_data")
+            .join("chn_stock_data")
             .join("daily")
             .join("pv")
             .join("2026")
@@ -1640,7 +1640,7 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_adj_factor_loader_test_{unique}"));
         let daily_path = root
-            .join("stock_data")
+            .join("chn_stock_data")
             .join("daily")
             .join("adj_factor")
             .join("2026")
@@ -1685,7 +1685,7 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("yq_moneyflow_loader_test_{unique}"));
         let daily_path = root
-            .join("stock_data")
+            .join("chn_stock_data")
             .join("daily")
             .join("moneyflow")
             .join("2026")

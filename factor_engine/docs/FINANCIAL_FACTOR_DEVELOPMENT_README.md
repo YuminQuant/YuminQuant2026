@@ -13,7 +13,7 @@ panel anchor. Each data family owns its own grid:
 - PV factors use the PV panel.
 - Minute and intraday factors use their own raw/minute panels.
 - Financial, main-business, dividend, and analyst event factors use the stock
-  universe panel built from `data/stock_data/info/stock_basic.parquet`.
+  universe panel built from `data/chn_stock_data/info/stock_basic.parquet`.
 
 财务/事件型股票因子不得用 `StockDailyPv` 作为输出网格锚点。各类数据自己建立网格：
 

@@ -1,4 +1,4 @@
-﻿# ml_alpha
+# ml_alpha
 
 `ml_alpha` separates model experiments from formal end-to-end factors.
 
@@ -207,7 +207,7 @@ For a formal factor such as `logsig_alpha_v`, `factor_id`, `name`, and `output_c
 Rust `derive-logsig` reads raw minute Parquets directly; no derived bar production is required:
 
 ```text
-data/stock_data/minute/{year}/{YYYYMMDD}.parquet
+data/chn_stock_data/minute/{year}/{YYYYMMDD}.parquet
 ```
 
 The Rust reader projects only `ts_code`, `trade_time`, and `vol`. It aggregates finite minute volume in the 09:31-11:30 and 13:01-15:00 sessions into 48 five-minute bars in memory. As in `derive-bar --columns volume`, duplicate minute records are included and incomplete five-minute groups may be summed; a stock must have all 48 finite bar values in every one of the 20 trading days. The 09:30 record is excluded. Missing days are not skipped or replaced with older days.

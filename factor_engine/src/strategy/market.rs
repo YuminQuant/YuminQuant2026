@@ -489,7 +489,7 @@ fn read_future_daily_table(path: &Path) -> Result<crate::data::Table> {
 
 fn daily_pv_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
     data_root
-        .join("stock_data")
+        .join("chn_stock_data")
         .join("daily")
         .join("pv")
         .join((trade_date / 10_000).to_string())
@@ -509,7 +509,7 @@ fn future_symbol_allowed(symbol: &str, products: &[String], symbols: &[String]) 
 
 fn minute_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
     data_root
-        .join("stock_data")
+        .join("chn_stock_data")
         .join("minute")
         .join((trade_date / 10_000).to_string())
         .join(format!("{trade_date}.parquet"))
@@ -540,7 +540,7 @@ fn future_minute_path(data_root: &Path, trade_date: i32) -> std::path::PathBuf {
 
 fn load_trade_filter(data_root: &Path, trade_date: i32) -> Result<BTreeMap<String, (bool, bool)>> {
     let path = data_root
-        .join("stock_data")
+        .join("chn_stock_data")
         .join("daily")
         .join("trade_filter")
         .join((trade_date / 10_000).to_string())

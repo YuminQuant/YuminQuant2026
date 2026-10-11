@@ -11,7 +11,7 @@ behavior. All commands below assume the repository root as the working directory
 
 | Layer / 层 | Location / 位置 | Responsibility / 职责 |
 | --- | --- | --- |
-| Source / 原始数据 | `data/stock_data/...` | Input only; do not modify during tests / 测试不修改源数据 |
+| Source / 原始数据 | `data/chn_stock_data/...` | Input only; do not modify during tests / 测试不修改源数据 |
 | Derived / 可复用派生数据 | `data/derived/stock/...` | Rust production, daily Parquet / Rust 生产，日度落盘 |
 | Labels / 标签 | `data/label/stock/daily` | Forward-return labels; not prediction inputs / 未来收益，不可作为预测特征 |
 | Experiments / 模型实验 | `ml_alpha/models/*.toml` | Model-layer configuration / 模型层配置 |
@@ -118,7 +118,7 @@ id = "logsig_alpha_v"
 root = "data/factors"
 asset = "stock"
 frequency = "daily"
-base_root = "data/stock_data/daily/pv"
+base_root = "data/chn_stock_data/daily/pv"
 write_workers = 4
 
 [dates]

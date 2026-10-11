@@ -13,6 +13,12 @@
 
 ## A 股与通用日历
 
+### A 股数据根目录 / A-share Data Root
+
+A 股原始数据统一存放在 `data/chn_stock_data/`。下载器使用 `config.toml` 中的路径配置；Rust 数据目录、回测与策略读取入口及 ML 配置使用相同目录。`base_data_dir` 仍指向 `data/`，派生数据、因子、Barra 和回测产物目录保持不变。更改路径后需重新编译 Rust 程序，并重启已有 Python 会话。
+
+A-share raw data lives under `data/chn_stock_data/`. Downloader path settings, Rust readers, backtest/strategy readers and ML configuration must agree on this directory. Keep `base_data_dir` pointing to `data/`; derived data, factors, Barra and backtest output locations are unchanged. Rebuild Rust binaries and restart existing Python sessions after a path migration.
+
 | 下载器 | Tushare 接口 | 请求粒度 | 本地增量判断 | 落盘方式 |
 | --- | --- | --- | --- | --- |
 | `CalendarDownloader` | `trade_cal` | 按交易所 + 日期区间 | 比较本地 `cal_date` 覆盖范围 | 每个交易所一个 `trade_cal_*.parquet` |
@@ -24,7 +30,7 @@
 | `StockSuspendDownloader` | `suspend_d` | 按交易日全市场横截面 | 比较本地已存在 `trade_date` | 按年 `YYYY.parquet` |
 | `StockMoneyflowDownloader` | `moneyflow` | 按交易日全市场横截面 | 比较本地已存在 `trade_date` | 按年 `YYYY.parquet` |
 | `StDownloader` | `stock_st` | 按交易日全市场横截面 | 比较本地已存在 `trade_date` | 按年 `YYYY.parquet` |
-| `StockMinuteDownloader` | `stk_mins` | 外层按交易日，内层按股票代码 batch | 按日期文件是否存在 | `stock_data/minute/YYYY/YYYYMMDD.parquet` |
+| `StockMinuteDownloader` | `stk_mins` | 外层按交易日，内层按股票代码 batch | 按日期文件是否存在 | `chn_stock_data/minute/YYYY/YYYYMMDD.parquet` |
 | `DividendDownloader` | `dividend` | 按自然日公告日 `ann_date` | 当前实现会请求传入区间内所有自然日 | 按公告年份 `YYYY.parquet` |
 | `AnalystReportDownloader` | `report_rc` | 按自然日 `report_date` | 比较本地已存在 `report_date` | 按年 `YYYY.parquet` |
 | `IncomeDownloader` 等财务类 | `*_vip` / 普通财报接口 | 历史按 `period`；增量按 `ann_date` + 股票代码 batch | 历史按报告期循环；增量由调用脚本指定日期 | 按公告年份 `YYYY.parquet` |

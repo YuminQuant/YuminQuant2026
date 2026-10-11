@@ -115,25 +115,59 @@ fn same_value(a: Option<f64>, b: Option<f64>) -> bool {
     }
 }
 
+fn decimal_precision(value: f64) -> usize {
+    // Parquet stores numbers, not original formatting; use effective decimal precision.
+    let text = value.to_string();
+    let (mantissa, exponent) = text.split_once('e').map_or((text.as_str(), 0), |(m, e)| {
+        (m, e.parse::<i32>().unwrap_or(0))
+    });
+    let decimals = mantissa
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len());
+    (decimals as i32 - exponent).max(0) as usize
+}
+
 /// Business policy belongs here, not in the shared data index.
 fn select_holdings(group: FundDisclosureView<'_>) -> (Vec<Holding>, bool) {
-    let mut rows = BTreeMap::<Option<&str>, usize>::new();
+    let mut rows = BTreeMap::<Option<&str>, (usize, Option<(f64, f64)>)>::new();
     for &row in group.rows() {
         let symbol = group.symbol(row);
-        if let Some(&previous) = rows.get(&symbol) {
-            if FUND_PORTFOLIO_COLUMNS[4..]
+        if let Some((previous, range)) = rows.get_mut(&symbol) {
+            if FUND_PORTFOLIO_COLUMNS[5..]
                 .iter()
-                .any(|column| !same_value(group.value(previous, column), group.value(row, column)))
+                .any(|column| !same_value(group.value(*previous, column), group.value(row, column)))
             {
                 return (Vec::new(), true);
             }
+            let old = group.value(*previous, "mkv");
+            let new = group.value(row, "mkv");
+            if let (Some(a), Some(b)) = (clean(old), clean(new)) {
+                let (min, max) = range.unwrap_or((a, a));
+                let bounds = (min.min(b), max.max(b));
+                // Check the entire group range, not a chain of pairwise tolerances.
+                if bounds.1 - bounds.0 > 0.5 {
+                    return (Vec::new(), true);
+                }
+                *range = Some(bounds);
+                // Equal precision uses a stable numeric tie-break, independent of row order.
+                if (decimal_precision(b), b.total_cmp(&a))
+                    > (decimal_precision(a), std::cmp::Ordering::Equal)
+                {
+                    *previous = row;
+                }
+            } else if !same_value(old, new) {
+                return (Vec::new(), true);
+            }
         } else {
-            rows.insert(symbol, row);
+            rows.insert(
+                symbol,
+                (row, clean(group.value(row, "mkv")).map(|v| (v, v))),
+            );
         }
     }
     let mut holdings = rows
         .into_iter()
-        .filter_map(|(code, row)| {
+        .filter_map(|(code, (row, _))| {
             let code = code.filter(|code| standard_stock(code))?;
             let market_value = clean(group.value(row, "mkv")).filter(|v| *v > 0.0)?;
             Some(Holding {
@@ -434,6 +468,80 @@ mod tests {
             vec![],
             20261231,
         )
+    }
+
+    #[test]
+    fn traction20d_mkv_rounding_keeps_precision_and_checks_full_range() {
+        for (values, expected) in [
+            (vec![21532., 21532.25], Some(21532.25)),
+            (vec![21532.25, 21532.], Some(21532.25)),
+            (vec![100., 100.5], Some(100.5)),
+            (vec![100.5, 100.], Some(100.5)),
+            (vec![100.1, 100.12], Some(100.12)),
+            (vec![100.12, 100.1], Some(100.12)),
+            (vec![100., 100.500001], None),
+            (vec![100., 100.4, 100.8], None),
+            (vec![100.4, 100.8, 100.], None),
+        ] {
+            let rows = values
+                .iter()
+                .map(|&v| ("F", 20260420, 20260331, "000001.SZ", v))
+                .collect::<Vec<_>>();
+            let mut source = table(&rows);
+            for column in FUND_PORTFOLIO_COLUMNS[5..].iter() {
+                source.columns.insert(
+                    (*column).into(),
+                    ColumnData::F64(vec![Some(1.); rows.len()]),
+                );
+            }
+            let index = FundPortfolioBatchIndex::new(
+                vec![Arc::new(
+                    FundPortfolioIndex::from_table(Arc::new(source)).unwrap(),
+                )],
+                vec![],
+                20260430,
+            );
+            let mut state = TractionState::default();
+            let reader = index.reader();
+            let group = reader.disclosures_between(None, 20260420)[0];
+            apply_disclosure(&mut state, group);
+            assert_eq!(
+                state.funds["F"].holdings.first().map(|h| h.market_value),
+                expected,
+                "{values:?}"
+            );
+            assert_eq!(state.conflict_groups, usize::from(expected.is_none()));
+        }
+    }
+
+    #[test]
+    fn traction20d_rounding_requires_exact_other_fields() {
+        for column in FUND_PORTFOLIO_COLUMNS[5..].iter() {
+            let mut source = table(&[
+                ("F", 20260420, 20260331, "000001.SZ", 100.),
+                ("F", 20260420, 20260331, "000001.SZ", 100.25),
+            ]);
+            for other in FUND_PORTFOLIO_COLUMNS[5..].iter() {
+                source
+                    .columns
+                    .insert((*other).into(), ColumnData::F64(vec![Some(1.); 2]));
+            }
+            source.columns.insert(
+                (*column).into(),
+                ColumnData::F64(vec![Some(1.), Some(1.000001)]),
+            );
+            let index = FundPortfolioBatchIndex::new(
+                vec![Arc::new(
+                    FundPortfolioIndex::from_table(Arc::new(source)).unwrap(),
+                )],
+                vec![],
+                20260430,
+            );
+            assert!(
+                select_holdings(index.reader().disclosures_between(None, 20260420)[0]).1,
+                "{column}"
+            );
+        }
     }
 
     #[test]

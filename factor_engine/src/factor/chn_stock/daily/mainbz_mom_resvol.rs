@@ -69,6 +69,7 @@ pub fn spec_for() -> FactorSpec {
             "DBZQ",
             "financial",
             "fundamental",
+            "alternative",
             "mainbz",
             "business_momentum",
             "residual_volatility",

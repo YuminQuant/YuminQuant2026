@@ -1591,6 +1591,9 @@ fn disclosure_windows_for_requests(
     let mut windows = HashMap::<DatasetId, BTreeSet<i32>>::new();
     for request in requests {
         match request.dataset {
+            DatasetId::FundPortfolio => {
+                windows.entry(request.dataset).or_default().extend(load_start_date / 10000..=end_date / 10000);
+            }
             DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow => {
                 windows.entry(request.dataset).or_default().extend(
                     financial_disclosure_years_for_range(
@@ -1633,6 +1636,11 @@ fn disclosure_columns_for_requests(
     let mut columns = HashMap::<DatasetId, BTreeSet<String>>::new();
     for request in requests {
         match request.dataset {
+            DatasetId::FundPortfolio => {
+                let entry = columns.entry(request.dataset).or_default();
+                entry.extend(crate::data::FUND_PORTFOLIO_COLUMNS.iter().map(|c| c.to_string()));
+                entry.extend(request.columns.iter().cloned());
+            }
             DatasetId::StockIncome | DatasetId::StockBalanceSheet | DatasetId::StockCashFlow => {
                 let entry = columns.entry(request.dataset).or_default();
                 entry.extend(

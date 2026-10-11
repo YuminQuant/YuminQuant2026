@@ -28,6 +28,7 @@ pub mod gfzq_hf_resid_std;
 pub mod gfzq_jump_vol_5min;
 pub mod hazq_comparable_value;
 pub mod hazq_equity_composition;
+pub mod htzq_analyst;
 pub mod intraday_daily;
 pub mod intraday_raw;
 pub mod kyzq_apm;

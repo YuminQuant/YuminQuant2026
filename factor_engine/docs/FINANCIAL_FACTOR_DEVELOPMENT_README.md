@@ -69,6 +69,19 @@ Use:
 let panel = data.stock_universe_panel()?;
 ```
 
+For universe-backed factors, provider context dates retain the complete daily
+output/warmup grid. Explicit dependency dates only restrict input reads and
+table views; they must not restrict the universe panel. A month-end factor
+holding its final cross-section must still return every target trading date.
+Validate this through the engine CLI and written files, not only a direct
+`Factor::compute` call. Keep PV/minute factors on their own grids.
+
+使用 stock universe panel 的因子必须保留完整日频输出和预热网格。
+依赖声明中的稀疏日期只约束取数和输入表视图，不得裁剪 universe panel。
+月末计算并持有最终截面的因子，仍须返回每个目标交易日。
+验证必须覆盖引擎 CLI 和实际写出文件，不能只直接调用 `Factor::compute`。
+PV、分钟因子继续使用自己的网格。
+
 The panel is built from `stock_basic.parquet` with at least these fields:
 `ts_code`, `list_status`, `list_date`, `delist_date`, `exchange`, and `market`.
 The current implementation keeps A-share style codes ending in `.SH`, `.SZ`, or

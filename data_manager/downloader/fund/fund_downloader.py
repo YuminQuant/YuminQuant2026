@@ -243,9 +243,13 @@ class FundPortfolioDownloader(_FundDownloader):
             raise ValueError("Fund disclosure precedes report period")
         return result
 
+    @staticmethod
+    def _filter_exchanges(frame):
+        return frame.loc[frame["symbol"].astype("string").str.endswith((".SH", ".SZ"), na=False)].copy()
+
     def _merge_year(self, incoming, year):
         path = self.save_dir / f"{year}.parquet"
-        incoming = self._normalize(incoming)
+        incoming = self._filter_exchanges(self._normalize(incoming))
         stamp = datetime.now(timezone.utc).isoformat()
         incoming["first_seen_at"] = stamp
         incoming["last_seen_at"] = stamp
@@ -253,7 +257,7 @@ class FundPortfolioDownloader(_FundDownloader):
             old = pd.read_parquet(path)
             if not set(self.fields + OBSERVED).issubset(old.columns):
                 raise ValueError(f"Invalid existing fund schema: {path}")
-            incoming = _concat_preserve_schema([old[self.fields + OBSERVED], incoming])
+            incoming = _concat_preserve_schema([self._filter_exchanges(old[self.fields + OBSERVED]), incoming])
         # Observation timestamps are provenance, not part of raw-record identity.
         merged = incoming.groupby(self.fields, dropna=False, as_index=False, sort=False).agg(
             first_seen_at=("first_seen_at", "min"), last_seen_at=("last_seen_at", "max"))
@@ -274,7 +278,7 @@ class FundPortfolioDownloader(_FundDownloader):
 
     def _query_and_save(self, cutoff, **query):
         # Stage a complete query before publishing; only one announcement year is merged at a time.
-        fetched, retained, saved = 0, 0, 0
+        fetched, retained, saved, excluded_exchange = 0, 0, 0, 0
         with TemporaryDirectory(prefix=".query-", dir=self.save_dir) as folder:
             staged = Path(folder)
             for page_idx, page in enumerate(self._pages(**query)):
@@ -283,6 +287,9 @@ class FundPortfolioDownloader(_FundDownloader):
                     column = "end_date" if key == "period" else key
                     if key in query and not page[column].eq(int(query[key])).all():
                         raise ValueError(f"fund_portfolio response does not match {key}")
+                before_filter = len(page)
+                page = self._filter_exchanges(page)
+                excluded_exchange += before_filter - len(page)
                 if cutoff is not None:
                     page = page[page.ann_date.le(int(cutoff)) & page.end_date.le(int(cutoff))]
                 retained += len(page)
@@ -304,7 +311,7 @@ class FundPortfolioDownloader(_FundDownloader):
                 saved += len(frame)
         self.logger.info(
             f"fund_portfolio query complete {query} fetched_rows={fetched} "
-            f"retained_rows={retained} unique_rows={saved} cutoff={cutoff}"
+            f"retained_rows={retained} unique_rows={saved} excluded_exchange_rows={excluded_exchange} cutoff={cutoff}"
         )
         if not retained:
             self.logger.info("fund_portfolio no rows eligible for cutoff; nothing written")

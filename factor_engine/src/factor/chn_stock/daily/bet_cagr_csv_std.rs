@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, DailyPanel, FinancialEventMarker,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, DailyPanel, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
@@ -92,10 +92,11 @@ fn raw_bet(
             || presence_changed
             || schedule.has_event_after_until(last_date, date)
         {
-            snapshots = cached_financial_stock_snapshots_for_date(
+            snapshots = routed_financial_stock_snapshots_for_date(
                 panel,
                 date,
                 &mut cache,
+                &FinancialStockEventRoute::new(&[income]),
                 |_, code, offset| is_bj_stock(code) || !panel.is_present_offset(offset),
                 |date, code, _| marker(income, code, date),
                 |date, code, _| snapshot(income, code, date),

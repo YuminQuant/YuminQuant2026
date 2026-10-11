@@ -5,7 +5,10 @@ use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
     Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
+
+#[cfg(test)]
+use crate::data::Table;
 use crate::error::{err, Result};
 use crate::factor::common::financial::{add_days, add_months};
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_and_fill_missing};
@@ -173,7 +176,8 @@ fn valid_rating(rating: Option<&str>) -> bool {
     .any(|sentinel| rating.eq_ignore_ascii_case(sentinel))
 }
 
-fn report_index(table: &Table, need_counts: bool, need_first: bool) -> Result<CoverageIndex<'_>> {
+fn report_index<'a>(table: impl Into<crate::data::SourceRowsReader<'a>>, need_counts: bool, need_first: bool) -> Result<CoverageIndex<'a>> {
+    let table = table.into();
     let codes = table.required_utf8("ts_code")?;
     let dates = table.required_i32_date_cast("report_date")?;
     let orgs = table.required_utf8("org_name")?;
@@ -201,13 +205,13 @@ fn report_index(table: &Table, need_counts: bool, need_first: bool) -> Result<Co
                 code,
                 date,
                 orgs[i].as_deref(),
-                authors.unwrap()[i].as_deref(),
-                titles.unwrap()[i].as_deref(),
+                authors.as_ref().unwrap()[i].as_deref(),
+                titles.as_ref().unwrap()[i].as_deref(),
             ))
         {
             result.dates.entry(code).or_default().push(date);
         }
-        if let Some(ratings) = ratings {
+        if let Some(ref ratings) = ratings {
             if let Some(org) = orgs[i].as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                 let history = result
                     .first
@@ -337,7 +341,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
         if !pending.is_empty() {
             if reports.is_none() {
                 reports = Some(report_index(
-                    data.daily(DatasetId::StockAnalystReport)?,
+                    data.analyst_report_reader()?,
                     outputs.iter().any(|output| *output != Output::Firstcov),
                     outputs.contains(&Output::Firstcov),
                 )?);

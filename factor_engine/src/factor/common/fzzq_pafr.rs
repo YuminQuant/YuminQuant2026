@@ -5,7 +5,10 @@ use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
     Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
+
+#[cfg(test)]
+use crate::data::Table;
 use crate::error::{err, Result};
 use crate::factor::common::financial::{add_days, analyst_fiscal_years};
 use crate::factor::common::stock_daily_ops::is_bj_stock;
@@ -113,13 +116,14 @@ fn revision(current: f64, previous: f64) -> Option<f64> {
     value.is_finite().then(|| value.clamp(-0.25, 0.25))
 }
 
-fn build_events(
-    table: &Table,
+fn build_events<'a>(
+    table: impl Into<crate::data::SourceRowsReader<'a>>,
     panel: &DailyPanel,
     income: &FinancialPitReader<'_>,
     lower: i32,
     upper: i32,
 ) -> Result<Vec<Event>> {
+    let table = table.into();
     let codes = table.required_utf8("ts_code")?;
     let dates = table.required_i32_date_cast("report_date")?;
     let years = table.required_utf8("quarter")?;
@@ -480,7 +484,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
         .collect();
     let lower = add_days(panel.dates()[start], -DAYS);
     let events = build_events(
-        data.daily(DatasetId::StockAnalystReport)?,
+        data.analyst_report_reader()?,
         panel,
         &income,
         lower,

@@ -9,7 +9,7 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, ClassificationLevel, ClassificationMap, DailyPanel,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, ClassificationLevel, ClassificationMap, DailyPanel,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialStatementDataset,
     InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
 };
@@ -303,10 +303,11 @@ fn update_business_snapshots_for_date(
     mainbz: &crate::factor::common::MainBusinessReader<'_>,
     cache: &mut InstrumentAlignedSnapshotCache<BusinessSnapshot>,
 ) -> Vec<Option<BusinessSnapshot>> {
-    cached_financial_stock_snapshots_for_date(
+    routed_financial_stock_snapshots_for_date(
         panel,
         trade_date,
         cache,
+        &FinancialStockEventRoute::new(&[balance]).with_main_business(mainbz),
         |_, ts_code, offset| !is_standard_sh_sz_stock(ts_code) || !panel.is_present_offset(offset),
         |trade_date, ts_code, _| {
             let balance_end_date = balance.latest_quarter_end_date(ts_code, trade_date)?;

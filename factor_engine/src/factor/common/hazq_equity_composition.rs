@@ -6,7 +6,7 @@ use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::stock_daily_ops::neutralize_size_sector;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, DailyPanel, FinancialEventMarker,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, DailyPanel, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialPitReader, FinancialStatementDataset,
     InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialRecordView, ReportTypePreference,
 };
@@ -152,10 +152,11 @@ fn raw_columns(
         if !panel.is_target_date(trade_date) {
             continue;
         }
-        let snapshots = cached_financial_stock_snapshots_for_date(
+        let snapshots = routed_financial_stock_snapshots_for_date(
             panel,
             trade_date,
             cache,
+            &FinancialStockEventRoute::new(&[balance]),
             |_, _, offset| !panel.is_present_offset(offset),
             |trade_date, ts_code, _| equity_composition_marker(ts_code, trade_date, balance),
             |trade_date, ts_code, _| {

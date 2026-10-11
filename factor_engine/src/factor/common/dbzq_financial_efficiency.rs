@@ -9,7 +9,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_only};
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, compute_financial_event_snapshot_streaming_on_panel,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, compute_financial_event_snapshot_streaming_on_panel,
     factor_series_to_panel_column, ClassificationLevel, ClassificationMap, DailyPanel,
     EventDrivenCrossSectionCache, FinancialEventMarker, FinancialEventMarkerBuilder,
     FinancialEventSchedule, FinancialPitReader, FinancialStatementDataset,
@@ -304,10 +304,11 @@ fn efficiency_raw_columns(
         if !panel.is_target_date(trade_date) {
             continue;
         }
-        let snapshots = cached_financial_stock_snapshots_for_date(
+        let snapshots = routed_financial_stock_snapshots_for_date(
             panel,
             trade_date,
             cache,
+            &FinancialStockEventRoute::new(&[income, cashflow, balance]).with_key(needs.roe as i64 + 2 * needs.cfo as i64),
             |_, ts_code, offset| {
                 is_bj_stock(ts_code)
                     || !panel.is_present_offset(offset)

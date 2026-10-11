@@ -10,10 +10,10 @@ use crate::barra::{BarraExposure, BarraSharedCache};
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, DailyPanel, FinancialEventMarker,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, DailyPanel, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialPitReader, FinancialStatementDataset,
     InstrumentAlignedSnapshotCache, ReportTypePreference,
 };
@@ -169,7 +169,7 @@ impl StockDailyBarraCne6Value {
         let trailing_ep =
             standardize_panel_industry_filled_weighted(&trailing_ep_raw, &weights, data)?;
 
-        let analyst_records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
+        let analyst_records = parse_analyst_records(data.analyst_report_reader()?)?;
         let analyst_by_stock = index_analyst_records(&analyst_records);
         let analyst_ep_raw = analyst_ep_column(panel, &analyst_by_stock)?;
         let analyst_ep =
@@ -272,10 +272,11 @@ fn cash_ep_raw_column(
         if !panel.is_target_date(trade_date) {
             continue;
         }
-        let snapshots = cached_financial_stock_snapshots_for_date(
+        let snapshots = routed_financial_stock_snapshots_for_date(
             panel,
             trade_date,
             cache,
+            &FinancialStockEventRoute::new(&[cashflow]),
             |_, _, offset| !panel.is_present_offset(offset),
             |trade_date, ts_code, _| cash_ep_marker(ts_code, trade_date, cashflow),
             |trade_date, ts_code, offset| {
@@ -306,10 +307,11 @@ fn ebit_ev_raw_column(
         if !panel.is_target_date(trade_date) {
             continue;
         }
-        let snapshots = cached_financial_stock_snapshots_for_date(
+        let snapshots = routed_financial_stock_snapshots_for_date(
             panel,
             trade_date,
             cache,
+            &FinancialStockEventRoute::new(&[income, balance]),
             |_, _, offset| !panel.is_present_offset(offset),
             |trade_date, ts_code, _| ebit_ev_marker(ts_code, trade_date, income, balance),
             |trade_date, ts_code, offset| {
@@ -445,7 +447,8 @@ struct AnalystRecord {
     pe: f64,
 }
 
-fn parse_analyst_records(table: &Table) -> Result<Vec<AnalystRecord>> {
+fn parse_analyst_records<'a>(table: impl Into<crate::data::SourceRowsReader<'a>>) -> Result<Vec<AnalystRecord>> {
+    let table = table.into();
     let ts_codes = table.required_utf8("ts_code")?;
     let report_dates = table.required_i32_date_cast("report_date")?;
     let quarters = table.required_utf8("quarter")?;

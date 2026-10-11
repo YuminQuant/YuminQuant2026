@@ -9,10 +9,10 @@ use crate::barra::{BarraExposure, BarraSharedCache};
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, DailyPanel, DividendReader,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, DailyPanel, DividendReader,
     FinancialEventMarkerBuilder, InstrumentAlignedSnapshotCache, PanelColumn,
 };
 
@@ -93,7 +93,7 @@ impl StockDailyBarraCne6DividendYield {
         let total_mv =
             panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
         let dividends = data.dividend_reader()?;
-        let analyst_reports = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
+        let analyst_reports = parse_analyst_records(data.analyst_report_reader()?)?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
         let dtop_raw = dtop_column(panel, &total_mv, &dividends, dtop_cache)?;
@@ -168,7 +168,8 @@ struct DtopSlowSnapshot {
     total_mv: f64,
 }
 
-fn parse_analyst_records(table: &Table) -> Result<Vec<AnalystRecord>> {
+fn parse_analyst_records<'a>(table: impl Into<crate::data::SourceRowsReader<'a>>) -> Result<Vec<AnalystRecord>> {
+    let table = table.into();
     let ts_codes = table.required_utf8("ts_code")?;
     let report_dates = table.required_i32_date_cast("report_date")?;
     let quarters = table.required_utf8("quarter")?;
@@ -209,10 +210,11 @@ fn dtop_column(
         }
         let dividend_sums =
             dividends.implemented_ltm_sum_by_stock(add_months(trade_date, -12), trade_date);
-        let snapshots = cached_financial_stock_snapshots_for_date(
+        let snapshots = routed_financial_stock_snapshots_for_date(
             panel,
             trade_date,
             cache,
+            &FinancialStockEventRoute::new(&[]).with_dividend(dividends),
             |_, _, offset| !panel.is_present_offset(offset),
             |_, ts_code, _| {
                 let cash = dividend_sums.get(ts_code).copied().unwrap_or(0.0);

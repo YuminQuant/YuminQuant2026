@@ -5,7 +5,7 @@ use crate::core::{
     AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
     Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::stock_daily_ops::{
     is_bj_stock, neutralize_and_fill_missing as neutralize_and_fill,
@@ -78,7 +78,8 @@ struct Forecast {
 }
 type Reports<'a> = HashMap<(&'a str, i32), Vec<Forecast>>;
 
-fn report_index(table: &Table) -> Result<Reports<'_>> {
+fn report_index<'a>(table: impl Into<crate::data::SourceRowsReader<'a>>) -> Result<Reports<'a>> {
+    let table = table.into();
     let codes = table.required_utf8("ts_code")?;
     let dates = table.required_i32_date_cast("report_date")?;
     let quarters = table.required_utf8("quarter")?;
@@ -186,7 +187,7 @@ fn compute(data: &DataPool, state: &mut State) -> Result<FactorSeries> {
         };
         if state.anchor != Some(anchor) {
             if reports.is_none() {
-                reports = Some(report_index(data.daily(DatasetId::StockAnalystReport)?)?);
+                reports = Some(report_index(data.analyst_report_reader()?)?);
             }
             let reports = reports.as_ref().unwrap();
             let anchor_day = panel

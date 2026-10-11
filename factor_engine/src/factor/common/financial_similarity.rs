@@ -13,7 +13,7 @@ use crate::factor::common::stock_daily_ops::{
 };
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    cached_financial_stock_snapshots_for_date, factor_series_to_panel_column,
+    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, factor_series_to_panel_column,
     financial_event_trade_dates, DailyPanel, DividendReader, EventDrivenCrossSectionCache,
     FinancialEventMarker, FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
@@ -596,10 +596,11 @@ fn financial_metric_columns(
         if !panel.is_target_date(trade_date) {
             continue;
         }
-        let snapshots = cached_financial_stock_snapshots_for_date(
+        let snapshots = routed_financial_stock_snapshots_for_date(
             panel,
             trade_date,
             cache,
+            &FinancialStockEventRoute::new(&[income, balance]).with_dividend(dividends),
             |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
             |trade_date, ts_code, _| {
                 let cash_dividend = dividend_sums_by_date
@@ -660,10 +661,11 @@ fn financial_similarity_points_for_trade_date(
     let date_offset = date_idx * instrument_count;
     let dividend_sums =
         dividends.implemented_ltm_sum_by_stock(add_months(trade_date, -12), trade_date);
-    let snapshots = cached_financial_stock_snapshots_for_date(
+    let snapshots = routed_financial_stock_snapshots_for_date(
         panel,
         trade_date,
         cache,
+        &FinancialStockEventRoute::new(&[income, balance]).with_dividend(dividends),
         |_, ts_code, offset| is_bj_stock(ts_code) || !panel.is_present_offset(offset),
         |trade_date, ts_code, _| {
             let cash_dividend = dividend_sums.get(ts_code).copied().unwrap_or(0.0);

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::core::{FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue};
@@ -17,6 +18,11 @@ pub enum FinancialStatementDataset {
 }
 
 const IMPLEMENTED_DIV_PROC: &str = "\u{5b9e}\u{65bd}";
+
+fn next_index_generation() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct FinancialRecordMarker {
@@ -122,9 +128,14 @@ fn collect_pit_reader_event_dates(
     reader: &FinancialPitReader<'_>,
     event_dates: &mut BTreeSet<i32>,
 ) {
-    for record in reader.index.iter_records() {
-        if reader.preference.contains(record.report_type) {
-            event_dates.insert(record.disclosure_date);
+    for part in reader.index.leaves() {
+        for report_type in &reader.preference.order {
+            if let Some(dates) = part.event_dates_by_type.get(report_type) {
+                let end = dates.partition_point(|date| {
+                    *date <= reader.index.max_disclosure_date.unwrap_or(i32::MAX)
+                });
+                event_dates.extend(&dates[..end]);
+            }
         }
     }
 }
@@ -363,8 +374,11 @@ pub fn financial_event_trade_dates(
 
 #[derive(Clone, Debug)]
 pub struct DividendIndex {
+    generation: u64,
     records: Vec<DividendIndexedRecord>,
+    by_ts_code: HashMap<String, Vec<usize>>,
     event_dates: BTreeSet<i32>,
+    stock_event_dates: HashMap<String, Vec<i32>>,
 }
 
 #[derive(Clone, Debug)]
@@ -426,9 +440,39 @@ impl DividendIndex {
             event_dates.insert(ex_date);
             event_dates.insert(add_days(add_months(ex_date, 12), 1));
         }
+        let mut by_ts_code = HashMap::<String, Vec<usize>>::new();
+        for (idx, record) in records.iter().enumerate() {
+            by_ts_code
+                .entry(record.ts_code.clone())
+                .or_default()
+                .push(idx);
+        }
+        let mut stock_event_dates = HashMap::<String, Vec<i32>>::new();
+        for record in &records {
+            let mut expiry = add_days(add_months(record.ex_date, 12), 1);
+            while add_months(expiry, -12) <= record.ex_date {
+                expiry = add_days(expiry, 1);
+            }
+            stock_event_dates
+                .entry(record.ts_code.clone())
+                .or_default()
+                .extend([
+                    record.ann_date,
+                    record.ex_date,
+                    add_days(add_months(record.ex_date, 12), 1),
+                    expiry,
+                ]);
+        }
+        for dates in stock_event_dates.values_mut() {
+            dates.sort_unstable();
+            dates.dedup();
+        }
         Ok(Self {
             records,
+            by_ts_code,
             event_dates,
+            generation: next_index_generation(),
+            stock_event_dates,
         })
     }
 
@@ -492,11 +536,13 @@ impl<'a> DividendReader<'a> {
 
     pub fn implemented_ltm_sum(&self, ts_code: &str, start_date: i32, trade_date: i32) -> f64 {
         self.index
-            .records
-            .iter()
+            .by_ts_code
+            .get(ts_code)
+            .into_iter()
+            .flatten()
+            .map(|&idx| &self.index.records[idx])
             .filter(|record| {
-                record.ts_code == ts_code
-                    && record.ann_date <= trade_date
+                record.ann_date <= trade_date
                     && record.ex_date <= trade_date
                     && record.ex_date >= start_date
             })
@@ -525,56 +571,84 @@ impl<'a> DividendReader<'a> {
 
 #[derive(Clone, Debug)]
 pub struct MainBusinessIndex {
+    generation: u64,
     rows: Vec<MainBusinessIndexedRow>,
     by_ts_end: BTreeMap<String, BTreeMap<i32, Vec<usize>>>,
-    bz_types: Vec<Option<String>>,
-    bz_items: Vec<Option<String>>,
-    bz_sales: Vec<Option<f64>>,
+    sources: Vec<Arc<Table>>,
+    industry_fingerprints: BTreeMap<String, BTreeMap<i32, i64>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct MainBusinessIndexedRow {
+    source_idx: usize,
     row_idx: usize,
     end_date: i32,
     update_flag: i64,
+    sales: Option<f64>,
 }
 
 impl MainBusinessIndex {
     pub fn from_table(table: Arc<Table>) -> Result<Self> {
-        let ts_codes = table.required_utf8("ts_code")?;
-        let end_dates = table.required_i32_date_cast("end_date")?;
-        let update_flags = table.required_i64_cast("update_flag")?;
-        let bz_types = table.required_utf8("bz_type")?.clone();
-        let bz_items = table.required_utf8("bz_item")?.clone();
-        let bz_sales = table.required_f64_cast("bz_sales")?;
+        Self::from_source_tables(vec![table], i32::MAX)
+    }
+
+    pub fn from_source_tables(sources: Vec<Arc<Table>>, max_end: i32) -> Result<Self> {
         let mut rows = Vec::new();
         let mut by_ts_end = BTreeMap::<String, BTreeMap<i32, Vec<usize>>>::new();
-        for idx in 0..table.len {
-            let (Some(ts_code), Some(end_date), Some(update_flag)) =
-                (ts_codes[idx].as_deref(), end_dates[idx], update_flags[idx])
-            else {
-                continue;
-            };
-            let row_pos = rows.len();
-            rows.push(MainBusinessIndexedRow {
-                row_idx: idx,
-                end_date,
-                update_flag,
-            });
-            by_ts_end
-                .entry(ts_code.to_string())
-                .or_default()
-                .entry(end_date)
-                .or_default()
-                .push(row_pos);
+        for (source_idx, table) in sources.iter().enumerate() {
+            let codes = table.required_utf8("ts_code")?;
+            let ends = table.required_i32_date_cast("end_date")?;
+            let flags = table.required_i64_cast("update_flag")?;
+            table.required_utf8("bz_type")?;
+            table.required_utf8("bz_item")?;
+            let sales = table.required_f64_cast("bz_sales")?;
+            for idx in 0..table.len {
+                let (Some(code), Some(end_date), Some(update_flag)) =
+                    (codes[idx].as_deref(), ends[idx], flags[idx])
+                else {
+                    continue;
+                };
+                if end_date > max_end {
+                    continue;
+                }
+                let pos = rows.len();
+                rows.push(MainBusinessIndexedRow {
+                    source_idx,
+                    row_idx: idx,
+                    end_date,
+                    update_flag,
+                    sales: sales[idx],
+                });
+                by_ts_end
+                    .entry(code.to_owned())
+                    .or_default()
+                    .entry(end_date)
+                    .or_default()
+                    .push(pos);
+            }
         }
-        Ok(Self {
+        let mut index = Self {
+            generation: next_index_generation(),
+            sources,
             rows,
             by_ts_end,
-            bz_types,
-            bz_items,
-            bz_sales,
-        })
+            industry_fingerprints: BTreeMap::new(),
+        };
+        for (code, periods) in &index.by_ts_end {
+            let mut fingerprints = BTreeMap::new();
+            for &end in periods.keys() {
+                if let Some(value) = index
+                    .reader()
+                    .compute_industry_update0_fingerprint(code, end)
+                {
+                    fingerprints.insert(end, value);
+                }
+            }
+            index
+                .industry_fingerprints
+                .insert(code.clone(), fingerprints);
+        }
+        Ok(index)
     }
 
     pub fn reader(&self) -> MainBusinessReader<'_> {
@@ -601,26 +675,23 @@ impl<'a> MainBusinessRecordView<'a> {
         self.index.rows[self.row_pos].update_flag
     }
 
+    fn string(&self, name: &str) -> Option<&'a str> {
+        let row = &self.index.rows[self.row_pos];
+        self.index.sources[row.source_idx]
+            .required_utf8(name)
+            .ok()?
+            .get(row.row_idx)?
+            .as_deref()
+    }
+
     pub fn bz_type(&self) -> Option<&'a str> {
-        self.index
-            .bz_types
-            .get(self.index.rows[self.row_pos].row_idx)
-            .and_then(|value| value.as_deref())
+        self.string("bz_type")
     }
-
     pub fn bz_item(&self) -> Option<&'a str> {
-        self.index
-            .bz_items
-            .get(self.index.rows[self.row_pos].row_idx)
-            .and_then(|value| value.as_deref())
+        self.string("bz_item")
     }
-
     pub fn bz_sales(&self) -> Option<f64> {
-        self.index
-            .bz_sales
-            .get(self.index.rows[self.row_pos].row_idx)
-            .copied()
-            .flatten()
+        self.index.rows[self.row_pos].sales
     }
 }
 
@@ -695,11 +766,19 @@ impl<'a> MainBusinessReader<'a> {
     }
 
     pub fn industry_update0_fingerprint(&self, ts_code: &str, end_date: i32) -> Option<i64> {
+        self.index
+            .industry_fingerprints
+            .get(ts_code)?
+            .get(&end_date)
+            .copied()
+    }
+
+    fn compute_industry_update0_fingerprint(&self, ts_code: &str, end_date: i32) -> Option<i64> {
         let mut rows = self
             .industry_update0_records(ts_code, end_date)
             .into_iter()
             .filter_map(|record| {
-                let item = record.bz_item()?.to_string();
+                let item = record.bz_item()?;
                 let sales = record.bz_sales()?;
                 Some((item, sales.to_bits(), record.update_flag()))
             })
@@ -949,6 +1028,8 @@ impl<T: Clone> FinancialStockSnapshotCache<T> {
 pub struct InstrumentAlignedSnapshotCache<T> {
     instruments: Vec<String>,
     cache: FinancialStockSnapshotCache<T>,
+    route_signature: Vec<(u64, Vec<i64>)>,
+    checked_dates: Vec<Option<i32>>,
 }
 
 impl<T: Clone> Default for InstrumentAlignedSnapshotCache<T> {
@@ -956,6 +1037,8 @@ impl<T: Clone> Default for InstrumentAlignedSnapshotCache<T> {
         Self {
             instruments: Vec::new(),
             cache: FinancialStockSnapshotCache::new(0),
+            route_signature: Vec::new(),
+            checked_dates: Vec::new(),
         }
     }
 }
@@ -977,23 +1060,25 @@ impl<T: Clone> InstrumentAlignedSnapshotCache<T> {
                 next.last_marker_by_stock[new_idx] = self
                     .cache
                     .last_marker_by_stock
-                    .get(old_idx)
-                    .cloned()
-                    .flatten();
+                    .get_mut(old_idx)
+                    .and_then(Option::take);
                 next.last_snapshot_by_stock[new_idx] = self
                     .cache
                     .last_snapshot_by_stock
-                    .get(old_idx)
-                    .cloned()
-                    .flatten();
+                    .get_mut(old_idx)
+                    .and_then(Option::take);
             }
         }
         self.instruments = instruments.to_vec();
         self.cache = next;
+        self.checked_dates = vec![None; instruments.len()];
     }
 
     pub fn clear(&mut self, instrument_idx: usize) {
         self.cache.clear(instrument_idx);
+        if let Some(date) = self.checked_dates.get_mut(instrument_idx) {
+            *date = None;
+        }
     }
 
     pub fn get_or_update<F>(
@@ -1005,8 +1090,144 @@ impl<T: Clone> InstrumentAlignedSnapshotCache<T> {
     where
         F: FnOnce() -> Option<T>,
     {
+        if let Some(date) = self.checked_dates.get_mut(instrument_idx) {
+            *date = None;
+        }
         self.cache.get_or_update(instrument_idx, marker, compute)
     }
+}
+
+/// Explicit dependencies for skipping unchanged stock markers. Formula keys and
+/// non-statement sources must be declared; arbitrary calendar formulas stay unrouted.
+pub struct FinancialStockEventRoute<'a> {
+    readers: Vec<FinancialPitReader<'a>>,
+    dividend: Option<DividendReader<'a>>,
+    extra_keys: Vec<(u64, Vec<i64>)>,
+    query_date: Option<i32>,
+}
+
+impl<'a> FinancialStockEventRoute<'a> {
+    pub fn new(readers: &[&FinancialPitReader<'a>]) -> Self {
+        Self {
+            readers: readers.iter().map(|reader| (*reader).clone()).collect(),
+            dividend: None,
+            extra_keys: Vec::new(),
+            query_date: None,
+        }
+    }
+
+    pub fn with_dividend(mut self, reader: &DividendReader<'a>) -> Self {
+        self.dividend = Some(*reader);
+        self
+    }
+
+    pub fn with_optional_dividend(mut self, reader: Option<&DividendReader<'a>>) -> Self {
+        self.dividend = reader.copied();
+        self
+    }
+
+    pub fn with_main_business(mut self, reader: &MainBusinessReader<'_>) -> Self {
+        self.extra_keys.push((reader.index.generation, Vec::new()));
+        self
+    }
+
+    pub fn with_key(mut self, key: i64) -> Self {
+        self.extra_keys.push((0, vec![key]));
+        self
+    }
+
+    /// Use when the marker queries a historical PIT date rather than the output date.
+    pub fn at_date(mut self, date: i32) -> Self {
+        self.query_date = Some(date);
+        self
+    }
+
+    fn signature(&self) -> Vec<(u64, Vec<i64>)> {
+        let mut keys: Vec<_> = self
+            .readers
+            .iter()
+            .map(|r| (r.index.generation, r.preference.order.clone()))
+            .collect();
+        if let Some(reader) = self.dividend {
+            keys.push((reader.index.generation, Vec::new()));
+        }
+        keys.extend(self.extra_keys.iter().cloned());
+        keys
+    }
+
+    fn changed(&self, code: &str, after: i32, until: i32) -> bool {
+        self.readers.iter().any(|reader| {
+            let until = until.min(reader.index.max_disclosure_date.unwrap_or(i32::MAX));
+            reader.index.leaves().any(|part| {
+                part.events_by_stock_type.get(code).is_some_and(|types| {
+                    reader.preference.order.iter().any(|kind| {
+                        types
+                            .get(kind)
+                            .is_some_and(|dates| event_between(dates, after, until))
+                    })
+                })
+            })
+        }) || self.dividend.is_some_and(|reader| {
+            reader
+                .index
+                .stock_event_dates
+                .get(code)
+                .is_some_and(|dates| event_between(dates, after, until))
+        })
+    }
+}
+
+fn event_between(dates: &[i32], after: i32, until: i32) -> bool {
+    after < until
+        && dates
+            .get(dates.partition_point(|date| *date <= after))
+            .is_some_and(|date| *date <= until)
+}
+
+pub fn routed_financial_stock_snapshots_for_date<T, SkipFn, MarkerFn, ComputeFn>(
+    panel: &DailyPanel,
+    trade_date: i32,
+    cache: &mut InstrumentAlignedSnapshotCache<T>,
+    route: &FinancialStockEventRoute<'_>,
+    mut skip_fn: SkipFn,
+    mut marker_fn: MarkerFn,
+    mut compute_fn: ComputeFn,
+) -> Vec<Option<T>>
+where
+    T: Clone,
+    SkipFn: FnMut(i32, &str, usize) -> bool,
+    MarkerFn: FnMut(i32, &str, usize) -> Option<FinancialEventMarker>,
+    ComputeFn: FnMut(i32, &str, usize) -> Option<T>,
+{
+    cache.align_to(panel.instruments());
+    let signature = route.signature();
+    if cache.route_signature != signature {
+        cache.checked_dates.fill(None);
+        cache.route_signature = signature;
+    }
+    let mut output = vec![None; panel.instruments().len()];
+    let Some(date_idx) = panel.dates().iter().position(|date| *date == trade_date) else {
+        return output;
+    };
+    let query_date = route.query_date.unwrap_or(trade_date);
+    for (idx, code) in panel.instruments().iter().enumerate() {
+        let offset = date_idx * output.len() + idx;
+        if skip_fn(trade_date, code, offset) {
+            cache.clear(idx);
+            continue;
+        }
+        let unchanged = cache.checked_dates[idx]
+            .is_some_and(|after| after <= query_date && !route.changed(code, after, query_date));
+        output[idx] = if unchanged {
+            cache.cache.last_snapshot_by_stock[idx].clone()
+        } else {
+            cache.get_or_update(idx, marker_fn(trade_date, code, offset), || {
+                compute_fn(trade_date, code, offset)
+            })
+        };
+        cache.checked_dates[idx] = Some(query_date);
+    }
+    output
 }
 
 pub fn cached_financial_stock_snapshots_for_date<T, SkipFn, MarkerFn, ComputeFn>(
@@ -1076,9 +1297,16 @@ impl ReportTypePreference {
 
 #[derive(Clone, Debug)]
 pub struct FinancialPitIndex {
+    generation: u64,
+    periods_by_stock: BTreeMap<String, Vec<i32>>,
+    events_by_stock_type: BTreeMap<String, BTreeMap<i64, Vec<i32>>>,
+    event_dates_by_type: BTreeMap<i64, Vec<i32>>,
+    record_count: usize,
     sources: Vec<Arc<Table>>,
     records: Vec<FinancialIndexedRecord>,
-    by_ts_code: BTreeMap<String, BTreeMap<i32, BTreeMap<i64, Vec<usize>>>>,
+    by_ts_code: BTreeMap<String, Vec<usize>>,
+    partitions: Vec<Arc<FinancialPitIndex>>,
+    max_disclosure_date: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1101,7 +1329,7 @@ impl FinancialPitIndex {
         max_disclosure_date: Option<i32>,
     ) -> Result<Self> {
         let mut records = Vec::new();
-        let mut by_ts_code = BTreeMap::<String, BTreeMap<i32, BTreeMap<i64, Vec<usize>>>>::new();
+        let mut by_ts_code = BTreeMap::<String, Vec<usize>>::new();
         for (source_idx, table) in sources.iter().enumerate() {
             let ts_codes = table.required_utf8("ts_code")?;
             let ann_dates = table.required_i32_date_cast("ann_date")?;
@@ -1134,37 +1362,139 @@ impl FinancialPitIndex {
                     report_type,
                     update_flag: update_flags[idx].unwrap_or(0),
                 });
-                by_ts_code
-                    .entry(ts_code)
-                    .or_default()
-                    .entry(end_date)
-                    .or_default()
-                    .entry(report_type)
-                    .or_default()
-                    .push(record_idx);
+                by_ts_code.entry(ts_code).or_default().push(record_idx);
             }
         }
 
-        for by_end_date in by_ts_code.values_mut() {
-            for by_report_type in by_end_date.values_mut() {
-                for versions in by_report_type.values_mut() {
-                    versions.sort_by(|left, right| {
-                        let left = records[*left];
-                        let right = records[*right];
-                        right
-                            .disclosure_date
-                            .cmp(&left.disclosure_date)
-                            .then_with(|| right.update_flag.cmp(&left.update_flag))
-                    });
-                }
+        for versions in by_ts_code.values_mut() {
+            // Stable ties preserve original source/row precedence without per-period trees.
+            versions.sort_by(|left, right| {
+                let left = records[*left];
+                let right = records[*right];
+                (left.end_date, left.report_type)
+                    .cmp(&(right.end_date, right.report_type))
+                    .then_with(|| right.disclosure_date.cmp(&left.disclosure_date))
+                    .then_with(|| right.update_flag.cmp(&left.update_flag))
+            });
+            versions.shrink_to_fit();
+        }
+        records.shrink_to_fit();
+
+        let periods_by_stock = by_ts_code
+            .iter()
+            .map(|(code, rows)| {
+                let mut ends = rows
+                    .iter()
+                    .map(|&i| records[i].end_date)
+                    .collect::<Vec<_>>();
+                ends.dedup();
+                ends.shrink_to_fit();
+                (code.clone(), ends)
+            })
+            .collect();
+        let mut events_by_stock_type = BTreeMap::<String, BTreeMap<i64, Vec<i32>>>::new();
+        for (code, rows) in &by_ts_code {
+            let types = events_by_stock_type.entry(code.clone()).or_default();
+            for &i in rows {
+                let record = &records[i];
+                types
+                    .entry(record.report_type)
+                    .or_default()
+                    .push(record.disclosure_date);
+            }
+            for dates in types.values_mut() {
+                dates.sort_unstable();
+                dates.dedup();
+                dates.shrink_to_fit();
             }
         }
-
+        let mut event_dates_by_type = BTreeMap::<i64, Vec<i32>>::new();
+        for types in events_by_stock_type.values() {
+            for (&kind, dates) in types {
+                event_dates_by_type.entry(kind).or_default().extend(dates);
+            }
+        }
+        for dates in event_dates_by_type.values_mut() {
+            dates.sort_unstable();
+            dates.dedup();
+            dates.shrink_to_fit();
+        }
         Ok(Self {
+            generation: next_index_generation(),
+            periods_by_stock,
+            events_by_stock_type,
+            event_dates_by_type,
+            record_count: records.len(),
             sources,
             records,
             by_ts_code,
+            partitions: Vec::new(),
+            max_disclosure_date,
         })
+    }
+
+    pub fn from_partitions(partitions: Vec<Arc<Self>>, max_date: i32) -> Self {
+        assert!(
+            partitions.iter().all(|part| part.partitions.is_empty()),
+            "annual partitions must be leaf indexes"
+        );
+        let record_count = partitions
+            .iter()
+            .flat_map(|part| part.records.iter())
+            .filter(|record| record.disclosure_date <= max_date)
+            .count();
+        let mut periods_by_stock = BTreeMap::<String, Vec<i32>>::new();
+        for part in &partitions {
+            for (code, rows) in &part.by_ts_code {
+                let mut last_end = None;
+                for &idx in rows {
+                    let record = &part.records[idx];
+                    if record.disclosure_date <= max_date && last_end != Some(record.end_date) {
+                        periods_by_stock
+                            .entry(code.clone())
+                            .or_default()
+                            .push(record.end_date);
+                        last_end = Some(record.end_date);
+                    }
+                }
+            }
+        }
+        for ends in periods_by_stock.values_mut() {
+            ends.sort_unstable();
+            ends.dedup();
+            ends.shrink_to_fit();
+        }
+        Self {
+            generation: next_index_generation(),
+            periods_by_stock,
+            events_by_stock_type: BTreeMap::new(),
+            event_dates_by_type: BTreeMap::new(),
+            record_count,
+            sources: Vec::new(),
+            records: Vec::new(),
+            by_ts_code: BTreeMap::new(),
+            partitions,
+            max_disclosure_date: Some(max_date),
+        }
+    }
+
+    fn leaves(&self) -> impl Iterator<Item = &Self> {
+        self.partitions
+            .iter()
+            .map(Arc::as_ref)
+            .chain(self.partitions.is_empty().then_some(self))
+    }
+
+    fn versions(&self, code: &str, end_date: i32, report_type: i64) -> &[usize] {
+        let Some(rows) = self.by_ts_code.get(code) else {
+            return &[];
+        };
+        let key = (end_date, report_type);
+        let start = rows
+            .partition_point(|&i| (self.records[i].end_date, self.records[i].report_type) < key);
+        let end = rows
+            .partition_point(|&i| (self.records[i].end_date, self.records[i].report_type) <= key);
+        &rows[start..end]
     }
 
     pub fn reader(&self, preference: ReportTypePreference) -> FinancialPitReader<'_> {
@@ -1175,11 +1505,7 @@ impl FinancialPitIndex {
     }
 
     pub fn len(&self) -> usize {
-        self.records.len()
-    }
-
-    fn iter_records(&self) -> impl Iterator<Item = &FinancialIndexedRecord> {
-        self.records.iter()
+        self.record_count
     }
 }
 
@@ -1197,19 +1523,23 @@ impl<'a> FinancialPitReader<'a> {
         after_exclusive: i32,
         until_inclusive: i32,
     ) -> Vec<i32> {
-        let Some(periods) = self.index.by_ts_code.get(ts_code) else {
-            return Vec::new();
-        };
         let mut dates = Vec::new();
-        for types in periods.values() {
-            for (report_type, versions) in types {
-                if !self.preference.contains(*report_type) {
+        let until_inclusive =
+            until_inclusive.min(self.index.max_disclosure_date.unwrap_or(i32::MAX));
+        if after_exclusive >= until_inclusive {
+            return dates;
+        }
+        for part in self.index.leaves() {
+            let Some(types) = part.events_by_stock_type.get(ts_code) else {
+                continue;
+            };
+            for report_type in &self.preference.order {
+                let Some(events) = types.get(report_type) else {
                     continue;
-                }
-                dates.extend(versions.iter().filter_map(|&idx| {
-                    let date = self.index.records[idx].disclosure_date;
-                    (date > after_exclusive && date <= until_inclusive).then_some(date)
-                }));
+                };
+                let start = events.partition_point(|date| *date <= after_exclusive);
+                let end = events.partition_point(|date| *date <= until_inclusive);
+                dates.extend_from_slice(&events[start..end]);
             }
         }
         dates.sort_unstable();
@@ -1223,28 +1553,46 @@ impl<'a> FinancialPitReader<'a> {
         trade_date: i32,
         end_date: i32,
     ) -> Option<PitFinancialRecordView<'a>> {
-        let by_report_type = self.index.by_ts_code.get(ts_code)?.get(&end_date)?;
+        let date = trade_date.min(self.index.max_disclosure_date.unwrap_or(i32::MAX));
         for report_type in &self.preference.order {
-            let Some(versions) = by_report_type.get(report_type) else {
-                continue;
-            };
-            if let Some(record_idx) = versions
-                .iter()
-                .copied()
-                .find(|idx| self.index.records[*idx].disclosure_date <= trade_date)
-            {
-                return Some(PitFinancialRecordView {
-                    table: self.index.sources[self.index.records[record_idx].source_idx].as_ref(),
-                    record: &self.index.records[record_idx],
-                });
+            let mut best: Option<PitFinancialRecordView<'a>> = None;
+            for part in self.index.leaves() {
+                let versions = part.versions(ts_code, end_date, *report_type);
+                let visible =
+                    versions.partition_point(|&idx| part.records[idx].disclosure_date > date);
+                if let Some(&idx) = versions.get(visible) {
+                    let record = &part.records[idx];
+                    // Keep the earlier source on exact ties, matching the stable merged sort.
+                    if best.as_ref().is_none_or(|old| {
+                        (record.disclosure_date, record.update_flag)
+                            > (old.record.disclosure_date, old.record.update_flag)
+                    }) {
+                        best = Some(PitFinancialRecordView {
+                            table: part.sources[record.source_idx].as_ref(),
+                            record,
+                        });
+                    }
+                }
+            }
+            if best.is_some() {
+                return best;
             }
         }
         None
     }
 
+    fn end_dates(&self, ts_code: &str) -> impl DoubleEndedIterator<Item = i32> + '_ {
+        self.index
+            .periods_by_stock
+            .get(ts_code)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+    }
+
     pub fn latest_quarter_end_date(&self, ts_code: &str, trade_date: i32) -> Option<i32> {
-        let by_end_date = self.index.by_ts_code.get(ts_code)?;
-        for (&end_date, _) in by_end_date.iter().rev() {
+        for end_date in self.end_dates(ts_code).into_iter().rev() {
             if self
                 .record_for_end_date(ts_code, trade_date, end_date)
                 .is_some()
@@ -1273,8 +1621,7 @@ impl<'a> FinancialPitReader<'a> {
     }
 
     pub fn ttm_sum(&self, ts_code: &str, trade_date: i32, column: &str) -> Option<f64> {
-        let by_end_date = self.index.by_ts_code.get(ts_code)?;
-        for (&anchor, _) in by_end_date.iter().rev() {
+        for anchor in self.end_dates(ts_code).into_iter().rev() {
             if let Some(value) = self.ttm_sum_for_end_date(ts_code, trade_date, anchor, column) {
                 return Some(value);
             }
@@ -1283,8 +1630,7 @@ impl<'a> FinancialPitReader<'a> {
     }
 
     pub fn latest_annual_end_date(&self, ts_code: &str, trade_date: i32) -> Option<i32> {
-        let by_end_date = self.index.by_ts_code.get(ts_code)?;
-        for (&end_date, _) in by_end_date.iter().rev() {
+        for end_date in self.end_dates(ts_code).into_iter().rev() {
             if end_date % 10_000 == 12_31
                 && self
                     .record_for_end_date(ts_code, trade_date, end_date)
@@ -1319,8 +1665,7 @@ impl<'a> FinancialPitReader<'a> {
         column: &str,
         count: usize,
     ) -> Option<Vec<f64>> {
-        let by_end_date = self.index.by_ts_code.get(ts_code)?;
-        for (&anchor, _) in by_end_date.iter().rev() {
+        for anchor in self.end_dates(ts_code).into_iter().rev() {
             if anchor % 10_000 != 12_31 {
                 continue;
             }
@@ -2083,6 +2428,200 @@ mod tests {
     }
 
     #[test]
+    fn financial_compact_stock_index_separates_periods_types_and_missing_keys() {
+        let index = FinancialPitIndex::from_table(Arc::new(financial_table(&[
+            (20240331, 20240430, 2, 0, 1.0),
+            (20231231, 20240430, 3, 0, 2.0),
+            (20240331, 20240501, 3, 0, 3.0),
+            (20240331, 20240501, 3, 1, 4.0),
+            (20240331, 20240501, 3, 1, 5.0),
+            (20240331, 20240429, 1, 0, 6.0),
+        ])))
+        .unwrap();
+        assert_eq!(index.by_ts_code.len(), 1);
+        assert_eq!(index.by_ts_code["000001.SZ"].len(), index.records.len());
+        assert!(index.versions("absent", 20240331, 3).is_empty());
+        assert!(index.versions("000001.SZ", 20240630, 3).is_empty());
+        assert!(index.versions("000001.SZ", 20240331, 4).is_empty());
+        let reader = index.reader(ReportTypePreference::income_single_quarter());
+        assert_eq!(
+            reader
+                .record_for_end_date("000001.SZ", 20240430, 20240331)
+                .unwrap()
+                .column("value"),
+            Some(1.0)
+        );
+        assert_eq!(
+            reader
+                .record_for_end_date("000001.SZ", 20240501, 20240331)
+                .unwrap()
+                .column("value"),
+            Some(4.0)
+        );
+        assert_eq!(
+            reader
+                .record_for_end_date("000001.SZ", 20240501, 20231231)
+                .unwrap()
+                .column("value"),
+            Some(2.0)
+        );
+    }
+
+    #[test]
+    fn financial_binary_version_lookup_matches_linear_for_all_boundaries() {
+        let index = FinancialPitIndex::from_table(Arc::new(financial_table(&[
+            (20241231, 20250401, 2, 0, 1.0),
+            (20241231, 20250410, 3, 0, 2.0),
+            (20241231, 20250410, 3, 1, 3.0),
+            (20241231, 20250410, 3, 1, 4.0),
+            (20241231, 20250420, 2, 1, 5.0),
+            (20241231, 20250430, 3, 1, 6.0),
+        ])))
+        .unwrap();
+        let reader = index.reader(ReportTypePreference::income_single_quarter());
+        for date in [
+            20250331, 20250401, 20250409, 20250410, 20250419, 20250420, 20250430, 20250501,
+        ] {
+            let expected = [3, 2].iter().find_map(|kind| {
+                index.by_ts_code["000001.SZ"].iter().copied().find(|&i| {
+                    index.records[i].end_date == 20241231
+                        && index.records[i].report_type == *kind
+                        && index.records[i].disclosure_date <= date
+                })
+            });
+            let actual = reader.record_for_end_date("000001.SZ", date, 20241231);
+            assert_eq!(
+                actual.map(|v| v.record.row_idx),
+                expected.map(|i| index.records[i].row_idx)
+            );
+        }
+    }
+
+    #[test]
+    fn financial_dividend_stock_index_matches_full_scan_in_original_order() {
+        let index = DividendIndex::from_table(Arc::new(dividend_table(&[
+            ("A", 20240101, "\u{5b9e}\u{65bd}", 1e16, 20240201, 1.0),
+            ("B", 20240101, "\u{5b9e}\u{65bd}", 7.0, 20240201, 1.0),
+            ("A", 20240101, "\u{5b9e}\u{65bd}", -1e16, 20240201, 1.0),
+            ("A", 20240101, "\u{5b9e}\u{65bd}", 1.0, 20240201, 1.0),
+            ("A", 20250101, "\u{5b9e}\u{65bd}", 2.0, 20250201, 1.0),
+            ("A", 20240101, "proposal", 9.0, 20240201, 1.0),
+        ])))
+        .unwrap();
+        assert_eq!(index.by_ts_code["A"].len(), 4);
+        for code in ["A", "B", "missing"] {
+            for (start, end) in [
+                (20240101, 20240131),
+                (20240101, 20240201),
+                (20240202, 20250201),
+                (20240101, 20250201),
+            ] {
+                let expected: f64 = index
+                    .records
+                    .iter()
+                    .filter(|r| {
+                        r.ts_code == code
+                            && r.ann_date <= end
+                            && r.ex_date <= end
+                            && r.ex_date >= start
+                    })
+                    .map(|r| r.cash_amount)
+                    .sum();
+                assert_eq!(
+                    index
+                        .reader()
+                        .implemented_ltm_sum(code, start, end)
+                        .to_bits(),
+                    expected.to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn financial_snapshot_remap_moves_payload_without_clone() {
+        #[derive(Debug)]
+        struct Payload;
+        impl Clone for Payload {
+            fn clone(&self) -> Self {
+                panic!("remap must move snapshots");
+            }
+        }
+        let mut cache = InstrumentAlignedSnapshotCache::<Payload>::default();
+        cache.align_to(&["A".into(), "B".into()]);
+        cache.cache.last_snapshot_by_stock[0] = Some(Payload);
+        cache.align_to(&["B".into(), "C".into(), "A".into()]);
+        assert!(cache.cache.last_snapshot_by_stock[0].is_none());
+        assert!(cache.cache.last_snapshot_by_stock[1].is_none());
+        assert!(cache.cache.last_snapshot_by_stock[2].is_some());
+        cache.align_to(&["B".into()]);
+        assert_eq!(cache.cache.last_snapshot_by_stock.len(), 1);
+    }
+
+    #[test]
+    fn financial_main_business_cached_marker_preserves_owned_string_hash() {
+        use std::hash::{Hash, Hasher};
+        let table = Table::new(BTreeMap::from([
+            (
+                "ts_code".into(),
+                ColumnData::Utf8(vec![Some("A".into()); 4]),
+            ),
+            ("end_date".into(), ColumnData::I32(vec![Some(20241231); 4])),
+            (
+                "update_flag".into(),
+                ColumnData::I64(vec![Some(0), Some(0), Some(0), Some(1)]),
+            ),
+            (
+                "bz_type".into(),
+                ColumnData::Utf8(vec![
+                    Some("I".into()),
+                    Some("i".into()),
+                    Some("P".into()),
+                    Some("I".into()),
+                ]),
+            ),
+            (
+                "bz_item".into(),
+                ColumnData::Utf8(vec![
+                    Some("second".into()),
+                    Some("first".into()),
+                    Some("excluded".into()),
+                    Some("revision".into()),
+                ]),
+            ),
+            (
+                "bz_sales".into(),
+                ColumnData::F64(vec![Some(2.0), Some(1.0), Some(99.0), Some(88.0)]),
+            ),
+        ]))
+        .unwrap();
+        let index = super::MainBusinessIndex::from_table(Arc::new(table)).unwrap();
+        let mut rows = vec![
+            ("second".to_string(), 2.0f64.to_bits(), 0i64),
+            ("first".to_string(), 1.0f64.to_bits(), 0i64),
+        ];
+        rows.sort();
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        20241231i32.hash(&mut hash);
+        rows.hash(&mut hash);
+        let expected = Some(i64::from_ne_bytes(hash.finish().to_ne_bytes()));
+        assert_eq!(
+            index.reader().industry_update0_fingerprint("A", 20241231),
+            expected
+        );
+        assert_eq!(
+            index
+                .reader()
+                .industry_update0_fingerprint("missing", 20241231),
+            None
+        );
+        assert_eq!(
+            index.reader().industry_update0_fingerprint("A", 20240930),
+            None
+        );
+    }
+
+    #[test]
     fn financial_pit_index_shares_rows_but_keeps_report_type_preferences_separate() {
         let table = Arc::new(financial_table(&[
             (20250331, 20250420, 1, 0, 1.0),
@@ -2105,6 +2644,381 @@ mod tests {
                 .record_for_end_date("000001.SZ", 20250501, 20250331)
                 .and_then(|record| record.column("value")),
             Some(1.0)
+        );
+    }
+
+    #[test]
+    fn financial_annual_partitions_match_merged_versions_and_cutoffs() {
+        let first = Arc::new(financial_table(&[
+            (20231231, 20240430, 2, 0, 1.0),
+            (20240331, 20240430, 2, 0, 2.0),
+            (20240630, 20240830, 2, 0, 3.0),
+            (20240930, 20241030, 2, 0, 4.0),
+            (20231231, 20240430, 1, 0, 10.0),
+        ]));
+        let second = Arc::new(financial_table(&[
+            (20231231, 20250105, 3, 0, 5.0),
+            (20231231, 20250105, 3, 1, 6.0),
+            (20231231, 20250105, 3, 1, 7.0),
+            (20240930, 20250201, 3, 0, 8.0),
+        ]));
+        let a = Arc::new(FinancialPitIndex::from_table(first.clone()).unwrap());
+        let b = Arc::new(FinancialPitIndex::from_table(second.clone()).unwrap());
+        for cutoff in [20240429, 20240430, 20241031, 20250105, 20250201] {
+            let composite = FinancialPitIndex::from_partitions(vec![a.clone(), b.clone()], cutoff);
+            let merged = FinancialPitIndex::from_source_tables(
+                vec![first.clone(), second.clone()],
+                Some(cutoff),
+            )
+            .unwrap();
+            assert!(composite.records.is_empty());
+            assert!(composite.sources.is_empty());
+            assert!(Arc::ptr_eq(&composite.partitions[0], &a));
+            assert_eq!(composite.len(), merged.len());
+            for preference in [
+                ReportTypePreference::new(&[3, 2]),
+                ReportTypePreference::new(&[1, 4]),
+            ] {
+                let actual = composite.reader(preference.clone());
+                let expected = merged.reader(preference);
+                for date in [20240429, 20240430, 20241031, 20250105, 20250201, 20261231] {
+                    for end in [20231231, 20240331, 20240630, 20240930] {
+                        let value = |r: Option<super::PitFinancialRecordView<'_>>| {
+                            r.map(|r| {
+                                (
+                                    r.disclosure_date(),
+                                    r.report_type(),
+                                    r.update_flag(),
+                                    r.column("value"),
+                                )
+                            })
+                        };
+                        assert_eq!(
+                            value(actual.record_for_end_date("000001.SZ", date, end)),
+                            value(expected.record_for_end_date("000001.SZ", date, end))
+                        );
+                    }
+                    assert_eq!(
+                        actual.latest_quarter_end_date("000001.SZ", date),
+                        expected.latest_quarter_end_date("000001.SZ", date)
+                    );
+                    assert_eq!(
+                        actual.ttm_sum("000001.SZ", date, "value"),
+                        expected.ttm_sum("000001.SZ", date, "value")
+                    );
+                    for count in [0, 1, 3] {
+                        assert_eq!(
+                            actual.annual_values("000001.SZ", date, "value", count),
+                            expected.annual_values("000001.SZ", date, "value", count)
+                        );
+                    }
+                    assert_eq!(
+                        actual.disclosure_dates_between("000001.SZ", 20230101, date),
+                        expected.disclosure_dates_between("000001.SZ", 20230101, date)
+                    );
+                }
+            }
+        }
+        let tie = Arc::new(
+            FinancialPitIndex::from_table(Arc::new(financial_table(&[(
+                20231231, 20240430, 2, 0, 999.0,
+            )])))
+            .unwrap(),
+        );
+        let composite = FinancialPitIndex::from_partitions(vec![a, tie], 20240430);
+        assert_eq!(
+            composite
+                .reader(ReportTypePreference::new(&[2]))
+                .record_for_end_date("000001.SZ", 20240430, 20231231)
+                .unwrap()
+                .column("value"),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn financial_stock_route_skips_unchanged_markers_and_handles_reentry_and_rewind() {
+        use super::{routed_financial_stock_snapshots_for_date, FinancialStockEventRoute};
+        let index = Arc::new(
+            FinancialPitIndex::from_table(Arc::new(financial_table_with_codes(&[
+                ("A", 20241231, 20250418, 2, 0, 1.0),
+                ("B", 20241231, 20250418, 2, 0, 2.0),
+                ("A", 20241231, 20250419, 3, 1, 3.0), // Saturday revision
+                ("B", 20241231, 20250420, 1, 0, 99.0), // irrelevant report type
+            ])))
+            .unwrap(),
+        );
+        let reader = index.reader(ReportTypePreference::new(&[3, 2]));
+        let route = FinancialStockEventRoute::new(&[&reader]);
+        let mut cache = InstrumentAlignedSnapshotCache::default();
+        let mut markers = BTreeMap::<String, usize>::new();
+        let mut computes = BTreeMap::<String, usize>::new();
+        for (date, skip_b, expected) in [
+            (20250418, false, vec![Some(1.0), Some(2.0)]),
+            (20250421, false, vec![Some(3.0), Some(2.0)]),
+            (20250422, true, vec![Some(3.0), None]),
+            (20250423, false, vec![Some(3.0), Some(2.0)]),
+            (20250423, false, vec![Some(3.0), Some(2.0)]),
+            (20250418, false, vec![Some(1.0), Some(2.0)]),
+        ] {
+            let panel = panel_for_codes(date, &["A", "B"]);
+            let values = routed_financial_stock_snapshots_for_date(
+                &panel,
+                date,
+                &mut cache,
+                &route,
+                |_, code, _| skip_b && code == "B",
+                |date, code, _| {
+                    *markers.entry(code.into()).or_default() += 1;
+                    let mut marker = FinancialEventMarkerBuilder::new();
+                    marker.include_reader_latest_quarter(
+                        FinancialStatementDataset::Income,
+                        &reader,
+                        code,
+                        date,
+                    );
+                    marker.build()
+                },
+                |date, code, _| {
+                    *computes.entry(code.into()).or_default() += 1;
+                    reader
+                        .record_for_end_date(code, date, 20241231)?
+                        .column("value")
+                },
+            );
+            assert_eq!(values, expected);
+        }
+        assert_eq!(markers["A"], 3);
+        assert_eq!(markers["B"], 3); // initial, reentry, rewind (not the other stock's event)
+        assert_eq!(computes["A"], 3);
+        assert_eq!(computes["B"], 2);
+        // A new bounded batch view must revalidate markers, even if the sources are reused.
+        let batch = FinancialPitIndex::from_partitions(vec![index], 20250418);
+        let reader = batch.reader(ReportTypePreference::new(&[3, 2]));
+        let p = panel_for_codes(20250424, &["B", "C", "A"]);
+        let values = routed_financial_stock_snapshots_for_date(
+            &p,
+            20250424,
+            &mut cache,
+            &FinancialStockEventRoute::new(&[&reader]),
+            |_, _, _| false,
+            |date, code, _| {
+                let mut m = FinancialEventMarkerBuilder::new();
+                m.include_reader_latest_quarter(
+                    FinancialStatementDataset::Income,
+                    &reader,
+                    code,
+                    date,
+                );
+                m.build()
+            },
+            |date, code, _| {
+                reader
+                    .record_for_end_date(code, date, 20241231)?
+                    .column("value")
+            },
+        );
+        for (code, value) in p.instruments().iter().zip(values) {
+            assert_eq!(
+                value,
+                match code.as_str() {
+                    "A" => Some(1.0),
+                    "B" => Some(2.0),
+                    _ => None,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn financial_stock_route_source_loss_clears_previously_valid_snapshot() {
+        use super::{routed_financial_stock_snapshots_for_date, FinancialStockEventRoute};
+        let valid = FinancialPitIndex::from_table(Arc::new(financial_table(&[(
+            20240331, 20240430, 2, 0, 7.0,
+        )])))
+        .unwrap();
+        let empty = FinancialPitIndex::from_partitions(Vec::new(), 20250430);
+        let p = panel(&[20250429, 20250430]);
+        let mut cache = InstrumentAlignedSnapshotCache::default();
+        for (date, index, expected) in [(20250429, &valid, Some(7.0)), (20250430, &empty, None)] {
+            let reader = index.reader(ReportTypePreference::new(&[2]));
+            let values = routed_financial_stock_snapshots_for_date(
+                &p,
+                date,
+                &mut cache,
+                &FinancialStockEventRoute::new(&[&reader]),
+                |_, _, _| false,
+                |date, code, _| {
+                    let mut m = FinancialEventMarkerBuilder::new();
+                    m.include_reader_latest_quarter(
+                        FinancialStatementDataset::Income,
+                        &reader,
+                        code,
+                        date,
+                    );
+                    m.build()
+                },
+                |date, code, _| {
+                    reader
+                        .record_for_end_date(code, date, 20240331)?
+                        .column("value")
+                },
+            );
+            assert_eq!(values, vec![expected]);
+        }
+    }
+
+    #[test]
+    fn financial_stock_route_uses_historical_query_clock_and_formula_key() {
+        use super::{routed_financial_stock_snapshots_for_date, FinancialStockEventRoute};
+        let index = FinancialPitIndex::from_table(Arc::new(financial_table(&[(
+            20240331, 20240430, 2, 0, 7.0,
+        )])))
+        .unwrap();
+        let reader = index.reader(ReportTypePreference::new(&[2]));
+        let p = panel(&[20250429, 20250430, 20250501]);
+        let mut cache = InstrumentAlignedSnapshotCache::default();
+        let mut count = 0;
+        for (output, query, key) in [
+            (20250429, 20240429, 1),
+            (20250430, 20240430, 1),
+            (20250501, 20240501, 2),
+        ] {
+            let values = routed_financial_stock_snapshots_for_date(
+                &p,
+                output,
+                &mut cache,
+                &FinancialStockEventRoute::new(&[&reader])
+                    .at_date(query)
+                    .with_key(key),
+                |_, _, _| false,
+                |_, code, _| {
+                    count += 1;
+                    let mut m = FinancialEventMarkerBuilder::new();
+                    m.include_reader_latest_quarter(
+                        FinancialStatementDataset::Income,
+                        &reader,
+                        code,
+                        query,
+                    );
+                    m.include_synthetic("formula", key);
+                    m.build()
+                },
+                |_, code, _| {
+                    reader
+                        .record_for_end_date(code, query, 20240331)?
+                        .column("value")
+                },
+            );
+            assert_eq!(
+                values,
+                vec![if query < 20240430 { None } else { Some(7.0) }]
+            );
+        }
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn financial_stock_route_dividend_expiry_matches_calendar_window_in_leap_year() {
+        use super::{
+            add_months, routed_financial_stock_snapshots_for_date, FinancialStockEventRoute,
+        };
+        let index = DividendIndex::from_table(Arc::new(dividend_table(&[(
+            "000001.SZ",
+            20230220,
+            super::IMPLEMENTED_DIV_PROC,
+            1.0,
+            20230228,
+            10.0,
+        )])))
+        .unwrap();
+        let reader = index.reader();
+        let dates = [20240227, 20240228, 20240229, 20240301, 20240304];
+        let p = panel(&dates);
+        let mut cache = InstrumentAlignedSnapshotCache::default();
+        let mut markers = 0;
+        for date in dates {
+            let value = reader.implemented_ltm_sum("000001.SZ", add_months(date, -12), date);
+            let result = routed_financial_stock_snapshots_for_date(
+                &p,
+                date,
+                &mut cache,
+                &FinancialStockEventRoute::new(&[]).with_dividend(&reader),
+                |_, _, _| false,
+                |_, _, _| {
+                    markers += 1;
+                    let mut m = FinancialEventMarkerBuilder::new();
+                    m.include_synthetic("cash", super::f64_marker_value(value));
+                    m.build()
+                },
+                |_, _, _| Some(value),
+            );
+            assert_eq!(result, vec![Some(value)]);
+        }
+        assert_eq!(markers, 3); // initial, original expiry event, exact leap-year expiry
+    }
+
+    #[test]
+    fn financial_main_business_multi_sources_borrow_strings_and_match_single_table() {
+        let make = |year: i32, names: &[&str]| {
+            Arc::new(
+                Table::new(BTreeMap::from([
+                    (
+                        "ts_code".into(),
+                        ColumnData::Utf8(vec![Some("A".into()); names.len()]),
+                    ),
+                    (
+                        "end_date".into(),
+                        ColumnData::I32(vec![Some(year * 10000 + 1231); names.len()]),
+                    ),
+                    (
+                        "bz_type".into(),
+                        ColumnData::Utf8(vec![Some("I".into()); names.len()]),
+                    ),
+                    (
+                        "bz_item".into(),
+                        ColumnData::Utf8(names.iter().map(|s| Some((*s).into())).collect()),
+                    ),
+                    (
+                        "bz_sales".into(),
+                        ColumnData::F64(vec![Some(10.0); names.len()]),
+                    ),
+                    (
+                        "update_flag".into(),
+                        ColumnData::I64(vec![Some(0); names.len()]),
+                    ),
+                ]))
+                .unwrap(),
+            )
+        };
+        let a = make(2023, &["one", "two"]);
+        let b = make(2024, &["three"]);
+        let index =
+            super::MainBusinessIndex::from_source_tables(vec![a.clone(), b.clone()], 20241231)
+                .unwrap();
+        let mut merged = (*a).clone();
+        merged.append(&b).unwrap();
+        let reference = super::MainBusinessIndex::from_table(Arc::new(merged)).unwrap();
+        for end in [20231231, 20241231] {
+            assert_eq!(
+                index.reader().industry_update0_fingerprint("A", end),
+                reference.reader().industry_update0_fingerprint("A", end)
+            );
+        }
+        let view = super::MainBusinessRecordView {
+            index: &index,
+            row_pos: 0,
+        };
+        let original = a.required_utf8("bz_item").unwrap()[0].as_deref().unwrap();
+        assert!(std::ptr::eq(
+            view.bz_item().unwrap().as_ptr(),
+            original.as_ptr()
+        ));
+        let bounded = super::MainBusinessIndex::from_source_tables(vec![a, b], 20240101).unwrap();
+        assert_eq!(bounded.len(), 2);
+        assert_eq!(
+            bounded.reader().industry_update0_fingerprint("A", 20241231),
+            None
         );
     }
 

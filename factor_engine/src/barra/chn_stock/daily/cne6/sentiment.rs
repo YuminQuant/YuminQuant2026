@@ -9,7 +9,7 @@ use crate::barra::BarraExposure;
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
 use crate::error::Result;
 
 pub struct StockDailyBarraCne6Sentiment;
@@ -41,7 +41,7 @@ impl BarraExposure for StockDailyBarraCne6Sentiment {
 
     fn compute(&self, _context: &FactorContext, data: &DataPool) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let records = parse_analyst_records(data.daily(DatasetId::StockAnalystReport)?)?;
+        let records = parse_analyst_records(data.analyst_report_reader()?)?;
         let records_by_stock = index_analyst_records(&records);
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
@@ -115,7 +115,8 @@ struct AnalystRecord {
     pe: Option<f64>,
 }
 
-fn parse_analyst_records(table: &Table) -> Result<Vec<AnalystRecord>> {
+fn parse_analyst_records<'a>(table: impl Into<crate::data::SourceRowsReader<'a>>) -> Result<Vec<AnalystRecord>> {
+    let table = table.into();
     let ts_codes = table.required_utf8("ts_code")?;
     let report_dates = table.required_i32_date_cast("report_date")?;
     let quarters = table.required_utf8("quarter")?;

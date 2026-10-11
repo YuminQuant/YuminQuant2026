@@ -411,23 +411,23 @@ input, then align those columns to the stock universe panel by
 1. 纯财报慢因子使用 `FinancialEventSnapshot` 和 `EventDrivenCrossSectionCache`。
 2. 快慢混合因子使用 `FinancialEventStateDailyFast`，只缓存慢状态，快变量每日重新计算。
 3. 估值指标、价格收益指标和其他日频快变量保持 `Daily`。
-4. 财务科目查表和股票级慢指标公式必须放入 provider state，例如 `InstrumentAlignedSnapshotCache<T>` + `cached_financial_stock_snapshots_for_date(...)`；不要放在单次函数调用的局部 cache 中。
+4. 财务科目查表和股票级慢指标公式必须放入 provider state，例如 `InstrumentAlignedSnapshotCache<T>` + `routed_financial_stock_snapshots_for_date(...)`；不要放在单次函数调用的局部 cache 中。
 5. Barra CNE6 的 `growth / quality / value / dividend_yield` 财报或分红 slow legs 使用同一规则；分析师 legs 仍按日频快分支处理。
 6. 多输出 provider 必须继续 requested-aware；同 provider 的 wrapper 共享 `compute_provider_key()`，并使用同一种 state 类型。
 
 1. Use `FinancialEventSnapshot`, `EventDrivenCrossSectionCache`, and `compute_financial_event_snapshot_streaming_on_panel(...)` for pure slow statement factors.
 2. Use `FinancialEventStateDailyFast` for mixed factors: cache only slow state, recompute fast variables daily.
 3. Keep valuation, price/return, and other daily fast variables on `Daily`.
-4. Put financial statement lookups and stock-level slow formulas in provider state, for example `InstrumentAlignedSnapshotCache<T>` plus `cached_financial_stock_snapshots_for_date(...)`; do not keep them in one-shot local function caches.
+4. Put financial statement lookups and stock-level slow formulas in provider state, for example `InstrumentAlignedSnapshotCache<T>` plus `routed_financial_stock_snapshots_for_date(...)`; do not keep them in one-shot local function caches.
 5. Use `data.stock_universe_panel()?` for financial/event output grids; there is no PV-anchor replay compatibility API.
 6. Barra CNE6 `growth / quality / value / dividend_yield` statement or dividend slow legs follow the same PIT/cache rule; analyst legs remain daily fast branches.
 7. Multi-output providers must remain requested-aware; wrappers sharing a provider key must use the same state type.
 
-股票级财报慢指标应优先使用 provider-state 的 `InstrumentAlignedSnapshotCache<T>` + `cached_financial_stock_snapshots_for_date(...)`。`skip_fn` 负责剔除 `.BJ`、非在市或不在股票池的股票；`marker_fn` 声明会影响 snapshot 的 PIT 记录链和 synthetic marker；`compute_fn` 只写股票级慢指标公式。截面 rank、OLS/ridge、网络降维和中性化仍放在事件日或每日的后续步骤中。
+股票级财报慢指标应优先使用 provider-state 的 `InstrumentAlignedSnapshotCache<T>` + `routed_financial_stock_snapshots_for_date(...)`。`skip_fn` 负责剔除 `.BJ`、非在市或不在股票池的股票；`marker_fn` 声明会影响 snapshot 的 PIT 记录链和 synthetic marker；`compute_fn` 只写股票级慢指标公式。截面 rank、OLS/ridge、网络降维和中性化仍放在事件日或每日的后续步骤中。
 
 For stock-level slow financial metrics, prefer provider-state
 `InstrumentAlignedSnapshotCache<T>` plus
-`cached_financial_stock_snapshots_for_date(...)`. `skip_fn` handles `.BJ`,
+`routed_financial_stock_snapshots_for_date(...)`. `skip_fn` handles `.BJ`,
 non-present, or out-of-universe stocks; `marker_fn` declares PIT record chains
 and synthetic markers that can change the snapshot; `compute_fn` contains only
 the stock-level slow formula. Cross-sectional rank, OLS/ridge, network
@@ -469,8 +469,10 @@ English rules:
   When date selection removes no rows, Table and DailyPanel reuse their backing storage. Proper subsets remain isolated so sparse requests cannot change another factor's time axis. Factor interfaces are unchanged.
 - 正式因子写出按日期构建列式缓冲，通过股票代码及分钟时间键对齐旧数据。显式空值会覆盖旧值；未更新的股票或因子列保留。避免将整个 batch 和旧宽表展开为逐单元格字符串映射。
   Factor output builds column buffers one date at a time, aligning existing rows by stock code and minute timestamp. Explicit null updates replace old values; untouched rows and columns are preserved, without per-cell string maps for the full batch and existing wide table.
-- 主营业务与分析师 loader 借用年度缓存，按日期筛选后逐列追加，避免完整年度投影表和完整过滤表同时驻留。最终 batch 表仍存在；这不是跨年度索引重构。
-  Main-business and analyst loaders borrow yearly cache sources and append selected rows column by column, avoiding full projected and filtered intermediate tables. The final batch table still exists; this does not replace it with a multi-source index.
+- 财报年度 PIT 索引随有界年度缓存跨 batch 复用；当批 context 组合索引引用并限制可见日期。主营业务、分析师使用多 source reader，不再拼接 batch 明细大表。列集合或源文件变化时重建对应索引，过期年份及索引一起淘汰。
+  Annual statement PIT indexes are reused with bounded source caches. Batch contexts compose references and enforce visibility bounds. Main-business and analyst readers access multiple sources without merged batch tables; changed columns/files invalidate indexes and obsolete years are evicted.
+- 财务慢指标使用显式股票事件路由；无相关事件时跳过 marker 查表，分红窗口到期、历史查询时钟和股票重新进入样本仍会正确核验。细节和示例见财务开发文档。
+  Explicit stock-event routes skip unaffected marker queries while accounting for dividend expiry, historical query clocks and universe reentry. See the financial development guide for declarations and examples.
 - 16GB 机器可从 `--threads 4 --factor-batch-size 5 --date-batch-size 60 --profile` 开始测量。缩小 factor batch 会增加旧宽表重写次数，应结合加载、计算、写出耗时调整。此版本没有改变线程默认值或 Parquet 压缩格式。
   On a 16GB machine, start measuring with the flags above. Smaller factor batches increase existing wide-file rewrites; tune against load, compute and write timings. Thread defaults and Parquet compression are unchanged.
 

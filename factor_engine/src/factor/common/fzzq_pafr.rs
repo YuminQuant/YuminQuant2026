@@ -2,8 +2,8 @@ use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::core::{
-    AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
-    Lookback,
+    AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+    FactorValue, Frequency, Lookback,
 };
 use crate::data::DataPool;
 
@@ -59,6 +59,30 @@ impl Factor for Pafr {
             // Cover twelve calendar months and the prior-session price anchor for every fit.
             lookback: Lookback { trading_days: PAIR_LOOKBACK + if self.0 == Output::Zscore { WINDOW } else { 0 } },
         }
+    }
+    fn requirements_for_context(&self, context: &FactorContext) -> Vec<DataRequest> {
+        self.spec()
+            .dependencies
+            .into_iter()
+            .map(|request| {
+                let dates = if request.dataset == DatasetId::StockBarraDaily {
+                    context.target_dates.clone()
+                } else {
+                    request.resolved_dates(context)
+                };
+                let request = request.with_explicit_dates(dates);
+                if matches!(
+                    request.dataset,
+                    DatasetId::StockDailyPv
+                        | DatasetId::StockAdjFactor
+                        | DatasetId::StockBarraDaily
+                ) {
+                    request.with_panel_only()
+                } else {
+                    request
+                }
+            })
+            .collect()
     }
     fn compute_provider_key(&self) -> String {
         "fzzq_pafr".into()
@@ -438,13 +462,64 @@ struct State {
 }
 
 fn adjusted_prices(data: &DataPool, panel: &DailyPanel) -> Result<PanelColumn> {
-    let close = panel.column_from_table(data.daily(DatasetId::StockDailyPv)?, "close")?;
-    let adj = panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
-    close.zip_binary(&adj, |close, adj| {
-        let (close, adj) = (close?, adj?);
-        let value = close * adj;
-        (close > 0.0 && adj > 0.0 && value.is_finite()).then_some(value)
-    })
+    let close = AlignedSource::new(data, panel, DatasetId::StockDailyPv, "close")?;
+    let adj = AlignedSource::new(data, panel, DatasetId::StockAdjFactor, "adj_factor")?;
+    let mut values = Vec::with_capacity(panel.shape_len());
+    for &date in panel.dates() {
+        let c = close.day(date);
+        let a = adj.day(date);
+        for stock in 0..panel.instruments().len() {
+            values.push(
+                close
+                    .get(c, stock)
+                    .zip(adj.get(a, stock))
+                    .and_then(|(c, a)| {
+                        let value = c * a;
+                        (c > 0.0 && a > 0.0 && value.is_finite()).then_some(value)
+                    }),
+            );
+        }
+    }
+    panel.column_from_values(values)
+}
+
+// Borrow cached source columns; align by keys without materializing extra full grids.
+struct AlignedSource<'a> {
+    panel: &'a DailyPanel,
+    column: PanelColumn,
+    stocks: Vec<Option<usize>>,
+}
+impl<'a> AlignedSource<'a> {
+    fn new(
+        data: &'a DataPool,
+        target: &DailyPanel,
+        dataset: DatasetId,
+        name: &str,
+    ) -> Result<Self> {
+        let panel = data.daily_panel(dataset)?;
+        let lookup: HashMap<_, _> = panel
+            .instruments()
+            .iter()
+            .enumerate()
+            .map(|(i, code)| (code.as_str(), i))
+            .collect();
+        let stocks = target
+            .instruments()
+            .iter()
+            .map(|code| lookup.get(code.as_str()).copied())
+            .collect();
+        Ok(Self {
+            panel,
+            column: panel.column(name)?,
+            stocks,
+        })
+    }
+    fn day(&self, date: i32) -> Option<usize> {
+        self.panel.dates().binary_search(&date).ok()
+    }
+    fn get(&self, day: Option<usize>, stock: usize) -> Option<f64> {
+        self.column.values()[day? * self.panel.instruments().len() + self.stocks[stock]?]
+    }
 }
 
 fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<FactorSeries>> {
@@ -490,7 +565,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
     };
     state.keep_history |= needs_z;
     let prices = adjusted_prices(data, panel)?;
-    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let size = AlignedSource::new(data, panel, DatasetId::StockBarraDaily, "SIZE")?;
     let sectors = ClassificationMap::from_table(
         data.daily(DatasetId::StockSwClassification)?,
         ClassificationLevel::Sector,
@@ -514,7 +589,13 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
     )?;
     let mut events = events.into_iter().peekable();
     let mut active = Vec::new();
-    let mut columns = vec![vec![None; panel.shape_len()]; outputs.len()];
+    let mut result: Vec<_> = outputs
+        .iter()
+        .map(|output| FactorSeries {
+            spec: Pafr(*output).spec(),
+            values: Vec::new(),
+        })
+        .collect();
     for day in start..=last_target {
         let date = panel.dates()[day];
         let window = RevisionWindow::new(date);
@@ -576,6 +657,8 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
             vec![]
         };
         if panel.is_target_date(date) {
+            let size_day = size.day(date);
+            let size_values: Vec<_> = (0..n).map(|i| size.get(size_day, i)).collect();
             let mut groups = sectors.groups_for(date, panel.instruments());
             for (i, code) in panel.instruments().iter().enumerate() {
                 if is_bj_stock(code) || !panel.is_present_offset(day * n + i) {
@@ -588,13 +671,19 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
                 } else {
                     &standardized
                 };
-                let residual = cs_neutralize_regression(
-                    input,
-                    &[&size.values()[day * n..(day + 1) * n]],
-                    Some(&groups),
-                    None,
-                );
-                columns[j][day * n..(day + 1) * n].copy_from_slice(&residual);
+                let residual =
+                    cs_neutralize_regression(input, &[&size_values], Some(&groups), None);
+                for (i, code) in panel.instruments().iter().enumerate() {
+                    if panel.is_present_offset(day * n + i) {
+                        result[j].values.push(FactorValue {
+                            key: FactorRowKey::Daily {
+                                trade_date: date,
+                                ts_code: code.clone(),
+                            },
+                            value: residual[i],
+                        });
+                    }
+                }
             }
         }
         if state.keep_history {
@@ -610,13 +699,5 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
         }
         state.last_date = Some(date);
     }
-    outputs
-        .into_iter()
-        .zip(columns)
-        .map(|(output, values)| {
-            Ok(panel
-                .column_from_values(values)?
-                .to_factor_series(Pafr(output).spec()))
-        })
-        .collect()
+    Ok(result)
 }

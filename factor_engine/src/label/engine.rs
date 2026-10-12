@@ -593,6 +593,7 @@ fn materialize_label_intraday_raw_table(
             columns,
             financial_quarters: None,
             date_policy: Default::default(),
+            panel_only: false,
         }];
         let load_started = Instant::now();
         let raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
@@ -794,6 +795,7 @@ where
             request.entity_id.clone(),
             request.bar_size,
             request.date_policy.clone(),
+            request.panel_only,
         );
         grouped
             .entry(key)
@@ -803,13 +805,14 @@ where
     let mut merged = grouped
         .into_iter()
         .map(
-            |((dataset, entity_id, bar_size, date_policy), columns)| DataRequest {
+            |((dataset, entity_id, bar_size, date_policy, panel_only), columns)| DataRequest {
                 dataset,
                 entity_id,
                 bar_size,
                 columns: columns.into_iter().collect(),
                 financial_quarters: None,
                 date_policy,
+                panel_only,
             },
         )
         .collect::<Vec<_>>();
@@ -819,6 +822,7 @@ where
             .then_with(|| left.entity_id.cmp(&right.entity_id))
             .then_with(|| left.bar_size.cmp(&right.bar_size))
             .then_with(|| left.date_policy.cmp(&right.date_policy))
+            .then_with(|| left.panel_only.cmp(&right.panel_only))
     });
     merged
 }

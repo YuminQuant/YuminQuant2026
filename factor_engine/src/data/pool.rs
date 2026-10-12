@@ -284,6 +284,7 @@ impl DataPool {
         }
 
         let mut pool = Self::default();
+        let panel_only = panel_only_datasets(requests);
         pool.financial_context = financial_context;
         if grouped
             .keys()
@@ -345,7 +346,9 @@ impl DataPool {
                     loader.load_barra_daily(context.asset_class, "CNE6", &columns, &load_dates)?;
                 let panel = DailyPanel::from_table(&table, context)?;
                 pool.daily_panels.insert(dataset, panel);
-                pool.daily.insert(dataset, Arc::new(table));
+                if !panel_only.contains(&dataset) {
+                    pool.daily.insert(dataset, Arc::new(table));
+                }
                 continue;
             }
             match dataset.frequency() {
@@ -355,7 +358,9 @@ impl DataPool {
                         let panel = DailyPanel::from_table(&table, context)?;
                         pool.daily_panels.insert(dataset, panel);
                     }
-                    pool.daily.insert(dataset, Arc::new(table));
+                    if !panel_only.contains(&dataset) {
+                        pool.daily.insert(dataset, Arc::new(table));
+                    }
                 }
                 Frequency::Minute1 => {
                     let target_dates = if context.frequency == Frequency::Daily {
@@ -464,6 +469,14 @@ impl DataPool {
     }
 
     pub fn view_for_requests(&self, requests: &[DataRequest], context: &FactorContext) -> Self {
+        let panel_only = panel_only_datasets(requests);
+        let mut panel_columns: HashMap<DatasetId, BTreeSet<String>> = HashMap::new();
+        for request in requests {
+            panel_columns
+                .entry(request.dataset)
+                .or_default()
+                .extend(request.columns.iter().cloned());
+        }
         let mut daily_panel_dates = HashMap::<DatasetId, BTreeSet<i32>>::new();
         let mut index_panel_dates = HashMap::<String, BTreeSet<i32>>::new();
         let needs_stock_universe_panel = requests
@@ -496,6 +509,7 @@ impl DataPool {
             daily: self
                 .daily
                 .iter()
+                .filter(|(dataset, _)| !panel_only.contains(dataset))
                 .map(|(dataset, table)| {
                     let table = daily_panel_dates
                         .get(dataset)
@@ -508,6 +522,11 @@ impl DataPool {
                 .daily_panels
                 .iter()
                 .map(|(dataset, panel)| {
+                    let panel = if panel_only.contains(dataset) {
+                        panel.select_columns(&panel_columns[dataset])
+                    } else {
+                        panel.clone()
+                    };
                     let panel = daily_panel_dates
                         .get(dataset)
                         .map(|dates| {
@@ -659,6 +678,12 @@ impl DataPool {
 
     pub fn loaded_table_row_count(&self) -> usize {
         let daily_rows = self.daily.values().map(|table| table.len).sum::<usize>();
+        let panel_rows = self
+            .daily_panels
+            .iter()
+            .filter(|(dataset, _)| !self.daily.contains_key(dataset))
+            .map(|(_, panel)| panel.present_row_count())
+            .sum::<usize>();
         let index_rows = self
             .index_daily
             .values()
@@ -669,7 +694,7 @@ impl DataPool {
             .intraday_daily_raw
             .as_ref()
             .map_or(0, |table| table.len);
-        daily_rows + index_rows + minute_rows + raw_rows
+        daily_rows + panel_rows + index_rows + minute_rows + raw_rows
     }
 
     pub fn indexed_row_count(&self) -> usize {
@@ -780,6 +805,18 @@ impl DataPool {
     }
 
 
+}
+
+fn panel_only_datasets(requests: &[DataRequest]) -> BTreeSet<DatasetId> {
+    let mut panel_only: BTreeSet<_> = requests
+        .iter()
+        .filter(|r| r.panel_only && should_build_daily_panel(r.dataset))
+        .map(|r| r.dataset)
+        .collect();
+    for request in requests.iter().filter(|r| !r.panel_only) {
+        panel_only.remove(&request.dataset);
+    }
+    panel_only
 }
 
 fn table_slice_dates_or_clone(table: &Arc<Table>, selected_dates: &BTreeSet<i32>) -> Arc<Table> {

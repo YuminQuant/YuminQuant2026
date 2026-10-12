@@ -16,6 +16,22 @@ for checking formulas, PIT visibility and batch alignment.
 
 ## Shared Query Performance / 共享查询性能
 
+For numeric daily inputs consumed exclusively through `data.daily_panel(...)`,
+declare `.with_panel_only()` in `requirements_for_context`. The loader builds
+the panel and releases the unused row table. A mixed batch retains the row table
+if any consumer uses the default request. Panel-only provider views project
+requested columns before date slicing and do not expose `data.daily(...)` for
+those datasets. Keep PIT sources and classification tables on their normal APIs.
+Resolve each input's dates against its own factor context; final neutralization
+needs SIZE only on output dates (or the relevant monthly anchors), not the whole
+price warmup. Do not shorten the history required by the factor formula.
+
+只通过 `data.daily_panel(...)` 消费的日频数值数据，可在上下文请求中加
+`.with_panel_only()`，避免同时保留行表和宽网格。同批仍有消费者需要行表时会保留行表；
+只读 panel 的 provider 先筛列再切日期，不能对该数据调用 `data.daily(...)`。
+PIT 财报和行业分类仍使用原接口。各输入按自己的回溯窗口加载，最终中性化的 SIZE
+只加载输出日或月末锚点；不缩短公式要求的历史窗口。
+
 - 单股票 LTM 分红通过 `DividendReader::implemented_ltm_sum` 查询股票行索引，不扫描其他股票；保留原始行顺序、公告日和除息日过滤，以及原有浮点求和顺序。
 - 主营业务 `industry_update0_fingerprint` 在不可变 index 构建时按股票和报告期预计算，后续 marker 查询直接复用；新 batch/index 自然重建，不保留跨版本失效的指纹。
 - PIT 版本按公告日降序、修正标记降序排列，用二分定位首个可见版本。`ReportTypePreference` 顺序和同日版本选择规则不变。

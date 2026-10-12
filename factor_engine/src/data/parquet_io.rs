@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -14,8 +15,15 @@ use crate::data::table::{ColumnData, Table};
 use crate::error::{err, Result};
 
 pub fn read_parquet(path: &Path, columns: Option<&[String]>) -> Result<Table> {
-    let file = File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let context = |error| {
+        err(format!(
+            "failed to read parquet {}: {error}",
+            path.display()
+        ))
+    };
+    let file = File::open(path).map_err(|error| context(error.to_string()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|error| context(error.to_string()))?;
     let mut builder = builder.with_batch_size(65_536);
 
     if let Some(requested_columns) = columns {
@@ -61,10 +69,12 @@ pub fn read_parquet(path: &Path, columns: Option<&[String]>) -> Result<Table> {
         builder = builder.with_projection(mask);
     }
 
-    let reader = builder.build()?;
+    let reader = builder
+        .build()
+        .map_err(|error| context(error.to_string()))?;
     let mut table = Table::empty();
     for batch_result in reader {
-        let batch = batch_result?;
+        let batch = batch_result.map_err(|error| context(error.to_string()))?;
         let batch_table = table_from_record_batch(&batch)?;
         table.append(&batch_table)?;
     }
@@ -72,8 +82,18 @@ pub fn read_parquet(path: &Path, columns: Option<&[String]>) -> Result<Table> {
 }
 
 pub fn parquet_column_names(path: &Path) -> Result<BTreeSet<String>> {
-    let file = File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let file = File::open(path).map_err(|error| {
+        err(format!(
+            "failed to read parquet {}: {error}",
+            path.display()
+        ))
+    })?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|error| {
+        err(format!(
+            "failed to read parquet {}: {error}",
+            path.display()
+        ))
+    })?;
     Ok(builder
         .schema()
         .fields()
@@ -105,14 +125,39 @@ pub fn write_parquet_with_compression(
         .collect::<Vec<_>>();
     let schema = Arc::new(Schema::new(fields));
     let batch = RecordBatch::try_new(schema.clone(), arrays)?;
-    let file = File::create(path)?;
     let props = WriterProperties::builder()
         .set_compression(compression)
         .build();
-    let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
-    writer.write(&batch)?;
-    writer.close()?;
-    Ok(())
+    static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let sequence = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_extension(format!("{}.{}.{}.tmp", std::process::id(), nonce, sequence));
+    let file = File::create_new(&temp).map_err(|error| {
+        err(format!(
+            "failed to write parquet {}: {error}",
+            path.display()
+        ))
+    })?;
+    // Never truncate the previous output before a complete footer is durable.
+    let result: Result<()> = (|| {
+        let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
+        writer.write(&batch)?;
+        writer.close()?;
+        File::options().write(true).open(&temp)?.sync_all()?;
+        std::fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result.map_err(|error| {
+        err(format!(
+            "failed to write parquet {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn ordered_column_names(table: &Table) -> Vec<String> {

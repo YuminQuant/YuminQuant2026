@@ -210,6 +210,8 @@ pub struct DataRequest {
     pub columns: Vec<String>,
     pub financial_quarters: Option<usize>,
     pub date_policy: DateLoadPolicy,
+    /// Only the aligned daily panel is consumed; retain a row table if any other request needs it.
+    pub panel_only: bool,
 }
 
 impl DataRequest {
@@ -221,6 +223,7 @@ impl DataRequest {
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
             date_policy: DateLoadPolicy::ContextLoadDates,
+            panel_only: false,
         }
     }
 
@@ -232,6 +235,7 @@ impl DataRequest {
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
             date_policy: DateLoadPolicy::ContextLoadDates,
+            panel_only: false,
         }
     }
 
@@ -243,6 +247,7 @@ impl DataRequest {
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: None,
             date_policy: DateLoadPolicy::ContextLoadDates,
+            panel_only: false,
         }
     }
 
@@ -254,6 +259,7 @@ impl DataRequest {
             columns: columns.iter().map(|value| value.to_string()).collect(),
             financial_quarters: Some(quarters),
             date_policy: DateLoadPolicy::ContextLoadDates,
+            panel_only: false,
         }
     }
 
@@ -268,6 +274,11 @@ impl DataRequest {
 
     pub fn with_explicit_dates(mut self, dates: Vec<i32>) -> Self {
         self.date_policy = DateLoadPolicy::ExplicitDates(dates);
+        self
+    }
+
+    pub fn with_panel_only(mut self) -> Self {
+        self.panel_only = true;
         self
     }
 

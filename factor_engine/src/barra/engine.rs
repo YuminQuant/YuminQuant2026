@@ -536,6 +536,7 @@ where
             request.entity_id.clone(),
             request.bar_size,
             request.date_policy.clone(),
+            request.panel_only,
         );
         let entry = grouped.entry(key).or_default();
         entry.0.extend(request.columns.into_iter());
@@ -548,7 +549,7 @@ where
     let mut merged = grouped
         .into_iter()
         .map(
-            |((dataset, entity_id, bar_size, date_policy), (columns, financial_quarters))| {
+            |((dataset, entity_id, bar_size, date_policy, panel_only), (columns, financial_quarters))| {
                 DataRequest {
                     dataset,
                     entity_id,
@@ -556,6 +557,7 @@ where
                     columns: columns.into_iter().collect(),
                     financial_quarters,
                     date_policy,
+                    panel_only,
                 }
             },
         )
@@ -566,6 +568,7 @@ where
             .then_with(|| left.entity_id.cmp(&right.entity_id))
             .then_with(|| left.bar_size.cmp(&right.bar_size))
             .then_with(|| left.date_policy.cmp(&right.date_policy))
+            .then_with(|| left.panel_only.cmp(&right.panel_only))
     });
     merged
 }

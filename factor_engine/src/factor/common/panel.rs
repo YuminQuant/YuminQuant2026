@@ -302,6 +302,22 @@ impl DailyPanel {
         self.columns.contains_key(name)
     }
 
+    pub fn select_columns(&self, names: &BTreeSet<String>) -> Self {
+        Self {
+            index: Arc::clone(&self.index),
+            columns: self
+                .columns
+                .iter()
+                .filter(|(name, _)| names.contains(*name))
+                .map(|(name, values)| (name.clone(), Arc::clone(values)))
+                .collect(),
+        }
+    }
+
+    pub fn present_row_count(&self) -> usize {
+        self.index.present.iter().filter(|present| **present).count()
+    }
+
     pub fn dates(&self) -> &[i32] {
         &self.index.dates
     }

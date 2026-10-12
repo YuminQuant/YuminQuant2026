@@ -151,8 +151,25 @@ impl Factor for HtzqAnalyst {
             .dependencies
             .into_iter()
             .map(|r| {
-                if r.dataset == DatasetId::StockBarraDaily && self.0 != Output::Revision {
-                    r.with_explicit_dates(anchors.clone())
+                let r = if r.dataset == DatasetId::StockBarraDaily {
+                    r.with_explicit_dates(if self.0 == Output::Revision {
+                        context.target_dates.clone()
+                    } else {
+                        anchors.clone()
+                    })
+                } else {
+                    let dates = r.resolved_dates(context);
+                    r.with_explicit_dates(dates)
+                };
+                if matches!(
+                    r.dataset,
+                    DatasetId::StockDailyPv
+                        | DatasetId::StockAdjFactor
+                        | DatasetId::StockDailyBasic
+                        | DatasetId::StockConsensus
+                        | DatasetId::StockBarraDaily
+                ) {
+                    r.with_panel_only()
                 } else {
                     r
                 }
@@ -257,6 +274,7 @@ fn report_index(
     reader: SourceRowsReader<'_>,
     codes: &[String],
     lower: i32,
+    forecast_lower: i32,
     upper: i32,
     needs_rating: bool,
     needs_revision: bool,
@@ -307,6 +325,9 @@ fn report_index(
         let entry = publications.entry(key).or_insert(None);
         if score.is_some() {
             *entry = score;
+        }
+        if date <= forecast_lower {
+            continue;
         }
         if let (Some(org), Some(year), Some(value)) = (
             key.2,
@@ -737,6 +758,7 @@ fn revision_index(
     annual: &FinancialPitReader<'_>,
     calendar: &TradingCalendar,
     codes: &[String],
+    recent_lower: i32,
 ) -> Revisions {
     let mut events: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut counts: BTreeMap<_, BTreeMap<i32, usize>> = BTreeMap::new();
@@ -750,7 +772,7 @@ fn revision_index(
             .or_default() += f.count;
         let key = (f.stock, f.org, f.year);
         if let Some((old_key, old_date, old_value)) = previous {
-            if key == old_key {
+            if key == old_key && f.date > recent_lower {
                 if let Some(delta) = finite(f.value - old_value) {
                     let consensus = *consensus_cache
                         .entry((f.stock, f.date, f.year))
@@ -917,6 +939,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
         data.analyst_report_reader()?,
         codes,
         lower,
+        add_months(first, -12),
         *targets.last().unwrap(),
         rating_needed,
         revision_needed,
@@ -990,6 +1013,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
             annual.as_ref().unwrap(),
             calendar,
             codes,
+            add_months(first, -3),
         ))
     } else {
         None

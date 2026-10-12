@@ -137,6 +137,18 @@ impl Engine {
             unreachable!("selection result handled");
         };
 
+        let model_ids = selected_metadata
+            .iter()
+            .filter(|row| is_model_generated_factor(row))
+            .map(|row| row.factor_id.as_str())
+            .collect::<Vec<_>>();
+        if !model_ids.is_empty() {
+            return Err(err(format!(
+                "model-generated factors cannot be produced by Rust run/plan: {}. Use the ml_alpha prediction workflow; their stored outputs remain available for backtest.",
+                model_ids.join(",")
+            )));
+        }
+
         let mut registry = factor_map();
         let mut factors = Vec::new();
         let mut stale_ids = Vec::new();
@@ -1399,6 +1411,7 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
         let selected = base
             .into_iter()
             .filter(|row| !is_deprecated_factor(row))
+            .filter(|row| !is_model_generated_factor(row))
             .filter(|row| {
                 tags.iter()
                     .all(|tag| row.tags.iter().any(|item| item == tag))
@@ -1452,6 +1465,7 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
     let active = base
         .into_iter()
         .filter(|row| !is_deprecated_factor(row))
+        .filter(|row| !is_model_generated_factor(row))
         .collect::<Vec<_>>();
     if active.is_empty() {
         return SelectionResult::Empty(format!(
@@ -1464,6 +1478,10 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
 
 fn is_deprecated_factor(row: &FactorMetadata) -> bool {
     row.tags.iter().any(|tag| tag == "deprecated")
+}
+
+fn is_model_generated_factor(row: &FactorMetadata) -> bool {
+    row.tags.iter().any(|tag| tag == "model_generated")
 }
 
 fn empty_report(request: &RunRequest, message: String) -> RunReport {

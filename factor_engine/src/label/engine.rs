@@ -315,7 +315,7 @@ impl LabelEngine {
                     let load_started = Instant::now();
                     let mut pool = DataPool::load(&loader, &batch_requests, &batch_context)?;
                     if let Some(raw_table) = raw_table.clone() {
-                        pool.set_intraday_daily_raw(raw_table, &batch_context)?;
+                        pool.set_intraday_daily_raw_panel(raw_table, &batch_context)?;
                     }
                     let load_ms = load_started.elapsed().as_millis();
                     let compute_started = Instant::now();

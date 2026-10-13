@@ -462,7 +462,7 @@ impl Engine {
                             &progress,
                         )?;
                         profiles.append(&mut raw_profiles);
-                        pool.set_intraday_daily_raw(raw_table, &context)?;
+                        pool.set_intraday_daily_raw_panel(raw_table, &context)?;
                     }
                     let compute_started = Instant::now();
                     let results = compute_factor_batch(

@@ -27,9 +27,9 @@ impl Factor for StockDailyIcc {
                 .into_iter().map(str::to_string).collect(),
             description: "Zero-dividend Easton raw ICC: sqrt((con_eps_fy2-con_eps_fy1)/close). EPS and unadjusted close are yuan/share; raw is a decimal rate. Uses the consensus dataset's PIT fiscal-year anchor. Requires finite EPS, strictly positive EPS increase and close; negative EPS levels are allowed. Stock universe panel, excludes BJ. Final output is the daily SW L1 industry and Barra SIZE regression residual, which may be negative; missing SIZE/industry stays null. No rank transform, winsorization or final zscore.".into(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockConsensus, &["con_eps_fy1", "con_eps_fy2"]),
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
-                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+                DataRequest::new(DatasetId::StockConsensus, &["con_eps_fy1", "con_eps_fy2"]).with_panel_only(),
+                DataRequest::new(DatasetId::StockDailyPv, &["close"]).with_panel_only(),
+                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]).with_panel_only(),
                 DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             ],
             intraday_raw_dependencies: vec![],
@@ -48,10 +48,10 @@ impl Factor for StockDailyIcc {
 
 fn raw_icc(data: &DataPool) -> Result<PanelColumn> {
     let panel = data.stock_universe_panel()?;
-    let consensus = data.daily(DatasetId::StockConsensus)?;
-    let eps1 = panel.column_from_table(consensus, "con_eps_fy1")?;
-    let eps2 = panel.column_from_table(consensus, "con_eps_fy2")?;
-    let close = panel.column_from_table(data.daily(DatasetId::StockDailyPv)?, "close")?;
+    let consensus = data.daily_panel(DatasetId::StockConsensus)?;
+    let eps1 = panel.column_from_panel(consensus, "con_eps_fy1")?;
+    let eps2 = panel.column_from_panel(consensus, "con_eps_fy2")?;
+    let close = panel.column_from_panel(data.daily_panel(DatasetId::StockDailyPv)?, "close")?;
     let n = panel.instruments().len();
     let mut values = vec![None; panel.shape_len()];
     for (day, &date) in panel.dates().iter().enumerate() {

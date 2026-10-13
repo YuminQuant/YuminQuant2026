@@ -36,8 +36,8 @@ impl Factor for DailyLeaderboard {
             tags: ["DFZQ", "price_volume", "return", "leaderboard", "exponential_decay", "daily", "neutralize", "barra", "size", "sector"].into_iter().map(str::to_string).collect(),
             description: "Square root of 120-day exponentially decayed top/bottom-80 daily pct_chg membership, half-life 10 trading days. Multiplies the decayed sum by (1-decay^120)/(1-decay), as specified, not its reciprocal. Finite present non-BJ returns only, ties by ascending stock code; fewer than 80 eligible stocks selects all. Missing history is nonmembership, min_periods=1, invalid current returns are null. Final daily SW L1 industry and Barra SIZE regression residual; missing exposures stay null. No final zscore or sign reversal. Shared daily partial selection and bounded sparse event queues; only requested outputs computed.".into(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["pct_chg"]),
-                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+                DataRequest::new(DatasetId::StockDailyPv, &["pct_chg"]).with_panel_only(),
+                DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]).with_panel_only(),
                 DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             ],
             intraday_raw_dependencies: vec![], lookback: Lookback { trading_days: WINDOW - 1 },
@@ -70,7 +70,7 @@ fn compute(ids: &[String], data: &DataPool) -> Result<Vec<FactorSeries>> {
     }
     let panel = data.daily_panel(DatasetId::StockDailyPv)?;
     let returns = panel.column("pct_chg")?;
-    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let size = panel.column_from_panel(data.daily_panel(DatasetId::StockBarraDaily)?, "SIZE")?;
     let sector = ClassificationMap::from_table(
         data.daily(DatasetId::StockSwClassification)?,
         ClassificationLevel::Sector,

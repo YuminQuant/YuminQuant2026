@@ -114,7 +114,7 @@ pub fn compute_requested_stateful(
         ReportTypePreference::balance_sheet_consolidated(),
     )?;
     let total_mv =
-        panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, TOTAL_MV_COLUMN)?;
+        panel.column_from_panel(data.daily_panel(DatasetId::StockDailyBasic)?, TOTAL_MV_COLUMN)?;
     let raw = raw_columns(panel, &balance, &total_mv, &mut state.snapshot_cache, needs)?;
 
     let mut output = Vec::new();
@@ -292,8 +292,8 @@ fn dependencies(output: HazqEquityCompositionOutput) -> Vec<DataRequest> {
             balance_columns,
             BALANCE_QUARTERS,
         ),
-        DataRequest::new(DatasetId::StockDailyBasic, &[TOTAL_MV_COLUMN]),
-        DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+        DataRequest::new(DatasetId::StockDailyBasic, &[TOTAL_MV_COLUMN]).with_panel_only(),
+        DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]).with_panel_only(),
         DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
     ]
 }

@@ -32,6 +32,21 @@ price warmup. Do not shorten the history required by the factor formula.
 PIT 财报和行业分类仍使用原接口。各输入按自己的回溯窗口加载，最终中性化的 SIZE
 只加载输出日或月末锚点；不缩短公式要求的历史窗口。
 
+Align numeric daily sources with
+`target.column_from_panel(data.daily_panel(dataset)?, column)`.
+Equal date/stock axes share the source values; other grids map by date and stock
+code, keeping the target presence mask and output dates. Missing source cells
+remain null. Repeated live alignments share weakly cached result arrays; the
+cache belongs to the batch panel, not persistent provider state. Date slices
+with different axes start a new cache. Do not align these sources by row number.
+The factor/label engines consume minute-derived daily row tables into panels
+without retaining an unused duplicate row table.
+
+日频数值源用 `column_from_panel` 对齐：相同日期/股票轴直接共享数值，否则按日期和
+股票代码映射，保留目标网格的 present mask 和输出日期，缺源值仍为空。对齐结果只在
+batch panel 内弱引用复用，不放入跨批次状态；改变日期轴的切片另建缓存。分钟派生日频
+中间表在引擎转为 panel 后释放行表，不重复持有。需要行业字符串等行数据的请求仍走原接口。
+
 - 单股票 LTM 分红通过 `DividendReader::implemented_ltm_sum` 查询股票行索引，不扫描其他股票；保留原始行顺序、公告日和除息日过滤，以及原有浮点求和顺序。
 - 主营业务 `industry_update0_fingerprint` 在不可变 index 构建时按股票和报告期预计算，后续 marker 查询直接复用；新 batch/index 自然重建，不保留跨版本失效的指纹。
 - PIT 版本按公告日降序、修正标记降序排列，用二分定位首个可见版本。`ReportTypePreference` 顺序和同日版本选择规则不变。

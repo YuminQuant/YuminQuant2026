@@ -38,8 +38,8 @@ impl Factor for StockDailyStd20 {
             description: "20-day standard deviation of adjusted daily returns with min_periods=1."
                 .to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
-                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
+                DataRequest::new(DatasetId::StockDailyPv, &["close"]).with_panel_only(),
+                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]).with_panel_only(),
             ],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback {
@@ -52,7 +52,7 @@ impl Factor for StockDailyStd20 {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let close = panel.column("close")?;
         let adj_factor =
-            panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+            panel.column_from_panel(data.daily_panel(DatasetId::StockAdjFactor)?, "adj_factor")?;
         let adj_close = chip::adjusted_close(&close, &adj_factor)?;
         let factor = chip::std20_from_adjusted_close(&adj_close)?;
         Ok(factor.to_factor_series(self.spec()))

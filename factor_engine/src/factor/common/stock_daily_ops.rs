@@ -84,7 +84,7 @@ pub fn neutralize_size_sector(
     panel: &DailyPanel,
     data: &DataPool,
 ) -> Result<PanelColumn> {
-    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let size = panel.column_from_panel(data.daily_panel(DatasetId::StockBarraDaily)?, "SIZE")?;
     let sector_map = ClassificationMap::from_table(
         data.daily(DatasetId::StockSwClassification)?,
         ClassificationLevel::Sector,
@@ -97,7 +97,7 @@ pub fn neutralize_size_only(
     panel: &DailyPanel,
     data: &DataPool,
 ) -> Result<PanelColumn> {
-    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let size = panel.column_from_panel(data.daily_panel(DatasetId::StockBarraDaily)?, "SIZE")?;
     values.cs_neutralize_regression(&[&size], None)
 }
 
@@ -113,9 +113,9 @@ pub fn neutralize_size_sector_with_inputs(
 }
 
 pub fn adjusted_20d_return(data: &DataPool, panel: &DailyPanel) -> Result<PanelColumn> {
-    let close = panel.column_from_table(data.daily(DatasetId::StockDailyPv)?, "close")?;
+    let close = panel.column_from_panel(data.daily_panel(DatasetId::StockDailyPv)?, "close")?;
     let adj_factor =
-        panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+        panel.column_from_panel(data.daily_panel(DatasetId::StockAdjFactor)?, "adj_factor")?;
     let adj_close = close.zip_binary(&adj_factor, multiply_pair_value)?;
     adj_close.ts(|series| inclusive_price_return(series, RET20_WINDOW))
 }
@@ -127,7 +127,7 @@ pub fn neutralize_ret20_size_sector(
 ) -> Result<PanelColumn> {
     let masked = mask_bj(values, panel)?;
     let ret20 = adjusted_20d_return(data, panel)?;
-    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let size = panel.column_from_panel(data.daily_panel(DatasetId::StockBarraDaily)?, "SIZE")?;
     let sector_map = ClassificationMap::from_table(
         data.daily(DatasetId::StockSwClassification)?,
         ClassificationLevel::Sector,

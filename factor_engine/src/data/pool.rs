@@ -693,7 +693,12 @@ impl DataPool {
         let raw_rows = self
             .intraday_daily_raw
             .as_ref()
-            .map_or(0, |table| table.len);
+            .map(|table| table.len)
+            .unwrap_or_else(|| {
+                self.intraday_daily_raw_panel
+                    .as_ref()
+                    .map_or(0, DailyPanel::present_row_count)
+            });
         daily_rows + panel_rows + index_rows + minute_rows + raw_rows
     }
 
@@ -775,6 +780,13 @@ impl DataPool {
         let panel = DailyPanel::from_table(&table, context)?;
         self.intraday_daily_raw = Some(Arc::new(table));
         self.intraday_daily_raw_panel = Some(panel);
+        Ok(())
+    }
+
+    /// Consume the intermediate row table when all consumers use the daily panel.
+    pub fn set_intraday_daily_raw_panel(&mut self, table: Table, context: &FactorContext) -> Result<()> {
+        self.intraday_daily_raw_panel = Some(DailyPanel::from_table(&table, context)?);
+        self.intraday_daily_raw = None;
         Ok(())
     }
 

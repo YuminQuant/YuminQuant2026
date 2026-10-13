@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::core::{
     BarraSeries, BarraSpec, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue,
@@ -37,6 +37,14 @@ impl DailyPanelIndex {
 pub struct DailyPanel {
     index: Arc<DailyPanelIndex>,
     columns: BTreeMap<String, Arc<Vec<Option<f64>>>>,
+    aligned: Arc<Mutex<HashMap<(usize, usize), AlignedColumn>>>,
+}
+
+#[derive(Debug)]
+struct AlignedColumn {
+    // Keep source identities alive so allocator address reuse cannot hit a stale entry.
+    _source: PanelColumn,
+    values: Weak<Vec<Option<f64>>>,
 }
 
 impl DailyPanel {
@@ -62,6 +70,7 @@ impl DailyPanel {
                 present,
             }),
             columns: BTreeMap::new(),
+            aligned: Default::default(),
         })
     }
 
@@ -131,6 +140,7 @@ impl DailyPanel {
                 .into_iter()
                 .map(|(name, values)| (name, Arc::new(values)))
                 .collect(),
+            aligned: Default::default(),
         })
     }
 
@@ -203,6 +213,7 @@ impl DailyPanel {
                 present: self.index.present.clone(),
             }),
             columns: self.columns.clone(),
+            aligned: Arc::clone(&self.aligned),
         }
     }
 
@@ -248,6 +259,7 @@ impl DailyPanel {
                 present,
             }),
             columns,
+            aligned: Default::default(),
         }
     }
 
@@ -298,6 +310,78 @@ impl DailyPanel {
         self.column_from_values(values)
     }
 
+    /// Align raw daily data without changing the target universe, mask or output dates.
+    pub fn column_from_panel(&self, source: &DailyPanel, name: &str) -> Result<PanelColumn> {
+        let source = source.column(name)?;
+        if self.index.dates == source.index.dates
+            && self.index.instruments == source.index.instruments
+        {
+            return Ok(PanelColumn {
+                index: Arc::clone(&self.index),
+                values: source.values,
+            });
+        }
+        let key = (
+            Arc::as_ptr(&source.index) as usize,
+            Arc::as_ptr(&source.values) as usize,
+        );
+        if let Some(values) = self
+            .aligned
+            .lock()
+            .unwrap()
+            .get(&key)
+            .and_then(|entry| entry.values.upgrade())
+        {
+            return Ok(PanelColumn {
+                index: Arc::clone(&self.index),
+                values,
+            });
+        }
+        let stocks: HashMap<_, _> = source
+            .index
+            .instruments
+            .iter()
+            .enumerate()
+            .map(|(i, code)| (code.as_str(), i))
+            .collect();
+        let mapping: Vec<_> = self
+            .index
+            .instruments
+            .iter()
+            .map(|code| stocks.get(code.as_str()).copied())
+            .collect();
+        let mut values = vec![None; self.shape_len()];
+        for (day, date) in self.index.dates.iter().enumerate() {
+            let Ok(source_day) = source.index.dates.binary_search(date) else {
+                continue;
+            };
+            let offset = source_day * source.index.instrument_count();
+            for (stock, source_stock) in mapping.iter().enumerate() {
+                if let Some(source_stock) = source_stock {
+                    values[self.index.offset(day, stock)] = source.values[offset + source_stock];
+                }
+            }
+        }
+        let mut cache = self.aligned.lock().unwrap();
+        cache.retain(|_, entry| entry.values.strong_count() > 0);
+        // Another provider may have aligned this column while we were computing it.
+        let values = cache
+            .get(&key)
+            .and_then(|entry| entry.values.upgrade())
+            .unwrap_or_else(|| Arc::new(values));
+        cache.insert(
+            key,
+            AlignedColumn {
+                _source: source,
+                values: Arc::downgrade(&values),
+            },
+        );
+        Ok(PanelColumn {
+            index: Arc::clone(&self.index),
+            values,
+        })
+    }
+
     pub fn has_column(&self, name: &str) -> bool {
         self.columns.contains_key(name)
     }
@@ -305,6 +389,7 @@ impl DailyPanel {
     pub fn select_columns(&self, names: &BTreeSet<String>) -> Self {
         Self {
             index: Arc::clone(&self.index),
+            aligned: Arc::clone(&self.aligned),
             columns: self
                 .columns
                 .iter()
@@ -315,7 +400,11 @@ impl DailyPanel {
     }
 
     pub fn present_row_count(&self) -> usize {
-        self.index.present.iter().filter(|present| **present).count()
+        self.index
+            .present
+            .iter()
+            .filter(|present| **present)
+            .count()
     }
 
     pub fn dates(&self) -> &[i32] {

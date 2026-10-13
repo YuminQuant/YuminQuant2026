@@ -34,8 +34,8 @@ impl Factor for StockDailyLongMom2 {
             description: "KYZQ LongMom2: first take 160 trading dates inclusive of today, then discard missing/nontraded and closing-limit-up/down observations without extending the window. Amplitude=(high-low)/pre_close. Sum daily pct_chg/100 minus the equal-weight return of present, traded, valid non-BJ stocks over amplitudes <= the linearly interpolated 70th percentile (boundary ties retained). Closing-limit stocks participate in the market mean. Finally take cross-sectional OLS residual against the compounded last 20 daily returns with intercept. Both rolling windows use min_periods=1, including partial early windows; skip missing observations, with all-missing windows remaining null. Excludes BJ; no industry/SIZE neutralization or final standardization.".into(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyPv,
-                    &["close", "high", "low", "pre_close", "pct_chg", "vol"]),
-                DataRequest::new(DatasetId::StockDailyLimit, &["up_limit", "down_limit"]),
+                    &["close", "high", "low", "pre_close", "pct_chg", "vol"]).with_panel_only(),
+                DataRequest::new(DatasetId::StockDailyLimit, &["up_limit", "down_limit"]).with_panel_only(),
             ],
             intraday_raw_dependencies: vec![],
             lookback: Lookback { trading_days: WINDOW - 1 },
@@ -50,9 +50,9 @@ impl Factor for StockDailyLongMom2 {
         let pre_close = panel.column("pre_close")?;
         let pct_chg = panel.column("pct_chg")?;
         let volume = panel.column("vol")?;
-        let limits = data.daily(DatasetId::StockDailyLimit)?;
-        let up_limit = panel.column_from_table(limits, "up_limit")?;
-        let down_limit = panel.column_from_table(limits, "down_limit")?;
+        let limits = data.daily_panel(DatasetId::StockDailyLimit)?;
+        let up_limit = panel.column_from_panel(limits, "up_limit")?;
+        let down_limit = panel.column_from_panel(limits, "down_limit")?;
         let market = market_returns(panel, &close, &pre_close, &pct_chg, &volume);
         let n = panel.instruments().len();
         let mut raw = vec![None; panel.shape_len()];

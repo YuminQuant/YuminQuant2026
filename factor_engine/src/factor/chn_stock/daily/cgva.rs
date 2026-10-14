@@ -12,7 +12,7 @@ use crate::factor::common::{
     ClassificationLevel, ClassificationMap, FinancialPitReader, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
-use crate::operators::{cs_neutralize_regression, cs_zscore};
+use crate::operators::{cs_fill_mean_by_group, cs_neutralize_regression, cs_zscore};
 
 const LOOKBACK: usize = 110;
 const EPS: f64 = 1e-12;
@@ -38,7 +38,7 @@ impl Factor for StockDailyCgva {
             tags: ["CICC", "analyst", "fundamental", "consensus", "valuation", "pit",
                 "monthly_update", "neutralize", "barra", "size", "sector", "daily"]
                 .into_iter().map(str::to_string).collect(),
-            description: "Month-end CGVA; hold FINAL neutralized cross-section by stock code daily. FY1=previous calendar year through Apr30 inclusive, current year from May1; FY0=FY1-1 and FY3=FY1+2. Map consensus FY0..3 to absolute years separately at each as-of date using the consensus PIT annual/May1 anchor; out-of-range historical years use only PIT-visible annual parent profit/10000. EEChange=(current FY1 NP-prior same absolute year NP)/abs(prior NP), prior date=last trading day on/before anchor minus three calendar months. Growth3=(FY3 NP/abs(FY0 NP))^(1/3)-1, Growth1=(FY1 NP-FY0 NP)/abs(FY0 NP); nonzero base and nonnegative FY3 required. Positive pe_ttm regressed on Growth3, PIT parent profit TTM/average parent equity at q and q-4 (both positive), ln(total_mv), SW L1. All-market valid EEChange split into three ascending equal-count groups, stock code breaks ties. Within each group population zscores of PE residual and Growth3-Growth1; zero deviation null. Raw=group score-Z(PE residual)+Z(term). Require all three terms, then SW L1/Barra SIZE neutralize; no fills, clips or extra zscore. Excludes BJ; no PV anchor. Projected input columns and sparse month-end/three-month comparison dates; state keeps only last final cross-section.".into(),
+            description: "Month-end CGVA; hold FINAL neutralized cross-section by stock code daily. FY1=previous calendar year through Apr30 inclusive, current year from May1; FY0=FY1-1 and FY3=FY1+2. Map consensus FY0..3 to absolute years separately at each as-of date using the consensus PIT annual/May1 anchor; out-of-range historical years use only PIT-visible annual parent profit/10000. EEChange=(current FY1 NP-prior same absolute year NP)/abs(prior NP), prior date=last trading day on/before anchor minus three calendar months. Growth3=(FY3 NP/abs(FY0 NP))^(1/3)-1, Growth1=(FY1 NP-FY0 NP)/abs(FY0 NP); nonzero base and nonnegative FY3 required. Positive pe_ttm regressed on Growth3, PIT parent profit TTM/average parent equity at q and q-4 (both positive), ln(total_mv), SW L1. All-market valid EEChange split into three ascending equal-count groups, stock code breaks ties. Within each group population zscores of PE residual and Growth3-Growth1; zero deviation null. Raw=group score-Z(PE residual)+Z(term). Fill each of the three score columns with its SW L1 industry mean BEFORE summation; an unsupported industry remains null. Then SW L1/Barra SIZE neutralize, without post-composite fill, clips or extra zscore. Excludes BJ; no PV anchor. Projected input columns and sparse month-end/three-month comparison dates; state keeps only last final cross-section.".into(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockConsensus, &FORECASTS),
                 DataRequest::new(DatasetId::StockDailyBasic, &["pe_ttm", "total_mv"]),
@@ -233,6 +233,7 @@ fn grouped_score(
     bias: &[Option<f64>],
     term: &[Option<f64>],
     codes: &[String],
+    industries: &[Option<String>],
 ) -> Vec<Option<f64>> {
     let mut order: Vec<_> = ee
         .iter()
@@ -247,7 +248,7 @@ fn grouped_score(
     for (rank, &(i, _)) in order.iter().enumerate() {
         members[rank * 3 / order.len()].push(i);
     }
-    let mut output = vec![None; ee.len()];
+    let mut scores = vec![vec![None; ee.len()]; 3];
     for (group, indices) in members.iter().enumerate() {
         let value: Vec<_> = indices
             .iter()
@@ -260,12 +261,17 @@ fn grouped_score(
         let zv = cs_zscore(&value);
         let zt = cs_zscore(&structure);
         for (j, &i) in indices.iter().enumerate() {
-            output[i] = zv[j]
-                .zip(zt[j])
-                .and_then(|(v, t)| finite(group as f64 + 1.0 - v + t));
+            scores[0][i] = Some(group as f64 + 1.0);
+            scores[1][i] = zv[j].map(|v| -v);
+            scores[2][i] = zt[j];
         }
     }
-    output
+    // EE-group zscores are not industry-neutral: use actual industry means.
+    let scores: Vec<_> = scores.iter()
+        .map(|s| cs_fill_mean_by_group(s, industries)).collect();
+    (0..ee.len()).map(|i| {
+        finite(scores[0][i]? + scores[1][i]? + scores[2][i]?)
+    }).collect()
 }
 
 fn compute(data: &DataPool, state: &mut State) -> Result<FactorSeries> {
@@ -379,7 +385,7 @@ fn compute(data: &DataPool, state: &mut State) -> Result<FactorSeries> {
                     Some(&groups),
                     None,
                 );
-                let raw = grouped_score(&ee, &bias, &term, codes);
+                let raw = grouped_score(&ee, &bias, &term, codes, &groups);
                 let final_values =
                     cs_neutralize_regression(&raw, &[&exposure], Some(&groups), None);
                 state.final_values = codes

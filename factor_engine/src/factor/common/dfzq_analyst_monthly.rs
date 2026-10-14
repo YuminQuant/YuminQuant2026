@@ -13,7 +13,7 @@ use crate::factor::common::{
     ClassificationLevel, ClassificationMap, FinancialPitReader, ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
-use crate::operators::cross_sectional::{cs_neutralize_regression, cs_zscore};
+use crate::operators::cross_sectional::{cs_fill_mean_by_group, cs_neutralize_regression, cs_zscore};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Output {
@@ -99,9 +99,9 @@ impl Factor for AnalystMonthly {
         }
         FactorSpec {
             id: self.0.id().into(), aliases: vec![self.0.id().to_ascii_uppercase()], name: self.0.id().into(),
-            asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.1.0".into(),
-            tags: ["deprecated", "DFZQ", "analyst", "fundamental", "pit", "monthly_update", "daily", "neutralize", "size", "sector"].into_iter().map(str::to_string).collect(),
-            description: format!("Month-end PIT analyst factor {:?}; hold final cross-section by stock until next month end. FY1=prior calendar year before Apr30, current calendar year from Apr30 inclusive; map consensus FY0..3 to absolute years using its own PIT/May1 anchor. No express/forecast announcements. FOM: 12 calendar months of annual report forecasts, N>=3 per year, actual annual parent profit/10000 preferred; average latest-day individual scores otherwise; sqrt(1+nonmissing mean over FY1..3). Rolling EP/ROE: (1-month/12)*FYk+month/12*FY(k+1); require each nonzero-weight input. Mean available FY1/FY2 rolls. ROE model: SW L1, ln(total_mv), 1/pb, parent profit TTM/average positive parent equity at q and q-4, asset YoY, ROE YoY difference, dv_ttm/100, adjusted RET60, min(ROE,0); ROE predictions divided by100. EP differences use raw month-end levels 3 months apart. PEG uses FY1 PE and decimal CAGR sqrt(FY2 NP/abs(actual FY0 NP))-1; zero denominators invalid, negative growth retained; output NEGATIVE 6-month raw PEG change. All raw outputs: 1.5 IQR clipping, SW L1/SIZE neutralization, missing raw gets zero only for supported exposure rows, then cs_zscore. Excludes BJ. Requested outputs only; monthly state, no disk intermediates.", self.0),
+            asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.2.0".into(),
+            tags: ["DFZQ", "analyst", "fundamental", "pit", "monthly_update", "daily", "neutralize", "size", "sector"].into_iter().map(str::to_string).collect(),
+            description: format!("Month-end PIT analyst factor {:?}; hold final cross-section by stock until next month end. FY1=prior calendar year before Apr30, current calendar year from Apr30 inclusive; map consensus FY0..3 to absolute years using its own PIT/May1 anchor. No express/forecast announcements. FOM: 12 calendar months of annual report forecasts, N>=3 per year, actual annual parent profit/10000 preferred; average latest-day individual scores otherwise; sqrt(1+nonmissing mean over FY1..3). Rolling EP/ROE: (1-month/12)*FYk+month/12*FY(k+1); require each nonzero-weight input. Mean available FY1/FY2 rolls. ROE model: SW L1, ln(total_mv), 1/pb, parent profit TTM/average positive parent equity at q and q-4, asset YoY, ROE YoY difference, dv_ttm/100, adjusted RET60, min(ROE,0); ROE predictions divided by100. EP differences use raw month-end levels 3 months apart. PEG uses FY1 PE and decimal CAGR sqrt(FY2 NP/abs(actual FY0 NP))-1; zero denominators invalid, negative growth retained; output NEGATIVE 6-month raw PEG change. Before averaging FY signals, fill each annual FOM score, each rolled EP valuation, and each ROE residual separately with its SW L1 mean. Underlying predictions remain unfilled. All outputs: 1.5 IQR clipping, SW L1/SIZE neutralization, then cs_zscore; only the standalone PEG difference fills missing raw via zero residual for supported exposures, never post-fill composites. Excludes BJ. Requested outputs only; monthly state, no disk intermediates.", self.0),
             dependencies, intraday_raw_dependencies: vec![], lookback: Lookback { trading_days: self.0.lookback() },
         }
     }
@@ -199,12 +199,6 @@ fn blend(a: Option<f64>, b: Option<f64>, month: i32) -> Option<f64> {
     }
     finite(a? * (1.0 - month as f64 / 12.0) + b? * month as f64 / 12.0)
 }
-fn roll(values: [Option<f64>; 3], month: i32) -> Option<f64> {
-    mean(&[
-        blend(values[0], values[1], month),
-        blend(values[1], values[2], month),
-    ])
-}
 fn peg(mv: Option<f64>, p1: Option<f64>, p2: Option<f64>, base: Option<f64>) -> Option<f64> {
     let (mv, p1, p2, base) = (mv?, p1?, p2?, base?);
     if mv <= 0.0 || p1 == 0.0 || base == 0.0 || p2 < 0.0 {
@@ -244,8 +238,15 @@ fn finish(
     raw: &[Option<f64>],
     size: &[Option<f64>],
     groups: &[Option<String>],
+    fill_final: bool,
 ) -> Vec<Option<f64>> {
-    cs_zscore(&neutralize_and_fill_missing(&clip_iqr(raw), size, groups))
+    let clipped = clip_iqr(raw);
+    let residual = if fill_final {
+        neutralize_and_fill_missing(&clipped, size, groups)
+    } else {
+        cs_neutralize_regression(&clipped, &[size], Some(groups), None)
+    };
+    cs_zscore(&residual)
 }
 
 // Store only requested month-end rows, not additional stock x day numeric panels.
@@ -609,21 +610,27 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
     let mut pegs = HashMap::new();
     if let (Some(np), Some(basic)) = (&np, &basic) {
         for &d in &dates {
-            let mut ev = vec![None; n];
+            let mut ep_parts = vec![vec![None; n]; 2];
             let mut pv = vec![None; n];
+            let mut groups = sectors.groups_for(d, codes);
             for (i, c) in codes.iter().enumerate() {
                 if is_bj_stock(c) {
+                    groups[i] = None;
                     continue;
                 }
                 let target = fy1(d);
                 let source = analyst_fiscal_years(d, c, &annual)[0];
-                let values = std::array::from_fn(|k| {
+                let values: [Option<f64>; 3] = std::array::from_fn(|k| {
                     let year = target + k as i32;
                     let idx = usize::try_from(year - source).ok()?;
                     np.get(d, i, idx)
                 });
                 let mv = basic.get(d, i, 0).filter(|v| *v > 0.0);
-                ev[i] = roll(values, d / 100 % 100).and_then(|v| finite(v / mv?));
+                if mv.is_none() { groups[i] = None; }
+                for k in 0..2 {
+                    ep_parts[k][i] = blend(values[k], values[k + 1], d / 100 % 100)
+                        .and_then(|v| finite(v / mv?));
+                }
                 if outputs.contains(&Output::PegDiff) {
                     let value = |year| {
                         annual
@@ -638,7 +645,9 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
                     );
                 }
             }
-            ep.insert(d, ev);
+            let ep_parts: Vec<_> = ep_parts.iter()
+                .map(|v| cs_fill_mean_by_group(v, &groups)).collect();
+            ep.insert(d, (0..n).map(|i| mean(&[ep_parts[0][i], ep_parts[1][i]])).collect());
             pegs.insert(d, pv);
         }
     }
@@ -676,19 +685,25 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
                     match output {
                         Output::Fom => {
                             if let Some(reports) = &reports {
+                                let mut parts = vec![vec![None; n]; 3];
                                 for (i, c) in codes.iter().enumerate() {
-                                    let values: Vec<_> = (0..3)
-                                        .map(|k| {
-                                            let y = fy1(anchor) + k;
-                                            let actual = annual
-                                                .record_for_end_date(c, anchor, y * 10000 + 1231)
-                                                .map(|r| {
-                                                    r.column("n_income_attr_p").map(|v| v / 10000.0)
-                                                });
-                                            reports.score(c, y, anchor, actual)
-                                        })
-                                        .collect();
-                                    raw[i] = mean(&values)
+                                    if groups[i].is_none() {
+                                        continue;
+                                    }
+                                    for k in 0..3 {
+                                        let y = fy1(anchor) + k as i32;
+                                        let actual = annual
+                                            .record_for_end_date(c, anchor, y * 10000 + 1231)
+                                            .map(|r| {
+                                                r.column("n_income_attr_p").map(|v| v / 10000.0)
+                                            });
+                                        parts[k][i] = reports.score(c, y, anchor, actual);
+                                    }
+                                }
+                                let parts: Vec<_> = parts.iter()
+                                    .map(|v| cs_fill_mean_by_group(v, &groups)).collect();
+                                for i in 0..n {
+                                    raw[i] = mean(&[parts[0][i], parts[1][i], parts[2][i]])
                                         .and_then(|v| finite((1.0 + v).max(0.0).sqrt()));
                                 }
                             }
@@ -768,8 +783,8 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
                                     x[7][i] = x[2][i].map(|v| v.min(0.0));
                                 }
                             }
-                            let a = roe_residual(&y[0], &x, &groups);
-                            let b = roe_residual(&y[1], &x, &groups);
+                            let a = cs_fill_mean_by_group(&roe_residual(&y[0], &x, &groups), &groups);
+                            let b = cs_fill_mean_by_group(&roe_residual(&y[1], &x, &groups), &groups);
                             raw = (0..n).map(|i| mean(&[a[i], b[i]])).collect();
                         }
                     }
@@ -785,7 +800,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
                             codes
                                 .iter()
                                 .cloned()
-                                .zip(finish(&raw, &exposure, &groups))
+                                .zip(finish(&raw, &exposure, &groups, output == Output::PegDiff))
                                 .collect(),
                         ),
                     );

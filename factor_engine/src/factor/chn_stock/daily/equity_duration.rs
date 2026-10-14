@@ -4,8 +4,9 @@ use crate::core::{
 };
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_and_fill_missing};
 use crate::factor::common::{
+    ClassificationLevel, ClassificationMap,
     routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, DailyPanel, DividendReader, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
@@ -35,7 +36,7 @@ impl Factor for StockDailyEquityDuration {
             version: "0.2.1".into(),
             tags: ["XYZQ", "fundamental", "analyst", "financial", "consensus", "valuation", "pit", "size_neutralize", "sector_neutralize", "daily"]
                 .into_iter().map(str::to_string).collect(),
-            description: "Negative residual-income equity duration using strictly three consensus periods FY0/FY1/FY2 with a PIT annual-disclosure anchor and May 1 fallback; all three must be finite, with no two-period fallback. All monetary totals in wan yuan. Payout=implemented LTM cash dividends / latest PIT parent profit TTM; positive current/recursive equity and TTM profit required. Terminal residual income stays constant. Require a unique positive implied discount rate above 0.0001; central price sensitivity at +/-0.0001. SW level-1 and Barra SIZE neutralization; no winsorization or zscore; excludes BJ.".into(),
+            description: "Negative residual-income equity duration using strictly three consensus periods FY0/FY1/FY2 with a PIT annual-disclosure anchor and May 1 fallback; all three must be finite, with no two-period fallback. All monetary totals in wan yuan. Payout=implemented LTM cash dividends / latest PIT parent profit TTM; positive current/recursive equity and TTM profit required. Terminal residual income stays constant. Require a unique positive implied discount rate above 0.0001; central price sensitivity at +/-0.0001. SW level-1 and Barra SIZE neutralization; missing raw gets zero residual only with valid SIZE and a fitted industry; no winsorization or zscore; excludes BJ.".into(),
             dependencies: vec![
                 DataRequest::financial_quarters(DatasetId::StockIncome, &[PROFIT], 4),
                 DataRequest::financial_quarters(DatasetId::StockBalanceSheet, &[EQUITY], 4),
@@ -80,7 +81,7 @@ impl Factor for StockDailyEquityDuration {
             &market_cap,
             &forecasts,
         )?;
-        Ok(neutralize_size_sector(&raw, &panel, data)?.to_factor_series(self.spec()))
+        Ok(finish_analyst(&raw, &panel, data)?.to_factor_series(self.spec()))
     }
 }
 
@@ -330,4 +331,33 @@ fn duration_alpha(equity: f64, cap: f64, payout: f64, forecasts: [Option<f64>; 3
     let alpha = (model.price_ratio(rate + RATE_STEP)? - model.price_ratio(rate - RATE_STEP)?)
         / (2.0 * RATE_STEP);
     alpha.is_finite().then_some(alpha)
+}
+
+// Fill only the final signal; financial and time-series inputs retain their missing values.
+fn finish_analyst(raw: &PanelColumn, panel: &DailyPanel, data: &DataPool) -> Result<PanelColumn> {
+    let size = panel.column_from_panel(data.daily_panel(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let sector = ClassificationMap::from_table(
+        data.daily(DatasetId::StockSwClassification)?, ClassificationLevel::Sector,
+    )?;
+    let n = panel.instruments().len();
+    let mut values = vec![None; panel.shape_len()];
+    for (day, &date) in panel.dates().iter().enumerate() {
+        if !panel.is_target_date(date) {
+            continue;
+        }
+        let start = day * n;
+        let mut groups = sector.groups_for(date, panel.instruments());
+        for (i, code) in panel.instruments().iter().enumerate() {
+            if is_bj_stock(code) || !panel.is_present_offset(start + i) {
+                groups[i] = None;
+            }
+        }
+        let residual = neutralize_and_fill_missing(
+            &raw.values()[start..start + n],
+            &size.values()[start..start + n],
+            &groups,
+        );
+        values[start..start + n].copy_from_slice(&residual);
+    }
+    panel.column_from_values(values)
 }

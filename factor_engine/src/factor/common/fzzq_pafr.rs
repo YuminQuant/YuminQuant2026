@@ -9,13 +9,13 @@ use crate::data::DataPool;
 
 use crate::error::{err, Result};
 use crate::factor::common::financial::{add_days, add_months, analyst_fiscal_years};
-use crate::factor::common::stock_daily_ops::is_bj_stock;
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_and_fill_missing};
 use crate::factor::common::{
     ClassificationLevel, ClassificationMap, DailyPanel, FinancialPitReader, PanelColumn,
     ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
-use crate::operators::cross_sectional::{cs_neutralize_regression, cs_regression_residual};
+use crate::operators::cross_sectional::{cs_regression_residual};
 
 const DAYS: i32 = 90;
 const PAIR_LOOKBACK: usize = 270;
@@ -45,7 +45,7 @@ impl Factor for Pafr {
             name: match self.0 { Output::Raw => "Momentum-Purged Analyst Forecast Revision", Output::Zscore => "Momentum-Purged Analyst Forecast Revision Historical Z-score" }.into(),
             asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.2.0".into(),
             tags: ["FZZQ", "analyst", "fundamental", "pit", "forecast_revision", "momentum_residual", "daily", "neutralize", "size", "sector"].into_iter().map(str::to_string).collect(),
-            description: format!("Daily PAFR approximation: match org/stock/absolute Q4 forecast year. Deduplicate date/org/author/title/year (last finite source row wins), then equally average reports for each institution/date/year. Current report's FY2 follows PIT annual disclosure with May-1 fallback. Compare strictly previous valid date in the same year, even if that year had another FY label then. New revisions must be in (T-90 calendar days,T]; the strictly previous prediction must be in (T minus twelve calendar months,T]. Revision=(current-previous)/abs(previous), zero base invalid, clipped +/-0.25. Adjusted-close interval return minus SAME-INTERVAL equal-weight cross-sectional mean, excludes BJ; endpoints last session <= report date, missing endpoints invalid. Daily pooled event OLS with intercept: revision~between-report excess return, then residual~report-to-T excess return; constant regressor reduces to demeaning. Stocks need >=3 complete institution-day revision events before both fits and aggregation. {} Final daily SW L1/SIZE neutralization, no missing-value fill or extra winsorization. No AFR output. Benchmark cache bounded to active intervals; z-score history cached by instrument, never recomputed using future data.",
+            description: format!("Daily PAFR approximation: match org/stock/absolute Q4 forecast year. Deduplicate date/org/author/title/year (last finite source row wins), then equally average reports for each institution/date/year. Current report's FY2 follows PIT annual disclosure with May-1 fallback. Compare strictly previous valid date in the same year, even if that year had another FY label then. New revisions must be in (T-90 calendar days,T]; the strictly previous prediction must be in (T minus twelve calendar months,T]. Revision=(current-previous)/abs(previous), zero base invalid, clipped +/-0.25. Adjusted-close interval return minus SAME-INTERVAL equal-weight cross-sectional mean, excludes BJ; endpoints last session <= report date, missing endpoints invalid. Daily pooled event OLS with intercept: revision~between-report excess return, then residual~report-to-T excess return; constant regressor reduces to demeaning. Stocks need >=3 complete institution-day revision events before both fits and aggregation. {} Final daily SW L1/SIZE neutralization, missing final raw gets zero residual with valid SIZE and a fitted industry; no extra winsorization; filled values never enter rolling history. No AFR output. Benchmark cache bounded to active intervals; z-score history cached by instrument, never recomputed using future data.",
                 match self.0 { Output::Raw => "Equally average second-stage residuals by stock.", Output::Zscore => "Standardize that raw stock mean using previous 252 trading sessions EXCLUDING today, >=120 finite values, population standard deviation; zero deviation is null." }),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockAnalystReport, &["np", "report_date", "quarter", "org_name", "author_name", "report_title"]),
@@ -672,7 +672,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
                     &standardized
                 };
                 let residual =
-                    cs_neutralize_regression(input, &[&size_values], Some(&groups), None);
+                    neutralize_and_fill_missing(input, &size_values, &groups);
                 for (i, code) in panel.instruments().iter().enumerate() {
                     if panel.is_present_offset(day * n + i) {
                         result[j].values.push(FactorValue {

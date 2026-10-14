@@ -12,7 +12,6 @@ use crate::factor::common::financial::{add_days, add_months};
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_and_fill_missing};
 use crate::factor::common::{ClassificationLevel, ClassificationMap, ReportTypePreference};
 use crate::factor::{Factor, FactorUpdatePolicy};
-use crate::operators::cross_sectional::cs_neutralize_regression;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Output {
@@ -48,7 +47,6 @@ impl Factor for AnalystCoverage {
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
         ];
         let mut tags = vec![
-            "deprecated",
             "DFZQ",
             "analyst",
             "coverage",
@@ -386,12 +384,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
             }
             for (output, raw) in pending.into_iter().zip(raw) {
                 let exposure = &size.values()[anchor_day * n..(anchor_day + 1) * n];
-                let residual = match output {
-                    Output::Cov | Output::Firstcov => {
-                        cs_neutralize_regression(&raw, &[exposure], Some(&groups), None)
-                    }
-                    Output::Anncov => neutralize_and_fill_missing(&raw, exposure, &groups),
-                };
+                let residual = neutralize_and_fill_missing(&raw, exposure, &groups);
                 state.outputs.insert(
                     output,
                     MonthlySnapshot {

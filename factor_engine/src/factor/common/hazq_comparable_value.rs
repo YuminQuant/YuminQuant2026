@@ -2,13 +2,13 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 
 use crate::core::{
-    AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
-    Lookback,
+    AssetClass, DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec,
+    FactorValue, Frequency, Lookback,
 };
 use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector_with_inputs};
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_and_fill_missing, neutralize_size_sector_with_inputs};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
     routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, financial_event_trade_dates, ClassificationLevel,
@@ -248,10 +248,18 @@ impl HazqComparableValueOutput {
         format!("comp_{}_{}", self.base.id(), self.component.id())
     }
 
+    pub const fn is_analyst(self) -> bool {
+        matches!(self.base, HazqComparableBase::EpFttm)
+            || matches!(self.component, HazqComparableComponent::GapAvg | HazqComparableComponent::GapMmm)
+    }
+
     pub const fn is_deprecated(self) -> bool {
         use HazqComparableBase::*;
         use HazqComparableComponent::*;
 
+        if self.is_analyst() {
+            return false;
+        }
         match self.base {
             Bp => matches!(
                 self.component,
@@ -507,12 +515,13 @@ pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
         name: id,
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
-        version: VERSION.to_string(),
+        version: if output.is_analyst() { "0.2.0" } else { VERSION }.to_string(),
         tags: output_tags,
         description: format!(
-            "HAZQ comparable-company value factor {} {}. It builds a PIT financial cosine-similarity network, uses peers with similarity above 0.9, excludes BJ stocks, and neutralizes the output by SW level-1 industry and Barra SIZE.",
+            "HAZQ comparable-company value factor {} {}. It builds a PIT financial cosine-similarity network, uses peers with similarity above 0.9, excludes BJ stocks, and neutralizes the output by SW level-1 industry and Barra SIZE. {}",
             output.base.alias(),
-            output.component.alias()
+            output.component.alias(),
+            if output.is_analyst() { "Missing raw gets zero residual only with valid SIZE and a fitted industry; no changes to financial fallback or peer inputs." } else { "" }
         ),
         dependencies,
         intraday_raw_dependencies: Vec::new(),
@@ -571,11 +580,15 @@ pub fn compute_requested_stateful(
     };
     let schedule = hazq_event_schedule(&inputs);
     let first_panel_date = panel.dates().first().copied();
-    let mut peer_state = match (state.peer_state.last_processed_trade_date, first_panel_date) {
+    let previous_peers = std::mem::take(&mut state.peer_state);
+    let mut peer_state = match (previous_peers.last_processed_trade_date, first_panel_date) {
         (Some(last_processed), Some(first_date)) if first_date > last_processed => {
-            state.peer_state.clone()
+            previous_peers
         }
-        _ => ComparablePeerState::default(),
+        _ => {
+            drop(previous_peers);
+            ComparablePeerState::default()
+        }
     };
     let event_dates = financial_event_trade_dates(
         peer_state.last_processed_trade_date,
@@ -611,7 +624,14 @@ pub fn compute_requested_stateful(
     }
     state.peer_state = peer_state;
 
-    let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
+    // No output calculation below needs valuation inputs or financial readers.
+    drop(base_columns);
+    drop(ep_base_column);
+    drop(growth_column);
+    drop(inputs);
+    drop(schedule);
+
+    let size = panel.column_from_panel(data.daily_panel(DatasetId::StockBarraDaily)?, "SIZE")?;
     let sector = ClassificationMap::from_table(
         data.daily(DatasetId::StockSwClassification)?,
         ClassificationLevel::Sector,
@@ -648,10 +668,67 @@ pub fn compute_requested_stateful(
         } else {
             raw
         };
-        let neutralized = neutralize_size_sector_with_inputs(&raw, &panel, &size, &sector)?;
-        result.push(neutralized.to_factor_series(spec(output)));
+        let series = if output.is_analyst() {
+            neutralize_analyst_with_fill(&raw, &panel, &size, &sector, spec(output))?
+        } else {
+            neutralize_size_sector_with_inputs(&raw, &panel, &size, &sector)?
+                .to_factor_series(spec(output))
+        };
+        result.push(series);
     }
     Ok(result)
+}
+
+// Applied only to analyst outputs, after all rolling/component calculations.
+fn neutralize_analyst_with_fill(
+    raw: &PanelColumn,
+    panel: &DailyPanel,
+    size: &PanelColumn,
+    sector: &ClassificationMap,
+    spec: FactorSpec,
+) -> Result<FactorSeries> {
+    let n = panel.instruments().len();
+    let row_count = panel
+        .dates()
+        .iter()
+        .enumerate()
+        .filter(|(_, date)| panel.is_target_date(**date))
+        .map(|(day, _)| {
+            (0..n)
+                .filter(|i| panel.is_present_offset(day * n + i))
+                .count()
+        })
+        .sum();
+    let mut values = Vec::with_capacity(row_count);
+    for (day, &date) in panel.dates().iter().enumerate() {
+        if !panel.is_target_date(date) {
+            continue;
+        }
+        let start = day * n;
+        let mut groups = sector.groups_for(date, panel.instruments());
+        for (i, code) in panel.instruments().iter().enumerate() {
+            if is_bj_stock(code) || !panel.is_present_offset(start + i) {
+                groups[i] = None;
+            }
+        }
+        let residual = neutralize_and_fill_missing(
+            &raw.values()[start..start + n],
+            &size.values()[start..start + n],
+            &groups,
+        );
+        for (i, value) in residual.into_iter().enumerate() {
+            if panel.is_present_offset(start + i) {
+                values.push(FactorValue {
+                    key: FactorRowKey::Daily {
+                        trade_date: date,
+                        ts_code: panel.instruments()[i].clone(),
+                    },
+                    value,
+                });
+            }
+        }
+    }
+    Ok(FactorSeries { spec, values })
 }
 
 fn hazq_inputs<'a>(
@@ -662,20 +739,20 @@ fn hazq_inputs<'a>(
     needs_consensus_growth: bool,
     needs_consensus_pe_roll: bool,
 ) -> Result<HazqComparableInputs<'a>> {
-    let daily_basic = data.daily(DatasetId::StockDailyBasic)?;
+    let daily_basic = data.daily_panel(DatasetId::StockDailyBasic)?;
     let consensus = if needs_consensus_growth || needs_consensus_pe_roll {
-        Some(data.daily(DatasetId::StockConsensus)?)
+        Some(data.daily_panel(DatasetId::StockConsensus)?)
     } else {
         None
     };
     Ok(HazqComparableInputs {
         panel,
-        total_mv: panel.column_from_table(daily_basic, TOTAL_MV_COLUMN)?,
+        total_mv: panel.column_from_panel(daily_basic, TOTAL_MV_COLUMN)?,
         pb: needs_pb
-            .then(|| panel.column_from_table(daily_basic, PB_COLUMN))
+            .then(|| panel.column_from_panel(daily_basic, PB_COLUMN))
             .transpose()?,
         pe_ttm: needs_pe_ttm
-            .then(|| panel.column_from_table(daily_basic, PE_TTM_COLUMN))
+            .then(|| panel.column_from_panel(daily_basic, PE_TTM_COLUMN))
             .transpose()?,
         income: data.financial_reader(
             DatasetId::StockIncome,
@@ -691,11 +768,11 @@ fn hazq_inputs<'a>(
         )?,
         consensus_growth: consensus
             .filter(|_| needs_consensus_growth)
-            .map(|table| panel.column_from_table(table, CONSENSUS_GROWTH_COLUMN))
+            .map(|table| panel.column_from_panel(table, CONSENSUS_GROWTH_COLUMN))
             .transpose()?,
         consensus_pe_roll: consensus
             .filter(|_| needs_consensus_pe_roll)
-            .map(|table| panel.column_from_table(table, CONSENSUS_PE_ROLL_COLUMN))
+            .map(|table| panel.column_from_panel(table, CONSENSUS_PE_ROLL_COLUMN))
             .transpose()?,
     })
 }
@@ -1532,10 +1609,9 @@ fn dependencies_for_output(output: HazqComparableValueOutput) -> Vec<DataRequest
         consensus_columns.push(CONSENSUS_PE_ROLL_COLUMN);
     }
     if !consensus_columns.is_empty() {
-        dependencies.push(DataRequest::new(
-            DatasetId::StockConsensus,
-            &consensus_columns,
-        ));
+        dependencies.push(
+            DataRequest::new(DatasetId::StockConsensus, &consensus_columns).with_panel_only(),
+        );
     }
     dependencies
 }
@@ -1552,7 +1628,7 @@ fn common_dependencies(output: HazqComparableValueOutput) -> Vec<DataRequest> {
         daily_basic_columns.push(PE_TTM_COLUMN);
     }
     vec![
-        DataRequest::new(DatasetId::StockDailyBasic, &daily_basic_columns),
+        DataRequest::new(DatasetId::StockDailyBasic, &daily_basic_columns).with_panel_only(),
         DataRequest::financial_quarters(
             DatasetId::StockIncome,
             &INCOME_COLUMNS,
@@ -1568,7 +1644,7 @@ fn common_dependencies(output: HazqComparableValueOutput) -> Vec<DataRequest> {
             &CASHFLOW_COLUMNS,
             FINANCIAL_QUARTERS,
         ),
-        DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
+        DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]).with_panel_only(),
         DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
     ]
 }

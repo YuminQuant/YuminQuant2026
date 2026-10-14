@@ -14,7 +14,8 @@ use crate::factor::common::{
     ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
-use crate::operators::{cs_neutralize_regression, cs_zscore};
+use crate::operators::{cs_fill_mean_by_group, cs_neutralize_regression, cs_zscore};
+use crate::factor::common::stock_daily_ops::neutralize_and_fill_missing;
 
 const EQUITY: &str = "total_hldr_eqy_exc_min_int";
 const PROFIT: &str = "n_income_attr_p";
@@ -132,9 +133,9 @@ impl Factor for HtzqAnalyst {
         };
         FactorSpec {
             id: self.0.id().into(), aliases: vec![self.0.id().to_ascii_uppercase()], name: self.0.id().into(),
-            asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.1.0".into(),
+            asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.2.0".into(),
             tags: tags.into_iter().map(str::to_string).collect(),
-            description: format!("{detail} Common: legal stock-basic universe, excludes BJ, report key stock/date/org/author/title deduplicated across forecast-year rows; last valid duplicate wins. Windows (cutoff,date]. Requested outputs only. Monthly final snapshots keyed by stock, no disk intermediates, no winsorization/missing fills/extra final zscore."),
+            description: format!("{detail} Common: legal stock-basic universe, excludes BJ, report key stock/date/org/author/title deduplicated across forecast-year rows; last valid duplicate wins. Windows (cutoff,date]. Requested outputs only. Monthly final snapshots keyed by stock, no disk intermediates, no winsorization/extra final zscore. Before any multi-signal mean, zscore each signal then fill its missing values with its SW L1 mean; unsupported industries stay null. Single rating outputs fill missing raw with zero residual only for valid SIZE and fitted industries. No post-composite fill."),
             dependencies, intraday_raw_dependencies: vec![],
             lookback: Lookback { trading_days: if self.0.rating_index().is_some() { 850 } else { 130 } },
         }
@@ -496,8 +497,10 @@ fn roe(
     finite(income.ttm_sum_for_end_date(code, date, q, PROFIT)? / (0.5 * a + 0.5 * b))
 }
 
-fn equal_zscore(parts: &[Vec<Option<f64>>]) -> Vec<Option<f64>> {
-    let standardized: Vec<_> = parts.iter().map(|v| cs_zscore(v)).collect();
+fn equal_zscore(parts: &[Vec<Option<f64>>], groups: &[Option<String>]) -> Vec<Option<f64>> {
+    // Fill each standardized signal BEFORE averaging, not the final composite.
+    let standardized: Vec<_> = parts.iter()
+        .map(|v| cs_fill_mean_by_group(&cs_zscore(v), groups)).collect();
     (0..parts[0].len())
         .map(|i| {
             let sum = standardized
@@ -572,6 +575,7 @@ fn coverage(
         &y.iter()
             .map(|v| cs_neutralize_regression(v, &xs, Some(groups), None))
             .collect::<Vec<_>>(),
+        groups,
     )
 }
 
@@ -834,6 +838,7 @@ fn earnings_revision(
     calendar: &TradingCalendar,
     panel: &DailyPanel,
     date: i32,
+    groups: &[Option<String>],
 ) -> Vec<Option<f64>> {
     let n = panel.instruments().len();
     let lower = add_months(date, -3);
@@ -890,6 +895,7 @@ fn earnings_revision(
             .iter()
             .map(|v| cs_neutralize_regression(v, &[&momentum], None, None))
             .collect::<Vec<_>>(),
+        groups,
     )
 }
 
@@ -1027,15 +1033,10 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
         let anchor = calendar.month_end_on_or_before(date);
         let mut daily = None;
         if revision_needed {
-            let raw =
-                earnings_revision(revisions.as_ref().unwrap(), &market, calendar, panel, date);
             let (groups, size) = exposures(panel, &market, &sectors, date);
-            daily = Some(cs_neutralize_regression(
-                &raw,
-                &[&size],
-                Some(&groups),
-                None,
-            ));
+            let raw =
+                earnings_revision(revisions.as_ref().unwrap(), &market, calendar, panel, date, &groups);
+            daily = Some(cs_neutralize_regression(&raw, &[&size], Some(&groups), None));
         }
         for (j, &output) in outputs.iter().enumerate() {
             if output != Output::Revision {
@@ -1068,7 +1069,7 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
                                     raw[i] = None;
                                 }
                             }
-                            cs_neutralize_regression(&raw, &[&size], Some(&groups), None)
+                            neutralize_and_fill_missing(&raw, &size, &groups)
                         };
                         state.monthly.insert(
                             output,

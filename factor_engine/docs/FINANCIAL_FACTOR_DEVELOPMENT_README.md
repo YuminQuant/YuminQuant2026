@@ -16,6 +16,33 @@ for checking formulas, PIT visibility and batch alignment.
 
 ## Shared Query Performance / 共享查询性能
 
+### Analyst Missing Values / 分析师因子缺失值
+
+All 51 registered analyst outputs are active, including the formerly deprecated
+24 outputs. This does not reactivate non-analyst comparable-value components.
+Missing-value policy is explicit in each factor/provider, not an engine-wide
+output transform. Existing financial zero operands, dividend-zero conventions,
+PIT actual/forecast priorities and CAGR-to-financial-growth fallback are retained.
+
+For a single industry/SIZE residual, fill missing raw signals with residual zero
+only for finite SIZE and an industry supported by the fit. A missing industry or
+failed fit stays null. For composites, fill EACH component BEFORE combination:
+HTZQ standardized residual components, CGVA's three score columns, DFZQ annual
+FOM scores, rolled EP valuations and ROE residuals. Use the component's actual
+industry mean where its transformations do not guarantee a zero industry mean.
+Do not replace a still-missing composite with zero after combination. Existing
+nonmissing-mean conventions for DFZQ fiscal-year averages remain unchanged.
+Monthly outputs fill at the month-end anchor and hold the final snapshot.
+Daily outputs fill daily; exclude BJ and stocks outside the date's universe.
+Do not insert these fills into financial sources or PAFR/BET rolling inputs.
+
+51个 analyst 输出均为 active；不恢复非 analyst 的弃用因子。新增填充在各因子或
+provider 内显式执行，不放入全局写出层。保留原有财报分项补0、无分红按0、实际值与预测
+优先级、CAGR缺失回退财报增速等口径。单因子的行业/SIZE回归残差可在行业有有效拟合且
+SIZE有效时补0；合成因子先分别填子项的行业均值，再按原规则合成，不在合成后兜底补0。
+子项经过其他变换后不保证行业均值为0的，计算实际行业均值。行业无有效样本则留空。
+月末因子只在锚点填充后日频持有，不因此变成每日重新填充。
+
 For numeric daily inputs consumed exclusively through `data.daily_panel(...)`,
 declare `.with_panel_only()` in `requirements_for_context`. The loader builds
 the panel and releases the unused row table. A mixed batch retains the row table

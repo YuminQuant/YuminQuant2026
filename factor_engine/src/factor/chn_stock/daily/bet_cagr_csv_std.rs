@@ -5,8 +5,9 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::Result;
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
+use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_and_fill_missing};
 use crate::factor::common::{
+    ClassificationLevel, ClassificationMap,
     routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, DailyPanel, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
     FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, ReportTypePreference,
@@ -38,7 +39,7 @@ impl Factor for StockDailyBetCagrCsvStd {
             version: "0.1.0".into(),
             tags: ["HAZQ", "fundamental", "analyst", "financial", "consensus", "valuation", "pit", "size_neutralize", "sector_neutralize", "daily"]
                 .into_iter().map(str::to_string).collect(),
-            description: "Daily BET uses g=min(consensus two-year growth / 100, PIT parent net-profit TTM YoY with absolute base). BET=ln1p(g*pe_ttm)/ln1p(g), with BET=pe_ttm at zero growth; positive PE and valid logarithms required. Apply 252-trading-day population z-score including today, min_periods=60, then SW level-1 and Barra SIZE neutralization. Lower is cheaper; no sign flip, fills or winsorization; excludes BJ.".into(),
+            description: "Daily BET uses g=min(consensus two-year growth / 100, PIT parent net-profit TTM YoY with absolute base). BET=ln1p(g*pe_ttm)/ln1p(g), with BET=pe_ttm at zero growth; positive PE and valid logarithms required. Apply 252-trading-day population z-score including today, min_periods=60, then SW level-1 and Barra SIZE neutralization. Lower is cheaper; missing final raw gets zero residual only with valid SIZE and a fitted industry; no sign flip or winsorization; excludes BJ.".into(),
             dependencies: vec![
                 DataRequest::financial_quarters(DatasetId::StockIncome, &[PROFIT], QUARTERS),
                 DataRequest::new(DatasetId::StockDailyBasic, &["pe_ttm"]),
@@ -65,7 +66,7 @@ impl Factor for StockDailyBetCagrCsvStd {
         let cagr = panel.column_from_table(data.daily(DatasetId::StockConsensus)?, CAGR)?;
         let bet = raw_bet(&panel, &income, &pe, &cagr)?;
         let standardized = bet.ts(|values| ts_zscore(values, WINDOW, MIN_PERIODS))?;
-        Ok(neutralize_size_sector(&standardized, &panel, data)?.to_factor_series(self.spec()))
+        Ok(finish_analyst(&standardized, &panel, data)?.to_factor_series(self.spec()))
     }
 }
 
@@ -179,4 +180,33 @@ fn bet_value(pe: Option<f64>, cagr_pct: Option<f64>, actual_yoy: Option<f64>) ->
         product.ln_1p() / g.ln_1p()
     };
     value.is_finite().then_some(value)
+}
+
+// Fill only the final signal; financial and time-series inputs retain their missing values.
+fn finish_analyst(raw: &PanelColumn, panel: &DailyPanel, data: &DataPool) -> Result<PanelColumn> {
+    let size = panel.column_from_panel(data.daily_panel(DatasetId::StockBarraDaily)?, "SIZE")?;
+    let sector = ClassificationMap::from_table(
+        data.daily(DatasetId::StockSwClassification)?, ClassificationLevel::Sector,
+    )?;
+    let n = panel.instruments().len();
+    let mut values = vec![None; panel.shape_len()];
+    for (day, &date) in panel.dates().iter().enumerate() {
+        if !panel.is_target_date(date) {
+            continue;
+        }
+        let start = day * n;
+        let mut groups = sector.groups_for(date, panel.instruments());
+        for (i, code) in panel.instruments().iter().enumerate() {
+            if is_bj_stock(code) || !panel.is_present_offset(start + i) {
+                groups[i] = None;
+            }
+        }
+        let residual = neutralize_and_fill_missing(
+            &raw.values()[start..start + n],
+            &size.values()[start..start + n],
+            &groups,
+        );
+        values[start..start + n].copy_from_slice(&residual);
+    }
+    panel.column_from_values(values)
 }

@@ -10,7 +10,7 @@ use crate::error::{err, Result};
 use crate::factor::common::financial::{add_days, add_months};
 use crate::factor::common::{ClassificationLevel, ClassificationMap};
 use crate::factor::{Factor, FactorUpdatePolicy};
-use crate::operators::cs_neutralize_regression;
+use crate::factor::common::stock_daily_ops::neutralize_and_fill_missing;
 
 const INITIAL_LOOKBACK: usize = 32;
 const HALF_LIFE: f64 = 90.0;
@@ -34,7 +34,7 @@ impl Factor for StockDailyCCafr {
             tags: ["CICC", "analyst", "forecast_revision", "monthly_update", "daily",
                 "neutralize", "barra", "size", "sector"]
                 .into_iter().map(str::to_string).collect(),
-            description: "Month-end C_CAFR approximation with institutions as analysts. Use annual Q4 forecasts for the previous calendar year through April 30 (inclusive), switching to the anchor calendar year from May 1. Deduplicate stock/date/org/author/title/year (last finite source row wins), average distinct same-day reports by institution, then subtract its strictly previous valid dated forecast for the same stock/year. New revisions must be in (anchor minus six calendar months, anchor]; the strictly previous prediction must be in (anchor minus twelve calendar months, anchor]; retain all revision events including zeros/negative forecasts, no percentage scaling or clipping. Mean weights: 0.5^(calendar age/90) times institution's deduplicated non-BJ A-share report count in (anchor minus twelve months, anchor], across all forecast years and without np filtering. Divide weighted mean by UNWEIGHTED population standard deviation, >=2 events, zero deviation null. Multiply by max(0,1-age_latest_NONZERO_revision/180). SW L1 + Barra SIZE neutralize at month-end, without fill, winsorization or extra zscore; hold FINAL values by stock code daily. Compact report/revision index built once per date-batch over shared annual sources; no PV anchor or disk intermediates.".into(),
+            description: "Month-end C_CAFR approximation with institutions as analysts. Use annual Q4 forecasts for the previous calendar year through April 30 (inclusive), switching to the anchor calendar year from May 1. Deduplicate stock/date/org/author/title/year (last finite source row wins), average distinct same-day reports by institution, then subtract its strictly previous valid dated forecast for the same stock/year. New revisions must be in (anchor minus six calendar months, anchor]; the strictly previous prediction must be in (anchor minus twelve calendar months, anchor]; retain all revision events including zeros/negative forecasts, no percentage scaling or clipping. Mean weights: 0.5^(calendar age/90) times institution's deduplicated non-BJ A-share report count in (anchor minus twelve months, anchor], across all forecast years and without np filtering. Divide weighted mean by UNWEIGHTED population standard deviation, >=2 events, zero deviation null. Multiply by max(0,1-age_latest_NONZERO_revision/180). SW L1 + Barra SIZE neutralize at month-end, missing raw gets zero residual with valid SIZE and a fitted industry; no winsorization or extra zscore; hold FINAL values by stock code daily. Compact report/revision index built once per date-batch over shared annual sources; no PV anchor or disk intermediates.".into(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockAnalystReport,
                     &["np", "report_date", "quarter", "org_name", "author_name", "report_title"]),
@@ -358,7 +358,7 @@ fn compute(context: &FactorContext, data: &DataPool, state: &mut State) -> Resul
                     .collect();
                 let exposure =
                     &size.as_ref().unwrap().values()[anchor_day * n..(anchor_day + 1) * n];
-                let residual = cs_neutralize_regression(&raw, &[exposure], Some(&groups), None);
+                let residual = neutralize_and_fill_missing(&raw, exposure, &groups);
                 state.final_values = panel.instruments().iter().cloned().zip(residual).collect();
                 state.last_anchor = Some(anchor);
             }

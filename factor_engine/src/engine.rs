@@ -469,7 +469,7 @@ impl Engine {
                         &batch_factors,
                         &context,
                         &pool,
-                        &contextual_requirements.by_provider,
+                        &contextual_requirements,
                         &mut compute_states,
                         thread_pool.as_ref(),
                     )?;
@@ -1570,6 +1570,7 @@ fn spec_calendar_lookback_days(spec: &crate::core::FactorSpec) -> usize {
 struct ContextualRequirements {
     all: Vec<DataRequest>,
     by_provider: BTreeMap<String, Vec<DataRequest>>,
+    load_dates_by_provider: BTreeMap<String, BTreeSet<i32>>,
 }
 
 fn contextual_requirements_for_factor_batch<'a>(
@@ -1596,6 +1597,11 @@ fn contextual_requirements_for_factor_batch<'a>(
             target_dates: context.target_dates.clone(),
         };
         let requirements = factor.requirements_for_context(&factor_context);
+        output
+            .load_dates_by_provider
+            .entry(factor.compute_provider_key())
+            .or_default()
+            .extend(factor_context.load_dates.iter().copied());
         output
             .by_provider
             .entry(factor.compute_provider_key())
@@ -1955,25 +1961,18 @@ fn request_has_daily_panel_dates(request: &DataRequest) -> bool {
 fn context_for_provider_requests(
     context: &FactorContext,
     requirements: &[DataRequest],
+    computation_dates: &BTreeSet<i32>,
 ) -> FactorContext {
-    let mut dates = BTreeSet::new();
+    // Preserve declared warmup and every output date, including when daily sources
+    // are absent or only requested at month ends. Never inherit another provider's history.
+    let mut dates = computation_dates.clone();
+    dates.extend(context.target_dates.iter().copied());
     for request in requirements {
         if request_has_daily_panel_dates(request) {
             dates.extend(request.resolved_dates(context));
         }
     }
-    // Universe-backed outputs keep the daily grid even when market inputs are sparse.
-    if requirements
-        .iter()
-        .any(|request| crate::data::pool::needs_stock_universe(request.dataset))
-    {
-        dates.extend(context.load_dates.iter().copied());
-    }
-    let load_dates = if dates.is_empty() {
-        context.load_dates.clone()
-    } else {
-        dates.into_iter().collect::<Vec<_>>()
-    };
+    let load_dates = dates.into_iter().collect::<Vec<_>>();
     FactorContext {
         asset_class: context.asset_class,
         frequency: context.frequency,
@@ -1992,7 +1991,7 @@ fn compute_factor_batch(
     factors: &[&dyn Factor],
     context: &FactorContext,
     pool: &DataPool,
-    provider_requirements: &BTreeMap<String, Vec<DataRequest>>,
+    provider_requirements: &ContextualRequirements,
     states: &mut BTreeMap<String, Box<dyn Any + Send>>,
     thread_pool: Option<&rayon::ThreadPool>,
 ) -> Result<Vec<FactorSeries>> {
@@ -2007,7 +2006,11 @@ fn compute_factor_batch(
             .or_insert_with(|| ComputeProviderGroup {
                 factor: *factor,
                 requested_ids: Vec::new(),
-                requirements: provider_requirements.get(&key).cloned().unwrap_or_default(),
+                requirements: provider_requirements
+                    .by_provider
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default(),
             });
         if !group.requested_ids.iter().any(|id| id == &spec.id) {
             group.requested_ids.push(spec.id);
@@ -2032,7 +2035,12 @@ fn compute_factor_batch(
     let compute = || {
         jobs.into_par_iter()
             .map(|mut job| {
-                let provider_context = context_for_provider_requests(context, &job.requirements);
+                let computation_dates = provider_requirements
+                    .load_dates_by_provider
+                    .get(&job.key)
+                    .expect("provider computation dates resolved with its requirements");
+                let provider_context =
+                    context_for_provider_requests(context, &job.requirements, computation_dates);
                 let provider_pool = pool.view_for_requests(&job.requirements, &provider_context);
                 let result = job.factor.compute_many_stateful(
                     &job.requested_ids,

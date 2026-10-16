@@ -47,6 +47,7 @@ impl Factor for AnalystCoverage {
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
         ];
         let mut tags = vec![
+            "deprecated",
             "DFZQ",
             "analyst",
             "coverage",

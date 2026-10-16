@@ -117,7 +117,7 @@ impl Factor for HtzqAnalyst {
         if self.0 == Output::Revision {
             dependencies.push(DataRequest::new(DatasetId::StockConsensus, &FORECASTS));
         }
-        let mut tags = vec!["HTZQ", "analyst", "daily", "neutralize", "size", "sector"];
+        let mut tags = vec!["deprecated", "HTZQ", "analyst", "daily", "neutralize", "size", "sector"];
         tags.push(if self.0 == Output::Revision {
             "forecast_revision"
         } else {

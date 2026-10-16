@@ -258,7 +258,7 @@ impl HazqComparableValueOutput {
         use HazqComparableComponent::*;
 
         if self.is_analyst() {
-            return false;
+            return !matches!((self.base, self.component), (EpFttm, Dst));
         }
         match self.base {
             Bp => matches!(

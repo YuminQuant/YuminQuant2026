@@ -22,6 +22,7 @@ from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
 from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.data.tensor_storage import TensorSpool
+from yq_ml_alpha.data.preprocessed_cache import PreprocessedDateCache
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
 
@@ -50,6 +51,14 @@ class DatasetBuilder:
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
         self._source_st_symbol_cache: dict[int, set[str]] = {}
+        self._labeled_cache = None
+
+    def prepare_labeled_cache(self, date_groups) -> None:
+        """Plan reuse for fixed factor frames; one builder represents one data snapshot."""
+        if self._labeled_cache is not None:
+            self._labeled_cache.close()
+        if isinstance(self.feature_provider, FactorFrameProvider):
+            self._labeled_cache = PreprocessedDateCache(date_groups)
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
         frames = []
@@ -72,6 +81,13 @@ class DatasetBuilder:
         for date_idx, trade_date in enumerate(dates, start=1):
             date_started = perf_counter()
             log_date("start", date_idx, trade_date, 0, date_started)
+            cache = self._labeled_cache if include_label else None
+            cached = cache.take(trade_date) if cache is not None else None
+            if cached is not None:
+                frames.append(cached)
+                total_rows += len(cached)
+                log_date("cache_hit", date_idx, trade_date, len(cached), date_started)
+                continue
             if isinstance(self.feature_provider, LogsigSignatureProvider):
                 progress = _logsig_signature_progress(split_name, date_idx, total_dates, trade_date)
                 features = self.feature_provider.load(trade_date, progress=progress)
@@ -89,6 +105,8 @@ class DatasetBuilder:
             frame = self._preprocess(frame, include_label)
             if include_label:
                 frame = frame.loc[frame[self.config.label.id].notna()]
+            if cache is not None:
+                cache.put(trade_date, frame)
             frames.append(frame)
             total_rows += len(frame)
             log_date("done", date_idx, trade_date, len(frame), date_started)

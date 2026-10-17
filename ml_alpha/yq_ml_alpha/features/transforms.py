@@ -79,11 +79,14 @@ def cross_section_zscore_erfinv_rank(
     fill_value: float = 0.0,
 ) -> pd.DataFrame:
     output = frame.copy()
+    single_date = not frame.empty and frame["trade_date"].notna().all() and frame["trade_date"].nunique() == 1
+    grouped = None if single_date else output.groupby("trade_date", group_keys=False)
     for column in columns:
         if column not in output.columns:
             continue
-        output[column] = output.groupby("trade_date", group_keys=False)[column].transform(
-            _zscore_erfinv_rank_series
+        output[column] = (
+            _zscore_erfinv_rank_series(output[column]) if single_date
+            else grouped[column].transform(_zscore_erfinv_rank_series)
         )
     if fill_columns:
         existing = [column for column in fill_columns if column in output.columns]

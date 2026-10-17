@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import warnings
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -50,13 +51,27 @@ class DatasetBuilder:
         self.filters = TradeFilters(config.filters, config.data_root)
         self._source_st_symbol_cache: dict[int, set[str]] = {}
 
-    def load(self, dates: list[int], include_label: bool) -> DatasetBundle:
+    def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
         frames = []
         total_dates = len(dates)
-        split_name = "labeled" if include_label else "predict"
+        split_name = split_name or ("labeled" if include_label else "predict")
+        started = perf_counter()
+        total_rows = 0
+
+        def log_date(status, current, date, rows, date_started):
+            if include_label:
+                now = perf_counter()
+                print(
+                    f"ml-alpha load split={split_name} [{current}/{total_dates}] "
+                    f"date={date} step={status} rows={rows} total_rows={total_rows} "
+                    f"date_elapsed_s={now - date_started:.2f} elapsed_s={now - started:.2f}",
+                    flush=True,
+                )
         if isinstance(self.feature_provider, LogsigSignatureProvider):
             self.feature_provider.set_cache_days_for_target_dates(dates)
         for date_idx, trade_date in enumerate(dates, start=1):
+            date_started = perf_counter()
+            log_date("start", date_idx, trade_date, 0, date_started)
             if isinstance(self.feature_provider, LogsigSignatureProvider):
                 progress = _logsig_signature_progress(split_name, date_idx, total_dates, trade_date)
                 features = self.feature_provider.load(trade_date, progress=progress)
@@ -64,6 +79,7 @@ class DatasetBuilder:
             else:
                 features = self.feature_provider.load(trade_date)
             if features.empty:
+                log_date("done", date_idx, trade_date, 0, date_started)
                 continue
             frame = self.universe.filter(features, trade_date)
             frame = self.filters.apply(frame, trade_date)
@@ -74,6 +90,8 @@ class DatasetBuilder:
             if include_label:
                 frame = frame.loc[frame[self.config.label.id].notna()]
             frames.append(frame)
+            total_rows += len(frame)
+            log_date("done", date_idx, trade_date, len(frame), date_started)
         if frames:
             output = pd.concat(frames, ignore_index=True)
         else:
@@ -82,6 +100,12 @@ class DatasetBuilder:
                 columns.append(self.config.label.id)
             output = pd.DataFrame(columns=columns)
         self._maybe_cache(output, dates, include_label)
+        if include_label:
+            print(
+                f"ml-alpha load split={split_name} step=complete dates={total_dates} "
+                f"total_rows={len(output)} elapsed_s={perf_counter() - started:.2f}",
+                flush=True,
+            )
         return DatasetBundle(output, self.feature_provider.feature_columns, self.config.label.id)
 
     def load_sequence(

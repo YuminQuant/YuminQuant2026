@@ -32,7 +32,7 @@ Current formal factor configs:
 
 `models/mdl_000007.toml` is LightGBM + Optuna; `models/mdl_000008.toml`
 is XGBoost + Optuna. Both use all formal daily factors, cross-sectional
-`rank_gauss`, month-end training samples, a 5-day future VWAP return label,
+`rank_gauss`, training and validation samples every 5 trading days, a 5-day future VWAP return label,
 and 50 TPE trials minimizing validation MSE. Both search 300-800 trees in
 steps of 100. They fit once (`static`).
 Tune using 2016–2021 training and 2022 validation, then
@@ -41,6 +41,13 @@ combined training and validation samples. Daily prediction covers 2023-01-01
 through 2026-04-24. The existing runtime removes samples whose labels cross
 split boundaries (6 trading days for this label); these purged samples are
 also absent from the final refit. No random validation split is used here.
+
+The shared tabular `DatasetBuilder.load` prints flushed per-date start/done
+logs for labeled data. Model and factor pipelines pass `split=train` or
+`split=valid`. Logs include date progress, usable rows after filters and
+missing-label removal, cumulative usable rows, per-date seconds and total
+elapsed seconds. Empty dates report zero rows; completion includes concatenation
+and optional cache-writing time. Existing sequence/bar-panel logging is unchanged.
 
 Use the existing Python 3.8.3 environment. Its DLL directories must be on PATH:
 

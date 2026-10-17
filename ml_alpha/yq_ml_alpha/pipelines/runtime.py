@@ -158,6 +158,7 @@ def _load_bundle(
     calendar: TradingCalendar,
     dates: list[int],
     include_label: bool,
+    split_name: str | None = None,
 ):
     if config.features.type in {"bar_panel", "multi_bar_panel"}:
         return dataset.load_bar_panel(dates, include_label, calendar)
@@ -165,6 +166,8 @@ def _load_bundle(
         sequence_length = int(config.model.params.get("sequence_length", 6))
         sequence_frequency = str(config.model.params.get("sequence_frequency", config.sample.train_frequency))
         return dataset.load_sequence(dates, include_label, calendar, sequence_length, sequence_frequency)
+    if split_name is not None:
+        return dataset.load(dates, include_label, split_name=split_name)
     return dataset.load(dates, include_label)
 
 

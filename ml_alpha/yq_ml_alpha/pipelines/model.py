@@ -55,9 +55,9 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
         progress.window(idx, window)
         model = _new_model(config)
         progress.step("load_train")
-        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True)
+        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True, split_name="train")
         progress.step("load_valid")
-        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True)
+        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True, split_name="valid")
         if train_bundle.frame.empty:
             continue
         context = _context(config, window.window_id, train_bundle.feature_columns)
@@ -103,9 +103,9 @@ def train_config(config: MlAlphaConfig) -> list[Path]:
         progress.window(idx, window)
         model = _new_model(config)
         progress.step("load_train")
-        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True)
+        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True, split_name="train")
         progress.step("load_valid")
-        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True)
+        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True, split_name="valid")
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         _fit_model(model, train_bundle, valid_bundle, context)

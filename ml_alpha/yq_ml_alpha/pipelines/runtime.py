@@ -14,7 +14,7 @@ import pandas as pd
 
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig
-from yq_ml_alpha.data.dataset import DatasetBuilder
+from yq_ml_alpha.data.dataset import DatasetBuilder, DatasetBundle
 from yq_ml_alpha.data.sampler import refit_dates, sample_dates
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
 from yq_ml_alpha.output.artifacts import window_artifact_path
@@ -185,6 +185,39 @@ def _fit_model(model: AlphaModel, train_bundle, valid_bundle, context: ModelCont
     model.fit(train_bundle.frame, valid_bundle.frame, context)
 
 
+def _load_train_valid(config, dataset, calendar, window, progress):
+    """Shared row/date split for both model and factor training entry points."""
+    if config.train_scheme.validation_unit != "rows":
+        progress.step("load_train")
+        train = _load_bundle(config, dataset, calendar, window.train_dates, True, split_name="train")
+        progress.step("load_valid")
+        valid = _load_bundle(config, dataset, calendar, window.valid_dates, True, split_name="valid")
+        return train, valid
+    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel"}:
+        raise ValueError("validation_unit=rows supports tabular datasets only")
+    progress.step("load_train_valid_pool")
+    pool = _load_bundle(config, dataset, calendar, window.train_dates, True, split_name="train_valid_pool")
+    frame = pool.frame.sort_values(["trade_date", "ts_code"], kind="mergesort").reset_index(drop=True)
+    if len(frame) < 2:
+        raise ValueError(f"{window.window_id}: row validation needs at least two labeled rows")
+    boundary = max(1, min(len(frame) - 1, math.floor(len(frame) * (1.0 - float(config.train_scheme.validation_ratio)))))
+    train_frame = frame.iloc[:boundary].reset_index(drop=True)
+    valid_frame = frame.iloc[boundary:].reset_index(drop=True)
+    print(f"ml-alpha split unit=rows total_rows={len(frame)} train_rows={len(train_frame)} "
+          f"valid_rows={len(valid_frame)} train_dates={_date_span(train_frame.trade_date.unique().tolist())} "
+          f"valid_dates={_date_span(valid_frame.trade_date.unique().tolist())}", flush=True)
+    dataset.row_split_info = {
+        "window_id": window.window_id, "sort_columns": ["trade_date", "ts_code"],
+        "total_rows": len(frame), "train_rows": len(train_frame), "valid_rows": len(valid_frame),
+        "train_first": train_frame.iloc[0][["trade_date", "ts_code"]].to_dict(),
+        "train_last": train_frame.iloc[-1][["trade_date", "ts_code"]].to_dict(),
+        "valid_first": valid_frame.iloc[0][["trade_date", "ts_code"]].to_dict(),
+        "valid_last": valid_frame.iloc[-1][["trade_date", "ts_code"]].to_dict(),
+    }
+    return (DatasetBundle(train_frame, pool.feature_columns, pool.label_column),
+            DatasetBundle(valid_frame, pool.feature_columns, pool.label_column))
+
+
 def _predict_model(model: AlphaModel, bundle, context: ModelContext):
     predict_bundle = getattr(model, "predict_bundle", None)
     if callable(predict_bundle) and bundle.tensors is not None:
@@ -226,7 +259,7 @@ def _train_only_windows(
         return []
     count = int(config.train_scheme.train_sample_count)
     if config.train_scheme.validation_ratio is not None:
-        train_dates, valid_dates = _split_by_validation_ratio(train_pool, float(config.train_scheme.validation_ratio))
+        train_dates, valid_dates = _split_window_dates(config, train_pool)
         if not train_dates:
             return []
     elif count > 0:
@@ -304,7 +337,7 @@ def _delayed_ratio_windows(config, calendar, predict_dates, scheme, train_freque
                if _is_actual_period_end(calendar, d, frequency)]
     candidates = []
     for cutoff in cutoffs:
-        # Calendar-month boundaries preserve a full 36-month window even when
+        # Calendar-month boundaries preserve the full lookback window even when
         # the last trading session occurs before the last calendar day.
         year, month = cutoff // 10000, (cutoff // 100) % 100
         month_end = year * 10000 + month * 100 + cal.monthrange(year, month)[1]
@@ -317,8 +350,8 @@ def _delayed_ratio_windows(config, calendar, predict_dates, scheme, train_freque
         if activation is None or activation > predict_dates[-1]:
             continue
         pool = sample_dates(calendar, (lower, cutoff), train_frequency)
-        train, valid = _split_by_validation_ratio(pool, float(config.train_scheme.validation_ratio))
-        if not train or not valid:
+        train, valid = _split_window_dates(config, pool)
+        if not train or (not valid and config.train_scheme.validation_unit != "rows"):
             continue
         candidates.append((cutoff, activation, train, valid))
     windows = []
@@ -357,7 +390,7 @@ def _ratio_split_windows(
             continue
         eligible = sample_dates(calendar, train_range, train_frequency)
         eligible = _settled_dates(config, calendar, eligible, segment[0])
-        train_dates, valid_dates = _split_by_validation_ratio(eligible, ratio)
+        train_dates, valid_dates = _split_window_dates(config, eligible)
         if not train_dates:
             continue
         windows.append(
@@ -369,6 +402,14 @@ def _ratio_split_windows(
             )
         )
     return windows
+
+
+def _split_window_dates(config, dates):
+    if config.train_scheme.validation_unit == "rows":
+        # The entire settled pool is loaded once; the split is determined only
+        # after filters, label alignment and missing-label removal.
+        return list(dates), []
+    return _split_by_validation_ratio(dates, float(config.train_scheme.validation_ratio))
 
 
 def _split_by_validation_ratio(dates: list[int], ratio: float) -> tuple[list[int], list[int]]:
@@ -588,6 +629,18 @@ def _lookback_start(
     lookback: str,
 ) -> int | None:
     value = lookback.strip().lower()
+    if value.endswith("m") and value[:-1].isdigit():
+        import calendar as cal
+        months = int(value[:-1])
+        if months <= 0:
+            raise ValueError("train_scheme.train_lookback months must be > 0")
+        end = _int_to_date(anchor_date)
+        year, month0 = divmod(end.year * 12 + end.month - 1 - months, 12)
+        month = month0 + 1
+        last = cal.monthrange(year, month)[1]
+        day = last if end.day == cal.monthrange(end.year, end.month)[1] else min(end.day, last)
+        start = dt.date(year, month, day) + dt.timedelta(days=1)
+        return int(start.strftime("%Y%m%d"))
     if value.endswith("d") and value[:-1].isdigit():
         days = int(value[:-1])
         if days <= 0:
@@ -604,7 +657,7 @@ def _lookback_start(
             shifted = end_date.replace(year=end_date.year - years, day=28)
         start_date = shifted + dt.timedelta(days=1)
         return int(start_date.strftime("%Y%m%d"))
-    raise ValueError("train_scheme.train_lookback must use 'Ny' or 'Nd', for example '3y' or '720d'")
+    raise ValueError("train_scheme.train_lookback must use 'Ny', 'Nm' or 'Nd', for example '24m'")
 
 
 def _int_to_date(value: int) -> dt.date:

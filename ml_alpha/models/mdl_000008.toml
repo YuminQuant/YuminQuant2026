@@ -6,7 +6,7 @@ output_root = "data/models"
 [dates]
 train = [20160101, 20260424]
 valid = []
-predict = [20190101, 20260424]
+predict = [20180101, 20260424]
 
 [sample]
 train_frequency = "5"
@@ -15,8 +15,9 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "quarterly_end"
-train_lookback = "3y"
+train_lookback = "24m"
 validation_ratio = 0.2
+validation_unit = "rows"
 # Keep cutoff samples; switch models only after cutoff labels have matured.
 prediction_activation = "after_label_maturity"
 start_from_features = true

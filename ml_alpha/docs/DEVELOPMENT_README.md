@@ -300,6 +300,22 @@ logsignature 的预测得分先按日 zscore，再由模型调用 Rust 做行业
 
 ## 6. Safety And Performance / 安全与性能约定
 
+For rolling/expanding ratio-split models with monthly/quarterly refits, use
+`train_scheme.prediction_activation = "after_label_maturity"` when the latest
+cutoff samples must be kept. The common runtime delays activation until the
+session strictly after `cutoff + label.lookahead_days` (inferred N+1 for built-in
+VWAP labels), and assigns intervening predictions to the preceding model.
+The first model has no predecessor: its warmup predictions remain null.
+Training/validation boundary purging still applies. Do not implement this switch
+inside individual estimators. Both model and factor pipelines use the same
+TrainingWindow schedule. Window logs/manifests expose cutoff and activation.
+Unsupported frequency/split combinations fail configuration validation.
+Existing configs default to the separate `purge` policy for compatibility.
+`start_from_features=true` discovers the first month with finite factor-frame
+values within configured training bounds, then waits for a full lookback period.
+For other providers, supply an explicit training start and leave this flag false.
+The prediction date range is required even for train-only execution of this policy.
+
 中文：沿用 `runtime.build_windows` 的标签到期检查；自定义标签填写 `label.lookahead_days`。
 训练、验证、预测边界不能有未来信息，财务/分析师特征必须保证 PIT。
 复用 artifact manifest 校验；变更特征顺序、训练日期或预处理后不要强行加载旧模型。

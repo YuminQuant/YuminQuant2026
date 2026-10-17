@@ -6,7 +6,7 @@ import json
 import math
 import re
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,8 @@ class TrainingWindow:
     train_dates: list[int]
     valid_dates: list[int]
     predict_dates: list[int]
+    training_cutoff_date: int | None = None
+    activation_date: int | None = None
 
 
 def _predict_write_window(
@@ -82,7 +84,7 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
         train = before(window.train_dates, valid[0] if valid else prediction_start)
         if not train:
             raise ValueError(f"{window.window_id}: no training labels settle before the next split")
-        output.append(TrainingWindow(window.window_id, train, valid, window.predict_dates))
+        output.append(replace(window, train_dates=train, valid_dates=valid))
     return output
 
 
@@ -109,6 +111,8 @@ def _build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Tra
     predict_dates = _predict_dates(config, calendar)
     scheme = config.train_scheme.type.lower()
     if not predict_dates:
+        if config.train_scheme.prediction_activation == "after_label_maturity":
+            raise ValueError("after_label_maturity requires a prediction range with trading dates, including for model-train")
         return _train_only_windows(config, calendar, scheme, train_frequency)
     if scheme == "static":
         return [
@@ -121,6 +125,8 @@ def _build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Tra
         ]
 
     if config.train_scheme.validation_ratio is not None:
+        if config.train_scheme.prediction_activation == "after_label_maturity":
+            return _delayed_ratio_windows(config, calendar, predict_dates, scheme, train_frequency)
         return _ratio_split_windows(config, calendar, predict_dates, scheme, train_frequency)
     if config.train_scheme.train_sample_count > 0:
         return _sample_count_windows(config, calendar, predict_dates, scheme, train_frequency)
@@ -255,6 +261,79 @@ def _train_only_sample_dates(config: MlAlphaConfig, calendar: TradingCalendar, t
     return sample_dates(calendar, config.dates.train, train_frequency)
 
 
+def _feature_start_month(config: MlAlphaConfig, calendar: TradingCalendar) -> int:
+    """First month with actual factor values, not merely an empty daily file."""
+    import numpy as np
+    import pyarrow.parquet as pq
+    from yq_ml_alpha.data.stores import is_all_column_request, NON_FEATURE_COLUMNS
+
+    if config.features.type != "factor_frame":
+        raise ValueError("start_from_features currently requires factor_frame")
+    trading_dates = set(calendar.dates)
+    for path in sorted(config.features.root.glob("*/*.parquet")):
+        if not path.stem.isdigit():
+            continue
+        date = int(path.stem)
+        if date not in trading_dates or date < config.dates.train[0] or date > config.dates.train[1]:
+            continue
+        schema = pq.read_schema(path).names
+        columns = ([c for c in schema if c not in NON_FEATURE_COLUMNS]
+                   if is_all_column_request(config.features.columns)
+                   else [c for c in config.features.columns if c in schema])
+        if not columns or pq.ParquetFile(path).metadata.num_rows == 0:
+            continue
+        values = pd.read_parquet(path, columns=columns).astype("float64").to_numpy()
+        if np.isfinite(values).any():
+            return max(config.dates.train[0], date // 100 * 100 + 1)
+    raise ValueError(f"no usable factor data in training range under {config.features.root}")
+
+
+def _delayed_ratio_windows(config, calendar, predict_dates, scheme, train_frequency):
+    """Public scheduling: retain cutoff samples and delay the model's activation.
+
+    The preceding model owns every prediction date until the next activation.
+    The first window has no predecessor; its warmup dates remain uncovered.
+    """
+    import calendar as cal
+
+    start = _feature_start_month(config, calendar) if config.train_scheme.start_from_features else config.dates.train[0]
+    horizon = _label_horizon(config)
+    frequency = config.train_scheme.refit_frequency
+    dates = calendar.between(start, min(config.dates.train[1], predict_dates[-1]))
+    cutoffs = [d for d in refit_dates(calendar, dates, frequency)
+               if _is_actual_period_end(calendar, d, frequency)]
+    candidates = []
+    for cutoff in cutoffs:
+        # Calendar-month boundaries preserve a full 36-month window even when
+        # the last trading session occurs before the last calendar day.
+        year, month = cutoff // 10000, (cutoff // 100) % 100
+        month_end = year * 10000 + month * 100 + cal.monthrange(year, month)[1]
+        lower = start
+        if scheme == "rolling":
+            lower = _lookback_start(config, calendar, month_end, cutoff, config.train_scheme.train_lookback)
+            if lower is None or lower < start:
+                continue
+        activation = calendar.offset(cutoff, horizon + 1)
+        if activation is None or activation > predict_dates[-1]:
+            continue
+        pool = sample_dates(calendar, (lower, cutoff), train_frequency)
+        train, valid = _split_by_validation_ratio(pool, float(config.train_scheme.validation_ratio))
+        if not train or not valid:
+            continue
+        candidates.append((cutoff, activation, train, valid))
+    windows = []
+    for idx, (cutoff, activation, train, valid) in enumerate(candidates):
+        next_activation = candidates[idx + 1][1] if idx + 1 < len(candidates) else None
+        segment = [d for d in predict_dates if d >= activation and (next_activation is None or d < next_activation)]
+        if segment:
+            windows.append(TrainingWindow(
+                window_id=f"cutoff_{cutoff}_active_{activation}",
+                train_dates=train, valid_dates=valid, predict_dates=segment,
+                training_cutoff_date=cutoff, activation_date=activation,
+            ))
+    return windows
+
+
 def _ratio_split_windows(
     config: MlAlphaConfig,
     calendar: TradingCalendar,
@@ -349,6 +428,13 @@ def _sample_count_windows(
 
 
 def _actual_refit_dates(calendar: TradingCalendar, date_range: tuple[int, int], frequency: str) -> list[int]:
+    if frequency.lower().strip() in {"quarterly", "quarterly_end"}:
+        # Include the preceding quarter end so the first prediction quarter is covered.
+        dates = [date for date in calendar.dates if date <= date_range[1]]
+        candidates = refit_dates(calendar, dates, frequency)
+        anchors = [date for date in candidates if _is_actual_period_end(calendar, date, frequency)]
+        previous = [date for date in anchors if date < date_range[0]]
+        return previous[-1:] + [date for date in anchors if date >= date_range[0]]
     candidates = refit_dates(calendar, calendar.between(date_range[0], date_range[1]), frequency)
     return [date for date in candidates if _is_actual_period_end(calendar, date, frequency)]
 
@@ -357,6 +443,8 @@ def _is_actual_period_end(calendar: TradingCalendar, date: int, frequency: str) 
     frequency = frequency.lower().strip()
     next_open = next((item for item in calendar.dates if item > date), None)
     if next_open is not None:
+        if frequency in {"quarterly", "quarterly_end"}:
+            return (next_open // 10000, ((next_open // 100) % 100 - 1) // 3) != (date // 10000, ((date // 100) % 100 - 1) // 3)
         if frequency in {"monthly", "monthly_end"}:
             return next_open // 100 != date // 100
         if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
@@ -365,6 +453,11 @@ def _is_actual_period_end(calendar: TradingCalendar, date: int, frequency: str) 
             return next_open // 10000 != date // 10000
         if frequency in {"weekly", "weekly_end"}:
             return _iso_week_key(next_open) != _iso_week_key(date)
+    if frequency in {"quarterly", "quarterly_end"}:
+        import calendar as cal
+
+        year, month, day = date // 10000, (date // 100) % 100, date % 100
+        return month in {3, 6, 9, 12} and day >= cal.monthrange(year, month)[1] - 3
     if frequency in {"monthly", "monthly_end"}:
         import calendar as cal
 
@@ -618,7 +711,8 @@ class _Progress:
             f"{self.label} [{current}/{self.total} {percent:5.1f}%] "
             f"window={window.window_id} train={len(window.train_dates)} "
             f"valid={len(window.valid_dates)} predict={len(window.predict_dates)} "
-            f"predict_dates={predict_span}",
+            f"predict_dates={predict_span} "
+            f"training_cutoff={window.training_cutoff_date} activation={window.activation_date}",
             flush=True,
         )
 

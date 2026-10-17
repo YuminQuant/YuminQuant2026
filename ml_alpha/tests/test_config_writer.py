@@ -2943,12 +2943,8 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             model_dir / "mdl_000004.toml": ("mdl_000004", "ElasticNetAlphaModel"),
             model_dir / "mdl_000005.toml": ("mdl_000005", "PCAOLSAlphaModel"),
             model_dir / "mdl_000006.toml": ("mdl_000006", "LSTMAlphaModel"),
-            model_dir / "monthly_rnn_36.toml": ("ml_alpha_rnn", "RNNAlphaModel"),
-            model_dir / "monthly_gru_36.toml": ("ml_alpha_gru", "GRUAlphaModel"),
-            model_dir / "monthly_elstm_ranknet_36.toml": ("ml_alpha_elstm_ranknet", "eLSTMRankNetAlphaModel"),
-            model_dir / "monthly_cnn_36.toml": ("ml_alpha_cnn", "CNNAlphaModel"),
-            model_dir / "monthly_xgb_optuna_36.toml": ("ml_alpha_xgb_optuna", "XGBoostOptunaAlphaModel"),
-            model_dir / "monthly_lgbm_optuna_36.toml": ("ml_alpha_lgbm_optuna", "LightGBMOptunaAlphaModel"),
+            model_dir / "mdl_000008.toml": ("mdl_000008", "XGBoostOptunaAlphaModel"),
+            model_dir / "mdl_000007.toml": ("mdl_000007", "LightGBMOptunaAlphaModel"),
         }
         for path, (alpha_id, class_name) in expected.items():
             filename = path.name
@@ -2974,12 +2970,6 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 "mdl_000002.toml",
                 "mdl_000003.toml",
                 "mdl_000004.toml",
-                "monthly_xgb_optuna_36.toml",
-                "monthly_lgbm_optuna_36.toml",
-                "monthly_rnn_36.toml",
-                "monthly_gru_36.toml",
-                "monthly_elstm_ranknet_36.toml",
-                "monthly_cnn_36.toml",
             }:
                 self.assertEqual(config.train_scheme.validation_sample_count, 1)
             else:
@@ -3001,7 +2991,7 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         root = Path(__file__).resolve().parents[1]
         self.assertTrue((root / "models" / "mdl_000006.toml").exists())
         for name in ["mdl_000007.toml", "mdl_000008.toml"]:
-            self.assertFalse((root / "models" / name).exists())
+            self.assertTrue((root / "models" / name).exists())
             self.assertFalse((root / "configs" / name).exists())
         for name in ["e2e_fct_000001.toml", "e2e_fct_000002.toml", "e2e_fct_000003.toml"]:
             self.assertFalse((root / "factors" / name).exists())
@@ -3009,8 +2999,8 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
             self.assertTrue((root / "factors" / name).exists())
         registry = (root / "model_registry.toml").read_text(encoding="utf-8")
         self.assertIn("mdl_000006", registry)
-        self.assertNotIn("mdl_000007", registry)
-        self.assertNotIn("mdl_000008", registry)
+        self.assertIn("mdl_000007", registry)
+        self.assertIn("mdl_000008", registry)
         factor_registry = (root / "factor_registry.toml").read_text(encoding="utf-8")
         self.assertNotIn("e2e_fct_", factor_registry)
         self.assertIn("logsig_alpha_v", factor_registry)
@@ -3020,12 +3010,12 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
         lasso = load_config(model_dir / "mdl_000002.toml")
         self.assertIn("alpha", lasso.model.search["space"])
 
-        xgb = load_config(model_dir / "monthly_xgb_optuna_36.toml")
+        xgb = load_config(model_dir / "mdl_000008.toml")
         self.assertIn("space", xgb.model.search)
         self.assertEqual(xgb.model.search["space"]["n_estimators"]["type"], "int")
         self.assertTrue(xgb.model.search["space"]["learning_rate"]["log"])
 
-        lgbm = load_config(model_dir / "monthly_lgbm_optuna_36.toml")
+        lgbm = load_config(model_dir / "mdl_000007.toml")
         self.assertIn("num_leaves", lgbm.model.search["space"])
 
     def test_optuna_space_supports_toml_distributions(self) -> None:

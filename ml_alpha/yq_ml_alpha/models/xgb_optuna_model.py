@@ -60,6 +60,11 @@ class XGBoostOptunaAlphaModel(AlphaModel):
             "n_trials": len(study.trials),
         }
         self.model = xgb.XGBRegressor(**self.best_params_)
+        if search.get("refit_on_validation", False):
+            if valid_data.empty or context.label_column not in valid_data.columns:
+                raise ValueError("refit_on_validation requires explicit labeled validation data")
+            x_train_all = np.concatenate([x_train_all, _features(valid_data, context.feature_columns)])
+            y_train_all = np.concatenate([y_train_all, _label(valid_data, context.label_column)])
         self.model.fit(x_train_all, y_train_all)
 
     def predict(self, data: pd.DataFrame, context: ModelContext) -> pd.Series:

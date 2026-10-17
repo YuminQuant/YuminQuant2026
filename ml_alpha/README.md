@@ -28,6 +28,71 @@ Current formal factor configs:
 
 ## CLI
 
+### Fixed GPU Optuna models (2016–2022)
+
+`models/mdl_000007.toml` is LightGBM + Optuna; `models/mdl_000008.toml`
+is XGBoost + Optuna. Both use all formal daily factors, cross-sectional
+`rank_gauss`, month-end training samples, a 5-day future VWAP return label,
+and 50 TPE trials minimizing validation MSE. Both search 300-800 trees in
+steps of 100. They fit once (`static`).
+Tune using 2016–2021 training and 2022 validation, then
+`model.search.refit_on_validation = true` refits the best parameters on the
+combined training and validation samples. Daily prediction covers 2023-01-01
+through 2026-04-24. The existing runtime removes samples whose labels cross
+split boundaries (6 trading days for this label); these purged samples are
+also absent from the final refit. No random validation split is used here.
+
+Use the existing Python 3.8.3 environment. Its DLL directories must be on PATH:
+
+```powershell
+Set-Location D:\yuminwu_workspace\Internship\YuminQuant
+$py = 'D:\Users\Devin\anaconda383\python.exe'
+$env:PATH = 'D:\Users\Devin\anaconda383;D:\Users\Devin\anaconda383\Library\bin;D:\Users\Devin\anaconda383\Scripts;' + $env:PATH
+
+& $py -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000008.toml
+& $py -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000008.toml
+
+& $py -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000007.toml
+& $py -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000007.toml
+```
+
+`model-run` combines training and prediction. XGBoost uses `gpu_hist`,
+`gpu_id=0`, `gpu_predictor`, matching the installed XGBoost 0.90 API.
+LightGBM explicitly requires `device_type=gpu` (OpenCL); if unavailable,
+skip its training, never change it to CPU. As inspected on 2026-10-17,
+Optuna 4.5.0 and LightGBM 3.3.5 are installed in Python 3.8.3.
+LightGBM's OpenCL GPU trainer identified the NVIDIA GeForce RTX 3060 Laptop
+GPU and completed fitting and prediction. XGBoost GPU fitting and prediction
+also passed. LightGBM 4.6.0 was incompatible with this environment's existing
+scikit-learn 0.23.1/joblib 0.16.0; retain the verified LightGBM 3.3.5 version.
+The installation bypass used process-local `NO_PROXY`, leaving the Windows
+system proxy unchanged. Pip's final environment inspection reported the
+pre-existing invalid pyodbc version `4.0.0-unsupported`; the installed Optuna,
+SQLAlchemy and Alembic imports and study execution were separately verified.
+
+Outputs (paths relative to repository root):
+
+- `data/models/<YYYY>/<YYYYMMDD>.parquet`: daily wide table keyed by
+  `trade_date` (int32), `ts_code`; each model adds its own float32 column
+  `mdl_000007` / `mdl_000008`. Other model columns are retained. Run the
+  two prediction jobs sequentially because they share daily files.
+- `data/model_workspace/<model_id>/artifacts/static/model.pkl`: pickled
+  model wrapper, fitted estimator, `best_params_`, `best_value_` and
+  `study_summary_` (best validation MSE, searched parameters, trial count).
+- `data/model_workspace/<model_id>/artifacts/static/model.manifest.json`:
+  configuration, feature and training-window identity used for loading checks.
+- `cache_samples=false`: no sample-cache output by default. Optuna studies
+  run in memory; no SQLite study database or full trial-history file is saved.
+
+The numbered model catalog now comprises OLS, Lasso, Ridge, ElasticNet,
+PCA+OLS, LSTM, LightGBM+Optuna and XGBoost+Optuna (`mdl_000001`–`mdl_000008`).
+Additional implementations remain available: untuned LightGBM/XGBoost,
+RandomForest, MLP, RNN, GRU, CNN, eLSTM+RankNet and generic sklearn adapters.
+IC-sign equal weighting and feature-mean baselines are not learned ML models.
+BarGRU, MultiBarGRU, ResidualMultiBarGRU and LogsigOrthogonalMLP are currently
+configured in the formal factor layer. Removing the six legacy monthly
+example configs does not remove their model implementations.
+
 Use explicit model/factor commands only. Run these from the repository root
 with the existing Python 3.8.3 environment; do not execute every example blindly:
 

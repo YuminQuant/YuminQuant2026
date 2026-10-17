@@ -33,8 +33,15 @@ Current formal factor configs:
 `models/mdl_000007.toml` is LightGBM + Optuna; `models/mdl_000008.toml`
 is XGBoost + Optuna. Both use all formal daily factors, cross-sectional
 `rank_gauss`, training and validation samples every 5 trading days, a 5-day future VWAP return label,
-and 50 TPE trials minimizing validation MSE. Both search 300-800 trees in
+and at most 20 TPE trials minimizing validation MSE. Both search 300-800 trees in
 steps of 100. They fit once (`static`).
+Each model implements trial-level early stopping in its own module: stop after
+5 consecutive completed trials without at least 0.01% relative MSE reduction
+from the last meaningful best value. Small reductions accumulate against that
+reference. The first completed trial establishes the reference; no warmup
+exemption is applied. Optuna still selects the absolute best trial for final
+refitting. Configure `early_stopping_patience` and `min_relative_improvement`
+under `[model.search]`. This does not stop individual boosting fits early.
 Tune using 2016–2021 training and 2022 validation, then
 `model.search.refit_on_validation = true` refits the best parameters on the
 combined training and validation samples. Daily prediction covers 2023-01-01

@@ -21,6 +21,9 @@ class XGBoostOptunaAlphaModel(AlphaModel):
         optuna = _optuna_module()
         base_params = _base_params(context.model_params)
         search = _search_params(context.model_search)
+        stopping = _SearchEarlyStopping(
+            int(search["early_stopping_patience"]), float(search["min_relative_improvement"])
+        )
         x_train_all = _features(train_data, context.feature_columns)
         y_train_all = _label(train_data, context.label_column)
         x_fit, y_fit, x_valid, y_valid = _validation_split(
@@ -51,6 +54,7 @@ class XGBoostOptunaAlphaModel(AlphaModel):
             n_trials=int(search["n_trials"]),
             timeout=search.get("timeout"),
             show_progress_bar=bool(search["show_progress_bar"]),
+            callbacks=[stopping],
         )
         self.best_params_ = {**base_params, **dict(study.best_params)}
         self.best_value_ = float(study.best_value)
@@ -58,6 +62,9 @@ class XGBoostOptunaAlphaModel(AlphaModel):
             "best_value": self.best_value_,
             "best_params": dict(study.best_params),
             "n_trials": len(study.trials),
+            "stopped_early": stopping.stopped,
+            "early_stopping_patience": stopping.patience,
+            "min_relative_improvement": stopping.min_relative_improvement,
         }
         self.model = xgb.XGBRegressor(**self.best_params_)
         if search.get("refit_on_validation", False):
@@ -100,7 +107,9 @@ def _base_params(raw: dict[str, Any]) -> dict[str, Any]:
 def _search_params(raw: dict[str, Any]) -> dict[str, Any]:
     raw = dict(raw)
     search = dict(raw.get("search", raw))
-    search.setdefault("n_trials", 50)
+    search.setdefault("n_trials", 20)
+    search.setdefault("early_stopping_patience", 5)
+    search.setdefault("min_relative_improvement", 0.0001)
     search.setdefault("timeout", None)
     search.setdefault("valid_fraction", 0.2)
     search.setdefault("random_state", 42)
@@ -165,3 +174,41 @@ def _optuna_module():
     except ImportError as exc:  # pragma: no cover - depends on optional local package
         raise ImportError("XGBoostOptunaAlphaModel requires installing optuna") from exc
     return optuna
+
+
+class _SearchEarlyStopping:
+    """Stop after consecutive completed trials without material relative MSE improvement."""
+
+    def __init__(self, patience: int, min_relative_improvement: float) -> None:
+        if patience < 1:
+            raise ValueError("early_stopping_patience must be positive")
+        if not np.isfinite(min_relative_improvement) or not 0 <= min_relative_improvement < 1:
+            raise ValueError("min_relative_improvement must be finite and in [0, 1)")
+        self.patience = patience
+        self.min_relative_improvement = min_relative_improvement
+        self.reference = None
+        self.stale_trials = 0
+        self.stopped = False
+
+    def __call__(self, study, trial) -> None:
+        if trial.state.name != "COMPLETE" or trial.value is None or not np.isfinite(trial.value):
+            return
+        value = float(trial.value)
+        if self.reference is None:
+            self.reference = value
+            return
+        improvement = self.reference - value
+        if improvement > 0 and improvement >= abs(self.reference) * self.min_relative_improvement:
+            self.reference = value
+            self.stale_trials = 0
+        else:
+            self.stale_trials += 1
+        if self.stale_trials >= self.patience:
+            self.stopped = True
+            print(
+                f"Optuna early stop: {self.stale_trials} consecutive completed trials "
+                f"without relative MSE improvement >= {self.min_relative_improvement:.6g}; "
+                f"best_value={study.best_value:.10g}",
+                flush=True,
+            )
+            study.stop()

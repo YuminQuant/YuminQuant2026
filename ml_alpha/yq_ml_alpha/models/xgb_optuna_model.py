@@ -7,6 +7,7 @@ import pandas as pd
 
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
 from yq_ml_alpha.models.optuna_space import suggest_params
+from yq_ml_alpha.models.xgb_training import make_matrix, fit_matrix
 
 
 class XGBoostOptunaAlphaModel(AlphaModel):
@@ -36,16 +37,16 @@ class XGBoostOptunaAlphaModel(AlphaModel):
 
         sampler = optuna.samplers.TPESampler(seed=int(search["random_state"]))
         study = optuna.create_study(direction="minimize", sampler=sampler)
+        d_fit = make_matrix(xgb, x_fit, y_fit, base_params["n_jobs"])
+        d_valid = (
+            make_matrix(xgb, x_valid, y_valid, base_params["n_jobs"])
+            if x_valid is not None else d_fit
+        )
 
         def objective(trial):
             params = {**base_params, **suggest_params(trial, search.get("space"), _default_xgb_space())}
-            model = xgb.XGBRegressor(**params)
-            fit_kwargs = {}
-            if x_valid is not None:
-                fit_kwargs["eval_set"] = [(x_valid, y_valid)]
-                fit_kwargs["verbose"] = False
-            model.fit(x_fit, y_fit, **fit_kwargs)
-            pred = model.predict(x_valid if x_valid is not None else x_fit)
+            model = fit_matrix(xgb, params, d_fit)
+            pred = model.get_booster().predict(d_valid)
             target = y_valid if x_valid is not None else y_fit
             return _mse(target, pred)
 
@@ -66,13 +67,18 @@ class XGBoostOptunaAlphaModel(AlphaModel):
             "early_stopping_patience": stopping.patience,
             "min_relative_improvement": stopping.min_relative_improvement,
         }
-        self.model = xgb.XGBRegressor(**self.best_params_)
         if search.get("refit_on_validation", False):
             if valid_data.empty or context.label_column not in valid_data.columns:
                 raise ValueError("refit_on_validation requires explicit labeled validation data")
-            x_train_all = np.concatenate([x_train_all, _features(valid_data, context.feature_columns)])
-            y_train_all = np.concatenate([y_train_all, _label(valid_data, context.label_column)])
-        self.model.fit(x_train_all, y_train_all)
+            x_train_all = np.concatenate([x_train_all, x_valid])
+            y_train_all = np.concatenate([y_train_all, y_valid])
+        if x_train_all is x_fit:
+            d_final = d_fit
+        else:
+            # Release trial matrices before allocating the full refit matrix.
+            del d_fit, d_valid
+            d_final = make_matrix(xgb, x_train_all, y_train_all, base_params["n_jobs"])
+        self.model = fit_matrix(xgb, self.best_params_, d_final)
 
     def predict(self, data: pd.DataFrame, context: ModelContext) -> pd.Series:
         if self.model is None:

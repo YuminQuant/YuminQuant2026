@@ -393,6 +393,25 @@ English handoff checklist:
 
 ## 8. Source Map / 源码导航
 
+### 滚动训练的数据复用
+
+模型训练入口会向公共 `DatasetBuilder.prepare_labeled_cache` 注册所有窗口的训练、验证日期。
+对于固定 `factor_frame`，只缓存后续仍会使用的日期，内容为过滤、标签对齐和预处理后的完整日截面。
+训练和验证共享该缓存，预测不使用带标签缓存。缓存保留原始行顺序、索引和 dtype，
+不改变采样日期、股票范围、标签或变换公式；单日 rank_gauss 直接调用相同的截面变换，省去逐列 groupby。
+
+缓存写到系统临时目录的 `yq-preprocessed-*` 子目录，不占用常驻全窗口内存。
+每个日期最后一次消费后删除对应文件，临时目录随缓存对象释放清理。
+缓存仅在本次 DatasetBuilder 生命周期内复用，输入文件在一次运行期间应保持固定；
+新的运行重新构建，不读取上次缓存。强制结束进程可能留下临时目录。
+它与 `[materialize].cache_samples` 的调试样本导出相互独立，命中日志标记为 `step=cache_hit`。
+
+XGBoost Optuna 使用公共 `models/xgb_training.py` 构建 DMatrix 和训练：同一窗口的候选模型
+复用训练、验证矩阵，每次候选训练结束后预测一次并计算 MSE，不执行逐棵树验证。
+参数仍通过 XGBRegressor 的参数映射传入 native train，保留 GPU、随机种子和树数量配置。
+最终模型仍保存为 XGBRegressor；合并验证集重训时单独构建最终矩阵，不复用候选模型权重。
+Optuna 搜索空间、次数、停止规则和最终重训范围保持不变。
+
 - [Main README / 功能入口](../README.md)
 - [Config parsing / 配置解析](../yq_ml_alpha/config.py)
 - [CLI / 命令入口](../yq_ml_alpha/cli.py)

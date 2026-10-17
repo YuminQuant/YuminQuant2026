@@ -14,7 +14,7 @@ def window_artifact_path(artifact_dir: str | Path, window_id: str) -> Path:
 
 
 def artifact_identity(config, window, dataset) -> dict:
-    return {
+    identity = {
         "pipeline_version": 2,
         "model": {"class": config.model.class_path, "params": config.model.params, "search": config.model.search},
         "features": asdict(config.features),
@@ -28,6 +28,13 @@ def artifact_identity(config, window, dataset) -> dict:
         "train_dates": window.train_dates,
         "valid_dates": window.valid_dates,
     }
+    if getattr(window, "activation_date", None) is not None:
+        identity["prediction_activation"] = {
+            "policy": config.train_scheme.prediction_activation,
+            "training_cutoff_date": window.training_cutoff_date,
+            "activation_date": window.activation_date,
+        }
+    return identity
 
 
 def _canonical(value) -> str:

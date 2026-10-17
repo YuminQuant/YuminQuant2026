@@ -28,13 +28,13 @@ Current formal factor configs:
 
 ## CLI
 
-### Fixed GPU Optuna models (2016–2022)
+### GPU Optuna models
 
 `models/mdl_000007.toml` is LightGBM + Optuna; `models/mdl_000008.toml`
 is XGBoost + Optuna. Both use all formal daily factors, cross-sectional
 `rank_gauss`, training and validation samples every 5 trading days, a 5-day future VWAP return label,
 and at most 20 TPE trials minimizing validation MSE. Both search 300-800 trees in
-steps of 100. They fit once (`static`).
+steps of 100. LightGBM fits once (`static`); XGBoost refits quarterly.
 Each model implements trial-level early stopping in its own module: stop after
 5 consecutive completed trials without at least 0.01% relative MSE reduction
 from the last meaningful best value. Small reductions accumulate against that
@@ -42,12 +42,34 @@ reference. The first completed trial establishes the reference; no warmup
 exemption is applied. Optuna still selects the absolute best trial for final
 refitting. Configure `early_stopping_patience` and `min_relative_improvement`
 under `[model.search]`. This does not stop individual boosting fits early.
-Tune using 2016–2021 training and 2022 validation, then
+LightGBM tunes using 2016–2021 training and 2022 validation, then
 `model.search.refit_on_validation = true` refits the best parameters on the
 combined training and validation samples. Daily prediction covers 2023-01-01
 through 2026-04-24. The existing runtime removes samples whose labels cross
 split boundaries (6 trading days for this label); these purged samples are
 also absent from the final refit. No random validation split is used here.
+
+XGBoost (`mdl_000008`) uses `rolling`, `quarterly_end`, `train_lookback="3y"`
+and `validation_ratio=0.2`. Public runtime settings
+`start_from_features=true` and `prediction_activation="after_label_maturity"`
+start the first complete 36-calendar-month pool in the first month containing
+usable factor data within the configured training bounds (currently January
+2016, first nonempty factor date 2016-01-04). The first pool is 2016-2018.
+Every quarter, sample the trailing 36 months every 5 trading days, including
+eligible sampled dates up to the quarter-end trading session. Split the
+sampled dates chronologically 80/20, and purge training labels that overlap
+the validation boundary. Keep validation's late samples for final refitting.
+
+The new model activates on the trading session strictly after the cutoff's
+label maturity: cutoff + 6 sessions + 1 session for the current 5-day VWAP
+label. The prior model continues predicting until that activation date;
+there is no gap at later quarterly switches. Before the first model is
+available there is no predecessor, so requested warmup dates have null
+signals. Prediction uses only the model assigned by this shared schedule.
+This policy works in both model and factor pipelines; it currently supports
+monthly/quarterly rolling or expanding ratio-split windows. Unsupported
+combinations are rejected. Other configs retain the existing `purge` policy.
+Saved manifests and window logs record training cutoff and activation dates.
 
 The shared tabular `DatasetBuilder.load` prints flushed per-date start/done
 logs for labeled data. Model and factor pipelines pass `split=train` or
@@ -84,16 +106,17 @@ system proxy unchanged. Pip's final environment inspection reported the
 pre-existing invalid pyodbc version `4.0.0-unsupported`; the installed Optuna,
 SQLAlchemy and Alembic imports and study execution were separately verified.
 
-Outputs (paths relative to repository root):
+Outputs (paths relative to repository root). Window IDs are `static` for
+LightGBM and `cutoff_<training_cutoff>_active_<activation_date>` for XGBoost:
 
 - `data/models/<YYYY>/<YYYYMMDD>.parquet`: daily wide table keyed by
   `trade_date` (int32), `ts_code`; each model adds its own float32 column
   `mdl_000007` / `mdl_000008`. Other model columns are retained. Run the
   two prediction jobs sequentially because they share daily files.
-- `data/model_workspace/<model_id>/artifacts/static/model.pkl`: pickled
+- `data/model_workspace/<model_id>/artifacts/<window_id>/model.pkl`: pickled
   model wrapper, fitted estimator, `best_params_`, `best_value_` and
   `study_summary_` (best validation MSE, searched parameters, trial count).
-- `data/model_workspace/<model_id>/artifacts/static/model.manifest.json`:
+- `data/model_workspace/<model_id>/artifacts/<window_id>/model.manifest.json`:
   configuration, feature and training-window identity used for loading checks.
 - `cache_samples=false`: no sample-cache output by default. Optuna studies
   run in memory; no SQLite study database or full trial-history file is saved.

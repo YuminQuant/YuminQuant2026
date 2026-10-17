@@ -2966,6 +2966,10 @@ artifact_dir = "{(root / "artifacts").as_posix()}"
                 self.assertEqual(config.model.params["num_layers"], 1)
                 self.assertEqual(config.model.params["dropout"], 0.0)
                 self.assertEqual(config.model.params["loss"], "pearson_ic")
+            elif filename == "mdl_000008.toml":
+                self.assertEqual(config.train_scheme.validation_ratio, 0.2)
+                self.assertEqual(config.train_scheme.refit_frequency, "quarterly_end")
+                self.assertEqual(config.train_scheme.train_lookback, "3y")
             elif filename in {
                 "mdl_000002.toml",
                 "mdl_000003.toml",

@@ -52,7 +52,7 @@ def test_validation_only_enters_final_fit(monkeypatch, tmp_path, backend, class_
     assert fits[1].tolist() == ([10., 20., 30.] if refit else [10., 20.])
 
 
-@pytest.mark.parametrize('model_id', ['mdl_000007', 'mdl_000008'])
+@pytest.mark.parametrize('model_id', ['mdl_000007'])
 def test_fixed_gpu_windows_have_mature_labels(model_id):
     config = load_config(Path(__file__).parents[1] / 'models' / (model_id + '.toml'))
     calendar = TradingCalendar([int(d.strftime('%Y%m%d')) for d in

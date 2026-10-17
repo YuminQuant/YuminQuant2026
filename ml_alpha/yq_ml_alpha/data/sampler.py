@@ -12,6 +12,8 @@ def sample_dates(calendar: TradingCalendar, date_range: tuple[int, int], frequen
         return _period_ends(dates, lambda date: date // 10000 * 100 + _week_number(date))
     if frequency in {"monthly", "monthly_end"}:
         return _period_ends(dates, lambda date: date // 100)
+    if frequency in {"quarterly", "quarterly_end"}:
+        return _period_ends(dates, lambda date: (date // 10000, ((date // 100) % 100 - 1) // 3))
     if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
         return _period_ends(dates, _semiannual_key)
     if frequency in {"annual", "annual_end", "yearly", "yearly_end", "year_end"}:
@@ -30,6 +32,8 @@ def refit_dates(calendar: TradingCalendar, predict_dates: list[int], frequency: 
         return predict_dates
     if frequency in {"monthly", "monthly_end"}:
         return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "monthly_end")
+    if frequency in {"quarterly", "quarterly_end"}:
+        return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "quarterly_end")
     if frequency in {"weekly", "weekly_end"}:
         return sample_dates(calendar, (predict_dates[0], predict_dates[-1]), "weekly_end")
     if frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:

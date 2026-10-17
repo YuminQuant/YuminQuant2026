@@ -47,6 +47,8 @@ class TrainSchemeConfig:
     train_sample_count: int = 0
     validation_sample_count: int = 0
     validation_ratio: float | None = None
+    prediction_activation: str = "purge"
+    start_from_features: bool = False
 
 
 @dataclass(frozen=True)
@@ -280,6 +282,15 @@ def load_config(path: str | Path) -> MlAlphaConfig:
 def _validate_train_scheme(section: TrainSchemeConfig) -> None:
     scheme = section.type.lower()
     ratio = section.validation_ratio
+    if section.prediction_activation not in {"purge", "after_label_maturity"}:
+        raise ValueError("prediction_activation must be purge or after_label_maturity")
+    if section.prediction_activation == "after_label_maturity":
+        if scheme not in {"rolling", "expanding"} or ratio is None:
+            raise ValueError("after_label_maturity requires rolling/expanding with validation_ratio")
+        if section.refit_frequency not in {"quarterly", "quarterly_end", "monthly", "monthly_end"}:
+            raise ValueError("after_label_maturity requires monthly or quarterly refits")
+    if section.start_from_features and section.prediction_activation != "after_label_maturity":
+        raise ValueError("start_from_features requires after_label_maturity")
     if scheme == "static" and section.train_lookback is not None:
         raise ValueError("train_scheme.train_lookback is not supported for static")
     if scheme == "static" and ratio is not None:

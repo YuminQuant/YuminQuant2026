@@ -4,16 +4,22 @@ data_root = "data"
 output_root = "data/models"
 
 [dates]
-train = [20160101, 20211231]
-valid = [20220101, 20221231]
-predict = [20230101, 20260424]
+train = [20160101, 20260424]
+valid = []
+predict = [20190101, 20260424]
 
 [sample]
 train_frequency = "5"
 predict_frequency = "daily"
 
 [train_scheme]
-type = "static"
+type = "rolling"
+refit_frequency = "quarterly_end"
+train_lookback = "3y"
+validation_ratio = 0.2
+# Keep cutoff samples; switch models only after cutoff labels have matured.
+prediction_activation = "after_label_maturity"
+start_from_features = true
 
 [label]
 id = "future_vwap_return_5d"

@@ -47,6 +47,7 @@ class TrainSchemeConfig:
     train_sample_count: int = 0
     validation_sample_count: int = 0
     validation_ratio: float | None = None
+    validation_unit: str = "dates"
     prediction_activation: str = "purge"
     start_from_features: bool = False
 
@@ -282,6 +283,10 @@ def load_config(path: str | Path) -> MlAlphaConfig:
 def _validate_train_scheme(section: TrainSchemeConfig) -> None:
     scheme = section.type.lower()
     ratio = section.validation_ratio
+    if section.validation_unit not in {"dates", "rows"}:
+        raise ValueError("validation_unit must be dates or rows")
+    if section.validation_unit == "rows" and ratio is None:
+        raise ValueError("row validation requires validation_ratio")
     if section.prediction_activation not in {"purge", "after_label_maturity"}:
         raise ValueError("prediction_activation must be purge or after_label_maturity")
     if section.prediction_activation == "after_label_maturity":
@@ -300,8 +305,9 @@ def _validate_train_scheme(section: TrainSchemeConfig) -> None:
         if not isinstance(value, str) or not (
             (value.lower().endswith("y") and value[:-1].isdigit())
             or (value.lower().endswith("d") and value[:-1].isdigit())
+            or (value.lower().endswith("m") and value[:-1].isdigit())
         ):
-            raise ValueError("train_scheme.train_lookback must use 'Ny' or 'Nd', for example '3y' or '720d'")
+            raise ValueError("train_scheme.train_lookback must use 'Ny', 'Nm' or 'Nd', for example '24m'")
     if scheme == "rolling" and ratio is not None and section.train_lookback is None:
         raise ValueError("train_scheme.validation_ratio requires train_lookback for rolling")
     if ratio is not None and not 0.0 < float(ratio) < 1.0:

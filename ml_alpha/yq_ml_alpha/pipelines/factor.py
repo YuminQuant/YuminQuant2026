@@ -16,6 +16,7 @@ from yq_ml_alpha.pipelines.runtime import (
     _context,
     _fit_model,
     _load_bundle,
+    _load_train_valid,
     _model_class,
     _new_model,
     _predict_dates,
@@ -115,10 +116,7 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
                 _release_accelerator_memory()
                 continue
         model = _new_model(config)
-        progress.step("load_train")
-        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True, split_name="train")
-        progress.step("load_valid")
-        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True, split_name="valid")
+        train_bundle, valid_bundle = _load_train_valid(config, dataset, calendar, window, progress)
         if train_bundle.frame.empty:
             del model, train_bundle, valid_bundle
             _release_accelerator_memory()
@@ -171,10 +169,7 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
             progress.step("resume_skip artifact_exists")
             continue
         model = _new_model(config)
-        progress.step("load_train")
-        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True, split_name="train")
-        progress.step("load_valid")
-        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True, split_name="valid")
+        train_bundle, valid_bundle = _load_train_valid(config, dataset, calendar, window, progress)
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         _fit_model(model, train_bundle, valid_bundle, context)

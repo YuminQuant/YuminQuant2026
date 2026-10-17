@@ -34,6 +34,13 @@ def artifact_identity(config, window, dataset) -> dict:
             "training_cutoff_date": window.training_cutoff_date,
             "activation_date": window.activation_date,
         }
+    if config.train_scheme.validation_unit == "rows":
+        identity["validation_split"] = {
+            "unit": "rows", "ratio": config.train_scheme.validation_ratio,
+            "sort_columns": ["trade_date", "ts_code"],
+            "boundary": "floor(total_rows * (1 - ratio))",
+            "after": "filters_and_missing_label_removal",
+        }
     return identity
 
 
@@ -44,6 +51,9 @@ def _canonical(value) -> str:
 def save_manifest(path: Path, config, window, dataset) -> None:
     identity = artifact_identity(config, window, dataset)
     payload = {"identity": identity, "fingerprint": hashlib.sha256(_canonical(identity).encode()).hexdigest()}
+    row_split = getattr(dataset, "row_split_info", None)
+    if config.train_scheme.validation_unit == "rows" and row_split and row_split["window_id"] == window.window_id:
+        payload["row_split"] = row_split
     destination = path.with_suffix(".manifest.json")
     temporary = destination.with_name(f"{destination.name}.{os.getpid()}.tmp")
     temporary.write_text(_canonical(payload), encoding="utf-8")

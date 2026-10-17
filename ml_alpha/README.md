@@ -49,16 +49,26 @@ through 2026-04-24. The existing runtime removes samples whose labels cross
 split boundaries (6 trading days for this label); these purged samples are
 also absent from the final refit. No random validation split is used here.
 
-XGBoost (`mdl_000008`) uses `rolling`, `quarterly_end`, `train_lookback="3y"`
-and `validation_ratio=0.2`. Public runtime settings
+XGBoost (`mdl_000008`) uses `rolling`, `quarterly_end`, `train_lookback="24m"`,
+`validation_ratio=0.2` and `validation_unit="rows"`. Public runtime settings
 `start_from_features=true` and `prediction_activation="after_label_maturity"`
-start the first complete 36-calendar-month pool in the first month containing
+start the first complete 24-calendar-month pool in the first month containing
 usable factor data within the configured training bounds (currently January
-2016, first nonempty factor date 2016-01-04). The first pool is 2016-2018.
-Every quarter, sample the trailing 36 months every 5 trading days, including
-eligible sampled dates up to the quarter-end trading session. Split the
-sampled dates chronologically 80/20, and purge training labels that overlap
-the validation boundary. Keep validation's late samples for final refitting.
+2016, first nonempty factor date 2016-01-04). The first pool is 2016-2017.
+Every quarter, sample the trailing 24 months every 5 trading days, including
+eligible sampled dates up to the quarter-end trading session. Load this pool
+once, apply stock filters and remove missing labels, then sort by trade_date
+and ts_code. The first floor(N * 0.8) rows train the candidate models and the
+remaining rows validate them. Do not split the date list 80/20. A trading date
+may appear on both sides of this row boundary; no additional train/validation
+date purge is applied in row mode. The out-of-sample label maturity protection
+below remains active. Final refitting uses both row partitions.
+
+公共层 `validation_unit="rows"` 支持模型和因子训练入口，默认 `"dates"` 保留其他配置的旧语义。
+24 个月是训练与验证共用的总窗口，不是训练 24 个月后再追加验证期。
+行数划分发生在过滤及标签缺失行剔除后，不随机打乱；整数边界使验证行数约为 20%。
+这种按行划分不保证训练与验证之间的时间隔离；同日股票或重叠标签区间可能跨两侧。
+样本外预测仍独立遵守标签到期边界。manifest 会记录行划分规则及实际行数、边界股票。
 
 The new model activates on the trading session strictly after the cutoff's
 label maturity: cutoff + 6 sessions + 1 session for the current 5-day VWAP
@@ -73,7 +83,8 @@ Saved manifests and window logs record training cutoff and activation dates.
 
 The shared tabular `DatasetBuilder.load` prints flushed per-date start/done
 logs for labeled data. Model and factor pipelines pass `split=train` or
-`split=valid`. Logs include date progress, usable rows after filters and
+`split=valid`; row mode uses `split=train_valid_pool` and then reports the actual
+train/validation row counts and date spans. Logs include date progress, usable rows after filters and
 missing-label removal, cumulative usable rows, per-date seconds and total
 elapsed seconds. Empty dates report zero rows; completion includes concatenation
 and optional cache-writing time. Existing sequence/bar-panel logging is unchanged.

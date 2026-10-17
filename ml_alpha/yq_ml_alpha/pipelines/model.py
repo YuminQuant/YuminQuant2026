@@ -14,6 +14,7 @@ from yq_ml_alpha.pipelines.runtime import (
     _context,
     _fit_model,
     _load_bundle,
+    _load_train_valid,
     _model_class,
     _new_model,
     _predict_dates,
@@ -57,10 +58,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
         model = _new_model(config)
-        progress.step("load_train")
-        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True, split_name="train")
-        progress.step("load_valid")
-        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True, split_name="valid")
+        train_bundle, valid_bundle = _load_train_valid(config, dataset, calendar, window, progress)
         if train_bundle.frame.empty:
             continue
         context = _context(config, window.window_id, train_bundle.feature_columns)
@@ -108,10 +106,7 @@ def train_config(config: MlAlphaConfig) -> list[Path]:
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
         model = _new_model(config)
-        progress.step("load_train")
-        train_bundle = _load_bundle(config, dataset, calendar, window.train_dates, include_label=True, split_name="train")
-        progress.step("load_valid")
-        valid_bundle = _load_bundle(config, dataset, calendar, window.valid_dates, include_label=True, split_name="valid")
+        train_bundle, valid_bundle = _load_train_valid(config, dataset, calendar, window, progress)
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         _fit_model(model, train_bundle, valid_bundle, context)

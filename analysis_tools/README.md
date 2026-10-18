@@ -6,7 +6,7 @@
 
 ## 策略检验 / Strategy Diagnostics
 
-`test.ipynb` 的“策略检验”部分可独立运行，当前比较 Top10、20、50、100、200、300、500（`strategy_001_top{N}_5d`）。不绘制 benchmark 或年度收益。左上面板将账户净值和回撤放在同一时间轴，第一行第二列显示 PnL，下方保留资金利用率、换手率、统一色阶的月度收益。
+`test.ipynb` 的“策略检验”部分仅保留 Top50 基准结果。策略研究统一在不受 Git 跟踪的 `strategy.ipynb` 中进行，当前比较 Top50、排名 11–50、排名 21–50、Top50 无涨跌停成交限制四组。不绘制 benchmark 或年度收益。左上面板将账户净值和回撤放在同一时间轴，第一行第二列显示 PnL，下方保留资金利用率、换手率、统一色阶的月度收益。
 
 使用 `plot_strategy_comparison({"Top 10": report10, "Top 20": report20, "Top 50": report50})` 绘制对比；所有报告需要有相同的观察日期，最多支持八组，超过四组时月度面板分两行。`diagnose_stock_cash()` 用前一交易日信号和当天开盘/悲观涨停标志解释现金较高的持有期，区分 Top N 未成交份额与按股票预算进行整手取整后的余额。该诊断应传入完整、未截断的回测报告。
 
@@ -212,10 +212,14 @@ sharpe(returns["return"], periods_per_year=240)
 max_drawdown(returns["return"])
 ```
 
-### 扩展策略归因与 notebook 重建
+### Top50 研究工作流
 
-- `python analysis_tools/scripts/attribute_stock_strategy.py`：对七组持股数量分别运行“涨跌停开/关 × 100 股整手/小数股”四种情景，保持信号、日期、费率、分红送转一致。正式规则的独立模拟必须逐日复现 Rust 的现金、权益、分红及股数，否则失败；输出在 `data/strategy/attribution/`。无涨跌停情景包含原本不可成交的新股，只是归因反事实，不是可实现收益。
-- `python analysis_tools/scripts/diagnose_signal_selection.py`：分析排名段、涨停禁买名额、上市年龄，以及使用开盘价与复权因子比值的五日理论总收益。未满期和缺行情观察不计收益均值；该表不代表实际成交组合收益。
-- `python analysis_tools/scripts/update_strategy_notebook.py`：保留 `test.ipynb` 的因子检验部分，重建并执行策略比较、分红核对、归因表和图。检查归因输入文件指纹，避免展示过期归因。
+1. `cargo build --release --offline --manifest-path factor_engine/Cargo.toml`
+2. `python analysis_tools/scripts/run_top50_research.py`
+3. `python analysis_tools/scripts/update_strategy_notebook.py`
 
-NAV 与 PnL 来自同一账户权益，已含现金分红应收/到账和送转股，不能再次叠加现金股利。股利金额单列仅用于核对。固定本金 10 万元时，Top300/500 每只预算很小，整手限制会让实际持仓远小于名义 N；比较时应一起看资金利用率和实际持仓数。
+第二步运行四组配置并保存配置快照、日志与文件指纹；第三步保留 `test.ipynb` 的因子部分，只刷新 Top50 结果，并在 `strategy.ipynb` 中执行四组比较。两个 notebook 都只展示结果，不加入实验结论或验证表，均由现有 `*.ipynb` 忽略规则排除。
+
+剔除头部 10/20 只对应原 Top50 内的排名 11–50（40 只）及 21–50（30 只），按剩余股票约等权分配，不从排名 50 之后补位。无涨跌停组仅关闭价格涨跌停成交限制，整手、费用、可用资金、真实开盘价和分红送转记账保持一致。
+
+NAV 与 PnL 来自同一账户权益，已含现金分红应收/到账和送转股，不能再次叠加现金股利。现金股利金额单列仅用于展示。旧多组归因脚本保留为源代码，旧回测、归因输出和临时实验产物已移至回收站，不再作为当前研究输入。

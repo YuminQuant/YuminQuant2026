@@ -151,20 +151,27 @@ fn triangle(low: f64, high: f64, mode: f64) -> Result<Distribution> {
     Ok(result)
 }
 
-fn numeric_rows(table: &Table, columns: &[&str]) -> Result<BTreeMap<String, Vec<Option<f64>>>> {
+type NumericRows = BTreeMap<String, Vec<Option<f64>>>;
+
+fn numeric_rows(table: &Table, columns: &[&str]) -> Result<BTreeMap<i32, NumericRows>> {
+    let dates = table.required_i32_date_cast("trade_date")?;
     let codes = table.required_utf8("ts_code")?;
     let values = columns
         .iter()
         .map(|c| table.required_f64_cast(c))
         .collect::<Result<Vec<_>>>()?;
-    let mut rows = BTreeMap::new();
+    let mut rows: BTreeMap<i32, NumericRows> = BTreeMap::new();
     for (i, code) in codes.iter().enumerate() {
-        if let Some(code) = code {
+        if let (Some(date), Some(code)) = (dates[i], code) {
             if rows
+                .entry(date)
+                .or_default()
                 .insert(code.clone(), values.iter().map(|v| v[i]).collect())
                 .is_some()
             {
-                return Err(err(format!("duplicate source symbol: {code}")));
+                return Err(err(format!(
+                    "duplicate source symbol: date={date} code={code}"
+                )));
             }
         }
     }
@@ -191,14 +198,20 @@ fn full_day_suspensions(root: &Path, date: i32) -> Result<BTreeSet<String>> {
         .collect())
 }
 
-pub fn derive_chip_age(config: &EngineConfig, start: i32, end: i32) -> Result<()> {
+pub fn derive_chip_age(
+    config: &EngineConfig,
+    start: i32,
+    end: i32,
+    date_batch_size: usize,
+) -> Result<()> {
+    if date_batch_size == 0 {
+        return Err(err("--date-batch-size must be greater than 0"));
+    }
     if start > end {
         return Err(err("require start-date <= end-date"));
     }
     // No system temporary directory or hidden preprocessing cache is used.
-    let root = config
-        .data_root
-        .join("derived/stock/chip_age_rolling250_v2");
+    let root = config.data_root.join("derived/stock/chip_age");
     let absolute = if root.is_absolute() {
         root.clone()
     } else {
@@ -229,137 +242,158 @@ pub fn derive_chip_age(config: &EngineConfig, start: i32, end: i32) -> Result<()
     let loader = MarketDataLoader::new(DataCatalog::new(config.data_root.clone()));
     let mut states: BTreeMap<String, ChipState> = BTreeMap::new();
     let run_started = Instant::now();
-    for date in dates {
-        let day_started = Instant::now();
-        let read = |dataset, names: &[&str]| -> Result<BTreeMap<String, Vec<Option<f64>>>> {
+    let warmup: Vec<_> = dates.into_iter().filter(|date| *date < first).collect();
+    // Warmup is separate from target batches; state survives every boundary.
+    for (batch_index, batch) in warmup
+        .chunks(date_batch_size)
+        .chain(targets.chunks(date_batch_size))
+        .enumerate()
+    {
+        let batch_started = Instant::now();
+        let read = |dataset, names: &[&str]| -> Result<BTreeMap<i32, NumericRows>> {
             let cols = names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-            numeric_rows(&loader.load_daily_by_dates(dataset, &cols, &[date])?, names)
+            numeric_rows(&loader.load_daily_by_dates(dataset, &cols, batch)?, names)
         };
-        let prices = read(
+        let mut price_batch = read(
             DatasetId::StockDailyPv,
             &["low", "high", "close", "amount", "vol"],
         )?;
-        let turnover = read(DatasetId::StockDailyBasic, &["turnover_rate_f"])?;
-        let adjustment = read(DatasetId::StockAdjFactor, &["adj_factor"])?;
-        let suspensions = full_day_suspensions(&config.data_root, date)?;
-        // Includes source decoding, numeric conversion and symbol indexing.
-        let load_ms = day_started.elapsed().as_secs_f64() * 1000.0;
-        let compute_started = Instant::now();
-        let symbols: BTreeSet<_> = states
-            .keys()
-            .chain(prices.keys())
-            .chain(suspensions.iter())
-            .cloned()
-            .collect();
-        let mut output = Vec::new();
-        let mut invalid = 0;
-        let mut invalid_symbols = Vec::new();
-        let mut high_turnover = 0;
-        for code in symbols {
-            let raw_volume = prices.get(&code).and_then(|v| v[4]);
-            if suspensions.contains(&code) && raw_volume.map_or(true, |v| v == 0.0) {
-                // A suspension at the left edge still counts as an observed
-                // zero-turnover session. It must not shorten a replay's window.
-                let state = states
+        let mut turnover_batch = read(DatasetId::StockDailyBasic, &["turnover_rate_f"])?;
+        let mut adjustment_batch = read(DatasetId::StockAdjFactor, &["adj_factor"])?;
+        println!(
+            "derive-chip-age batch={} first={} last={} dates={} warmup={} batch_load_ms={:.1}",
+            batch_index + 1,
+            batch[0],
+            batch[batch.len() - 1],
+            batch.len(),
+            batch[0] < first,
+            batch_started.elapsed().as_secs_f64() * 1000.0
+        );
+        for &date in batch {
+            let day_started = Instant::now();
+            let prices = price_batch.remove(&date).unwrap_or_default();
+            let turnover = turnover_batch.remove(&date).unwrap_or_default();
+            let adjustment = adjustment_batch.remove(&date).unwrap_or_default();
+            let suspensions = full_day_suspensions(&config.data_root, date)?;
+            // Daily extraction and suspension load; primary decoding is batch_load_ms.
+            let load_ms = day_started.elapsed().as_secs_f64() * 1000.0;
+            let compute_started = Instant::now();
+            let symbols: BTreeSet<_> = states
+                .keys()
+                .chain(prices.keys())
+                .chain(suspensions.iter())
+                .cloned()
+                .collect();
+            let mut output = Vec::new();
+            let mut invalid = 0;
+            let mut invalid_symbols = Vec::new();
+            let mut high_turnover = 0;
+            for code in symbols {
+                let raw_volume = prices.get(&code).and_then(|v| v[4]);
+                if suspensions.contains(&code) && raw_volume.map_or(true, |v| v == 0.0) {
+                    // A suspension at the left edge still counts as an observed
+                    // zero-turnover session. It must not shorten a replay's window.
+                    let state = states
+                        .entry(code.clone())
+                        .or_insert_with(|| ChipState::new(f64::NAN));
+                    state.advance(0.0, Distribution::new(), state.adjusted_close)?;
+                    if let Some((features, outside, retained)) = state.features() {
+                        output.push((code, features, outside, retained, state.ages.len()));
+                    }
+                    continue;
+                }
+                let source = prices.get(&code).and_then(|v| {
+                    let adj = adjustment.get(&code)?[0]?;
+                    let rate = turnover.get(&code)?[0]? / 100.0;
+                    let (low, high, close, amount, volume) = (v[0]?, v[1]?, v[2]?, v[3]?, v[4]?);
+                    if ![adj, rate, low, high, close, amount, volume]
+                        .iter()
+                        .all(|v| v.is_finite())
+                        || adj <= 0.0
+                        || rate < 0.0
+                        || low <= 0.0
+                        || high < low
+                        || close <= 0.0
+                        || volume <= 0.0
+                        || amount <= 0.0
+                    {
+                        return None;
+                    }
+                    Some((
+                        low * adj,
+                        high * adj,
+                        close * adj,
+                        amount * 10.0 / volume * adj,
+                        rate,
+                    ))
+                });
+                let Some((low, high, close, vwap, rate)) = source else {
+                    states.remove(&code);
+                    if invalid_symbols.len() < 20 {
+                        invalid_symbols.push(code.clone());
+                    }
+                    invalid += 1;
+                    continue;
+                };
+                let distribution = triangle(low, high, vwap)?;
+                if rate > 1.0 {
+                    high_turnover += 1;
+                }
+                states
                     .entry(code.clone())
-                    .or_insert_with(|| ChipState::new(f64::NAN));
-                state.advance(0.0, Distribution::new(), state.adjusted_close)?;
+                    .or_insert_with(|| ChipState::new(close))
+                    .advance(rate, distribution, close)?;
+                let state = &states[&code];
                 if let Some((features, outside, retained)) = state.features() {
                     output.push((code, features, outside, retained, state.ages.len()));
                 }
-                continue;
             }
-            let source = prices.get(&code).and_then(|v| {
-                let adj = adjustment.get(&code)?[0]?;
-                let rate = turnover.get(&code)?[0]? / 100.0;
-                let (low, high, close, amount, volume) = (v[0]?, v[1]?, v[2]?, v[3]?, v[4]?);
-                if ![adj, rate, low, high, close, amount, volume]
-                    .iter()
-                    .all(|v| v.is_finite())
-                    || adj <= 0.0
-                    || rate < 0.0
-                    || low <= 0.0
-                    || high < low
-                    || close <= 0.0
-                    || volume <= 0.0
-                    || amount <= 0.0
-                {
-                    return None;
-                }
-                Some((
-                    low * adj,
-                    high * adj,
-                    close * adj,
-                    amount * 10.0 / volume * adj,
-                    rate,
-                ))
-            });
-            let Some((low, high, close, vwap, rate)) = source else {
-                states.remove(&code);
-                if invalid_symbols.len() < 20 {
-                    invalid_symbols.push(code.clone());
-                }
-                invalid += 1;
-                continue;
-            };
-            let distribution = triangle(low, high, vwap)?;
-            if rate > 1.0 {
-                high_turnover += 1;
-            }
-            states
-                .entry(code.clone())
-                .or_insert_with(|| ChipState::new(close))
-                .advance(rate, distribution, close)?;
-            let state = &states[&code];
-            if let Some((features, outside, retained)) = state.features() {
-                output.push((code, features, outside, retained, state.ages.len()));
-            }
-        }
-        let count = output.len();
-        let compute_ms = compute_started.elapsed().as_secs_f64() * 1000.0;
-        let write_started = Instant::now();
-        if date >= start {
-            let mut columns = BTreeMap::new();
-            columns.insert(
-                "trade_date".into(),
-                ColumnData::I32(vec![Some(date); count]),
-            );
-            columns.insert(
-                "ts_code".into(),
-                ColumnData::Utf8(output.iter().map(|r| Some(r.0.clone())).collect()),
-            );
-            for i in 0..128 {
+            let count = output.len();
+            let compute_ms = compute_started.elapsed().as_secs_f64() * 1000.0;
+            let write_started = Instant::now();
+            if date >= start {
+                let mut columns = BTreeMap::new();
                 columns.insert(
-                    format!("chip_age_{}_{:02}", i / 32, i % 32),
-                    ColumnData::F32(output.iter().map(|r| Some(r.1[i])).collect()),
+                    "trade_date".into(),
+                    ColumnData::I32(vec![Some(date); count]),
                 );
+                columns.insert(
+                    "ts_code".into(),
+                    ColumnData::Utf8(output.iter().map(|r| Some(r.0.clone())).collect()),
+                );
+                for i in 0..128 {
+                    columns.insert(
+                        format!("chip_age_{}_{:02}", i / 32, i % 32),
+                        ColumnData::F32(output.iter().map(|r| Some(r.1[i])).collect()),
+                    );
+                }
+                columns.insert(
+                    "outside_mass".into(),
+                    ColumnData::F64(output.iter().map(|r| Some(r.2)).collect()),
+                );
+                columns.insert(
+                    "retained_window_mass".into(),
+                    ColumnData::F64(output.iter().map(|r| Some(r.3)).collect()),
+                );
+                columns.insert(
+                    "history_days".into(),
+                    ColumnData::I32(output.iter().map(|r| Some(r.4 as i32)).collect()),
+                );
+                let table = Table::new(columns)?;
+                let directory = root.join((date / 10000).to_string());
+                std::fs::create_dir_all(&directory)?;
+                let path = directory.join(format!("{date}.parquet"));
+                let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+                write_derived_parquet(&temp, &table)?;
+                std::fs::rename(temp, path)?;
             }
-            columns.insert(
-                "outside_mass".into(),
-                ColumnData::F64(output.iter().map(|r| Some(r.2)).collect()),
-            );
-            columns.insert(
-                "retained_window_mass".into(),
-                ColumnData::F64(output.iter().map(|r| Some(r.3)).collect()),
-            );
-            columns.insert(
-                "history_days".into(),
-                ColumnData::I32(output.iter().map(|r| Some(r.4 as i32)).collect()),
-            );
-            let table = Table::new(columns)?;
-            let directory = root.join((date / 10000).to_string());
-            std::fs::create_dir_all(&directory)?;
-            let path = directory.join(format!("{date}.parquet"));
-            let temp = path.with_extension(format!("{}.tmp", std::process::id()));
-            write_derived_parquet(&temp, &table)?;
-            std::fs::rename(temp, path)?;
+            let write_ms = if date >= start {
+                write_started.elapsed().as_secs_f64() * 1000.0
+            } else {
+                0.0
+            };
+            println!("derive-chip-age date={date} rows={count} states={} invalid_reset={invalid} invalid_first20={invalid_symbols:?} turnover_above_100pct={high_turnover} warmup={} load_ms={load_ms:.1} compute_ms={compute_ms:.1} write_ms={write_ms:.1} day_ms={:.1} elapsed_s={:.1}", states.len(), date < start, day_started.elapsed().as_secs_f64() * 1000.0, run_started.elapsed().as_secs_f64());
         }
-        let write_ms = if date >= start {
-            write_started.elapsed().as_secs_f64() * 1000.0
-        } else {
-            0.0
-        };
-        println!("derive-chip-age date={date} rows={count} states={} invalid_reset={invalid} invalid_first20={invalid_symbols:?} turnover_above_100pct={high_turnover} warmup={} load_ms={load_ms:.1} compute_ms={compute_ms:.1} write_ms={write_ms:.1} day_ms={:.1} elapsed_s={:.1}", states.len(), date < start, day_started.elapsed().as_secs_f64() * 1000.0, run_started.elapsed().as_secs_f64());
     }
     // Definition identity stays stable when new OOS dates are appended.
     let body = r#"{"version":"chip_age_rolling250_v2","window_trading_days":250,

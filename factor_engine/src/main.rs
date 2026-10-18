@@ -241,7 +241,7 @@ fn run_cli() -> Result<()> {
         "derive-chip-age" => {
             let flags = parse_flags(&args[1..])?;
             for key in flags.keys() {
-                if !["asset", "start-date", "end-date", "config"].contains(&key.as_str()) {
+                if !["asset", "start-date", "end-date", "config", "date-batch-size"].contains(&key.as_str()) {
                     return Err(yq_factor_engine::error::err(format!("unsupported derive-chip-age flag: --{key}")));
                 }
             }
@@ -252,7 +252,8 @@ fn run_cli() -> Result<()> {
                 parse_yyyymmdd(flags.get(key).ok_or_else(|| yq_factor_engine::error::err(format!("missing --{key}")))?, key)
             };
             let config = EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
-            yq_factor_engine::derive::chip_age::derive_chip_age(&config, date("start-date")?, date("end-date")?)?;
+            let batch_size = flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(20);
+            yq_factor_engine::derive::chip_age::derive_chip_age(&config, date("start-date")?, date("end-date")?, batch_size)?;
         }
         "derive-logsig" => {
             let request = parse_derive_logsig_request(&args[1..])?;
@@ -1302,7 +1303,7 @@ fn print_derive_consensus_report(report: &yq_factor_engine::AnalystConsensusRepo
 }
 
 fn print_help() {
-    println!("  derive-chip-age --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--config path]");
+    println!("  derive-chip-age --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
     println!("  derive-logsig --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--threads 2] [--overwrite true|false]");
     println!("    raw minute volume -> 5m/20d/order10 (226 columns), daily Snappy derived/stock/logsig_v; sequential dates with rolling state");
     println!("YuminQuant factor engine MVP");

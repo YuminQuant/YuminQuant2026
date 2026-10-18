@@ -179,12 +179,17 @@ Minute strategies default to daily snapshots; `detail=true` writes one row per m
 
 Minute valuation remains per bar in both output modes. Daily output only serializes the final snapshot and aggregates daily fill counts. Holdings are streamed to a temporary Parquet file and published on successful completion. Annual fallback data is cached per run; minute symbol filters are pushed into the Parquet reader. Existing pessimistic execution and strategy-owned risk rules are unchanged.
 
-### 扩展 Top N 对比
+### 当前研究：Top50 与三个对照
 
-同一 `mdl_000009` 信号、初始资金 10 万元和 5 个交易日持有期，增加 `strategy_001_top100_5d.toml`、`strategy_001_top200_5d.toml`、`strategy_001_top300_5d.toml`、`strategy_001_top500_5d.toml`。例如：
+默认 `strategy_001.toml` 使用 Top50。四组独立配置：
 
-```powershell
-cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --config strategy_config/stock/strategy_001_top100_5d.toml
-```
+| 配置 | 信号排名范围 | 涨跌停限制 |
+|---|---|---|
+| `strategy_001_top50_5d.toml` | 1–50 | 保留 |
+| `strategy_001_top50_exclude10_5d.toml` | 11–50 | 保留 |
+| `strategy_001_top50_exclude20_5d.toml` | 21–50 | 保留 |
+| `strategy_001_top50_no_limits_5d.toml` | 1–50 | 关闭，仅用于假设可成交的测试 |
 
-保持严格 Top N 和整手规则，未成交份额留现金，不为提高资金利用率更改策略。NAV/PnL 均包含分红送转；七组 notebook 对比使用各自的输出与历史配置快照。
+`[strategy].exclude_top_n` 默认 0，必须小于 `top_n`。先取原 Top N，再剔除头部，不向后补位；余额仍遵循约等权整手分配。`[execution].respect_price_limits` 默认 true，设置 false 同时关闭策略分配和成交引擎中的涨停买入/跌停卖出限制；资金、整手、未上市送转股锁定、费用与行情缺失处理保持原样。
+
+初始资金 10 万元，信号 `mdl_000009`，持有 5 个交易日；NAV/PnL 都包含分红送转。研究结果位于本地 `strategy.ipynb`。

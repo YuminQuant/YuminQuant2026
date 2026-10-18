@@ -78,11 +78,16 @@ pass. The 250-session window and output definition are unchanged, but floating
 point operation ordering can produce rounding differences (not bitwise identity).
 Daily logs report `load_ms` (including conversion/indexing), `compute_ms`,
 `write_ms` (including output table construction), `day_ms` and `elapsed_s`.
-This optimization adds no disk cache, date batching or writer concurrency.
+`--date-batch-size` (default 20) controls target trading dates per processing batch.
+Primary input tables are loaded per batch; dates are processed sequentially.
+Warmup is batched separately and state persists across batches. Larger batches
+increase input memory; no disk cache or concurrent writes are introduced.
+`batch_load_ms` measures primary loading; daily `load_ms` measures extraction
+and suspension loading.
 Equivalence test source is included; execution and performance measurement are
 pending user authorization.
 
-- `data/derived/stock/chip_age_rolling250_v2/YYYY/YYYYMMDD.parquet`: Snappy daily tensors,
+- `data/derived/stock/chip_age/YYYY/YYYYMMDD.parquet`: Snappy daily tensors,
   128 float32 feature columns, keys, outside_mass, retained_window_mass and
   history_days. Each invocation automatically preloads the preceding 249 market
   sessions before its first target date. Days then advance chronologically using
@@ -92,8 +97,8 @@ pending user authorization.
   definition, not a run timestamp/date range. Normal new-date appends do not
   invalidate fixed-model fingerprints. The marker is removed before writes;
   interrupted writes require a successful rerun before consumption. Missing
-  daily input files fail explicitly in the provider. The v2 root separates this
-  definition from all earlier initialized-state datasets.
+  daily input files fail explicitly in the provider. The manifest version identifies the rolling250 v2 definition independently
+  of the directory name.
 - Revisions to existing historical source data require regeneration of affected
   daily features and a deliberate `data_version` change/retraining when training
   inputs change. Definition identity alone does not hash raw historical data.
@@ -116,7 +121,7 @@ From the repository root, after source review and authorization to compute:
 ```powershell
 # Emit dates before 2013 too, so the first training sample has 30 daily inputs.
 cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-chip-age `
-  --asset stock --start-date 20120101 --end-date 20260424
+  --asset stock --start-date 20120101 --end-date 20260424 --date-batch-size 120
 
 cargo run --release --manifest-path factor_engine\Cargo.toml -- label-metadata
 cargo run --release --manifest-path factor_engine\Cargo.toml -- label-run `

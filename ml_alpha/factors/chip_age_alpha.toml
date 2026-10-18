@@ -45,7 +45,7 @@ feature_fill_value = 0.0
 
 [features]
 type = "derived_chip_age"
-root = "data/derived/stock/chip_age_rolling250_v2"
+root = "data/derived/stock/chip_age"
 columns = "__all__"
 
 [features.params]

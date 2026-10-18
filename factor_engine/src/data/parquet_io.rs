@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use arrow_array::{BooleanArray, RecordBatch, StringArray};
-use arrow_schema::Schema;
+use arrow_array::{new_null_array, BooleanArray, RecordBatch, StringArray};
+use arrow_schema::{DataType, Schema};
 use parquet::arrow::arrow_reader::{ArrowPredicateFn, ParquetRecordBatchReaderBuilder, RowFilter};
 use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::Compression;
@@ -15,7 +15,7 @@ use crate::data::table::{ColumnData, Table};
 use crate::error::{err, Result};
 
 pub fn read_parquet(path: &Path, columns: Option<&[String]>) -> Result<Table> {
-    read_parquet_impl(path, columns, None)
+    read_parquet_impl(path, columns, None, &BTreeMap::new())
 }
 
 /// Filter symbols before materializing the remaining projected columns into Table.
@@ -24,7 +24,22 @@ pub(crate) fn read_parquet_symbols(
     columns: &[String],
     predicate: impl Fn(&str) -> bool + Send + 'static,
 ) -> Result<Table> {
-    read_parquet_impl(path, Some(columns), Some(Box::new(predicate)))
+    read_parquet_impl(
+        path,
+        Some(columns),
+        Some(Box::new(predicate)),
+        &BTreeMap::new(),
+    )
+}
+
+/// Resolve untyped all-null columns using the source schema declared by the caller.
+/// Non-null column types are never coerced; values remain null, not empty/zero.
+pub fn read_parquet_with_null_types(
+    path: &Path,
+    columns: &[String],
+    null_types: &BTreeMap<String, DataType>,
+) -> Result<Table> {
+    read_parquet_impl(path, Some(columns), None, null_types)
 }
 
 type SymbolPredicate = Box<dyn Fn(&str) -> bool + Send>;
@@ -33,6 +48,7 @@ fn read_parquet_impl(
     path: &Path,
     columns: Option<&[String]>,
     predicate: Option<SymbolPredicate>,
+    null_types: &BTreeMap<String, DataType>,
 ) -> Result<Table> {
     let context = |error| {
         err(format!(
@@ -128,10 +144,12 @@ fn read_parquet_impl(
     let reader = builder
         .build()
         .map_err(|error| context(error.to_string()))?;
-    let mut table = table_from_record_batch(&empty_batch)?;
+    let mut table = table_from_record_batch(&empty_batch, null_types)
+        .map_err(|error| context(error.to_string()))?;
     for batch_result in reader {
         let batch = batch_result.map_err(|error| context(error.to_string()))?;
-        let batch_table = table_from_record_batch(&batch)?;
+        let batch_table = table_from_record_batch(&batch, null_types)
+            .map_err(|error| context(error.to_string()))?;
         table.append(&batch_table)?;
     }
     Ok(table)
@@ -340,10 +358,51 @@ fn ordered_column_names(table: &Table) -> Vec<String> {
     names
 }
 
-fn table_from_record_batch(batch: &RecordBatch) -> Result<Table> {
+fn table_from_record_batch(
+    batch: &RecordBatch,
+    null_types: &BTreeMap<String, DataType>,
+) -> Result<Table> {
     let mut columns = BTreeMap::new();
     for (field, array) in batch.schema().fields().iter().zip(batch.columns()) {
-        columns.insert(field.name().clone(), ColumnData::from_arrow(array)?);
+        let typed_null = if array.data_type() == &DataType::Null {
+            null_types
+                .get(field.name())
+                .map(|kind| new_null_array(kind, array.len()))
+        } else {
+            None
+        };
+        let column = ColumnData::from_arrow(typed_null.as_ref().unwrap_or(array))
+            .map_err(|error| err(format!("column {}: {error}", field.name())))?;
+        columns.insert(field.name().clone(), column);
     }
     Table::new(columns)
+}
+
+#[cfg(test)]
+mod null_column_tests {
+    use super::*;
+    use arrow_schema::Field;
+
+    #[test]
+    fn declared_null_string_keeps_rows_and_missing_values() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "suspend_timing",
+            DataType::Null,
+            true,
+        )]));
+        let types = BTreeMap::from([("suspend_timing".to_string(), DataType::Utf8)]);
+        for len in [0, 3] {
+            let batch =
+                RecordBatch::try_new(schema.clone(), vec![new_null_array(&DataType::Null, len)])
+                    .unwrap();
+            let table = table_from_record_batch(&batch, &types).unwrap();
+            assert_eq!(table.len, len);
+            assert_eq!(
+                table.required_utf8("suspend_timing").unwrap(),
+                &vec![None; len]
+            );
+            let error = table_from_record_batch(&batch, &BTreeMap::new()).unwrap_err();
+            assert!(error.to_string().contains("suspend_timing"));
+        }
+    }
 }

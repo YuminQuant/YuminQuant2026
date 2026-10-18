@@ -6,10 +6,11 @@ use std::time::Instant;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::DatasetId;
-use crate::data::parquet_io::read_parquet;
+use crate::data::parquet_io::read_parquet_with_null_types;
 use crate::data::{ColumnData, DataCatalog, MarketDataLoader, Table};
 use crate::derive::storage::write_derived_parquet;
 use crate::error::{err, Result};
+use arrow_schema::DataType;
 
 const GRID: f64 = 0.01;
 // Sorted sparse bins in contiguous storage; triangle emits bins in ascending order.
@@ -186,7 +187,15 @@ fn full_day_suspensions(root: &Path, date: i32) -> Result<BTreeSet<String>> {
     if !path.exists() {
         return Ok(BTreeSet::new());
     }
-    let table = read_parquet(&path, None)?;
+    let columns: Vec<String> = ["ts_code", "suspend_type", "suspend_timing"]
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let null_types = columns
+        .iter()
+        .map(|name| (name.clone(), DataType::Utf8))
+        .collect();
+    let table = read_parquet_with_null_types(&path, &columns, &null_types)?;
     let codes = table.required_utf8("ts_code")?;
     let types = table.required_utf8("suspend_type")?;
     let timing = table.required_utf8("suspend_timing")?;

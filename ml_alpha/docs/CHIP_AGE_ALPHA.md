@@ -71,6 +71,17 @@ training windows to compensate for missing files.
 
 ## Resources and storage
 
+The Rust estimator stores each daily cohort as sorted contiguous price bins and
+a separate surviving weight. Daily decay updates one weight per cohort rather
+than every price bin; feature emission also collects retained mass in the same
+pass. The 250-session window and output definition are unchanged, but floating
+point operation ordering can produce rounding differences (not bitwise identity).
+Daily logs report `load_ms` (including conversion/indexing), `compute_ms`,
+`write_ms` (including output table construction), `day_ms` and `elapsed_s`.
+This optimization adds no disk cache, date batching or writer concurrency.
+Equivalence test source is included; execution and performance measurement are
+pending user authorization.
+
 - `data/derived/stock/chip_age_rolling250_v2/YYYY/YYYYMMDD.parquet`: Snappy daily tensors,
   128 float32 feature columns, keys, outside_mass, retained_window_mass and
   history_days. Each invocation automatically preloads the preceding 249 market

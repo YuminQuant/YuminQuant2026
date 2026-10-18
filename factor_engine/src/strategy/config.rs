@@ -112,6 +112,7 @@ pub struct StrategyRunConfig {
     pub initial_cash: f64,
     pub bar_frequency: BarFrequency,
     pub fill_price: FillPrice,
+    pub respect_price_limits: bool,
     pub commission_bps: f64,
     pub buy_commission_bps: f64,
     pub sell_commission_bps: f64,
@@ -158,6 +159,12 @@ impl StrategyRunConfig {
             .and_then(|value| BarFrequency::parse(&value))
             .ok_or_else(|| err("missing or invalid [clock].bar_frequency"))?;
         for (section, key, valid) in [
+            (
+                "execution",
+                "respect_price_limits",
+                doc.string("execution", "respect_price_limits")
+                    .map(|v| parse_bool(Some(&v)).is_some()),
+            ),
             (
                 "execution",
                 "fill_price",
@@ -247,6 +254,7 @@ impl StrategyRunConfig {
             initial_cash,
             bar_frequency,
             fill_price,
+            respect_price_limits: parse_bool(doc.string("execution", "respect_price_limits").as_deref()).unwrap_or(true),
             commission_bps,
             buy_commission_bps,
             sell_commission_bps,

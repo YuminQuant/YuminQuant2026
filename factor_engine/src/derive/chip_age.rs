@@ -1,6 +1,7 @@
 //! Causal chip-age estimation. Engineering choices are recorded in manifest.json.
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
+use std::time::Instant;
 
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
@@ -11,14 +12,22 @@ use crate::derive::storage::write_derived_parquet;
 use crate::error::{err, Result};
 
 const GRID: f64 = 0.01;
-type Distribution = BTreeMap<i32, f64>;
+// Sorted sparse bins in contiguous storage; triangle emits bins in ascending order.
+type Distribution = Vec<(i32, f64)>;
+
+#[derive(Debug, PartialEq)]
+struct Cohort {
+    distribution: Distribution,
+    // A cohort's price shape never changes. Only its surviving weight decays.
+    weight: f64,
+}
 
 const WINDOW: usize = 250;
 
 struct ChipState {
     // Raw surviving masses, NOT normalized between days. Each cohort expires
     // individually at age 251; normalizing the state would reintroduce history.
-    ages: VecDeque<Distribution>,
+    ages: VecDeque<Cohort>,
     adjusted_close: f64,
 }
 
@@ -30,18 +39,16 @@ impl ChipState {
         }
     }
 
-    fn advance(&mut self, turnover: f64, mut incoming: Distribution, close: f64) -> Result<()> {
+    fn advance(&mut self, turnover: f64, incoming: Distribution, close: f64) -> Result<()> {
         let survive = (-turnover).exp();
         let replace = -(-turnover).exp_m1();
-        for distribution in &mut self.ages {
-            for value in distribution.values_mut() {
-                *value *= survive;
-            }
+        for cohort in &mut self.ages {
+            cohort.weight *= survive;
         }
-        for value in incoming.values_mut() {
-            *value *= replace;
-        }
-        self.ages.push_front(incoming);
+        self.ages.push_front(Cohort {
+            distribution: incoming,
+            weight: replace,
+        });
         if self.ages.len() > WINDOW {
             self.ages.pop_back();
         }
@@ -49,11 +56,21 @@ impl ChipState {
         Ok(())
     }
 
+    #[cfg(test)]
     fn retained_mass(&self) -> f64 {
-        self.ages.iter().flat_map(|d| d.values()).sum()
+        self.ages
+            .iter()
+            .map(|cohort| {
+                cohort
+                    .distribution
+                    .iter()
+                    .map(|(_, mass)| mass * cohort.weight)
+                    .sum::<f64>()
+            })
+            .sum()
     }
 
-    fn features(&self) -> Option<([f32; 128], f64)> {
+    fn features(&self) -> Option<([f32; 128], f64, f64)> {
         if self.ages.len() != WINDOW
             || !self.adjusted_close.is_finite()
             || self.adjusted_close <= 0.0
@@ -62,15 +79,19 @@ impl ChipState {
         }
         let mut masses = [0.0_f64; 128];
         let mut outside = 0.0;
-        for (index, distribution) in self.ages.iter().enumerate() {
+        let mut retained = 0.0;
+        let log_close = self.adjusted_close.ln();
+        for (index, cohort) in self.ages.iter().enumerate() {
             let group = match index {
                 0..=1 => 0,
                 2..=9 => 1,
                 10..=99 => 2,
                 _ => 3,
             };
-            for (&bin, &mass) in distribution {
-                let relative = (bin as f64 + 0.5) * GRID - self.adjusted_close.ln();
+            for &(bin, shape_mass) in &cohort.distribution {
+                let mass = shape_mass * cohort.weight;
+                retained += mass;
+                let relative = (bin as f64 + 0.5) * GRID - log_close;
                 if !(-0.7..=0.7).contains(&relative) {
                     outside += mass;
                 }
@@ -86,7 +107,7 @@ impl ChipState {
         for (out, mass) in result.iter_mut().zip(masses) {
             *out = (mass / total).sqrt() as f32;
         }
-        Some((result, outside / total))
+        Some((result, outside / total, retained))
     }
 }
 
@@ -97,7 +118,7 @@ fn triangle(low: f64, high: f64, mode: f64) -> Result<Distribution> {
     let first = (low.ln() / GRID).floor() as i32;
     let last = (high.ln() / GRID).floor() as i32;
     if first == last || high == low {
-        return Ok(BTreeMap::from([(first, 1.0)]));
+        return Ok(vec![(first, 1.0)]);
     }
     let cdf = |x: f64| -> f64 {
         if x <= low {
@@ -110,18 +131,21 @@ fn triangle(low: f64, high: f64, mode: f64) -> Result<Distribution> {
             1.0 - (high - x).powi(2) / ((high - low) * (high - mode))
         }
     };
-    let mut result = BTreeMap::new();
+    let mut result = Vec::new();
+    let mut left_cdf = cdf((first as f64 * GRID).exp());
     for bin in first..=last {
-        let mass = cdf(((bin + 1) as f64 * GRID).exp()) - cdf((bin as f64 * GRID).exp());
+        let right_cdf = cdf(((bin + 1) as f64 * GRID).exp());
+        let mass = right_cdf - left_cdf;
+        left_cdf = right_cdf;
         if mass > 0.0 {
-            result.insert(bin, mass);
+            result.push((bin, mass));
         }
     }
-    let total: f64 = result.values().sum();
+    let total: f64 = result.iter().map(|(_, mass)| mass).sum();
     if total <= 0.0 {
         return Err(err("empty triangular chip distribution"));
     }
-    for mass in result.values_mut() {
+    for (_, mass) in &mut result {
         *mass /= total;
     }
     Ok(result)
@@ -204,7 +228,9 @@ pub fn derive_chip_age(config: &EngineConfig, start: i32, end: i32) -> Result<()
     let dates = calendar.open_dates_between(calendar.warmup_start(first, WINDOW - 1), end);
     let loader = MarketDataLoader::new(DataCatalog::new(config.data_root.clone()));
     let mut states: BTreeMap<String, ChipState> = BTreeMap::new();
+    let run_started = Instant::now();
     for date in dates {
+        let day_started = Instant::now();
         let read = |dataset, names: &[&str]| -> Result<BTreeMap<String, Vec<Option<f64>>>> {
             let cols = names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
             numeric_rows(&loader.load_daily_by_dates(dataset, &cols, &[date])?, names)
@@ -216,6 +242,9 @@ pub fn derive_chip_age(config: &EngineConfig, start: i32, end: i32) -> Result<()
         let turnover = read(DatasetId::StockDailyBasic, &["turnover_rate_f"])?;
         let adjustment = read(DatasetId::StockAdjFactor, &["adj_factor"])?;
         let suspensions = full_day_suspensions(&config.data_root, date)?;
+        // Includes source decoding, numeric conversion and symbol indexing.
+        let load_ms = day_started.elapsed().as_secs_f64() * 1000.0;
+        let compute_started = Instant::now();
         let symbols: BTreeSet<_> = states
             .keys()
             .chain(prices.keys())
@@ -235,14 +264,8 @@ pub fn derive_chip_age(config: &EngineConfig, start: i32, end: i32) -> Result<()
                     .entry(code.clone())
                     .or_insert_with(|| ChipState::new(f64::NAN));
                 state.advance(0.0, Distribution::new(), state.adjusted_close)?;
-                if let Some((features, outside)) = state.features() {
-                    output.push((
-                        code,
-                        features,
-                        outside,
-                        state.retained_mass(),
-                        state.ages.len(),
-                    ));
+                if let Some((features, outside, retained)) = state.features() {
+                    output.push((code, features, outside, retained, state.ages.len()));
                 }
                 continue;
             }
@@ -288,17 +311,13 @@ pub fn derive_chip_age(config: &EngineConfig, start: i32, end: i32) -> Result<()
                 .or_insert_with(|| ChipState::new(close))
                 .advance(rate, distribution, close)?;
             let state = &states[&code];
-            if let Some((features, outside)) = state.features() {
-                output.push((
-                    code,
-                    features,
-                    outside,
-                    state.retained_mass(),
-                    state.ages.len(),
-                ));
+            if let Some((features, outside, retained)) = state.features() {
+                output.push((code, features, outside, retained, state.ages.len()));
             }
         }
         let count = output.len();
+        let compute_ms = compute_started.elapsed().as_secs_f64() * 1000.0;
+        let write_started = Instant::now();
         if date >= start {
             let mut columns = BTreeMap::new();
             columns.insert(
@@ -335,7 +354,12 @@ pub fn derive_chip_age(config: &EngineConfig, start: i32, end: i32) -> Result<()
             write_derived_parquet(&temp, &table)?;
             std::fs::rename(temp, path)?;
         }
-        println!("derive-chip-age date={date} rows={count} states={} invalid_reset={invalid} invalid_first20={invalid_symbols:?} turnover_above_100pct={high_turnover} warmup={}", states.len(), date < start);
+        let write_ms = if date >= start {
+            write_started.elapsed().as_secs_f64() * 1000.0
+        } else {
+            0.0
+        };
+        println!("derive-chip-age date={date} rows={count} states={} invalid_reset={invalid} invalid_first20={invalid_symbols:?} turnover_above_100pct={high_turnover} warmup={} load_ms={load_ms:.1} compute_ms={compute_ms:.1} write_ms={write_ms:.1} day_ms={:.1} elapsed_s={:.1}", states.len(), date < start, day_started.elapsed().as_secs_f64() * 1000.0, run_started.elapsed().as_secs_f64());
     }
     // Definition identity stays stable when new OOS dates are appended.
     let body = r#"{"version":"chip_age_rolling250_v2","window_trading_days":250,
@@ -358,11 +382,15 @@ mod tests {
     fn triangular_mass_and_endpoint_modes() {
         for mode in [10.0, 11.0, 12.0] {
             let distribution = triangle(10.0, 12.0, mode).unwrap();
-            assert!((distribution.values().sum::<f64>() - 1.0).abs() < 1e-12);
-            assert!(distribution.values().all(|v| *v >= 0.0));
+            assert!((distribution.iter().map(|(_, mass)| mass).sum::<f64>() - 1.0).abs() < 1e-12);
+            assert!(distribution.iter().all(|(_, mass)| *mass >= 0.0));
         }
         assert_eq!(
-            triangle(10.0, 10.0, 10.0).unwrap().values().sum::<f64>(),
+            triangle(10.0, 10.0, 10.0)
+                .unwrap()
+                .iter()
+                .map(|(_, mass)| mass)
+                .sum::<f64>(),
             1.0
         );
     }
@@ -370,7 +398,7 @@ mod tests {
     #[test]
     fn first_cohort_is_not_initialized_to_full_mass() {
         let mut state = ChipState::new(1.0);
-        state.advance(1.5, BTreeMap::from([(0, 1.0)]), 1.0).unwrap();
+        state.advance(1.5, vec![(0, 1.0)], 1.0).unwrap();
         assert!((state.retained_mass() - (1.0 - (-1.5_f64).exp())).abs() < 1e-12);
         for _ in 1..WINDOW {
             state.advance(0.0, Distribution::new(), 1.0).unwrap();
@@ -385,37 +413,76 @@ mod tests {
     fn rolling_state_matches_direct_window_formula_and_is_origin_independent() {
         let mut long = ChipState::new(1.0);
         for _ in 0..87 {
-            long.advance(0.4, BTreeMap::from([(-99, 1.0)]), 1.0)
-                .unwrap();
+            long.advance(0.4, vec![(-99, 1.0)], 1.0).unwrap();
         }
         let mut short = ChipState::new(1.0);
         let rates: Vec<f64> = (0..WINDOW).map(|i| 0.001 * (1 + i % 7) as f64).collect();
         for (i, &rate) in rates.iter().enumerate() {
-            let distribution = BTreeMap::from([(i as i32, 1.0)]);
+            let distribution = vec![(i as i32, 1.0)];
             long.advance(rate, distribution.clone(), 1.0).unwrap();
             short.advance(rate, distribution, 1.0).unwrap();
         }
         assert_eq!(long.ages, short.ages);
         for (i, &rate) in rates.iter().enumerate() {
             let expected = -(-rate).exp_m1() * (-rates[i + 1..].iter().sum::<f64>()).exp();
-            assert!((short.ages[WINDOW - 1 - i][&(i as i32)] - expected).abs() < 1e-12);
+            assert!((short.ages[WINDOW - 1 - i].weight - expected).abs() < 1e-12);
         }
-        let (x, _) = short.features().unwrap();
+        let (x, _, _) = short.features().unwrap();
         assert!((x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weighted_cohorts_match_per_bin_decay() {
+        let mut optimized = ChipState::new(1.0);
+        let mut reference = ChipState::new(1.0);
+        for day in 0..600 {
+            let rate: f64 = if day % 19 == 0 { 1.5 } else { 0.003 };
+            // Include suspensions, distinct cost bins, overflow and age expiry.
+            let incoming = if day % 23 == 0 {
+                vec![]
+            } else {
+                vec![(-90, 0.2), (day % 40, 0.3), (90, 0.5)]
+            };
+            let rate = if incoming.is_empty() { 0.0 } else { rate };
+            let close = 1.0 + (day % 11) as f64 * 0.01;
+            optimized.advance(rate, incoming.clone(), close).unwrap();
+            for cohort in &mut reference.ages {
+                for (_, mass) in &mut cohort.distribution {
+                    *mass *= (-rate).exp();
+                }
+            }
+            reference.ages.push_front(Cohort {
+                distribution: incoming
+                    .into_iter()
+                    .map(|(bin, mass)| (bin, mass * -(-rate).exp_m1()))
+                    .collect(),
+                weight: 1.0,
+            });
+            if reference.ages.len() > WINDOW {
+                reference.ages.pop_back();
+            }
+            reference.adjusted_close = close;
+            if let Some((actual, outside, retained)) = optimized.features() {
+                let (expected, expected_outside, expected_retained) = reference.features().unwrap();
+                for (a, b) in actual.iter().zip(expected) {
+                    assert!((*a - b).abs() < 1e-6);
+                }
+                assert!((outside - expected_outside).abs() < 1e-12);
+                assert!((retained - expected_retained).abs() < 1e-12);
+            } else {
+                assert!(reference.features().is_none());
+            }
+        }
     }
 
     #[test]
     fn complete_250_day_window_is_required() {
         let mut state = ChipState::new(1.0);
         for _ in 0..249 {
-            state
-                .advance(0.001, BTreeMap::from([(0, 1.0)]), 1.0)
-                .unwrap();
+            state.advance(0.001, vec![(0, 1.0)], 1.0).unwrap();
         }
         assert!(state.features().is_none());
-        state
-            .advance(0.001, BTreeMap::from([(0, 1.0)]), 1.0)
-            .unwrap();
+        state.advance(0.001, vec![(0, 1.0)], 1.0).unwrap();
         assert!(state.features().is_some());
     }
 }

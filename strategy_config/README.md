@@ -178,3 +178,13 @@ Minute strategies default to daily snapshots; `detail=true` writes one row per m
 - 数据降级与部分无效配置会打印 `[strategy warning]` 到 stderr，保留原有默认值和错误处理方式。公共层未新增风控规则。
 
 Minute valuation remains per bar in both output modes. Daily output only serializes the final snapshot and aggregates daily fill counts. Holdings are streamed to a temporary Parquet file and published on successful completion. Annual fallback data is cached per run; minute symbol filters are pushed into the Parquet reader. Existing pessimistic execution and strategy-owned risk rules are unchanged.
+
+### 扩展 Top N 对比
+
+同一 `mdl_000009` 信号、初始资金 10 万元和 5 个交易日持有期，增加 `strategy_001_top100_5d.toml`、`strategy_001_top200_5d.toml`、`strategy_001_top300_5d.toml`、`strategy_001_top500_5d.toml`。例如：
+
+```powershell
+cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --config strategy_config/stock/strategy_001_top100_5d.toml
+```
+
+保持严格 Top N 和整手规则，未成交份额留现金，不为提高资金利用率更改策略。NAV/PnL 均包含分红送转；七组 notebook 对比使用各自的输出与历史配置快照。

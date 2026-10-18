@@ -51,10 +51,10 @@ impl ExecutionEngine {
         };
         let side = OrderSide::from_signed_quantity(order.signed_quantity);
         // Deliberately pessimistic: the daily close-based limit flags apply to the whole day.
-        if side == OrderSide::Buy && bar.is_limit_up {
+        if config.respect_price_limits && side == OrderSide::Buy && bar.is_limit_up {
             return;
         }
-        if side == OrderSide::Sell && bar.is_limit_down {
+        if config.respect_price_limits && side == OrderSide::Sell && bar.is_limit_down {
             return;
         }
 

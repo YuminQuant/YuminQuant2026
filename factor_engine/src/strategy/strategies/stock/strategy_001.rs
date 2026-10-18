@@ -14,6 +14,7 @@ pub struct Strategy001 {
     signal_root: std::path::PathBuf,
     rebalance_days: usize,
     top_n: usize,
+    exclude_top_n: usize,
     cash_buffer: f64,
     seen_sessions: usize,
     calendar: Option<TradingCalendar>,
@@ -35,6 +36,7 @@ impl Strategy001 {
             signal_root,
             rebalance_days: parse_usize(params, "rebalance_days", 5).max(1),
             top_n: parse_usize(params, "top_n", 20).max(1),
+            exclude_top_n: parse_usize(params, "exclude_top_n", 0),
             cash_buffer: parse_f64(params, "cash_buffer", 0.0).clamp(0.0, 0.99),
             seen_sessions: 0,
             calendar: None,
@@ -48,6 +50,9 @@ impl Strategy for Strategy001 {
     }
 
     fn on_start(&mut self, ctx: &mut StrategyContext) -> Result<()> {
+        if self.exclude_top_n >= self.top_n {
+            return Err(crate::error::err("exclude_top_n must be smaller than top_n"));
+        }
         self.calendar = Some(TradingCalendar::load(&ctx.config().data_root, "SSE")?);
         Ok(())
     }
@@ -86,6 +91,7 @@ impl Strategy for Strategy001 {
         ranked.truncate(self.top_n);
         let symbols = ranked
             .into_iter()
+            .skip(self.exclude_top_n)
             .map(|(symbol, _)| symbol)
             .collect::<Vec<_>>();
         for (symbol, quantity) in opening_allocation(ctx, &symbols, self.cash_buffer) {
@@ -115,7 +121,7 @@ fn opening_allocation(
     let mut cash = ctx.account().cash();
     let mut retained = BTreeMap::new();
     for (symbol, position) in ctx.account().positions() {
-        let sellable = ctx.market().bar(symbol).is_some_and(|b| !b.is_limit_down);
+        let sellable = ctx.market().bar(symbol).is_some_and(|b| !config.respect_price_limits || !b.is_limit_down);
         let quantity = if sellable {
             ctx.account().sellable_quantity(symbol)
         } else {
@@ -154,7 +160,7 @@ fn opening_allocation(
             let bar = ctx.market().bar(symbol)?;
             let price = ctx.market().open_price(symbol)?;
             // A failed liquidation remains the old batch; do not add another batch to it.
-            let budget = if bar.is_limit_up || retained.get(symbol).copied().unwrap_or(0.0) > 1e-9 {
+            let budget = if (config.respect_price_limits && bar.is_limit_up) || retained.get(symbol).copied().unwrap_or(0.0) > 1e-9 {
                 0.0
             } else {
                 target_value

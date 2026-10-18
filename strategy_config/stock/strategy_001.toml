@@ -23,5 +23,5 @@ model_root = "data/models"
 signal_id = "mdl_000009"
 signal_root = "data/models"
 rebalance_days = 5
-top_n = 20
+top_n = 50
 cash_buffer = 0.0

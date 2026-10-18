@@ -167,3 +167,14 @@ def test_dividend_receivable_is_equity_but_not_spendable_cash():
     assert report["daily"].equity_reconciliation_error.iloc[0] == 0
     assert report["daily"].pnl_reconciliation_error.iloc[0] == 0
     assert report["daily"].cash_ratio.iloc[0] == .4
+
+
+def test_seven_strategy_comparison_includes_every_curve_and_monthly_panel():
+    report = make_strategy_report(snapshots(), initial_cash=100)
+    labels = [f"Top {n}" for n in [10, 20, 50, 100, 200, 300, 500]]
+    fig = plot_strategy_comparison(dict.fromkeys(labels, report))
+    assert len(fig.axes) == 13  # 5 account axes + 7 monthly panels + shared colorbar
+    assert set(labels) <= {line.get_label() for line in fig.axes[0].lines}
+    assert set(labels) <= {line.get_label() for line in fig.axes[2].lines}
+    assert sum("monthly return" in axis.get_title() for axis in fig.axes) == 7
+    plt.close(fig)

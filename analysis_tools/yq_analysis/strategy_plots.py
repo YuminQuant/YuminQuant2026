@@ -12,20 +12,21 @@ def plot_strategy_comparison(reports: dict[str, dict[str, pd.DataFrame]], *,
 
     if not reports:
         raise ValueError("At least one strategy report is required")
-    if len(reports) > 4:
-        raise ValueError("Use at most four strategies for readable monthly panels")
+    if len(reports) > 8:
+        raise ValueError("Use at most eight strategies for readable comparisons")
     first = next(iter(reports.values()))["daily"]
     if any(not r["daily"].index.equals(first.index) for r in reports.values()):
         raise ValueError("Strategy comparisons require identical observation dates")
-    fig = plt.figure(figsize=(18, 14), constrained_layout=True)
-    grid = fig.add_gridspec(3, 2, height_ratios=[1.35, 1, 1])
+    monthly_rows = 1 if len(reports) <= 4 else 2
+    fig = plt.figure(figsize=(18, 14 if monthly_rows == 1 else 19), constrained_layout=True)
+    grid = fig.add_gridspec(2 + monthly_rows, 2, height_ratios=[1.35, 1] + [1] * monthly_rows)
     nav_grid = grid[0, 0].subgridspec(2, 1, height_ratios=[2, 1], hspace=.04)
     nav_ax = fig.add_subplot(nav_grid[0])
     dd_ax = fig.add_subplot(nav_grid[1], sharex=nav_ax)
     pnl_ax = fig.add_subplot(grid[0, 1])
     usage_ax = fig.add_subplot(grid[1, 0])
     turnover_ax = fig.add_subplot(grid[1, 1])
-    colors = ["#126782", "#e07a24", "#6a4c93", "#27864c"]
+    colors = ["#126782", "#e07a24", "#6a4c93", "#27864c", "#c23b45", "#8c564b", "#cf4a9a", "#6b7280"]
     for (label, report), color in zip(reports.items(), colors):
         d = report["daily"]
         nav_ax.plot(d.index, d.nav, label=label, color=color)
@@ -39,15 +40,15 @@ def plot_strategy_comparison(reports: dict[str, dict[str, pd.DataFrame]], *,
             pnl_ax.plot(d.index, d.net_realized_pnl_cum, label="Net realized", alpha=.7)
             pnl_ax.plot(d.index, d.unrealized_pnl, label="Unrealized", alpha=.7)
             pnl_ax.plot(d.index, d.cost_cum, label="Costs", ls="--", alpha=.7)
-    nav_ax.set_title("Account NAV and drawdown (after costs)")
+    nav_ax.set_title("Account NAV and drawdown (incl. distributions, after costs)")
     nav_ax.axhline(1, color="grey", lw=.5)
-    nav_ax.legend()
+    nav_ax.legend(ncol=2 if len(reports) > 4 else 1, fontsize=8)
     nav_ax.tick_params(labelbottom=False)
     dd_ax.set_ylabel("Drawdown")
     dd_ax.yaxis.set_major_formatter(PercentFormatter())
-    pnl_ax.set_title("Account PnL (currency, run-to-date)")
+    pnl_ax.set_title("Account PnL (incl. distributions, after costs)")
     pnl_ax.axhline(0, color="grey", lw=.5)
-    pnl_ax.legend()
+    pnl_ax.legend(ncol=2 if len(reports) > 4 else 1, fontsize=8)
     usage_ax.set_title("Capital utilization = gross stock value / account equity")
     usage_ax.axhline(100, color="grey", ls="--", lw=.7, label="100% invested")
     usage_ax.yaxis.set_major_formatter(PercentFormatter())
@@ -61,14 +62,15 @@ def plot_strategy_comparison(reports: dict[str, dict[str, pd.DataFrame]], *,
     for ax in [nav_ax, dd_ax, pnl_ax, usage_ax, turnover_ax]:
         ax.grid(alpha=.18)
         ax.spines[["top", "right"]].set_visible(False)
-    monthly_grid = grid[2, :].subgridspec(1, len(reports))
+    monthly_columns = len(reports) if monthly_rows == 1 else 4
+    monthly_grid = grid[2:, :].subgridspec(monthly_rows, monthly_columns)
     limit = max(.01, max(float(np.nanmax(np.abs(r["monthly_returns"].to_numpy()))) for r in reports.values()))
     cmap = plt.get_cmap("RdYlGn").copy()
     cmap.set_bad("#eeeeee")
     monthly_axes = []
     for i, (label, report) in enumerate(reports.items()):
         monthly = report["monthly_returns"]
-        ax = fig.add_subplot(monthly_grid[i])
+        ax = fig.add_subplot(monthly_grid[i // monthly_columns, i % monthly_columns])
         monthly_axes.append(ax)
         im = ax.imshow(monthly.to_numpy(), aspect="auto", cmap=cmap, vmin=-limit, vmax=limit)
         ax.set_xticks(range(12), [str(m) for m in range(1, 13)])

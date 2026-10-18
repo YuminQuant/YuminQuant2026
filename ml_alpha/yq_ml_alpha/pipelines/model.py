@@ -49,9 +49,6 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
     writer = _new_writer(config)
     written: list[Path] = []
     windows = build_windows(config, calendar)
-    dataset.prepare_labeled_cache(
-        dates for window in windows for dates in (window.train_dates, window.valid_dates)
-    )
     all_predict_dates = _predict_dates(config, calendar)
     covered_dates: set[int] = set()
     progress = _Progress("ml-alpha model run", len(windows))
@@ -99,9 +96,6 @@ def train_config(config: MlAlphaConfig) -> list[Path]:
     dataset = DatasetBuilder(config)
     paths: list[Path] = []
     windows = build_windows(config, calendar)
-    dataset.prepare_labeled_cache(
-        dates for window in windows for dates in (window.train_dates, window.valid_dates)
-    )
     progress = _Progress("ml-alpha model train", len(windows))
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)

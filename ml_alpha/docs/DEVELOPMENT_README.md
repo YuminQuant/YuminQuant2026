@@ -395,16 +395,11 @@ English handoff checklist:
 
 ### 滚动训练的数据复用
 
-模型训练入口会向公共 `DatasetBuilder.prepare_labeled_cache` 注册所有窗口的训练、验证日期。
-对于固定 `factor_frame`，只缓存后续仍会使用的日期，内容为过滤、标签对齐和预处理后的完整日截面。
-训练和验证共享该缓存，预测不使用带标签缓存。缓存保留原始行顺序、索引和 dtype，
-不改变采样日期、股票范围、标签或变换公式；单日 rank_gauss 直接调用相同的截面变换，省去逐列 groupby。
-
-缓存写到系统临时目录的 `yq-preprocessed-*` 子目录，不占用常驻全窗口内存。
-每个日期最后一次消费后删除对应文件，临时目录随缓存对象释放清理。
-缓存仅在本次 DatasetBuilder 生命周期内复用，输入文件在一次运行期间应保持固定；
-新的运行重新构建，不读取上次缓存。强制结束进程可能留下临时目录。
-它与 `[materialize].cache_samples` 的调试样本导出相互独立，命中日志标记为 `step=cache_hit`。
+预处理后的完整日截面不再写入系统临时目录：已移除 `yq-preprocessed-*` Pickle 缓存。
+每个窗口按需加载、过滤、对齐标签并执行预处理，不改变采样日期、股票范围或变换公式。
+单日 rank_gauss 直接调用相同的截面变换，省去逐列 groupby。
+后续新增磁盘缓存必须显式指定经用户认可的存储路径，不得默认写入 C 盘。
+`[materialize].cache_samples` 的显式调试样本导出配置保持独立。
 
 XGBoost Optuna 使用公共 `models/xgb_training.py` 构建 DMatrix 和训练：同一窗口的候选模型
 复用训练、验证矩阵，每次候选训练结束后预测一次并计算 MSE，不执行逐棵树验证。

@@ -9,13 +9,13 @@ use crate::core::{
 use crate::data::{DataPool, SourceRowsReader};
 use crate::error::{err, Result};
 use crate::factor::common::financial::{add_days, add_months, analyst_fiscal_years};
+use crate::factor::common::stock_daily_ops::neutralize_and_fill_missing;
 use crate::factor::common::{
     ClassificationLevel, ClassificationMap, DailyPanel, FinancialPitReader, PanelColumn,
     ReportTypePreference,
 };
 use crate::factor::{Factor, FactorUpdatePolicy};
 use crate::operators::{cs_fill_mean_by_group, cs_neutralize_regression, cs_zscore};
-use crate::factor::common::stock_daily_ops::neutralize_and_fill_missing;
 
 const EQUITY: &str = "total_hldr_eqy_exc_min_int";
 const PROFIT: &str = "n_income_attr_p";
@@ -117,7 +117,15 @@ impl Factor for HtzqAnalyst {
         if self.0 == Output::Revision {
             dependencies.push(DataRequest::new(DatasetId::StockConsensus, &FORECASTS));
         }
-        let mut tags = vec!["deprecated", "HTZQ", "analyst", "daily", "neutralize", "size", "sector"];
+        let mut tags = vec![
+            "deprecated",
+            "HTZQ",
+            "analyst",
+            "daily",
+            "neutralize",
+            "size",
+            "sector",
+        ];
         tags.push(if self.0 == Output::Revision {
             "forecast_revision"
         } else {
@@ -499,8 +507,10 @@ fn roe(
 
 fn equal_zscore(parts: &[Vec<Option<f64>>], groups: &[Option<String>]) -> Vec<Option<f64>> {
     // Fill each standardized signal BEFORE averaging, not the final composite.
-    let standardized: Vec<_> = parts.iter()
-        .map(|v| cs_fill_mean_by_group(&cs_zscore(v), groups)).collect();
+    let standardized: Vec<_> = parts
+        .iter()
+        .map(|v| cs_fill_mean_by_group(&cs_zscore(v), groups))
+        .collect();
     (0..parts[0].len())
         .map(|i| {
             let sum = standardized
@@ -1034,9 +1044,20 @@ fn compute(ids: &[String], data: &DataPool, state: &mut State) -> Result<Vec<Fac
         let mut daily = None;
         if revision_needed {
             let (groups, size) = exposures(panel, &market, &sectors, date);
-            let raw =
-                earnings_revision(revisions.as_ref().unwrap(), &market, calendar, panel, date, &groups);
-            daily = Some(cs_neutralize_regression(&raw, &[&size], Some(&groups), None));
+            let raw = earnings_revision(
+                revisions.as_ref().unwrap(),
+                &market,
+                calendar,
+                panel,
+                date,
+                &groups,
+            );
+            daily = Some(cs_neutralize_regression(
+                &raw,
+                &[&size],
+                Some(&groups),
+                None,
+            ));
         }
         for (j, &output) in outputs.iter().enumerate() {
             if output != Output::Revision {

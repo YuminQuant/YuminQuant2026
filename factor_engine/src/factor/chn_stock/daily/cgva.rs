@@ -267,11 +267,13 @@ fn grouped_score(
         }
     }
     // EE-group zscores are not industry-neutral: use actual industry means.
-    let scores: Vec<_> = scores.iter()
-        .map(|s| cs_fill_mean_by_group(s, industries)).collect();
-    (0..ee.len()).map(|i| {
-        finite(scores[0][i]? + scores[1][i]? + scores[2][i]?)
-    }).collect()
+    let scores: Vec<_> = scores
+        .iter()
+        .map(|s| cs_fill_mean_by_group(s, industries))
+        .collect();
+    (0..ee.len())
+        .map(|i| finite(scores[0][i]? + scores[1][i]? + scores[2][i]?))
+        .collect()
 }
 
 fn compute(data: &DataPool, state: &mut State) -> Result<FactorSeries> {

@@ -1,11 +1,14 @@
 pub mod catalog;
+pub mod fund_portfolio;
 pub mod loader;
 pub mod parquet_io;
 pub mod pool;
-pub mod table;
 pub mod source_rows;
-pub mod fund_portfolio;
-pub use fund_portfolio::{FundPortfolioIndex, FundPortfolioBatchIndex, FundPortfolioReader, FundDisclosureView, FUND_PORTFOLIO_COLUMNS};
+pub mod table;
+pub use fund_portfolio::{
+    FundDisclosureView, FundPortfolioBatchIndex, FundPortfolioIndex, FundPortfolioReader,
+    FUND_PORTFOLIO_COLUMNS,
+};
 pub use source_rows::{SourceRows, SourceRowsReader};
 
 pub use catalog::DataCatalog;

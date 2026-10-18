@@ -8,14 +8,16 @@ use crate::core::{
 use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::financial::previous_quarter_end_date;
-use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_and_fill_missing, neutralize_size_sector_with_inputs};
+use crate::factor::common::stock_daily_ops::{
+    is_bj_stock, neutralize_and_fill_missing, neutralize_size_sector_with_inputs,
+};
 use crate::factor::common::vector::clean;
 use crate::factor::common::{
-    routed_financial_stock_snapshots_for_date, FinancialStockEventRoute, financial_event_trade_dates, ClassificationLevel,
+    financial_event_trade_dates, routed_financial_stock_snapshots_for_date, ClassificationLevel,
     ClassificationMap, DailyPanel, DividendReader, FinancialEventMarker,
     FinancialEventMarkerBuilder, FinancialEventSchedule, FinancialPitReader,
-    FinancialStatementDataset, InstrumentAlignedSnapshotCache, PanelColumn, PitFinancialRecordView,
-    ReportTypePreference,
+    FinancialStatementDataset, FinancialStockEventRoute, InstrumentAlignedSnapshotCache,
+    PanelColumn, PitFinancialRecordView, ReportTypePreference,
 };
 use crate::operators::{cs_zscore, ts_zscore};
 
@@ -250,7 +252,10 @@ impl HazqComparableValueOutput {
 
     pub const fn is_analyst(self) -> bool {
         matches!(self.base, HazqComparableBase::EpFttm)
-            || matches!(self.component, HazqComparableComponent::GapAvg | HazqComparableComponent::GapMmm)
+            || matches!(
+                self.component,
+                HazqComparableComponent::GapAvg | HazqComparableComponent::GapMmm
+            )
     }
 
     pub const fn is_deprecated(self) -> bool {
@@ -488,7 +493,6 @@ pub fn all_outputs() -> Vec<HazqComparableValueOutput> {
         .collect()
 }
 
-
 pub fn spec(output: HazqComparableValueOutput) -> FactorSpec {
     let id = output.id();
     let mut output_tags = tags();
@@ -582,9 +586,7 @@ pub fn compute_requested_stateful(
     let first_panel_date = panel.dates().first().copied();
     let previous_peers = std::mem::take(&mut state.peer_state);
     let mut peer_state = match (previous_peers.last_processed_trade_date, first_panel_date) {
-        (Some(last_processed), Some(first_date)) if first_date > last_processed => {
-            previous_peers
-        }
+        (Some(last_processed), Some(first_date)) if first_date > last_processed => previous_peers,
         _ => {
             drop(previous_peers);
             ComparablePeerState::default()

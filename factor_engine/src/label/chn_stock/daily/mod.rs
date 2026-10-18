@@ -10,6 +10,7 @@ pub mod future_open_5m_vwap_return_5d;
 pub mod future_open_return_1d;
 pub mod future_open_return_20d;
 pub mod future_open_return_5d;
+pub mod future_vwap_return_10d;
 pub mod future_vwap_return_1d;
 pub mod future_vwap_return_20d;
 pub mod future_vwap_return_5d;

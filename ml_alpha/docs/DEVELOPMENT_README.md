@@ -300,17 +300,17 @@ logsignature 的预测得分先按日 zscore，再由模型调用 Rust 做行业
 
 ## 6. Safety And Performance / 安全与性能约定
 
-For rolling/expanding ratio-split models with monthly/quarterly refits, use
-`train_scheme.prediction_activation = "after_label_maturity"` when the latest
-cutoff samples must be kept. The common runtime delays activation until the
-session strictly after `cutoff + label.lookahead_days` (inferred N+1 for built-in
-VWAP labels), and assigns intervening predictions to the preceding model.
-The first model has no predecessor: its warmup predictions remain null.
-Training/validation boundary purging still applies. Do not implement this switch
-inside individual estimators. Both model and factor pipelines use the same
-TrainingWindow schedule. Window logs/manifests expose cutoff and activation.
-Unsupported frequency/split combinations fail configuration validation.
-Existing configs default to the separate `purge` policy for compatibility.
+All training entry points use the shared `build_windows` maturity rule:
+T denotes the information cutoff at market close, and every training/validation
+label must end at or before T. N-day VWAP labels require N+1 trading sessions;
+10-day labels therefore use feature dates no later than T-11. This also applies
+to static and train-only runs; without prediction dates, the configured final
+train/validation date anchors T. Date-based validation retains its split purge.
+For monthly/quarterly ratio windows, the legacy `after_label_maturity` setting
+now truncates immature samples at T and activates at T+1, rather than retaining
+T samples and postponing activation. The previous model owns dates before the
+switch. Both model and factor pipelines use this policy. Manifests version 3
+record the information cutoff and reject artifacts from the older policy.
 `start_from_features=true` discovers the first month with finite factor-frame
 values within configured training bounds, then waits for a full lookback period.
 For other providers, supply an explicit training start and leave this flag false.

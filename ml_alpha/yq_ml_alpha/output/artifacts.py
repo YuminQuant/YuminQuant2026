@@ -15,7 +15,9 @@ def window_artifact_path(artifact_dir: str | Path, window_id: str) -> Path:
 
 def artifact_identity(config, window, dataset) -> dict:
     identity = {
-        "pipeline_version": 2,
+        "pipeline_version": 3,
+        "training_information_cutoff": window.training_cutoff_date,
+        "label_maturity_policy": "label_end_at_or_before_training_close",
         "model": {"class": config.model.class_path, "params": config.model.params, "search": config.model.search},
         "features": asdict(config.features),
         "feature_columns": list(dataset.feature_provider.feature_columns),

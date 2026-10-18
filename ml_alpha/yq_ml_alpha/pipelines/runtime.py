@@ -77,15 +77,37 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
 
     output = []
     for window in windows:
+        # T is an end-of-day information cutoff, not a feature date whose
+        # future label may be read now and made safe by delaying prediction.
+        cutoff = window.training_cutoff_date
+        if cutoff is None:
+            if window.predict_dates:
+                cutoff = calendar.previous_open(window.predict_dates[0])
+            else:
+                end = max(config.dates.train[1], config.dates.valid[1] if config.dates.valid else config.dates.train[1])
+                available = [date for date in calendar.dates if date <= end]
+                cutoff = available[-1] if available else None
+        if cutoff is None:
+            raise ValueError(f"{window.window_id}: no training information cutoff")
+        train_pool = _mature_dates(config, calendar, window.train_dates, cutoff)
+        valid_pool = _mature_dates(config, calendar, window.valid_dates, cutoff)
         prediction_start = window.predict_dates[0] if window.predict_dates else None
-        valid = before(window.valid_dates, prediction_start)
+        valid = before(valid_pool, prediction_start)
         if window.valid_dates and not valid:
             raise ValueError(f"{window.window_id}: no validation labels settle before prediction")
-        train = before(window.train_dates, valid[0] if valid else prediction_start)
+        train = before(train_pool, valid[0] if valid else prediction_start)
         if not train:
             raise ValueError(f"{window.window_id}: no training labels settle before the next split")
-        output.append(replace(window, train_dates=train, valid_dates=valid))
+        output.append(replace(window, train_dates=train, valid_dates=valid, training_cutoff_date=cutoff))
     return output
+
+
+def _mature_dates(config, calendar, dates, training_date):
+    """Only labels fully observable at training-date close may enter fitting."""
+    positions = {date: idx for idx, date in enumerate(calendar.dates)}
+    horizon = _label_horizon(config)
+    limit = positions[training_date]
+    return [date for date in dates if positions[date] + horizon <= limit]
 
 
 def _label_horizon(config: MlAlphaConfig) -> int:
@@ -322,7 +344,7 @@ def _feature_start_month(config: MlAlphaConfig, calendar: TradingCalendar) -> in
 
 
 def _delayed_ratio_windows(config, calendar, predict_dates, scheme, train_frequency):
-    """Public scheduling: retain cutoff samples and delay the model's activation.
+    """Public scheduling: fit with labels mature at cutoff close.
 
     The preceding model owns every prediction date until the next activation.
     The first window has no predecessor; its warmup dates remain uncovered.
@@ -330,7 +352,6 @@ def _delayed_ratio_windows(config, calendar, predict_dates, scheme, train_freque
     import calendar as cal
 
     start = _feature_start_month(config, calendar) if config.train_scheme.start_from_features else config.dates.train[0]
-    horizon = _label_horizon(config)
     frequency = config.train_scheme.refit_frequency
     dates = calendar.between(start, min(config.dates.train[1], predict_dates[-1]))
     cutoffs = [d for d in refit_dates(calendar, dates, frequency)
@@ -346,10 +367,11 @@ def _delayed_ratio_windows(config, calendar, predict_dates, scheme, train_freque
             lower = _lookback_start(config, calendar, month_end, cutoff, config.train_scheme.train_lookback)
             if lower is None or lower < start:
                 continue
-        activation = calendar.offset(cutoff, horizon + 1)
+        activation = calendar.offset(cutoff, 1)
         if activation is None or activation > predict_dates[-1]:
             continue
         pool = sample_dates(calendar, (lower, cutoff), train_frequency)
+        pool = _mature_dates(config, calendar, pool, cutoff)
         train, valid = _split_window_dates(config, pool)
         if not train or (not valid and config.train_scheme.validation_unit != "rows"):
             continue
@@ -399,6 +421,7 @@ def _ratio_split_windows(
                 train_dates=train_dates,
                 valid_dates=valid_dates,
                 predict_dates=segment,
+                training_cutoff_date=refit,
             )
         )
     return windows
@@ -463,6 +486,7 @@ def _sample_count_windows(
                 train_dates=train_dates,
                 valid_dates=valid_dates,
                 predict_dates=segment,
+                training_cutoff_date=refit,
             )
         )
     return windows

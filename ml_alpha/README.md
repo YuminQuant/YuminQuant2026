@@ -56,7 +56,7 @@ start the first complete 24-calendar-month pool in the first month containing
 usable factor data within the configured training bounds (currently January
 2016, first nonempty factor date 2016-01-04). The first pool is 2016-2017.
 Every quarter, sample the trailing 24 months every 5 trading days, including
-eligible sampled dates up to the quarter-end trading session. Load this pool
+only sampled dates whose labels have matured by quarter-end close. Load this pool
 once, apply stock filters and remove missing labels, then sort by trade_date
 and ts_code. The first floor(N * 0.8) rows train the candidate models and the
 remaining rows validate them. Do not split the date list 80/20. A trading date
@@ -70,12 +70,37 @@ below remains active. Final refitting uses both row partitions.
 这种按行划分不保证训练与验证之间的时间隔离；同日股票或重叠标签区间可能跨两侧。
 样本外预测仍独立遵守标签到期边界。manifest 会记录行划分规则及实际行数、边界股票。
 
-The new model activates on the trading session strictly after the cutoff's
-label maturity: cutoff + 6 sessions + 1 session for the current 5-day VWAP
-label. The prior model continues predicting until that activation date;
-there is no gap at later quarterly switches. Before the first model is
-available there is no predecessor, so requested warmup dates have null
-signals. Prediction uses only the model assigned by this shared schedule.
+`mdl_000009` uses the ordinary `XGBoostAlphaModel` with the same 24-month,
+10-day sampling and `future_vwap_return_10d` labels, and refits at each month-end (`monthly_end`). It fixes 600 trees, learning rate 0.001,
+depth 6, min_child_weight 10, row/column subsampling 0.8, L1 0.1 and L2 10.
+There is no Optuna search. `model.params.fit_on_validation=true` combines the
+row-based train/validation partitions before one final fit, preserving 008's
+final-fit pooling approach without a preliminary fit or per-round evaluation.
+The 20% partition is therefore not a held-out performance estimate for 009.
+Existing ordinary XGBoost configs retain their behavior when this flag is absent.
+
+All model and factor training uses an end-of-day information cutoff T. Both
+training and validation rows must have labels fully observed by T close.
+For N-day VWAP returns, the last eligible feature date is T-(N+1) trading
+sessions: T-11 for 009 and T-6 for 008. Sampling may end earlier. Each window
+samples its trailing calendar-month range, then removes immature dates.
+The legacy `after_label_maturity` setting now fits only mature labels at the
+scheduled cutoff and activates the model on the next trading session. The
+preceding model owns dates before activation; initial warmup dates stay null.
+This public rule also applies to static and train-only windows. Old model
+manifests must be retrained after this policy change.
+
+Generate the 10-day adjusted VWAP label from the repository root:
+
+```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- label-run `
+  --asset stock --frequency daily --start-date 20160101 --end-date 20260424 `
+  --labels future_vwap_return_10d
+```
+
+The label is adjusted VWAP(t+11) / adjusted VWAP(t+1) - 1. Dates without
+available future prices remain missing; the CLI does not start model training.
+
 This policy works in both model and factor pipelines; it currently supports
 monthly/quarterly rolling or expanding ratio-split windows. Unsupported
 combinations are rejected. Other configs retain the existing `purge` policy.

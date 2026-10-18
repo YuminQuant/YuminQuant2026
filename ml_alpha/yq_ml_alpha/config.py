@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any, Optional, Tuple
 
 try:
@@ -43,6 +44,7 @@ class TrainSchemeConfig:
     refit_frequency: str = "monthly"
     min_train_days: int = 756
     valid_days: int = 252
+    validation_lookback: str | None = None
     train_lookback: str | None = None
     train_sample_count: int = 0
     validation_sample_count: int = 0
@@ -283,6 +285,15 @@ def load_config(path: str | Path) -> MlAlphaConfig:
 def _validate_train_scheme(section: TrainSchemeConfig) -> None:
     scheme = section.type.lower()
     ratio = section.validation_ratio
+    if section.validation_lookback is not None:
+        value = section.validation_lookback
+        if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*m", value):
+            raise ValueError("validation_lookback must be positive calendar months, e.g. '3m'")
+        if (scheme != "rolling" or section.refit_frequency not in {"yearly", "yearly_end", "annual"}
+                or section.train_lookback is None or ratio is not None
+                or section.train_sample_count or section.validation_sample_count
+                or section.prediction_activation != "purge"):
+            raise ValueError("calendar validation requires annual rolling lookback with purge and no sample-count/ratio split")
     if section.validation_unit not in {"dates", "rows"}:
         raise ValueError("validation_unit must be dates or rows")
     if section.validation_unit == "rows" and ratio is None:

@@ -132,6 +132,10 @@ def _build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Tra
     train_frequency = _train_frequency(config)
     predict_dates = _predict_dates(config, calendar)
     scheme = config.train_scheme.type.lower()
+    if config.train_scheme.validation_lookback is not None:
+        if not predict_dates:
+            raise ValueError("annual calendar windows require a prediction range, including for factor-train")
+        return _annual_calendar_windows(config, calendar, predict_dates, train_frequency)
     if not predict_dates:
         if config.train_scheme.prediction_activation == "after_label_maturity":
             raise ValueError("after_label_maturity requires a prediction range with trading dates, including for model-train")
@@ -177,6 +181,36 @@ def _build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Tra
                 predict_dates=segment,
             )
         )
+    return windows
+
+
+def _annual_calendar_windows(config, calendar, predict_dates, train_frequency):
+    """Fit at prior year-end close; preserve window identity for prediction subsets."""
+    windows = []
+    for year in sorted({date // 10000 for date in predict_dates}):
+        anchor = (year - 1) * 10000 + 1231
+        cutoff = calendar.previous_open(year * 10000 + 101)
+        if cutoff is None or cutoff > config.dates.train[1]:
+            raise ValueError(f"{year}: training range/calendar does not cover prior year-end")
+        lower = _lookback_start(config, calendar, anchor, cutoff, config.train_scheme.train_lookback)
+        valid_start = _lookback_start(config, calendar, anchor, cutoff, config.train_scheme.validation_lookback)
+        if lower is None or lower >= valid_start:
+            raise ValueError("training lookback must exceed validation lookback")
+        if lower < config.dates.train[0] or calendar.dates[0] > lower:
+            raise ValueError(f"{year}: insufficient calendar/config history for full training window")
+        train_end = calendar.previous_open(valid_start)
+        train_dates = calendar.between(lower, train_end)
+        if len(train_dates) < config.train_scheme.min_train_days:
+            raise ValueError(f"{year}: insufficient training days")
+        year_dates = calendar.between(year * 10000 + 101, year * 10000 + 1231)
+        windows.append(TrainingWindow(
+            window_id=f"annual_{year}",
+            train_dates=sample_dates(calendar, (lower, train_end), train_frequency),
+            valid_dates=sample_dates(calendar, (valid_start, cutoff), train_frequency),
+            predict_dates=[date for date in predict_dates if date // 10000 == year],
+            training_cutoff_date=cutoff,
+            activation_date=year_dates[0],
+        ))
     return windows
 
 

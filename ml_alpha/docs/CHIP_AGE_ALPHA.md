@@ -50,22 +50,24 @@ User-confirmed engineering choices:
 - Seed 42 initially; `seeds` accepts multiple distinct seeds and averages their
   evaluation scores. BatchNorm uses learned running statistics in evaluation.
 
-## Fixed split and stock universe
+## Annual rolling split and stock universe
 
-Follow logsig_alpha_v: train 20110101-20150930, valid 20151001-20151231,
-predict 20160101-20260424; sample training endpoints every five trading days,
+Follow logsig_alpha_v: refit at each prior year-end using the preceding 36
+calendar months (first 33 months train, last 3 months validation). First window:
+train 20130101-20150930, valid 20151001-20151231, predict during 2016.
+Advance all ranges one year per model; prediction ends 20260424; sample training endpoints every five trading days,
 with ALL thirty daily observations inside each sample; predict daily.
 The public runtime purges labels at train/valid and prediction boundaries.
 The label is `future_vwap_return_10d`, with lookahead 11 sessions. Validation
-selects the epoch; it is not merged into a final refit. There is no rolling fit.
+selects the epoch; it is not merged into a final refit. Each new model activates on the first trading day of its prediction year.
 
 `mkt_all`, exclude_bj=true, exclude_st=true, exclude_limit=false match logsig.
 These inherit current TradeFilters behavior, including its existing lack of ST
 exclusion before 2016. This is not a historical CSI All Share constituent universe.
 
-The 2011-2015 label files were removed from the local library previously.
-Generate the required 10-day labels before training; do not change the fixed
-training interval to compensate for missing files.
+The pre-2016 label files were removed from the local library previously.
+Generate the required 10-day labels before training; do not shorten the rolling
+training windows to compensate for missing files.
 
 ## Resources and storage
 
@@ -92,7 +94,7 @@ training interval to compensate for missing files.
   ICs equally. Chunking does not approximate IC by averaging local correlations.
 - Feature writes use same-directory temporary files on the configured D: data
   root. C: derivation output is rejected. Training sample disk caching is disabled.
-- Models: `data/model_workspace/chip_age_alpha/artifacts/static/model.pkl`
+- Models: `data/model_workspace/chip_age_alpha/artifacts/annual_<prediction_year>/model.pkl`
   (torch checkpoint); manifests, loss_history.parquet and model_info.json alongside.
 - Scores: `data/factors/stock/daily/YYYY/YYYYMMDD.parquet`, column `chip_age_alpha`.
 
@@ -101,13 +103,13 @@ training interval to compensate for missing files.
 From the repository root, after source review and authorization to compute:
 
 ```powershell
-# Emit dates before 2011 too, so the first training sample has 30 daily inputs.
+# Emit dates before 2013 too, so the first training sample has 30 daily inputs.
 cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-chip-age `
-  --asset stock --start-date 20100101 --end-date 20260424
+  --asset stock --start-date 20120101 --end-date 20260424
 
 cargo run --release --manifest-path factor_engine\Cargo.toml -- label-metadata
 cargo run --release --manifest-path factor_engine\Cargo.toml -- label-run `
-  --asset stock --frequency daily --start-date 20110101 --end-date 20151231 `
+  --asset stock --frequency daily --start-date 20130101 --end-date 20251231 `
   --labels future_vwap_return_10d --date-batch-size 120
 
 $py = 'D:\Users\Devin\anaconda383\python.exe'

@@ -383,9 +383,11 @@ For an opt-in small real-data equivalence/performance comparison, run `tests/ben
 The config uses:
 
 - label: `future_vwap_return_5d`
-- fixed training: 2011-01-01 through 2015-09-30
-- validation: 2015-10-01 through 2015-12-31
-- out-of-sample prediction: from 2016-01-01, without periodic retraining
+- annual rolling training: preceding 36 calendar months, first 33 for training
+- validation: final 3 calendar months; shared label-maturity purging applies
+- first window: train 2013-01-01 through 2015-09-30, validate 2015-10-01 through 2015-12-31
+- out-of-sample prediction: 2016-01-01 through 2026-04-24, one model per calendar year
+- artifacts: `data/model_workspace/logsig_alpha_v/artifacts/annual_<prediction_year>/`
 - sample frequency: every 5 trading days
 - prediction frequency: daily
 - model: `LogsigOrthogonalMLPAlphaModel`
@@ -397,9 +399,9 @@ Base factors are model artifacts/diagnostics only. The formal factor library rec
 
 ## Fixed Training And Safety / 固定训练与安全边界
 
-All four e2e configs use the same fixed training/validation dates above and are active. Machine learning remains in Python. Rust continues to provide existing feature operators and metadata interoperability only.
+The three bar-GRU configs retain their fixed training/validation dates and are active. Logsig and chip-age use annual rolling windows. Machine learning remains in Python. Rust continues to provide existing feature operators and metadata interoperability only.
 
-四个 e2e 配置均采用上述固定划分，三个 GRU 配置已恢复 active。机器学习继续使用 Python，不迁移到 Rust。
+三个 GRU 配置保留固定划分；logsig 与 chip-age 改为年度滚动训练。机器学习继续使用 Python，不迁移到 Rust。
 
 Train once, then predict / 先训练，再推理（从项目根目录执行 / run from repository root）：
 
@@ -431,9 +433,9 @@ Labeled bar-sequence bundles default to `[materialize].tensor_storage = "mmap"`.
 Logsig supports `features.params.feature_cache_dir` (enabled in its config). Deterministic per-date features are reused only when settings and source file sizes/mtime match. This disk cache persists across runs; remove its directory when no longer needed. It stores features, not fitted normalization or model weights. Daily output schema discovery is memoized per writer instead of rescanning all dates for every prediction chunk.
 
 Logsig 配置已启用确定性特征磁盘缓存：参数和源文件大小/修改时间一致才复用，不缓存训练标准化参数或模型权重。该缓存跨命令保留，可按需清理目录。写出 schema 每个 writer 按日期记忆，避免每个预测块重扫全区间。以上不代表已完成实际全量性能基准；训练规模和可用磁盘仍需按本机资源设置。
-# Chip-age fixed-training factor
+# Chip-age annual rolling factor
 
 `chip_age_alpha` uses precomputed daily chip-age tensors and a CNN/GRU with
-date-wise IC loss. It follows logsig_alpha_v's fixed split and stock universe.
+date-wise IC loss. It follows logsig_alpha_v's annual 36-month window (33 train + 3 validation) and stock universe.
 See [implementation and commands](docs/CHIP_AGE_ALPHA.md) for confirmed source
 assumptions, resource controls and the required historical label restoration.

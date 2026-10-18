@@ -2,7 +2,7 @@
 factor_id = "chip_age_alpha"
 config = "factors/chip_age_alpha.toml"
 status = "active"
-display_name = "Chip-age CNN-GRU fixed-training alpha"
+display_name = "Chip-age CNN-GRU annual rolling alpha"
 model_class = "yq_ml_alpha.models.chip_age_cnn_gru_model.ChipAgeCNNGRUAlphaModel"
 output = "data/factors/stock/daily"
 label = "future_vwap_return_10d"

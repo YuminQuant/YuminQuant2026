@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_analysis.strategy_plots import plot_strategy_summary, plot_strategy_comparison
+
 from pathlib import Path
 import re
 from typing import Iterable

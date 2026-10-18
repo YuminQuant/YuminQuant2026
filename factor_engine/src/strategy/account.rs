@@ -51,6 +51,16 @@ impl Position {
     }
 }
 
+/// A single-pass valuation of the current positions; never cached across trades/bars.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AccountSummary {
+    pub equity: f64,
+    pub unrealized_pnl: f64,
+    pub gross_market_value: f64,
+    pub net_market_value: f64,
+    pub margin_required: f64,
+}
+
 #[derive(Clone, Debug)]
 pub struct AccountState {
     initial_cash: f64,
@@ -58,6 +68,9 @@ pub struct AccountState {
     realized_pnl_cum: f64,
     net_realized_pnl_cum: f64,
     positions: BTreeMap<String, Position>,
+    dividend_receivables: Vec<(i32, f64)>,
+    locked_shares: Vec<(i32, String, f64)>,
+    dividend_income: f64,
 }
 
 impl AccountState {
@@ -68,6 +81,9 @@ impl AccountState {
             realized_pnl_cum: 0.0,
             net_realized_pnl_cum: 0.0,
             positions: BTreeMap::new(),
+            dividend_receivables: Vec::new(),
+            locked_shares: Vec::new(),
+            dividend_income: 0.0,
         }
     }
 
@@ -89,6 +105,29 @@ impl AccountState {
 
     pub fn positions(&self) -> &BTreeMap<String, Position> {
         &self.positions
+    }
+
+    pub(crate) fn positions_mut(&mut self) -> impl Iterator<Item = (&String, &mut Position)> {
+        self.positions.iter_mut()
+    }
+
+    pub fn summary(&self) -> AccountSummary {
+        let mut totals = AccountSummary::default();
+        for position in self.positions.values() {
+            let market_value = position.market_value();
+            let unrealized_pnl = position.unrealized_pnl();
+            totals.equity += if position.cash_settled {
+                market_value
+            } else {
+                unrealized_pnl
+            };
+            totals.unrealized_pnl += unrealized_pnl;
+            totals.gross_market_value += market_value.abs();
+            totals.net_market_value += market_value;
+            totals.margin_required += position.margin_value();
+        }
+        totals.equity += self.cash + self.dividend_receivable();
+        totals
     }
 
     pub fn realized_pnl_cum(&self) -> f64 {
@@ -129,6 +168,7 @@ impl AccountState {
 
     pub fn equity(&self) -> f64 {
         self.cash
+            + self.dividend_receivable()
             + self
                 .positions
                 .values()
@@ -259,5 +299,82 @@ impl AccountState {
 
     pub fn record_buy_cost(&mut self, total_cost: f64) {
         self.net_realized_pnl_cum -= total_cost;
+    }
+
+    pub fn dividend_receivable(&self) -> f64 {
+        self.dividend_receivables
+            .iter()
+            .map(|(_, amount)| amount)
+            .sum()
+    }
+
+    pub fn dividend_income(&self) -> f64 {
+        self.dividend_income
+    }
+
+    pub fn sellable_quantity(&self, symbol: &str) -> f64 {
+        let locked: f64 = self
+            .locked_shares
+            .iter()
+            .filter(|(_, code, _)| code == symbol)
+            .map(|(_, _, qty)| qty)
+            .sum();
+        (self.position_quantity(symbol) - locked).max(0.0)
+    }
+
+    pub fn settle_stock_entitlements(&mut self, date: i32) {
+        self.dividend_receivables.retain(|(pay_date, amount)| {
+            if *pay_date <= date {
+                self.cash += amount;
+                false
+            } else {
+                true
+            }
+        });
+        self.locked_shares
+            .retain(|(listing_date, _, _)| *listing_date > date);
+    }
+
+    /// Recognize the registered holder's distribution on ex-date. Cash stays
+    /// receivable until payment; bonus shares stay unsellable until listing.
+    pub fn apply_stock_distribution(
+        &mut self,
+        symbol: &str,
+        entitled: f64,
+        stock_rate: f64,
+        cash_rate: f64,
+        pay_date: i32,
+        listing_date: i32,
+        date: i32,
+        record_mark: f64,
+    ) {
+        let bonus = (entitled * stock_rate + 1e-6).floor();
+        let cash_income = entitled * cash_rate;
+        if bonus > 0.0 {
+            let position = self.positions.entry(symbol.to_string()).or_default();
+            let basis = position.quantity * position.avg_cost;
+            position.quantity += bonus;
+            position.avg_cost = basis / position.quantity;
+            position.multiplier = 1.0;
+            position.cash_settled = true;
+            if listing_date > date {
+                self.locked_shares
+                    .push((listing_date, symbol.to_string(), bonus));
+            }
+        }
+        // Correct stale marks as well, e.g. an ex-date during a suspension.
+        if let Some(position) = self.positions.get_mut(symbol) {
+            position.last_price = Some(((record_mark - cash_rate) / (1.0 + stock_rate)).max(0.0));
+        }
+        if cash_income > 0.0 {
+            self.dividend_income += cash_income;
+            self.realized_pnl_cum += cash_income;
+            self.net_realized_pnl_cum += cash_income;
+            if pay_date <= date {
+                self.cash += cash_income;
+            } else {
+                self.dividend_receivables.push((pay_date, cash_income));
+            }
+        }
     }
 }

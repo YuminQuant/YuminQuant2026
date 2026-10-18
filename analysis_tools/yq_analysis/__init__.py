@@ -1,6 +1,7 @@
 """Analysis helpers for backtest and strategy result series."""
 
-from yq_analysis.io import load_backtest_result
+from yq_analysis.io import load_backtest_result, load_strategy_result, load_index_returns
+from yq_analysis.strategy import make_strategy_report
 from yq_analysis.report import (
     make_backtest_report,
     make_factor_stats_report,
@@ -11,6 +12,9 @@ from yq_analysis.report import (
 )
 
 __all__ = [
+    "load_strategy_result",
+    "load_index_returns",
+    "make_strategy_report",
     "load_backtest_result",
     "make_backtest_report",
     "make_factor_stats_report",

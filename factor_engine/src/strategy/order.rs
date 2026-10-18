@@ -69,6 +69,8 @@ pub struct HoldingSnapshot {
     pub trade_date: i32,
     pub trade_time: String,
     pub cash: f64,
+    pub dividend_receivable: f64,
+    pub dividend_income_cum: f64,
     pub account_pnl: f64,
     pub realized_pnl_cum: f64,
     pub net_realized_pnl_cum: f64,

@@ -4,6 +4,42 @@
 
 `analysis_tools` is a lightweight Python helper package for reading Rust backtest outputs, building performance/IC reports, and plotting group return summaries. It is not tied to ML alpha.
 
+## 策略检验 / Strategy Diagnostics
+
+`test.ipynb` 的“策略检验”部分可独立运行，当前比较 `strategy_001_top10_5d`、`strategy_001_top20_5d`、`strategy_001_top50_5d`。不绘制 benchmark 或年度收益。左上面板将账户净值和回撤放在同一时间轴，第一行第二列显示 PnL，下方保留资金利用率、换手率、统一色阶的月度收益。
+
+使用 `plot_strategy_comparison({"Top 10": report10, "Top 20": report20, "Top 50": report50})` 绘制对比；三个报告需要有相同的观察日期。`diagnose_stock_cash()` 用前一交易日信号和当天开盘/悲观涨停标志解释现金较高的持有期，区分 Top N 未成交份额与按股票预算进行整手取整后的余额。该诊断应传入完整、未截断的回测报告。
+
+```python
+from yq_analysis.io import load_strategy_result, load_index_returns
+from yq_analysis.report import make_strategy_report
+from yq_analysis.plots import plot_strategy_summary
+
+holdings = load_strategy_result("data/strategy/stock", "strategy_001")
+benchmark = load_index_returns("data/index_data/daily", "000905.SH", 20200101, 20260424)
+strategy_report = make_strategy_report(
+    holdings, initial_cash=100000, periods_per_year=240,
+    benchmark=benchmark, benchmark_name="000905.SH",
+)
+display(strategy_report["portfolio_total"].round(3))
+display(strategy_report["portfolio_by_year"].round(3))
+fig = plot_strategy_summary(strategy_report, save=True)
+```
+
+输出包括 `daily`（日收益、净值、回撤、仓位、现金、换手、费用）、`portfolio_total`、`portfolio_by_year`、`monthly_returns`、`drawdowns`、`activity`、`latest_positions`、`trades`、`diagnostics`。
+
+- 股票权益对账包含 `现金 + 持仓市值 + dividend_receivable`；应收股利不能用于买入，`dividend_income_cum` 展示累计税前现金股利。旧文件缺少这两列时按零读取。
+- 账户净资产为 `initial_cash + account_pnl`，第一日收益包含相对初始资金的盈亏。筛选日期前先计算收益，保留筛选首日相对前一日净资产的收益。
+- 分钟输出按日取最后估值，成交计数按日求和。Sharpe 默认无风险利率为零、年化 240 日；分年实际收益与年化外推分列展示。
+- 回撤包含初始净值 1，因此首日亏损不会被遗漏。回撤表 `recovery=NaT` 表示尚未恢复，`underwater_days` 表示低于前高的交易日数。
+- 相对净值为策略净值除以指数净值，`Relative wealth` 使用对应复合相对收益；指数按同日 close/pre_close 对齐，缺失时禁用比较，绝不补零。
+- 股票双边换手为买卖成交金额之和 / 前一日净资产。成交价格在 Rust 输出中已取两位小数，因此换手是近似值。缺失或无效成交明细显示 NaN；期货缺逐笔合约规格时不推算换手。
+- 累计成本由 `realized_pnl_cum - net_realized_pnl_cum` 还原，包含费用、税和滑点，收益已扣过这些成本。不能据此精确模拟免手续费策略，因为改变费用会影响后续仓位。
+- 成交笔数是 fill 数量；不从这些记录推算完整往返交易胜率。资金追加/提取未建模，适用于当前引擎的无外部现金流账户。
+- `initial_cash` 必须与该次回测一致；检查 `diagnostics` 中的账户、盈亏对账。可传入 `expected_dates` 检查缺失交易日。净资产非正、重复快照或损坏 JSON 会明确报错。
+
+默认图片路径：`analysis_tools/plots/strategy/{strategy_id}.png`。
+
 ## 使用方式 / Usage
 
 不安装时，把包目录加入 `sys.path`：

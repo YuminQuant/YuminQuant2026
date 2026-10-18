@@ -157,6 +157,30 @@ impl StrategyRunConfig {
             .string("clock", "bar_frequency")
             .and_then(|value| BarFrequency::parse(&value))
             .ok_or_else(|| err("missing or invalid [clock].bar_frequency"))?;
+        for (section, key, valid) in [
+            (
+                "execution",
+                "fill_price",
+                doc.string("execution", "fill_price")
+                    .map(|v| FillPrice::parse(&v).is_some()),
+            ),
+            (
+                "future",
+                "mark_price",
+                doc.string("future", "mark_price")
+                    .map(|v| FutureMarkPrice::parse(&v).is_some()),
+            ),
+            (
+                "output",
+                "detail",
+                doc.string("output", "detail")
+                    .map(|v| parse_bool(Some(&v)).is_some()),
+            ),
+        ] {
+            if valid == Some(false) {
+                eprintln!("[strategy warning] invalid [{section}].{key}; using existing default");
+            }
+        }
         let fill_price = doc
             .string("execution", "fill_price")
             .and_then(|value| FillPrice::parse(&value))
@@ -301,6 +325,7 @@ impl SimpleToml {
                 continue;
             }
             let Some((key, value)) = line.split_once('=') else {
+                eprintln!("[strategy warning] ignoring malformed configuration line: {line}");
                 continue;
             };
             doc.sections
@@ -316,11 +341,21 @@ impl SimpleToml {
     }
 
     fn i32(&self, section: &str, key: &str) -> Option<i32> {
-        self.string(section, key)?.parse().ok()
+        let raw = self.string(section, key)?;
+        let parsed = raw.parse().ok();
+        if parsed.is_none() {
+            eprintln!("[strategy warning] invalid [{section}].{key}={raw}; using existing fallback/error handling");
+        }
+        parsed
     }
 
     fn f64(&self, section: &str, key: &str) -> Option<f64> {
-        self.string(section, key)?.parse().ok()
+        let raw = self.string(section, key)?;
+        let parsed = raw.parse().ok();
+        if parsed.is_none() {
+            eprintln!("[strategy warning] invalid [{section}].{key}={raw}; using existing fallback/error handling");
+        }
+        parsed
     }
 
     fn section_values(&self, section: &str) -> BTreeMap<String, String> {

@@ -1,10 +1,11 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
+use crate::calendar::TradingCalendar;
 use crate::data::parquet_io::read_parquet;
 use crate::error::Result;
 use crate::strategy::context::StrategyContext;
-use crate::strategy::market::BarEvent;
+use crate::strategy::market::{BarEvent, SessionOpenEvent};
 use crate::strategy::strategy::Strategy;
 
 #[derive(Clone, Debug)]
@@ -15,6 +16,7 @@ pub struct Strategy001 {
     top_n: usize,
     cash_buffer: f64,
     seen_sessions: usize,
+    calendar: Option<TradingCalendar>,
 }
 
 impl Strategy001 {
@@ -33,8 +35,9 @@ impl Strategy001 {
             signal_root,
             rebalance_days: parse_usize(params, "rebalance_days", 5).max(1),
             top_n: parse_usize(params, "top_n", 20).max(1),
-            cash_buffer: parse_f64(params, "cash_buffer", 0.02).clamp(0.0, 0.99),
+            cash_buffer: parse_f64(params, "cash_buffer", 0.0).clamp(0.0, 0.99),
             seen_sessions: 0,
+            calendar: None,
         }
     }
 }
@@ -44,48 +47,134 @@ impl Strategy for Strategy001 {
         "stock::strategy_001"
     }
 
-    fn on_bar(&mut self, ctx: &mut StrategyContext, event: &BarEvent) -> Result<()> {
-        if !event.is_session_end {
-            return Ok(());
-        }
-        self.seen_sessions += 1;
-        if (self.seen_sessions - 1) % self.rebalance_days != 0 {
-            return Ok(());
-        }
+    fn on_start(&mut self, ctx: &mut StrategyContext) -> Result<()> {
+        self.calendar = Some(TradingCalendar::load(&ctx.config().data_root, "SSE")?);
+        Ok(())
+    }
 
-        let signal = load_signal(&self.signal_root, event.trade_date, &self.signal_id)?;
-        if signal.is_empty() {
+    fn on_session_open(
+        &mut self,
+        ctx: &mut StrategyContext,
+        event: &SessionOpenEvent,
+    ) -> Result<()> {
+        let rebalance = self.seen_sessions % self.rebalance_days == 0;
+        self.seen_sessions += 1;
+        if !rebalance {
             return Ok(());
+        }
+        // First-day entry uses the previous trading day's signal, never today's close.
+        let Some(signal_date) = self
+            .calendar
+            .as_ref()
+            .and_then(|calendar| calendar.last_open_on_or_before(event.trade_date - 1))
+        else {
+            return Err(crate::error::err(
+                "strategy_001 requires a previous trading date for its opening signal",
+            ));
+        };
+        let signal = load_signal(&self.signal_root, signal_date, &self.signal_id)?;
+        if signal.is_empty() {
+            eprintln!("[strategy warning] strategy_001 missing signal on {signal_date}; closing prior batch without new entries on {}", event.trade_date);
         }
         let mut ranked = signal
             .into_iter()
             .filter(|(symbol, value)| {
-                value.is_finite()
-                    && !symbol.to_ascii_uppercase().ends_with(".BJ")
-                    && ctx.market().bar(symbol).is_some()
+                value.is_finite() && !symbol.to_ascii_uppercase().ends_with(".BJ")
             })
             .collect::<Vec<_>>();
         ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
         ranked.truncate(self.top_n);
-        let selected = ranked
-            .iter()
-            .map(|(symbol, _)| symbol.clone())
-            .collect::<BTreeSet<_>>();
-
-        for (symbol, position) in ctx.account().positions().clone() {
-            if position.quantity > 0.0 && !selected.contains(&symbol) {
-                ctx.order_target_quantity(symbol, 0.0);
-            }
-        }
-        if ranked.is_empty() {
-            return Ok(());
-        }
-        let target_value = ctx.account().equity() * (1.0 - self.cash_buffer) / ranked.len() as f64;
-        for (symbol, _) in ranked {
-            ctx.order_target_value(symbol, target_value);
+        let symbols = ranked
+            .into_iter()
+            .map(|(symbol, _)| symbol)
+            .collect::<Vec<_>>();
+        for (symbol, quantity) in opening_allocation(ctx, &symbols, self.cash_buffer) {
+            ctx.order_quantity(symbol, quantity);
         }
         Ok(())
     }
+
+    fn on_bar(&mut self, _ctx: &mut StrategyContext, _event: &BarEvent) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Close the preceding five-session batch, then open a fresh equal-budget batch.
+/// Unfilled Top-N allocations stay in cash; never redistribute them or replace names.
+fn opening_allocation(
+    ctx: &StrategyContext,
+    selected: &[String],
+    cash_buffer: f64,
+) -> Vec<(String, f64)> {
+    let config = ctx.config();
+    let lot = config.lot_size.max(1.0);
+    let buy_rate = (config.buy_commission_bps + config.slippage_bps) / 10_000.0;
+    let sell_rate =
+        (config.sell_commission_bps + config.stamp_tax_bps + config.slippage_bps) / 10_000.0;
+    let mut orders = Vec::new();
+    let mut cash = ctx.account().cash();
+    let mut retained = BTreeMap::new();
+    for (symbol, position) in ctx.account().positions() {
+        let sellable = ctx.market().bar(symbol).is_some_and(|b| !b.is_limit_down);
+        let quantity = if sellable {
+            ctx.account().sellable_quantity(symbol)
+        } else {
+            0.0
+        };
+        if let Some(price) = ctx.market().open_price(symbol) {
+            if quantity > 0.0 {
+                orders.push((symbol.clone(), -quantity));
+                cash += quantity * price * (1.0 - sell_rate);
+            }
+            retained.insert(symbol.clone(), position.quantity - quantity);
+        } else {
+            retained.insert(symbol.clone(), position.quantity);
+        }
+    }
+    if selected.is_empty() {
+        return orders;
+    }
+    let retained_value: f64 = retained
+        .iter()
+        .map(|(symbol, quantity)| {
+            quantity
+                * ctx
+                    .market()
+                    .open_price(symbol)
+                    .unwrap_or_else(|| ctx.account().position(symbol).unwrap().mark_price())
+        })
+        .sum();
+    let equity = cash + retained_value;
+    let reserve = equity.max(0.0) * cash_buffer;
+    let target_value = (equity - reserve).max(0.0) / selected.len() as f64;
+    let available = (cash - reserve).max(0.0);
+    let desired = selected
+        .iter()
+        .filter_map(|symbol| {
+            let bar = ctx.market().bar(symbol)?;
+            let price = ctx.market().open_price(symbol)?;
+            // A failed liquidation remains the old batch; do not add another batch to it.
+            let budget = if bar.is_limit_up || retained.get(symbol).copied().unwrap_or(0.0) > 1e-9 {
+                0.0
+            } else {
+                target_value
+            };
+            Some((symbol, price, budget))
+        })
+        .collect::<Vec<_>>();
+    let total_budget: f64 = desired.iter().map(|(_, _, budget)| budget).sum();
+    let scale = if total_budget > available {
+        available / total_budget
+    } else {
+        1.0
+    };
+    for (symbol, price, budget) in desired {
+        let quantity = (budget * scale / (price * (1.0 + buy_rate)) / lot).floor() * lot;
+        if quantity > 0.0 {
+            orders.push((symbol.clone(), quantity));
+        }
+    }
+    orders
 }
 
 fn load_signal(

@@ -50,6 +50,7 @@ impl ExecutionEngine {
             return;
         };
         let side = OrderSide::from_signed_quantity(order.signed_quantity);
+        // Deliberately pessimistic: the daily close-based limit flags apply to the whole day.
         if side == OrderSide::Buy && bar.is_limit_up {
             return;
         }
@@ -60,7 +61,7 @@ impl ExecutionEngine {
         let requested_qty = order.signed_quantity.abs();
         let quantity = match side {
             OrderSide::Buy => affordable_buy_quantity(account.cash(), requested_qty, price, config),
-            OrderSide::Sell => requested_qty.min(account.position_quantity(&order.symbol)),
+            OrderSide::Sell => requested_qty.min(account.sellable_quantity(&order.symbol)),
             _ => 0.0,
         };
         if quantity <= 0.0 {
@@ -286,6 +287,7 @@ impl ExecutionEngine {
         self.fill_id += 1;
         let position = account.position(&order.symbol).cloned().unwrap_or_default();
         let fill_time = format!("{} {}", market.event.trade_date, market.event.trade_time);
+        let totals = account.summary();
         fills.push(FillEvent {
             strategy_id: config.strategy_id.clone(),
             asset_class: config.asset_class.as_str().to_string(),
@@ -308,8 +310,8 @@ impl ExecutionEngine {
             cash_after: account.cash(),
             position_qty_after: position.quantity,
             avg_cost_after: position.avg_cost,
-            unrealized_pnl_after: account.total_unrealized_pnl(),
-            account_pnl_after: account.account_pnl(),
+            unrealized_pnl_after: totals.unrealized_pnl,
+            account_pnl_after: totals.equity - account.initial_cash(),
             signal_time: order.signal_time,
             fill_time,
         });
@@ -353,9 +355,12 @@ fn affordable_future_open_quantity(
     if unit_need <= 0.0 || !unit_need.is_finite() {
         return requested;
     }
-    let cap_margin = account.equity().max(0.0) * config.future.max_margin_ratio;
-    let available_by_cap = (cap_margin - account.margin_required()).max(0.0);
-    let available_margin = account.available_margin().max(0.0).min(available_by_cap);
+    let totals = account.summary();
+    let cap_margin = totals.equity.max(0.0) * config.future.max_margin_ratio;
+    let available_by_cap = (cap_margin - totals.margin_required).max(0.0);
+    let available_margin = (totals.equity - totals.margin_required)
+        .max(0.0)
+        .min(available_by_cap);
     let affordable = round_down_lot(available_margin / unit_need, lot);
     requested.min(affordable).max(0.0)
 }

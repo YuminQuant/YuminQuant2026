@@ -10,13 +10,13 @@ use crate::strategy::config::{BarFrequency, StrategyAssetClass, StrategyRunConfi
 use crate::strategy::context::StrategyContext;
 use crate::strategy::execution::ExecutionEngine;
 use crate::strategy::market::{
-    load_future_daily_frames, load_future_metadata, load_future_minute_frames,
-    load_stock_daily_frames, load_stock_minute_frames, Bar, BarEvent, FutureContractMeta,
-    MarketFrame, MarketSnapshot, SessionOpenEvent,
+    load_future_metadata, load_future_minute_frames, load_stock_daily_frames,
+    load_stock_minute_frames, Bar, BarEvent, FutureContractMeta, FutureDailyCache, MarketFrame,
+    MarketSnapshot, SessionOpenEvent,
 };
 use crate::strategy::order::{FillEvent, HoldingSnapshot, Order, OrderSide};
 use crate::strategy::request::StrategyRunRequest;
-use crate::strategy::storage::write_holdings;
+use crate::strategy::storage::HoldingsWriter;
 use crate::strategy::strategies::future::cta_001::Cta001;
 use crate::strategy::strategies::future::sma::SmaStrategy;
 use crate::strategy::strategies::stock::strategy_001::Strategy001;
@@ -59,9 +59,19 @@ impl StrategyEngine {
         }
         let mut strategy = create_strategy(&run_config)?;
         let mut account = AccountState::new(run_config.initial_cash);
+        let mut corporate_actions = if run_config.asset_class == StrategyAssetClass::Stock {
+            super::corporate_actions::CorporateActions::load(
+                &run_config.data_root,
+                run_config.start_date,
+                run_config.end_date,
+            )?
+        } else {
+            super::corporate_actions::CorporateActions::default()
+        };
         let mut execution = ExecutionEngine::new();
         let mut pending_orders = Vec::<Order>::new();
-        let mut holdings = Vec::<HoldingSnapshot>::new();
+        let mut holdings = HoldingsWriter::new(&run_config.output_dir())?;
+        let mut daily_cache = FutureDailyCache::default();
         let mut trade_count = 0_usize;
         let mut next_order_id = 0_i64;
         let progress = ProgressBar::new("strategy-run", dates.len(), true);
@@ -73,14 +83,17 @@ impl StrategyEngine {
 
         let mut started = false;
         for trade_date in dates {
-            let frames = load_frames(&run_config, trade_date, &future_meta)?;
+            corporate_actions.begin_session(&mut account, trade_date);
+            let frames = load_frames(&run_config, trade_date, &future_meta, &mut daily_cache)?;
             if frames.is_empty() {
+                corporate_actions.end_session(&account, trade_date);
+                eprintln!("[strategy warning] date={trade_date}: no market frames; skipping date");
                 progress.tick(format!("date={trade_date} frames=0 trades={}", trade_count));
                 continue;
             }
-            let mut daily_snapshot = None::<HoldingSnapshot>;
             let mut daily_side_counts = SideCounts::default();
-            for frame in frames {
+            let frame_count = frames.len();
+            for (frame_index, frame) in frames.into_iter().enumerate() {
                 let market = MarketSnapshot::new(frame.event.clone(), frame.bars);
                 let mut bar_fills = Vec::<FillEvent>::new();
                 if !started {
@@ -144,20 +157,23 @@ impl StrategyEngine {
                     StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
                 strategy.on_bar(&mut ctx, &market.event)?;
                 pending_orders.extend(ctx.take_orders());
-                let snapshot = holding_snapshot(&run_config, &account, &market, &bar_fills);
-                if run_config.bar_frequency == BarFrequency::Minute && !run_config.detail {
-                    daily_snapshot = Some(snapshot);
-                } else {
-                    holdings.push(snapshot);
+                let daily_only =
+                    run_config.bar_frequency == BarFrequency::Minute && !run_config.detail;
+                if !daily_only || frame_index + 1 == frame_count {
+                    // Daily mode never serializes the discarded intraday snapshots/trades.
+                    let mut snapshot = holding_snapshot(
+                        &run_config,
+                        &account,
+                        &market,
+                        if daily_only { &[] } else { &bar_fills },
+                    );
+                    if daily_only {
+                        daily_side_counts.apply_to_snapshot(&mut snapshot);
+                    }
+                    holdings.push(snapshot)?;
                 }
             }
-            if run_config.bar_frequency == BarFrequency::Minute && !run_config.detail {
-                if let Some(mut snapshot) = daily_snapshot {
-                    daily_side_counts.apply_to_snapshot(&mut snapshot);
-                    clear_trade_json(&mut snapshot);
-                    holdings.push(snapshot);
-                }
-            }
+            corporate_actions.end_session(&account, trade_date);
             progress.tick(format!("date={trade_date} trades={trade_count}"));
         }
         if started {
@@ -167,7 +183,7 @@ impl StrategyEngine {
             strategy.on_end(&mut ctx)?;
         }
         progress.finish();
-        let output = write_holdings(&run_config.output_dir(), &holdings)?;
+        let output = holdings.finish()?;
         Ok(StrategyRunReport {
             strategy_id: run_config.strategy_id,
             asset_class: run_config.asset_class.as_str().to_string(),
@@ -181,6 +197,7 @@ fn load_frames(
     config: &StrategyRunConfig,
     trade_date: i32,
     future_meta: &BTreeMap<String, FutureContractMeta>,
+    daily_cache: &mut FutureDailyCache,
 ) -> Result<Vec<MarketFrame>> {
     let dates = [trade_date];
     match (&config.asset_class, config.bar_frequency) {
@@ -191,7 +208,7 @@ fn load_frames(
             load_stock_minute_frames(&config.data_root, &dates)
         }
         (StrategyAssetClass::Future, BarFrequency::Daily) => {
-            load_future_daily_frames(&config.data_root, &dates, future_meta)
+            daily_cache.load(&config.data_root, &dates, future_meta)
         }
         (StrategyAssetClass::Future, BarFrequency::Minute) => load_future_minute_frames(
             &config.data_root,
@@ -289,20 +306,23 @@ fn holding_snapshot(
         margin_values.push(position.margin_value());
     }
 
+    let totals = account.summary();
     HoldingSnapshot {
         strategy_id: config.strategy_id.clone(),
         asset_class: config.asset_class.as_str().to_string(),
         trade_date: market.event.trade_date,
         trade_time: market.event.trade_time.clone(),
         cash: round2(account.cash()),
-        account_pnl: round2(account.account_pnl()),
+        dividend_receivable: round2(account.dividend_receivable()),
+        dividend_income_cum: round2(account.dividend_income()),
+        account_pnl: round2(totals.equity - account.initial_cash()),
         realized_pnl_cum: round2(account.realized_pnl_cum()),
         net_realized_pnl_cum: round2(account.net_realized_pnl_cum()),
-        unrealized_pnl: round2(account.total_unrealized_pnl()),
-        gross_market_value: round2(account.gross_market_value()),
-        net_market_value: round2(account.net_market_value()),
-        margin_required: round2(account.margin_required()),
-        available_margin: round2(account.available_margin()),
+        unrealized_pnl: round2(totals.unrealized_pnl),
+        gross_market_value: round2(totals.gross_market_value),
+        net_market_value: round2(totals.net_market_value),
+        margin_required: round2(totals.margin_required),
+        available_margin: round2(totals.equity - totals.margin_required),
         position_count: symbols.len() as i64,
         buy_count: side_counts.buy,
         sell_count: side_counts.sell,
@@ -394,22 +414,12 @@ impl SideCounts {
     }
 }
 
-fn clear_trade_json(snapshot: &mut HoldingSnapshot) {
-    snapshot.trade_symbols_json = "[]".to_string();
-    snapshot.trade_sides_json = "[]".to_string();
-    snapshot.trade_quantities_json = "[]".to_string();
-    snapshot.trade_signed_quantities_json = "[]".to_string();
-    snapshot.trade_prices_json = "[]".to_string();
-    snapshot.trade_realized_pnls_json = "[]".to_string();
-    snapshot.trade_net_pnls_json = "[]".to_string();
-}
-
 fn mark_account_positions(
     config: &StrategyRunConfig,
     account: &mut AccountState,
     market: &MarketSnapshot,
 ) {
-    for symbol in market.symbols() {
+    for (symbol, position) in account.positions_mut() {
         let Some(bar) = market.bar(symbol) else {
             continue;
         };
@@ -422,13 +432,10 @@ fn mark_account_positions(
         } else {
             config.future_margin_ratio(symbol)
         };
-        account.mark_price_with_spec(
-            symbol,
-            price,
-            bar.multiplier.max(1.0),
-            margin_ratio,
-            cash_settled,
-        );
+        position.last_price = Some(price);
+        position.multiplier = bar.multiplier.max(1.0);
+        position.margin_ratio = margin_ratio.max(0.0);
+        position.cash_settled = cash_settled;
     }
 }
 
@@ -552,3 +559,7 @@ fn trade_side_code(side: OrderSide) -> i64 {
         OrderSide::Cover => 2,
     }
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

@@ -1,19 +1,95 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::data::parquet_io::write_parquet;
+use crate::data::parquet_io::ParquetStreamWriter;
 use crate::data::{ColumnData, Table};
 use crate::error::Result;
 use crate::strategy::order::HoldingSnapshot;
 
-pub fn write_holdings(output_dir: &Path, rows: &[HoldingSnapshot]) -> Result<PathBuf> {
-    let path = output_dir.join("holdings.parquet");
-    let legacy = output_dir.join("trades.parquet");
-    if legacy.exists() {
-        std::fs::remove_file(legacy)?;
+/// Bound snapshot buffering by both row count and approximate string bytes.
+pub struct HoldingsWriter {
+    writer: ParquetStreamWriter,
+    rows: Vec<HoldingSnapshot>,
+    bytes: usize,
+    legacy: PathBuf,
+}
+
+impl HoldingsWriter {
+    pub fn new(output_dir: &Path) -> Result<Self> {
+        Ok(Self {
+            writer: ParquetStreamWriter::new(
+                &output_dir.join("holdings.parquet"),
+                &holdings_table(&[])?,
+            )?,
+            rows: Vec::new(),
+            bytes: 0,
+            legacy: output_dir.join("trades.parquet"),
+        })
     }
-    write_parquet(&path, &holdings_table(rows)?)?;
-    Ok(path)
+
+    pub fn push(&mut self, row: HoldingSnapshot) -> Result<()> {
+        self.bytes += snapshot_bytes(&row);
+        self.rows.push(row);
+        if self.rows.len() >= 256 || self.bytes >= 8 * 1024 * 1024 {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if !self.rows.is_empty() {
+            self.writer.write(&holdings_table(&self.rows)?)?;
+            self.rows.clear();
+            self.bytes = 0;
+        }
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<PathBuf> {
+        self.flush()?;
+        let path = self.writer.finish()?;
+        if self.legacy.exists() {
+            std::fs::remove_file(self.legacy)?;
+        }
+        Ok(path)
+    }
+}
+
+pub fn write_holdings(output_dir: &Path, rows: &[HoldingSnapshot]) -> Result<PathBuf> {
+    let mut writer = HoldingsWriter::new(output_dir)?;
+    for row in rows {
+        writer.push(row.clone())?;
+    }
+    writer.finish()
+}
+
+fn snapshot_bytes(row: &HoldingSnapshot) -> usize {
+    std::mem::size_of::<HoldingSnapshot>()
+        + [
+            &row.strategy_id,
+            &row.asset_class,
+            &row.trade_time,
+            &row.symbols_json,
+            &row.quantities_json,
+            &row.signed_quantities_json,
+            &row.directions_json,
+            &row.avg_costs_json,
+            &row.market_values_json,
+            &row.unrealized_pnls_json,
+            &row.multipliers_json,
+            &row.margin_ratios_json,
+            &row.margin_values_json,
+            &row.trade_symbols_json,
+            &row.trade_sides_json,
+            &row.trade_quantities_json,
+            &row.trade_signed_quantities_json,
+            &row.trade_prices_json,
+            &row.trade_realized_pnls_json,
+            &row.trade_net_pnls_json,
+        ]
+        .iter()
+        .map(|value| value.len())
+        .sum::<usize>()
 }
 
 fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
@@ -33,6 +109,14 @@ fn holdings_table(rows: &[HoldingSnapshot]) -> Result<Table> {
         (
             "trade_time".to_string(),
             utf8(rows.iter().map(|row| Some(row.trade_time.clone()))),
+        ),
+        (
+            "dividend_receivable".to_string(),
+            f64_col(rows.iter().map(|row| Some(row.dividend_receivable))),
+        ),
+        (
+            "dividend_income_cum".to_string(),
+            f64_col(rows.iter().map(|row| Some(row.dividend_income_cum))),
         ),
         (
             "cash".to_string(),

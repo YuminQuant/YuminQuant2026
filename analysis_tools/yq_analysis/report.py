@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_analysis.strategy import make_strategy_report
+
 import re
 import math
 import warnings

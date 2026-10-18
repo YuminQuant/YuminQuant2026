@@ -20,8 +20,8 @@ lot_size = 100
 model_root = "data/models"
 
 [strategy]
-signal_id = "mdl_000006"
+signal_id = "mdl_000009"
 signal_root = "data/models"
 rebalance_days = 5
 top_n = 20
-cash_buffer = 0.02
+cash_buffer = 0.0

@@ -4,9 +4,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
+use arrow_array::{BooleanArray, RecordBatch, StringArray};
 use arrow_schema::Schema;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{ArrowPredicateFn, ParquetRecordBatchReaderBuilder, RowFilter};
 use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -15,6 +15,25 @@ use crate::data::table::{ColumnData, Table};
 use crate::error::{err, Result};
 
 pub fn read_parquet(path: &Path, columns: Option<&[String]>) -> Result<Table> {
+    read_parquet_impl(path, columns, None)
+}
+
+/// Filter symbols before materializing the remaining projected columns into Table.
+pub(crate) fn read_parquet_symbols(
+    path: &Path,
+    columns: &[String],
+    predicate: impl Fn(&str) -> bool + Send + 'static,
+) -> Result<Table> {
+    read_parquet_impl(path, Some(columns), Some(Box::new(predicate)))
+}
+
+type SymbolPredicate = Box<dyn Fn(&str) -> bool + Send>;
+
+fn read_parquet_impl(
+    path: &Path,
+    columns: Option<&[String]>,
+    predicate: Option<SymbolPredicate>,
+) -> Result<Table> {
     let context = |error| {
         err(format!(
             "failed to read parquet {}: {error}",
@@ -69,10 +88,47 @@ pub fn read_parquet(path: &Path, columns: Option<&[String]>) -> Result<Table> {
         builder = builder.with_projection(mask);
     }
 
+    if let Some(predicate) = predicate {
+        let index = builder.schema().index_of("ts_code")?;
+        let projection = ProjectionMask::roots(builder.parquet_schema(), [index]);
+        let filter = ArrowPredicateFn::new(projection, move |batch: RecordBatch| {
+            let codes = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    arrow_schema::ArrowError::ComputeError("ts_code is not utf8".into())
+                })?;
+            Ok(BooleanArray::from(
+                codes
+                    .iter()
+                    .map(|code| code.map(&predicate).unwrap_or(false))
+                    .collect::<Vec<_>>(),
+            ))
+        });
+        builder = builder.with_row_filter(RowFilter::new(vec![Box::new(filter)]));
+    }
+    // Keep the schema even when a predicate selects no rows.
+    let empty_batch = RecordBatch::new_empty(
+        builder
+            .schema()
+            .clone()
+            .project(
+                &builder
+                    .schema()
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, field)| columns.map_or(true, |names| names.contains(field.name())))
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>(),
+            )?
+            .into(),
+    );
     let reader = builder
         .build()
         .map_err(|error| context(error.to_string()))?;
-    let mut table = Table::empty();
+    let mut table = table_from_record_batch(&empty_batch)?;
     for batch_result in reader {
         let batch = batch_result.map_err(|error| context(error.to_string()))?;
         let batch_table = table_from_record_batch(&batch)?;
@@ -158,6 +214,86 @@ pub fn write_parquet_with_compression(
             path.display()
         ))
     })
+}
+
+/// Incremental Parquet output. Only publish after the footer is complete and synced.
+pub(crate) struct ParquetStreamWriter {
+    path: std::path::PathBuf,
+    temp: std::path::PathBuf,
+    writer: Option<ArrowWriter<File>>,
+}
+
+impl ParquetStreamWriter {
+    pub(crate) fn new(path: &Path, empty: &Table) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let temp = path.with_extension(format!(
+            "{}.{}.{}.tmp",
+            std::process::id(),
+            nonce,
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let batch = table_record_batch(empty)?;
+        let file = File::create_new(&temp)?;
+        let mut out = Self {
+            path: path.to_path_buf(),
+            temp,
+            writer: None,
+        };
+        let props = WriterProperties::builder()
+            .set_compression(Compression::UNCOMPRESSED)
+            .build();
+        out.writer = Some(ArrowWriter::try_new(file, batch.schema(), Some(props))?);
+        Ok(out)
+    }
+
+    pub(crate) fn write(&mut self, table: &Table) -> Result<()> {
+        let batch = table_record_batch(table)?;
+        let writer = self.writer.as_mut().expect("writer already finished");
+        writer.write(&batch)?;
+        // Do not let ArrowWriter retain row groups across our bounded batches.
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> Result<std::path::PathBuf> {
+        self.writer
+            .take()
+            .expect("writer already finished")
+            .close()?;
+        File::options().write(true).open(&self.temp)?.sync_all()?;
+        std::fs::rename(&self.temp, &self.path)?;
+        Ok(self.path.clone())
+    }
+}
+
+impl Drop for ParquetStreamWriter {
+    fn drop(&mut self) {
+        drop(self.writer.take());
+        let _ = std::fs::remove_file(&self.temp);
+    }
+}
+
+fn table_record_batch(table: &Table) -> Result<RecordBatch> {
+    let names = ordered_column_names(table);
+    let schema = Arc::new(Schema::new(
+        names
+            .iter()
+            .map(|name| table.columns[name].field(name))
+            .collect::<Vec<_>>(),
+    ));
+    Ok(RecordBatch::try_new(
+        schema,
+        names
+            .iter()
+            .map(|name| table.columns[name].to_arrow())
+            .collect(),
+    )?)
 }
 
 fn ordered_column_names(table: &Table) -> Vec<String> {

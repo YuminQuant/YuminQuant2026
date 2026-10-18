@@ -51,7 +51,9 @@ impl Strategy for Strategy001 {
 
     fn on_start(&mut self, ctx: &mut StrategyContext) -> Result<()> {
         if self.exclude_top_n >= self.top_n {
-            return Err(crate::error::err("exclude_top_n must be smaller than top_n"));
+            return Err(crate::error::err(
+                "exclude_top_n must be smaller than top_n",
+            ));
         }
         self.calendar = Some(TradingCalendar::load(&ctx.config().data_root, "SSE")?);
         Ok(())
@@ -121,7 +123,10 @@ fn opening_allocation(
     let mut cash = ctx.account().cash();
     let mut retained = BTreeMap::new();
     for (symbol, position) in ctx.account().positions() {
-        let sellable = ctx.market().bar(symbol).is_some_and(|b| !config.respect_price_limits || !b.is_limit_down);
+        let sellable = ctx
+            .market()
+            .bar(symbol)
+            .is_some_and(|b| !config.respect_price_limits || !b.is_limit_down);
         let quantity = if sellable {
             ctx.account().sellable_quantity(symbol)
         } else {
@@ -160,7 +165,9 @@ fn opening_allocation(
             let bar = ctx.market().bar(symbol)?;
             let price = ctx.market().open_price(symbol)?;
             // A failed liquidation remains the old batch; do not add another batch to it.
-            let budget = if (config.respect_price_limits && bar.is_limit_up) || retained.get(symbol).copied().unwrap_or(0.0) > 1e-9 {
+            let budget = if (config.respect_price_limits && bar.is_limit_up)
+                || retained.get(symbol).copied().unwrap_or(0.0) > 1e-9
+            {
                 0.0
             } else {
                 target_value

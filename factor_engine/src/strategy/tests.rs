@@ -604,3 +604,63 @@ fn stock_missing_signal_does_not_prevent_mature_batch_exit() {
         Some(0)
     );
 }
+
+#[test]
+fn stock_rank_exclusion_removes_head_and_reweights_remaining_names() {
+    let (fixture, request) = stock_open_fixture(false);
+    let path = fixture.0.join("strategy.toml");
+    let cfg = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("top_n = 1", "top_n = 2\nexclude_top_n = 1");
+    std::fs::write(&path, cfg).unwrap();
+    let report = fixture.engine().run(&request).unwrap();
+    let output = read_parquet(&report.output_files[0], None).unwrap();
+    assert_eq!(
+        output.required_utf8("symbols_json").unwrap()[0].as_deref(),
+        Some("[\"B.SZ\"]")
+    );
+    assert_eq!(
+        output.required_utf8("quantities_json").unwrap()[0].as_deref(),
+        Some("[4900]")
+    );
+    assert_eq!(
+        output.required_utf8("symbols_json").unwrap()[5].as_deref(),
+        Some("[\"A.SZ\"]")
+    );
+}
+
+#[test]
+fn stock_no_limits_experiment_executes_limit_up_buys_and_limit_down_sells() {
+    let (fixture, request) = stock_open_fixture(true);
+    let path = fixture.0.join("strategy.toml");
+    let cfg = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("[execution]", "[execution]\nrespect_price_limits = false");
+    std::fs::write(&path, cfg).unwrap();
+    let filter = fixture
+        .0
+        .join("chn_stock_data/daily/trade_filter/2020/20200102.parquet");
+    let mut table = read_parquet(&filter, None).unwrap();
+    table.columns.insert(
+        "is_limit_up".into(),
+        ColumnData::Bool(vec![Some(true), Some(false)]),
+    );
+    write_parquet(&filter, &table).unwrap();
+    let report = fixture.engine().run(&request).unwrap();
+    let output = read_parquet(&report.output_files[0], None).unwrap();
+    assert_eq!(output.required_i64_cast("buy_count").unwrap()[0], Some(1));
+    assert_eq!(output.required_i64_cast("sell_count").unwrap()[5], Some(1));
+    assert_eq!(output.required_i64_cast("buy_count").unwrap()[5], Some(1));
+}
+
+#[test]
+fn stock_excluding_entire_universe_is_rejected() {
+    let (fixture, request) = stock_open_fixture(false);
+    let path = fixture.0.join("strategy.toml");
+    let cfg = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("top_n = 1", "top_n = 1\nexclude_top_n = 1");
+    std::fs::write(&path, cfg).unwrap();
+    let error = fixture.engine().run(&request).unwrap_err();
+    assert!(error.to_string().contains("exclude_top_n must be smaller"));
+}

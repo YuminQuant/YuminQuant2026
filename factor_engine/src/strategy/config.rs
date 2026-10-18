@@ -254,7 +254,10 @@ impl StrategyRunConfig {
             initial_cash,
             bar_frequency,
             fill_price,
-            respect_price_limits: parse_bool(doc.string("execution", "respect_price_limits").as_deref()).unwrap_or(true),
+            respect_price_limits: parse_bool(
+                doc.string("execution", "respect_price_limits").as_deref(),
+            )
+            .unwrap_or(true),
             commission_bps,
             buy_commission_bps,
             sell_commission_bps,

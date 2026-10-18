@@ -201,7 +201,7 @@ def _load_bundle(
 
 def _fit_model(model: AlphaModel, train_bundle, valid_bundle, context: ModelContext) -> None:
     fit_bundle = getattr(model, "fit_bundle", None)
-    if callable(fit_bundle) and train_bundle.tensors is not None:
+    if callable(fit_bundle) and (train_bundle.tensors is not None or getattr(train_bundle, "tensor_source", None) is not None):
         fit_bundle(train_bundle, valid_bundle, context)
         return
     model.fit(train_bundle.frame, valid_bundle.frame, context)
@@ -215,7 +215,7 @@ def _load_train_valid(config, dataset, calendar, window, progress):
         progress.step("load_valid")
         valid = _load_bundle(config, dataset, calendar, window.valid_dates, True, split_name="valid")
         return train, valid
-    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel"}:
+    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel", "derived_chip_age"}:
         raise ValueError("validation_unit=rows supports tabular datasets only")
     progress.step("load_train_valid_pool")
     pool = _load_bundle(config, dataset, calendar, window.train_dates, True, split_name="train_valid_pool")
@@ -242,7 +242,7 @@ def _load_train_valid(config, dataset, calendar, window, progress):
 
 def _predict_model(model: AlphaModel, bundle, context: ModelContext):
     predict_bundle = getattr(model, "predict_bundle", None)
-    if callable(predict_bundle) and bundle.tensors is not None:
+    if callable(predict_bundle) and (bundle.tensors is not None or getattr(bundle, "tensor_source", None) is not None):
         return predict_bundle(bundle, context)
     return model.predict(bundle.frame, context)
 

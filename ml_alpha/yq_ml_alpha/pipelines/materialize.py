@@ -16,6 +16,8 @@ def run(config_path: str | Path) -> list[Path]:
 
 
 def run_config(config: MlAlphaConfig) -> list[Path]:
+    if config.features.type == "derived_chip_age":
+        raise ValueError("Chip-age tensors are derived data; use derive-chip-age before factor-run")
     if config.features.type == "derived_logsig":
         raise ValueError("Logsignature is derived data; use Rust derive-logsig before factor-run")
     if config.features.type == "logsig_signature":

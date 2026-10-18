@@ -20,6 +20,7 @@ from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
+from yq_ml_alpha.features.derived_chip_age import DerivedChipAgeProvider
 from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.data.tensor_storage import TensorSpool
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
@@ -33,6 +34,7 @@ class DatasetBundle:
     tensors: dict[str, np.ndarray] | None = None
     tensor_columns: dict[str, list[str]] | None = None
     storage: TensorSpool | None = None
+    tensor_source: object | None = None
 
     def close(self) -> None:
         if self.storage is not None:
@@ -52,6 +54,9 @@ class DatasetBuilder:
         self._source_st_symbol_cache: dict[int, set[str]] = {}
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
+        lazy_tensor = isinstance(self.feature_provider, DerivedChipAgeProvider)
+        if lazy_tensor and (self.config.preprocess.cross_section_transform != "none" or self.config.materialize.cache_samples):
+            raise ValueError("derived chip tensors require transform=none and cache_samples=false")
         frames = []
         total_dates = len(dates)
         split_name = split_name or ("labeled" if include_label else "predict")
@@ -86,9 +91,11 @@ class DatasetBuilder:
             if include_label:
                 labels = read_daily(self.config.label.root, trade_date, [self.config.label.id])
                 frame = frame.merge(labels[["trade_date", "ts_code", self.config.label.id]], on=["trade_date", "ts_code"], how="left")
-            frame = self._preprocess(frame, include_label)
+            if not lazy_tensor:
+                frame = self._preprocess(frame, include_label)
             if include_label:
-                frame = frame.loc[frame[self.config.label.id].notna()]
+                keep = np.isfinite(frame[self.config.label.id]) if lazy_tensor else frame[self.config.label.id].notna()
+                frame = frame.loc[keep]
             frames.append(frame)
             total_rows += len(frame)
             log_date("done", date_idx, trade_date, len(frame), date_started)
@@ -106,7 +113,8 @@ class DatasetBuilder:
                 f"total_rows={len(output)} elapsed_s={perf_counter() - started:.2f}",
                 flush=True,
             )
-        return DatasetBundle(output, self.feature_provider.feature_columns, self.config.label.id)
+        return DatasetBundle(output, self.feature_provider.feature_columns, self.config.label.id,
+                             tensor_source=self.feature_provider.sequence if lazy_tensor else None)
 
     def load_sequence(
         self,
@@ -406,6 +414,8 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    if config.features.type == "derived_chip_age":
+        return DerivedChipAgeProvider(config.features.root, config.features.params)
     if config.features.type == "derived_logsig":
         return DerivedLogsigProvider(config.features.root)
     if config.features.type == "factor_frame":

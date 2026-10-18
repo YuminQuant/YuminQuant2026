@@ -93,6 +93,7 @@ manifests must be retrained after this policy change.
 Generate the 10-day adjusted VWAP label from the repository root:
 
 ```powershell
+cargo run --release --manifest-path factor_engine\Cargo.toml -- label-metadata
 cargo run --release --manifest-path factor_engine\Cargo.toml -- label-run `
   --asset stock --frequency daily --start-date 20160101 --end-date 20260424 `
   --labels future_vwap_return_10d
@@ -430,3 +431,9 @@ Labeled bar-sequence bundles default to `[materialize].tensor_storage = "mmap"`.
 Logsig supports `features.params.feature_cache_dir` (enabled in its config). Deterministic per-date features are reused only when settings and source file sizes/mtime match. This disk cache persists across runs; remove its directory when no longer needed. It stores features, not fitted normalization or model weights. Daily output schema discovery is memoized per writer instead of rescanning all dates for every prediction chunk.
 
 Logsig 配置已启用确定性特征磁盘缓存：参数和源文件大小/修改时间一致才复用，不缓存训练标准化参数或模型权重。该缓存跨命令保留，可按需清理目录。写出 schema 每个 writer 按日期记忆，避免每个预测块重扫全区间。以上不代表已完成实际全量性能基准；训练规模和可用磁盘仍需按本机资源设置。
+# Chip-age fixed-training factor
+
+`chip_age_alpha` uses precomputed daily chip-age tensors and a CNN/GRU with
+date-wise IC loss. It follows logsig_alpha_v's fixed split and stock universe.
+See [implementation and commands](docs/CHIP_AGE_ALPHA.md) for confirmed source
+assumptions, resource controls and the required historical label restoration.

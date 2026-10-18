@@ -43,6 +43,9 @@ def artifact_identity(config, window, dataset) -> dict:
             "boundary": "floor(total_rows * (1 - ratio))",
             "after": "filters_and_missing_label_removal",
         }
+    dataset_identity = getattr(dataset.feature_provider, "dataset_identity", None)
+    if callable(dataset_identity):
+        identity["derived_dataset"] = dataset_identity()
     return identity
 
 

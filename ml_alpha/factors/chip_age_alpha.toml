@@ -1,0 +1,84 @@
+factor_id = "chip_age_alpha"
+data_root = "data"
+data_version = "chip_age_rolling250_v2"
+tags = ["e2e", "chip_age", "cnn_gru", "ic_loss"]
+
+[output]
+kind = "factor"
+id = "chip_age_alpha"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20110101, 20150930]
+valid = [20151001, 20151231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "static"
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "derived_chip_age"
+root = "data/derived/stock/chip_age_rolling250_v2"
+columns = "__all__"
+
+[features.params]
+dataset_version = "chip_age_rolling250_v2"
+sequence_length = 30
+memory_budget_mb = 128
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/chip_age_alpha/cache"
+tensor_storage = "memory"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "chip_age_cnn_gru"
+class = "yq_ml_alpha.models.chip_age_cnn_gru_model.ChipAgeCNNGRUAlphaModel"
+artifact_dir = "data/model_workspace/chip_age_alpha/artifacts"
+
+[model.params]
+seeds = [42]
+epochs = 100
+patience = 10
+lr = 0.001
+weight_decay = 0.0001
+dropout = 0.1
+device = "cuda"
+# Encoder chunks only; BatchNorm and IC still use the entire date.
+micro_batch_size = 256
+min_stocks = 20
+ic_eps = 1e-8
+gradient_clip = 1.0
+min_improvement = 0.00001

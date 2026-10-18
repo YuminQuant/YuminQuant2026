@@ -1,5 +1,6 @@
 pub mod analyst;
 pub mod bar;
+pub mod chip_age;
 pub mod engine;
 pub mod logsig;
 pub mod request;

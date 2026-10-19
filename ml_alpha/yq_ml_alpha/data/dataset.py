@@ -19,6 +19,7 @@ from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvid
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.rawbar import RawBarProvider
+from yq_ml_alpha.features.resnet_panel import ResNetPanelProvider
 from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
 from yq_ml_alpha.features.derived_chip_age import DerivedChipAgeProvider
@@ -210,8 +211,8 @@ class DatasetBuilder:
         include_label: bool,
         calendar: TradingCalendar,
     ) -> DatasetBundle:
-        if not isinstance(self.feature_provider, (BarPanelProvider, MultiBarPanelProvider)):
-            raise TypeError("load_bar_panel requires BarPanelProvider or MultiBarPanelProvider")
+        if not isinstance(self.feature_provider, (BarPanelProvider, MultiBarPanelProvider, ResNetPanelProvider)):
+            raise TypeError("load_bar_panel requires a bar tensor feature provider")
         frames = []
         tensor_chunks: list[dict[str, np.ndarray]] = []
         storage_mode = self.config.materialize.tensor_storage
@@ -415,6 +416,8 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    if config.features.type == "resnet_panel":
+        return ResNetPanelProvider(config.features.root, config.features.columns, config.features.params)
     if config.features.type == "rawbar":
         return RawBarProvider(config.features.root, config.features.columns, config.features.params)
     if config.features.type == "derived_chip_age":

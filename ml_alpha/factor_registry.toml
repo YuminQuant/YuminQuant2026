@@ -1,4 +1,24 @@
 [[factors]]
+factor_id = "resnet_gru_week"
+config = "factors/resnet_gru_week.toml"
+status = "active"
+display_name = "ResNet-GRU 150-day weekly-image alpha"
+model_class = "yq_ml_alpha.models.resnet_gru_model.ResNetGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "resnet_gru", "week", "orthogonal", "mse_loss", "DFZQ"]
+
+[[factors]]
+factor_id = "resnet_gru_msnew"
+config = "factors/resnet_gru_msnew.toml"
+status = "active"
+display_name = "ResNet-GRU half-hour-image alpha"
+model_class = "yq_ml_alpha.models.resnet_gru_model.ResNetGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "resnet_gru", "msnew", "orthogonal", "mse_loss", "DFZQ"]
+
+[[factors]]
 factor_id = "rawbar_multi_gru"
 config = "factors/rawbar_multi_gru.toml"
 status = "active"

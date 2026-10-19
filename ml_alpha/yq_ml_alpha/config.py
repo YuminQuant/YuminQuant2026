@@ -411,6 +411,8 @@ def _normalize_feature_params(params: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(params)
     if "feature_cache_dir" in normalized:
         normalized["feature_cache_dir"] = _project_path(normalized["feature_cache_dir"])
+    if "daily_root" in normalized:
+        normalized["daily_root"] = _project_path(normalized["daily_root"])
     panels = normalized.get("panels")
     if isinstance(panels, dict):
         normalized_panels: dict[str, dict[str, Any]] = {}

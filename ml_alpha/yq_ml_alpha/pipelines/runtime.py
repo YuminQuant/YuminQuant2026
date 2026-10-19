@@ -222,7 +222,7 @@ def _load_bundle(
     include_label: bool,
     split_name: str | None = None,
 ):
-    if config.features.type in {"bar_panel", "multi_bar_panel", "rawbar"}:
+    if config.features.type in {"bar_panel", "multi_bar_panel", "rawbar", "resnet_panel"}:
         return dataset.load_bar_panel(dates, include_label, calendar)
     if _uses_sequence_dataset(config):
         sequence_length = int(config.model.params.get("sequence_length", 6))
@@ -249,7 +249,7 @@ def _load_train_valid(config, dataset, calendar, window, progress):
         progress.step("load_valid")
         valid = _load_bundle(config, dataset, calendar, window.valid_dates, True, split_name="valid")
         return train, valid
-    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel", "rawbar", "derived_chip_age"}:
+    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel", "rawbar", "resnet_panel", "derived_chip_age"}:
         raise ValueError("validation_unit=rows supports tabular datasets only")
     progress.step("load_train_valid_pool")
     pool = _load_bundle(config, dataset, calendar, window.train_dates, True, split_name="train_valid_pool")

@@ -1,0 +1,89 @@
+factor_id = "resnet_gru_msnew"
+tags = ["DFZQ", "resnet_gru", "msnew", "orthogonal", "mse_loss"]
+data_root = "data"
+
+[output]
+kind = "factor"
+id = "resnet_gru_msnew"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20130101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "resnet_panel"
+root = "data/derived/stock/bar/30m"
+columns = ["open", "high", "low", "close", "amount"]
+
+[features.params]
+dataset = "msnew"
+daily_root = "data/chn_stock_data/daily"
+max_cache_sessions = 30
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/resnet_gru_msnew/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "resnet_gru_msnew"
+class = "yq_ml_alpha.models.resnet_gru_model.ResNetGRUAlphaModel"
+artifact_dir = "data/model_workspace/resnet_gru_msnew/artifacts"
+
+[model.params]
+sequence_length = 240
+input_size = 5
+hidden_size = 64
+num_layers = 2
+dropout = 0.1
+epochs = 100
+batch_size = 3000
+lr = 0.001
+weight_decay = 0.0
+seed = 42
+device = "auto"
+patience = 10
+base_factors = 64
+orthogonal_lambda = 1.0
+dataset = "msnew"
+conv_channels = 32
+kernel_size = 3

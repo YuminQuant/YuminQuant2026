@@ -19,6 +19,8 @@ interfaces, performance conventions, leakage controls, and the handoff checklist
 
 Current formal factor configs:
 
+- `factors/resnet_gru_week.toml` / `factors/resnet_gru_msnew.toml`（见 [ResNet-GRU 数据与命令](docs/RESNET_GRU.md)）
+
 - `factors/bar_gru_15m.toml`
 - `factors/multi_bar_gru_daily_15m.toml`
 - `factors/residual_multi_bar_gru.toml`

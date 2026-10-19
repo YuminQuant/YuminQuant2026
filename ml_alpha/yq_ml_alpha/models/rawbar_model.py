@@ -83,7 +83,7 @@ class _RawBarRegressor:
                 for name, values in zip(("panel_lower", "panel_upper", "panel_mean", "panel_std"),
                                         defaults if stats is None else stats):
                     self.register_buffer(name, torch.tensor(values, dtype=torch.float32))
-                recurrent = nn.GRU if params["architecture"] == "agru" else nn.LSTM
+                recurrent = nn.GRU if params["architecture"] in ("agru", "gru") else nn.LSTM
                 self.recurrent = recurrent(input_size=6, hidden_size=params["hidden_size"],
                                            num_layers=params["num_layers"], batch_first=True,
                                            dropout=params["dropout"] if params["num_layers"] > 1 else 0.0)
@@ -92,15 +92,21 @@ class _RawBarRegressor:
                                                    nn.Tanh(), nn.Linear(params["hidden_size"], 1, bias=False))
                 self.head = nn.Linear(params["hidden_size"], 1)
 
-            def forward(self, x):
+            def encode(self, x):
                 x = torch.minimum(torch.maximum(x, self.panel_lower), self.panel_upper)
                 x = (x - self.panel_mean) / self.panel_std
                 output, state = self.recurrent(x)
                 if params["architecture"] == "agru":
                     weights = torch.softmax(self.attention(output), dim=1)
                     summary = torch.sum(weights * output, dim=1)
-                else:
+                elif params["architecture"] == "lstm":
                     summary = state[0][-1]
+                else:
+                    summary = state[-1]
+                return summary
+
+            def forward(self, x):
+                summary = self.encode(x)
                 return self.head(summary).reshape(-1)
 
         return Model()

@@ -26,6 +26,7 @@ Current formal factor configs:
 - `factors/gru_patch2.toml`
 - `factors/rawbar_agru.toml`
 - `factors/rawbar_lstm.toml`
+- `factors/rawbar_multi_gru.toml`（64 个内部因子等权输出，见 [说明](docs/MULTIVARIATE_GRU.md)）
 - `factors/logsig_alpha_v.toml`
 
 `mdl_*` is reserved for model-layer configs. `e2e_fct_*` is no longer a valid formal factor identifier.

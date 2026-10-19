@@ -27,6 +27,9 @@ class BarGRUAlphaModel(AlphaModel):
     def _build_regressor(self, nn):
         return _BarGRURegressor(nn, self.params)
 
+    def _training_loss(self, torch, inputs, target):
+        return _negative_ic_loss(torch, self.model(inputs), target)
+
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
         self._fit(train_data, valid_data, context, train_tensor=None, valid_tensor=None)
 
@@ -98,8 +101,7 @@ class BarGRUAlphaModel(AlphaModel):
                         x_tensor = torch.from_numpy(x_np).to(device)
                         y_tensor = torch.from_numpy(y_np).to(device)
                         optimizer.zero_grad()
-                        pred = self.model(x_tensor)
-                        loss = _negative_ic_loss(torch, pred, y_tensor)
+                        loss = self._training_loss(torch, x_tensor, y_tensor)
                         if loss is None:
                             continue
                         loss.backward()

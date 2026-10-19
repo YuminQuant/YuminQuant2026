@@ -1,4 +1,14 @@
 [[factors]]
+factor_id = "rawbar_multi_gru"
+config = "factors/rawbar_multi_gru.toml"
+status = "active"
+display_name = "Daily multivariate GRU with 64 equal-weight base factors"
+model_class = "yq_ml_alpha.models.multivariate_gru_model.MultivariateGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "rawbar", "multivariate_gru", "orthogonal", "ic_loss", "DFZQ"]
+
+[[factors]]
 factor_id = "rawbar_agru"
 config = "factors/rawbar_agru.toml"
 status = "active"

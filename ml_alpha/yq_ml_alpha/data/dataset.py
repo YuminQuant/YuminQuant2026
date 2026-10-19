@@ -18,6 +18,7 @@ from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
+from yq_ml_alpha.features.rawbar import RawBarProvider
 from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
 from yq_ml_alpha.features.derived_chip_age import DerivedChipAgeProvider
@@ -414,6 +415,8 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    if config.features.type == "rawbar":
+        return RawBarProvider(config.features.root, config.features.columns, config.features.params)
     if config.features.type == "derived_chip_age":
         return DerivedChipAgeProvider(config.features.root, config.features.params)
     if config.features.type == "derived_logsig":

@@ -1,4 +1,24 @@
 [[factors]]
+factor_id = "rawbar_agru"
+config = "factors/rawbar_agru.toml"
+status = "active"
+display_name = "Rawbar attention GRU single-output alpha"
+model_class = "yq_ml_alpha.models.rawbar_model.RawBarAGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "rawbar", "agru", "ic_loss"]
+
+[[factors]]
+factor_id = "rawbar_lstm"
+config = "factors/rawbar_lstm.toml"
+status = "active"
+display_name = "Rawbar LSTM single-output alpha"
+model_class = "yq_ml_alpha.models.rawbar_model.RawBarLSTMAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "rawbar", "lstm", "ic_loss"]
+
+[[factors]]
 factor_id = "gru_patch1"
 config = "factors/gru_patch1.toml"
 status = "active"

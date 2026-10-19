@@ -80,6 +80,12 @@ OpenMP conflicts through environment consistency, not the unsafe duplicate-runti
 
 ## 3. Files To Add Or Change / 需要编写哪些配置
 
+端到端因子统一训练约定：每年重训，回看过去 36 个自然月，前 33 个月训练、
+后 3 个月验证，按交易日每 5 日采样。新增端到端配置沿用
+`rolling / yearly_end / train_lookback="36m" / validation_lookback="3m"`，
+通过公共 `build_windows` 处理标签到期与训练/验证隔离；不要在模型内部另写日期切分。
+此约定不改变 `models/` 中独立实验配置的窗口。
+
 | Task / 任务 | Files / 文件 |
 | --- | --- |
 | Experiment / 模型实验 | `models/<model_id>.toml`, catalog entry in `model_registry.toml` |

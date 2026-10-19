@@ -13,6 +13,7 @@ from yq_ml_alpha.models.bar_gru_model import (
     _date_batches,
     _date_groups,
     _device,
+    _eval_batched_date_loss,
     _negative_ic_loss,
     _release_torch_memory,
     _set_seed,
@@ -263,6 +264,7 @@ class _ResidualMultiBarGRURegressor:
         class Model(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
+                self.daily_frozen = False
                 self.daily_gru = nn.GRU(
                     input_size=int(params["input_size"]),
                     hidden_size=int(params["daily_hidden_size"]),
@@ -294,11 +296,20 @@ class _ResidualMultiBarGRURegressor:
                 yield from self.minute_head.parameters()
 
             def freeze_daily_branch(self) -> None:
+                self.daily_frozen = True
                 for parameter in self.daily_parameters():
                     parameter.requires_grad = False
                 self.daily_gru.eval()
                 self.daily_batch_norm.eval()
                 self.daily_head.eval()
+
+            def train(self, mode: bool = True):
+                super().train(mode)
+                if self.daily_frozen:
+                    self.daily_gru.eval()
+                    self.daily_batch_norm.eval()
+                    self.daily_head.eval()
+                return self
 
             def train_minute_only(self) -> None:
                 self.train()
@@ -517,27 +528,12 @@ def _eval_stage_loss(
     forward_name: str,
     tensors: dict[str, np.ndarray] | None = None,
 ) -> float | None:
-    if frame.empty or not groups:
-        return None
-    model.eval()
-    losses = []
-    with torch.no_grad():
-        for rows in groups.values():
-            if len(rows) < 2:
-                continue
-            daily_np, minute_np = _multi_bar_batch(frame, context.feature_columns, rows, params, tensors)
-            y_np = frame.loc[rows, context.label_column].astype("float32").to_numpy()
-            pred = _forward(
-                model,
-                forward_name,
-                torch.from_numpy(daily_np).to(device),
-                torch.from_numpy(minute_np).to(device),
-            )
-            target = torch.from_numpy(y_np).to(device)
-            loss = _negative_ic_loss(torch, pred, target)
-            if loss is not None:
-                losses.append(float(loss.detach().cpu().item()))
-    model.train()
-    if not losses:
-        return None
-    return float(np.mean(losses))
+    def predict_rows(rows):
+        daily_np, minute_np = _multi_bar_batch(frame, context.feature_columns, rows, params, tensors)
+        return _forward(
+            model, forward_name,
+            torch.from_numpy(daily_np).to(device),
+            torch.from_numpy(minute_np).to(device),
+        )
+
+    return _eval_batched_date_loss(torch, model, frame, groups, context, params, predict_rows)

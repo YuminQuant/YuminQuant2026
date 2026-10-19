@@ -13,6 +13,7 @@ from yq_ml_alpha.models.bar_gru_model import (
     _date_batches,
     _date_groups,
     _device,
+    _eval_batched_date_loss,
     _negative_ic_loss,
     _release_torch_memory,
     _set_seed,
@@ -476,22 +477,8 @@ def _eval_multi_date_loss(
     device,
     tensors: dict[str, np.ndarray] | None = None,
 ) -> float | None:
-    if frame.empty or not groups:
-        return None
-    model.eval()
-    losses = []
-    with torch.no_grad():
-        for rows in groups.values():
-            if len(rows) < 2:
-                continue
-            daily_np, minute_np = _multi_bar_batch(frame, context.feature_columns, rows, params, tensors)
-            y_np = frame.loc[rows, context.label_column].astype("float32").to_numpy()
-            pred = model(torch.from_numpy(daily_np).to(device), torch.from_numpy(minute_np).to(device))
-            target = torch.from_numpy(y_np).to(device)
-            loss = _negative_ic_loss(torch, pred, target)
-            if loss is not None:
-                losses.append(float(loss.detach().cpu().item()))
-    model.train()
-    if not losses:
-        return None
-    return float(np.mean(losses))
+    def predict_rows(rows):
+        daily_np, minute_np = _multi_bar_batch(frame, context.feature_columns, rows, params, tensors)
+        return model(torch.from_numpy(daily_np).to(device), torch.from_numpy(minute_np).to(device))
+
+    return _eval_batched_date_loss(torch, model, frame, groups, context, params, predict_rows)

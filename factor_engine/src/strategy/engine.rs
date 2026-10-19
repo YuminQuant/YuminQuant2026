@@ -20,6 +20,7 @@ use crate::strategy::storage::HoldingsWriter;
 use crate::strategy::strategies::future::cta_001::Cta001;
 use crate::strategy::strategies::future::sma::SmaStrategy;
 use crate::strategy::strategies::stock::strategy_001::Strategy001;
+use crate::strategy::strategies::stock::strategy_002::Strategy002;
 use crate::strategy::strategy::Strategy;
 
 #[derive(Debug)]
@@ -84,7 +85,19 @@ impl StrategyEngine {
         let mut started = false;
         for trade_date in dates {
             corporate_actions.begin_session(&mut account, trade_date);
-            let frames = load_frames(&run_config, trade_date, &future_meta, &mut daily_cache)?;
+            let universe = strategy.prepare_session(&run_config, &account, trade_date)?;
+            let frames = if run_config.asset_class == StrategyAssetClass::Stock
+                && run_config.bar_frequency == BarFrequency::Minute
+            {
+                super::market::load_stock_minute_frames_for_run(
+                    &run_config.data_root,
+                    &[trade_date],
+                    universe.as_ref(),
+                    run_config.minute_open_limits,
+                )?
+            } else {
+                load_frames(&run_config, trade_date, &future_meta, &mut daily_cache)?
+            };
             if frames.is_empty() {
                 corporate_actions.end_session(&account, trade_date);
                 eprintln!("[strategy warning] date={trade_date}: no market frames; skipping date");
@@ -152,6 +165,24 @@ impl StrategyEngine {
                     }
                 }
 
+                let mut ctx =
+                    StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
+                strategy.on_bar_open(&mut ctx, &market.event)?;
+                let orders = ctx.take_orders();
+                if !orders.is_empty() {
+                    let fills = execution.fill_orders(&run_config, &mut account, &market, orders);
+                    call_fills(
+                        &mut *strategy,
+                        &run_config,
+                        &account,
+                        &market,
+                        &mut next_order_id,
+                        &fills,
+                    )?;
+                    trade_count += fills.len();
+                    daily_side_counts.add_fills(&fills);
+                    bar_fills.extend(fills);
+                }
                 mark_account_positions(&run_config, &mut account, &market);
                 let mut ctx =
                     StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
@@ -228,6 +259,7 @@ fn create_strategy(config: &StrategyRunConfig) -> Result<Box<dyn Strategy>> {
         "stock::strategy_001" | "stock::top_signal_equal_weight" => {
             Ok(Box::new(Strategy001::from_context_config(config)))
         }
+        "stock::strategy_002" => Ok(Box::new(Strategy002::from_config(config)?)),
         "future::cta_001" => Ok(Box::new(Cta001::from_context_config(config))),
         "future::sma" => Ok(Box::new(SmaStrategy::from_context_config(config))),
         other => Err(err(format!("unknown strategy_class: {other}"))),

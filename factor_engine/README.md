@@ -498,3 +498,35 @@ cargo check --manifest-path factor_engine\Cargo.toml
 cargo test --manifest-path factor_engine\Cargo.toml
 cargo run --release --manifest-path factor_engine\Cargo.toml -- metadata
 ```
+
+
+### strategy002：Top50 开盘 30 分钟 TWAP
+
+配置：`strategy_config/stock/strategy_002.toml`。默认沿用 2020-01-01 至
+2026-04-24、初始资金 100000 元、mdl_000009、Top50、5 个交易日换仓。
+T 日收盘信号在 T+1 入场，下一批换仓日 T+6 出场；重复入选也卖出旧批次并买入新批次。
+
+```powershell
+cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --config strategy_config/stock/strategy_002.toml
+python analysis_tools/scripts/run_strategy002_research.py
+```
+
+第二条命令使用已编译的 release 程序重新回测，保存配置、日志、绩效和校验信息，
+并在不被 Git 跟踪的 `strategy.ipynb` 中更新 strategy002 结果区。只刷新结果可加
+`--report-only`。原有 strategy001 及其结果不受影响。
+
+- `[execution].price_limit_mode = "daily_close"` 为兼容默认值，保留日线收盘涨跌停的悲观限制。
+  `"minute_open"` 使用当天价格上下限与当前分钟 open 比较，买入触及涨停价、卖出触及跌停价时不成交。
+  strategy002 强制使用 minute_open 和 respect_price_limits=true。零成交量分钟不成交；缺失价格上下限记录的股票禁止交易。
+  价格上下限记录存在但边界为空/非正时，按该方向无价格限制处理。
+- 9:30–9:59 共 30 个分钟时点，同一分钟先执行卖单，再执行买单，假设卖款可立即用于买入。
+  使用分钟 open 成交，按原规则另计佣金、印花税与滑点费用。未使用当分钟 high/low/close 来决定开盘交易；
+  分钟成交量只排除无交易的空 bar，不模拟盘口队列或成交量参与上限。
+- 开盘按 98% 权益等权确定目标股数，预留 2% 开盘权益作为现金底线，交易费用计入买入预算。
+  总目标按累计时间进度拆单；100 股整数手无法均分时，以固定排名相位错开执行时间。
+  未成交部分在窗口内追赶累计进度；不补选，不把受阻股票预算分给其他股票。
+  开盘缺报价的选股份额留现金。窗口后不再交易；未卖出的旧仓保留到下一次换仓窗口。
+- 新增 `on_bar_open` 回调只允许使用开盘已知信息；普通 `on_bar` 仍在收盘回调并于下一根 bar open 成交。
+  分钟行情按选股与持仓并集过滤读取；固定交易时钟保留停牌/空仓日，避免换仓周期漂移。
+- `holdings.parquet` 默认仅保留日终账户；`fills.csv` 保存全部分钟成交，包含价格、数量、费用和已实现 PnL。
+  NAV/PnL 继续包含现有现金分红、送转股与应收分红核算；现金分红沿用税前口径。

@@ -2,6 +2,7 @@ use super::*;
 use crate::data::parquet_io::{read_parquet, write_parquet};
 use crate::data::{ColumnData, Table};
 use crate::strategy::market::load_future_daily_frames;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -663,4 +664,189 @@ fn stock_excluding_entire_universe_is_rejected() {
     std::fs::write(&path, cfg).unwrap();
     let error = fixture.engine().run(&request).unwrap_err();
     assert!(error.to_string().contains("exclude_top_n must be smaller"));
+}
+
+fn minute_twap_fixture() -> (Fixture, StrategyRunRequest) {
+    let (fixture, request) = stock_open_fixture(false);
+    let config_path = fixture.0.join("strategy.toml");
+    let config = std::fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("stock::strategy_001", "stock::strategy_002")
+        .replace("bar_frequency = \"daily\"", "bar_frequency = \"minute\"")
+        .replace(
+            "[execution]",
+            "[execution]\nprice_limit_mode = \"minute_open\"",
+        )
+        .replace("cash_buffer = 0", "cash_buffer = 0.02\ntwap_minutes = 30");
+    std::fs::write(config_path, config).unwrap();
+    for date in [
+        20200102, 20200103, 20200106, 20200107, 20200108, 20200109, 20200110,
+    ] {
+        let mut times = Vec::new();
+        let mut codes = Vec::new();
+        let mut prices = Vec::new();
+        for minute in 570..=610 {
+            for (symbol, normal) in [("A.SZ", 10.0), ("B.SZ", 20.0)] {
+                times.push(format!(
+                    "2020-01-{:02} {:02}:{:02}:00",
+                    date % 100,
+                    minute / 60,
+                    minute % 60
+                ));
+                codes.push(Some(symbol.to_string()));
+                prices.push(if symbol == "A.SZ" && minute < 580 {
+                    if date == 20200102 {
+                        11.0
+                    } else if date == 20200109 {
+                        9.0
+                    } else {
+                        normal
+                    }
+                } else {
+                    normal
+                });
+            }
+        }
+        let mut table = market_table(vec![date; codes.len()], codes, times, prices);
+        // Deliberately different close: opening orders must not size from current-bar close.
+        table
+            .columns
+            .insert("close".into(), ColumnData::F64(vec![Some(50.0); table.len]));
+        write_parquet(
+            &fixture
+                .0
+                .join(format!("chn_stock_data/minute/2020/{date}.parquet")),
+            &table,
+        )
+        .unwrap();
+        write_parquet(
+            &fixture
+                .0
+                .join(format!("chn_stock_data/daily/limit/2020/{date}.parquet")),
+            &Table::new(BTreeMap::from([
+                (
+                    "ts_code".into(),
+                    ColumnData::Utf8(vec![Some("A.SZ".into()), Some("B.SZ".into())]),
+                ),
+                (
+                    "up_limit".into(),
+                    ColumnData::F64(vec![Some(11.0), Some(22.0)]),
+                ),
+                (
+                    "down_limit".into(),
+                    ColumnData::F64(vec![Some(9.0), Some(18.0)]),
+                ),
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    (fixture, request)
+}
+
+#[test]
+fn minute_twap_retries_open_boards_respects_window_and_five_sessions() {
+    let (fixture, request) = minute_twap_fixture();
+    let report = fixture.engine().run(&request).unwrap();
+    let out = read_parquet(&report.output_files[0], None).unwrap();
+    assert_eq!(out.len, 7);
+    assert_eq!(
+        out.required_utf8("quantities_json").unwrap()[0].as_deref(),
+        Some("[8900]")
+    );
+    assert_eq!(
+        out.required_utf8("symbols_json").unwrap()[5].as_deref(),
+        Some("[\"B.SZ\"]")
+    );
+    let audit = std::fs::read_to_string(report.output_files[0].parent().unwrap().join("fills.csv"))
+        .unwrap();
+    let mut first_date_count = 0;
+    let mut buys_on_exit = BTreeSet::new();
+    let mut sells_on_exit = BTreeSet::new();
+    for line in audit.lines().skip(1) {
+        let cols = line.split(',').collect::<Vec<_>>();
+        assert!(cols[0] == "20200102" || cols[0] == "20200109");
+        let time = cols[1].split(' ').last().unwrap();
+        assert!(time >= "09:30:00" && time <= "09:59:00");
+        assert!(cols[10].parse::<f64>().unwrap() >= 1990.0);
+        if cols[0] == "20200102" {
+            assert_eq!(cols[2], "A.SZ");
+            assert!(time >= "09:40:00");
+            first_date_count += 1;
+        }
+        if cols[0] == "20200109" {
+            if cols[3] == "sell" {
+                assert!(time >= "09:40:00");
+                sells_on_exit.insert(time.to_string());
+            } else {
+                buys_on_exit.insert(time.to_string());
+            }
+        }
+    }
+    assert!(first_date_count > 1);
+    assert!(!buys_on_exit.is_disjoint(&sells_on_exit));
+}
+
+#[test]
+fn minute_twap_reselected_names_sell_only_old_batch_and_buy_new_batch() {
+    let (fixture, request) = minute_twap_fixture();
+    let path = fixture.0.join("strategy.toml");
+    let cfg = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("top_n = 1", "top_n = 2");
+    std::fs::write(path, cfg).unwrap();
+    let report = fixture.engine().run(&request).unwrap();
+    let audit = std::fs::read_to_string(report.output_files[0].parent().unwrap().join("fills.csv"))
+        .unwrap();
+    let mut totals = BTreeMap::<(String, String, String), f64>::new();
+    for line in audit.lines().skip(1) {
+        let c = line.split(',').collect::<Vec<_>>();
+        *totals
+            .entry((c[0].into(), c[2].into(), c[3].into()))
+            .or_default() += c[4].parse::<f64>().unwrap();
+    }
+    for symbol in ["A.SZ", "B.SZ"] {
+        let bought = totals[&("20200102".into(), symbol.into(), "buy".into())];
+        assert_eq!(
+            totals[&("20200109".into(), symbol.into(), "sell".into())],
+            bought
+        );
+        assert!(totals[&("20200109".into(), symbol.into(), "buy".into())] > 0.0);
+    }
+}
+
+#[test]
+fn minute_clock_survives_empty_universe_and_zero_volume_cannot_fill() {
+    let (fixture, _) = minute_twap_fixture();
+    let empty = BTreeSet::new();
+    let frames = crate::strategy::market::load_stock_minute_frames_for_run(
+        &fixture.0,
+        &[20200102],
+        Some(&empty),
+        true,
+    )
+    .unwrap();
+    assert_eq!(frames.len(), 241);
+    assert!(frames.iter().all(|f| f.bars.is_empty()));
+    assert!(frames[0].event.is_session_first);
+    assert!(frames.last().unwrap().event.is_session_end);
+    let path = fixture
+        .0
+        .join("chn_stock_data/minute/2020/20200102.parquet");
+    let mut table = read_parquet(&path, None).unwrap();
+    table
+        .columns
+        .insert("vol".into(), ColumnData::F64(vec![Some(0.0); table.len]));
+    write_parquet(&path, &table).unwrap();
+    let frames = crate::strategy::market::load_stock_minute_frames_for_run(
+        &fixture.0,
+        &[20200102],
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(frames
+        .iter()
+        .flat_map(|f| &f.bars)
+        .all(|b| b.is_limit_up && b.is_limit_down));
 }

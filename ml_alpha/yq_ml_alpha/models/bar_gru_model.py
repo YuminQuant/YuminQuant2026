@@ -436,22 +436,36 @@ def _negative_ic_loss(torch, pred, target):
 
 
 def _eval_date_loss(torch, model, frame, groups, context, params, device, tensor: np.ndarray | None = None) -> float | None:
+    def predict_rows(rows):
+        x_np = _bar_tensor_batch(frame, context.feature_columns, rows, params, tensor)
+        return model(torch.from_numpy(x_np).to(device))
+
+    return _eval_batched_date_loss(torch, model, frame, groups, context, params, predict_rows)
+
+
+def _eval_batched_date_loss(torch, model, frame, groups, context, params, predict_rows) -> float | None:
+    """Bound forward-pass memory, while computing one IC over each full date."""
     if frame.empty or not groups:
         return None
+    was_training = model.training
     model.eval()
     losses = []
-    with torch.no_grad():
-        for rows in groups.values():
-            if len(rows) < 2:
-                continue
-            x_np = _bar_tensor_batch(frame, context.feature_columns, rows, params, tensor)
-            y_np = frame.loc[rows, context.label_column].astype("float32").to_numpy()
-            pred = model(torch.from_numpy(x_np).to(device))
-            target = torch.from_numpy(y_np).to(device)
-            loss = _negative_ic_loss(torch, pred, target)
-            if loss is not None:
-                losses.append(float(loss.detach().cpu().item()))
-    model.train()
+    try:
+        with torch.no_grad():
+            for rows in groups.values():
+                if len(rows) < 2:
+                    continue
+                predictions = []
+                for start in range(0, len(rows), int(params["batch_size"])):
+                    batch_rows = rows[start : start + int(params["batch_size"])]
+                    predictions.append(predict_rows(batch_rows).detach().cpu())
+                pred = torch.cat(predictions)
+                y_np = frame.loc[rows, context.label_column].astype("float32").to_numpy()
+                loss = _negative_ic_loss(torch, pred, torch.from_numpy(y_np))
+                if loss is not None:
+                    losses.append(float(loss.item()))
+    finally:
+        model.train(was_training)
     if not losses:
         return None
     return float(np.mean(losses))

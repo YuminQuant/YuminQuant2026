@@ -168,10 +168,25 @@ pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<Ma
 }
 
 pub fn load_stock_minute_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<MarketFrame>> {
+    load_stock_minute_frames_for_run(data_root, dates, None, false)
+}
+
+pub fn load_stock_minute_frames_for_run(
+    data_root: &Path,
+    dates: &[i32],
+    symbols: Option<&BTreeSet<String>>,
+    minute_limits: bool,
+) -> Result<Vec<MarketFrame>> {
     let mut frames = Vec::new();
     for trade_date in dates {
         let path = minute_path(data_root, *trade_date);
         if !path.exists() {
+            if minute_limits {
+                return Err(crate::error::err(format!(
+                    "missing minute file {}",
+                    path.display()
+                )));
+            }
             continue;
         }
         let columns = vec![
@@ -184,7 +199,12 @@ pub fn load_stock_minute_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<M
             "vol".to_string(),
             "amount".to_string(),
         ];
-        let table = read_parquet(&path, Some(&columns))?;
+        let table = if let Some(symbols) = symbols {
+            let selected = symbols.clone();
+            read_parquet_symbols(&path, &columns, move |s| selected.contains(s))?
+        } else {
+            read_parquet(&path, Some(&columns))?
+        };
         let codes = table.required_utf8("ts_code")?;
         let times = table.required_utf8("trade_time")?;
         let open = numeric_column(&table, "open")?;
@@ -193,8 +213,34 @@ pub fn load_stock_minute_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<M
         let close = numeric_column(&table, "close")?;
         let volume = numeric_column(&table, "vol")?;
         let amount = numeric_column(&table, "amount")?;
-        let limits = load_trade_filter_or_warn(data_root, *trade_date);
+        let limits = if minute_limits {
+            BTreeMap::new()
+        } else {
+            load_trade_filter_or_warn(data_root, *trade_date)
+        };
+        let price_bands = if minute_limits {
+            load_price_bands(data_root, *trade_date)?
+        } else {
+            BTreeMap::new()
+        };
         let mut grouped = BTreeMap::<String, Vec<Bar>>::new();
+        if minute_limits {
+            // Keep the exchange clock even if all selected/held stocks are suspended.
+            for minute in (570..=690).chain(781..=900) {
+                let date = *trade_date;
+                grouped.insert(
+                    format!(
+                        "{:04}-{:02}-{:02} {:02}:{:02}:00",
+                        date / 10000,
+                        date / 100 % 100,
+                        date % 100,
+                        minute / 60,
+                        minute % 60
+                    ),
+                    Vec::new(),
+                );
+            }
+        }
         for idx in 0..table.len {
             let Some(symbol) = codes[idx].clone() else {
                 continue;
@@ -214,7 +260,22 @@ pub fn load_stock_minute_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<M
             let Some(close) = clean_positive_opt(close[idx]) else {
                 continue;
             };
-            let (is_limit_up, is_limit_down) = limits.get(&symbol).copied().unwrap_or_default();
+            let (mut is_limit_up, mut is_limit_down) = if minute_limits {
+                match price_bands.get(&symbol) {
+                    Some((up, down)) => (
+                        up.is_some_and(|p| open >= p - 0.0001),
+                        down.is_some_and(|p| open <= p + 0.0001),
+                    ),
+                    // Missing price bands are unknown, not permission to trade.
+                    None => (true, true),
+                }
+            } else {
+                limits.get(&symbol).copied().unwrap_or_default()
+            };
+            if minute_limits && !volume[idx].is_some_and(|v| v.is_finite() && v > 0.0) {
+                is_limit_up = true;
+                is_limit_down = true;
+            }
             grouped.entry(trade_time.clone()).or_default().push(Bar {
                 symbol,
                 trade_date: *trade_date,
@@ -675,4 +736,26 @@ fn warn_missing_multipliers(missing: &BTreeSet<String>, date: i32) {
     if !missing.is_empty() {
         eprintln!("[strategy warning] date={date}: {} contracts with missing/invalid multiplier; using 1 (examples: {})", missing.len(), missing.iter().take(5).map(String::as_str).collect::<Vec<_>>().join(","));
     }
+}
+
+fn load_price_bands(
+    root: &Path,
+    date: i32,
+) -> Result<BTreeMap<String, (Option<f64>, Option<f64>)>> {
+    let path = root
+        .join("chn_stock_data/daily/limit")
+        .join((date / 10000).to_string())
+        .join(format!("{date}.parquet"));
+    let cols = ["ts_code", "up_limit", "down_limit"].map(str::to_string);
+    let table = read_parquet(&path, Some(&cols))?;
+    let codes = table.required_utf8("ts_code")?;
+    let up = table.required_f64_cast("up_limit")?;
+    let down = table.required_f64_cast("down_limit")?;
+    Ok((0..table.len)
+        .filter_map(|i| {
+            codes[i]
+                .clone()
+                .map(|s| (s, (clean_positive_opt(up[i]), clean_positive_opt(down[i]))))
+        })
+        .collect())
 }

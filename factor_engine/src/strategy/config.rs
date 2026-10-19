@@ -113,6 +113,7 @@ pub struct StrategyRunConfig {
     pub bar_frequency: BarFrequency,
     pub fill_price: FillPrice,
     pub respect_price_limits: bool,
+    pub minute_open_limits: bool,
     pub commission_bps: f64,
     pub buy_commission_bps: f64,
     pub sell_commission_bps: f64,
@@ -245,7 +246,19 @@ impl StrategyRunConfig {
             .map(|value| parse_csv_upper(&value))
             .unwrap_or_default();
 
+        let limit_mode = doc
+            .string("execution", "price_limit_mode")
+            .unwrap_or_else(|| "daily_close".into());
+        if !matches!(limit_mode.as_str(), "daily_close" | "minute_open") {
+            return Err(err("price_limit_mode must be daily_close or minute_open"));
+        }
+        if limit_mode == "minute_open"
+            && (asset_class != StrategyAssetClass::Stock || bar_frequency != BarFrequency::Minute)
+        {
+            return Err(err("minute_open price limits require stock minute bars"));
+        }
         Ok(Self {
+            minute_open_limits: limit_mode == "minute_open",
             asset_class,
             strategy_id,
             strategy_class,

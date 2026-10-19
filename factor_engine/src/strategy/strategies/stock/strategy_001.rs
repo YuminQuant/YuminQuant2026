@@ -190,7 +190,7 @@ fn opening_allocation(
     orders
 }
 
-fn load_signal(
+pub(super) fn load_signal(
     root: &std::path::Path,
     trade_date: i32,
     signal_id: &str,

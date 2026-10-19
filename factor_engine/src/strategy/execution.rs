@@ -50,7 +50,7 @@ impl ExecutionEngine {
             return;
         };
         let side = OrderSide::from_signed_quantity(order.signed_quantity);
-        // Deliberately pessimistic: the daily close-based limit flags apply to the whole day.
+        // Flags are daily-close pessimistic by default, or minute-open bands when configured.
         if config.respect_price_limits && side == OrderSide::Buy && bar.is_limit_up {
             return;
         }

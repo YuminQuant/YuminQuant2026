@@ -1,0 +1,33 @@
+asset_class = "stock"
+strategy_id = "strategy_002"
+strategy_class = "stock::strategy_002"
+
+start_date = 20200101
+end_date = 20260424
+initial_cash = 100000.0
+
+[clock]
+bar_frequency = "minute"
+
+[execution]
+respect_price_limits = true
+price_limit_mode = "minute_open"
+fill_price = "next_open"
+commission_bps = 2.0
+stamp_tax_bps = 5.0
+slippage_bps = 5.0
+lot_size = 100
+
+[paths]
+model_root = "data/models"
+
+[strategy]
+signal_id = "mdl_000009"
+signal_root = "data/models"
+rebalance_days = 5
+top_n = 50
+cash_buffer = 0.02
+twap_minutes = 30
+
+[output]
+detail = false

@@ -1,5 +1,5 @@
 factor_id = "residual_multi_bar_gru"
-tags = []
+tags = ["HTZQ"]
 data_root = "data"
 
 [output]

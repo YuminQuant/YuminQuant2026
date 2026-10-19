@@ -1,7 +1,7 @@
 factor_id = "chip_age_alpha"
 data_root = "data"
 data_version = "chip_age_rolling250_v2"
-tags = ["e2e", "chip_age", "cnn_gru", "ic_loss"]
+tags = ["e2e", "chip_age", "cnn_gru", "ic_loss", "HTZQ"]
 
 [output]
 kind = "factor"

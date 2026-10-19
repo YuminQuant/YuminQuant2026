@@ -1,4 +1,5 @@
 factor_id = "logsig_alpha_v"
+tags = ["DBZQ"]
 data_root = "data"
 
 [output]

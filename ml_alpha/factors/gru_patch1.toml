@@ -1,5 +1,5 @@
 factor_id = "gru_patch1"
-tags = []
+tags = ["HTZQ"]
 data_root = "data"
 
 [output]

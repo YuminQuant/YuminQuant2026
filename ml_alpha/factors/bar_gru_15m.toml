@@ -1,5 +1,5 @@
 factor_id = "bar_gru_15m"
-tags = []
+tags = ["HTZQ"]
 data_root = "data"
 
 [output]

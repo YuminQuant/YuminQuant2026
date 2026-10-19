@@ -22,6 +22,8 @@ Current formal factor configs:
 - `factors/bar_gru_15m.toml`
 - `factors/multi_bar_gru_daily_15m.toml`
 - `factors/residual_multi_bar_gru.toml`
+- `factors/gru_patch1.toml`
+- `factors/gru_patch2.toml`
 - `factors/logsig_alpha_v.toml`
 
 `mdl_*` is reserved for model-layer configs. `e2e_fct_*` is no longer a valid formal factor identifier.
@@ -399,7 +401,9 @@ Base factors are model artifacts/diagnostics only. The formal factor library rec
 
 ## Annual Training And Safety / 年度训练与安全边界
 
-All five end-to-end factors use annual rolling windows: the preceding 36 calendar months, split into 33 training months and 3 validation months, sampled every 5 trading sessions. Machine learning remains in Python. Rust continues to provide existing feature operators and metadata interoperability only.
+All end-to-end factors use annual rolling windows: the preceding 36 calendar months, split into 33 training months and 3 validation months, sampled every 5 trading sessions. Machine learning remains in Python. Rust continues to provide existing feature operators and metadata interoperability only.
+
+GRUPatch1 and GRUPatch2 reuse the 15-minute bar input and shared BarGRU training/inference pipeline. See [GRUPatch implementation](docs/GRU_PATCH.md) for report alignment and CLI commands.
 
 三个 GRU、logsig 与 chip-age 统一使用年度滚动训练：过去 36 个自然月，前 33 个月训练、后 3 个月验证，每 5 个交易日采样。公共层按标签到期日截断，清除训练/验证交界的标签重叠。三个 GRU 使用 10 日 VWAP 标签（到期需 11 个交易日）、单种子 42、batch_size 3000；详见 [研报核对说明](docs/BAR_GRU_REPORT_ALIGNMENT.md)。机器学习继续使用 Python，不迁移到 Rust。
 

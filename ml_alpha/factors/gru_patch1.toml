@@ -1,0 +1,88 @@
+factor_id = "gru_patch1"
+tags = []
+data_root = "data"
+
+[output]
+kind = "factor"
+id = "gru_patch1"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20130101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "zscore"
+feature_fill_value = 0.0
+
+[features]
+type = "bar_panel"
+root = "data/derived/stock/bar/15m"
+columns = ["open", "high", "low", "close", "vwap", "volume"]
+
+[features.params]
+source_frequency = "minute_bar"
+bar_size = 15
+lookback_sessions = 20
+time_series_scale = "mean"
+strict = true
+max_cache_sessions = "auto"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/gru_patch1/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "gru_patch1"
+class = "yq_ml_alpha.models.gru_patch_model.GRUPatch1AlphaModel"
+artifact_dir = "data/model_workspace/gru_patch1/artifacts"
+
+[model.params]
+sequence_length = 320
+patch_length = 16
+input_size = 6
+hidden_size = 30
+num_layers = 1
+dropout = 0.0
+epochs = 100
+batch_size = 3000
+lr = 0.005
+weight_decay = 0.0
+seed = 42
+device = "auto"
+patience = 10

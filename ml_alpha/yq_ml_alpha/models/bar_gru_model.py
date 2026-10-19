@@ -21,6 +21,12 @@ class BarGRUAlphaModel(AlphaModel):
         self.loss_history: list[dict[str, Any]] = []
         self.model_info: dict[str, Any] = {}
 
+    def _normalize_params(self, raw: dict[str, Any]) -> dict[str, Any]:
+        return _params(raw)
+
+    def _build_regressor(self, nn):
+        return _BarGRURegressor(nn, self.params)
+
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
         self._fit(train_data, valid_data, context, train_tensor=None, valid_tensor=None)
 
@@ -43,7 +49,7 @@ class BarGRUAlphaModel(AlphaModel):
         valid_tensor: np.ndarray | None,
     ) -> None:
         torch, nn = _torch_modules()
-        self.params = _params(context.model_params)
+        self.params = self._normalize_params(context.model_params)
         diagnostics = _diagnostics(context)
         _set_seed(torch, int(self.params["seed"]))
         device = _device(torch, str(self.params["device"]))
@@ -52,7 +58,7 @@ class BarGRUAlphaModel(AlphaModel):
         if train_data.empty:
             raise ValueError("BarGRUAlphaModel requires non-empty train_data")
 
-        self.model = _BarGRURegressor(nn, self.params).to(device)
+        self.model = self._build_regressor(nn).to(device)
         optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=float(self.params["lr"]),
@@ -272,8 +278,8 @@ class BarGRUAlphaModel(AlphaModel):
         torch, nn = _torch_modules()
         checkpoint = torch.load(Path(path), map_location="cpu")
         model = cls()
-        model.params = _params(checkpoint["params"])
-        model.model = _BarGRURegressor(nn, model.params)
+        model.params = model._normalize_params(checkpoint["params"])
+        model.model = model._build_regressor(nn)
         model.model.load_state_dict(checkpoint["state_dict"])
         model.model.eval()
         model.loss_history = list(checkpoint.get("loss_history", []))

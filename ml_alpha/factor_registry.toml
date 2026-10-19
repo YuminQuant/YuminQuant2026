@@ -1,4 +1,24 @@
 [[factors]]
+factor_id = "gru_patch1"
+config = "factors/gru_patch1.toml"
+status = "active"
+display_name = "GRUPatch1 shared intraday GRU with daily attention"
+model_class = "yq_ml_alpha.models.gru_patch_model.GRUPatch1AlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "gru_patch", "minute", "attention", "ic_loss"]
+
+[[factors]]
+factor_id = "gru_patch2"
+config = "factors/gru_patch2.toml"
+status = "active"
+display_name = "GRUPatch2 independent feature GRUs over daily patches"
+model_class = "yq_ml_alpha.models.gru_patch_model.GRUPatch2AlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "gru_patch", "minute", "ic_loss"]
+
+[[factors]]
 factor_id = "chip_age_alpha"
 config = "factors/chip_age_alpha.toml"
 status = "active"

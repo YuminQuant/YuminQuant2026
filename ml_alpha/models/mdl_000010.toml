@@ -1,0 +1,77 @@
+run_id = "mdl_000010"
+alpha_id = "mdl_000010"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "mad5_zscore_rank_label"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000010/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "adaptive_single_gate"
+class = "yq_ml_alpha.models.adaptive_gate_model.AdaptiveGateAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000010/artifacts"
+
+[model.params]
+hidden_size = 64
+gate_hidden_size = 64
+negative_slope = 0.01
+gate_temperature = 1.0
+target_pass_rate = 0.4
+gate_loss_weight = 10.0
+loss = "rank_exp_mse"
+# Implementation choice: each 20 percentile points of descending return rank halves the weight.
+rank_weight_half_life = 0.2
+epochs = 100
+patience = 20
+lr = 0.001
+weight_decay = 0.0
+# One cross-section per forward/backward; average gradients over 32 dates per optimizer step.
+dates_per_step = 32
+predict_batch_size = 3000
+seed = 42
+device = "auto"

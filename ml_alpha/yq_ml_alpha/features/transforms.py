@@ -165,6 +165,35 @@ def _zscore_log_rank_series(values: pd.Series) -> pd.Series:
     return transformed
 
 
+@register_transform("mad5_zscore_rank_label")
+def _transform_mad5_zscore_rank_label(
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+    label_columns: list[str],
+    feature_fill_value: float,
+) -> pd.DataFrame:
+    """MAD winsorized factors; standardized ordinal ranks for return labels."""
+    output = frame.copy()
+    for column in feature_columns:
+        output[column] = output.groupby("trade_date", group_keys=False)[column].transform(_mad5_zscore_series)
+    for column in label_columns:
+        if column in output.columns:
+            output[column] = output.groupby("trade_date", group_keys=False)[column].transform(
+                lambda values: _zscore_series(values.replace([np.inf, -np.inf], np.nan).rank(method="average"))
+            )
+    return fill_feature_nan(output, feature_columns, feature_fill_value)
+
+
+def _mad5_zscore_series(values: pd.Series) -> pd.Series:
+    values = values.replace([np.inf, -np.inf], np.nan).astype("float64")
+    median = values.median()
+    mad = (values - median).abs().median()
+    # With zero MAD the empirical interval collapses to the median.
+    if np.isfinite(mad):
+        values = values.clip(median - 5.0 * mad, median + 5.0 * mad)
+    return _zscore_series(values)
+
+
 def _zscore_series(values: pd.Series) -> pd.Series:
     transformed = values.replace([np.inf, -np.inf], np.nan).astype("float64")
     valid = transformed.notna()

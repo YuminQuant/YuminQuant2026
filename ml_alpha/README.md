@@ -30,6 +30,10 @@ Current formal factor configs:
 
 ## CLI
 
+`models/mdl_000010.toml` adds a single-gate adaptive-depth factor combination
+model using the existing daily factor library. It is a model-layer signal,
+not an end-to-end factor. See [adaptive network configuration and CLI](docs/ADAPTIVE_GATE.md).
+
 ### GPU Optuna models
 
 `models/mdl_000007.toml` is LightGBM + Optuna; `models/mdl_000008.toml`

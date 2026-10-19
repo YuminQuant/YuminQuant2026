@@ -1,6 +1,22 @@
 version = 1
 
 [[models]]
+model_id = "mdl_000010"
+alpha_id = "mdl_000010"
+run_id = "mdl_000010"
+config = "models/mdl_000010.toml"
+status = "active"
+display_name = "Single-gate adaptive-depth factor combo"
+description = "All eligible formal factors; single hard Gumbel gate controlling the middle hidden layer; return-rank exponential weighted MSE plus gate-rate penalty; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.adaptive_gate_model.AdaptiveGateAlphaModel"
+model_family = "adaptive_gate_mlp"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_rank_label"
+train_scheme = "rolling_36m_annual_33m_train_3m_valid"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["adaptive_gate", "mlp", "factor_frame", "rolling", "rank_weighted_mse"]
+
+[[models]]
 model_id = "mdl_000001"
 alpha_id = "mdl_000001"
 run_id = "mdl_000001"

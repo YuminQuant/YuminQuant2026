@@ -409,6 +409,15 @@ English handoff checklist:
 
 ## 8. Source Map / 源码导航
 
+### ASTGNN 完整截面图训练
+
+`models/cross_section_bar_model.py` 提供分块股票编码、完整日期优化/验证/预测的公共流程。
+`astgnn_model.py` 复用 ResNet-GRU 图片编码，按当日隐藏状态动态构图。
+provider 的 `requires_full_cross_section` 经 bundle 传递，保留缺失标签节点，
+训练损失自行屏蔽无标签行；其他模型维持既有标签筛选行为。
+`batch_size` 为编码块大小，`graph_chunk_size` 为读取全部邻居的 query 块大小，
+均不得将一张日图拆成互不相连的独立子图。见 [ASTGNN.md](ASTGNN.md)。
+
 ### 滚动训练的数据复用
 
 预处理后的完整日截面不再写入系统临时目录：已移除 `yq-preprocessed-*` Pickle 缓存。

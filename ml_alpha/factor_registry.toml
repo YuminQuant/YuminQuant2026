@@ -1,4 +1,24 @@
 [[factors]]
+factor_id = "astgnn_week"
+config = "factors/astgnn_week.toml"
+status = "active"
+display_name = "ASTGNN weekly-image adaptive graph alpha"
+model_class = "yq_ml_alpha.models.astgnn_model.ASTGNNAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "astgnn", "adaptive_graph", "week", "orthogonal", "mse_loss"]
+
+[[factors]]
+factor_id = "astgnn_msnew"
+config = "factors/astgnn_msnew.toml"
+status = "active"
+display_name = "ASTGNN half-hour-image adaptive graph alpha"
+model_class = "yq_ml_alpha.models.astgnn_model.ASTGNNAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "astgnn", "adaptive_graph", "msnew", "orthogonal", "mse_loss"]
+
+[[factors]]
 factor_id = "rawbar_restcn"
 config = "factors/rawbar_restcn.toml"
 status = "active"

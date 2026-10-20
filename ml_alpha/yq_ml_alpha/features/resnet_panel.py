@@ -17,6 +17,9 @@ class ResNetPanelProvider(FeatureProvider):
     def __init__(self, root, columns, params=None):
         params = dict(params or {})
         self.root = Path(root)
+        self.requires_full_cross_section = params.get("full_cross_section", False)
+        if not isinstance(self.requires_full_cross_section, bool):
+            raise ValueError("full_cross_section must be a boolean")
         self.dataset = str(params.get("dataset", "week"))
         if self.dataset not in {"week", "msnew"}:
             raise ValueError("resnet_panel dataset must be week or msnew")

@@ -39,6 +39,7 @@ class DatasetBundle:
     tensor_columns: dict[str, list[str]] | None = None
     storage: TensorSpool | None = None
     tensor_source: object | None = None
+    full_cross_section: bool = False
 
     def close(self) -> None:
         if self.storage is not None:
@@ -261,7 +262,7 @@ class DatasetBuilder:
                     how="left",
                 )
             frame, tensors = self._preprocess_tensors(frame, tensors, include_label)
-            if include_label:
+            if include_label and not self.feature_provider.requires_full_cross_section:
                 keep = frame[self.config.label.id].notna().to_numpy()
                 frame = frame.loc[keep].reset_index(drop=True)
                 tensors = _take_tensor_rows(tensors, keep)
@@ -290,6 +291,7 @@ class DatasetBuilder:
             tensors=output_tensors,
             tensor_columns=tensor_columns,
             storage=spool,
+            full_cross_section=self.feature_provider.requires_full_cross_section,
         )
 
     def _source_st_symbols_by_date(self, dates: list[int]) -> dict[int, set[str]]:

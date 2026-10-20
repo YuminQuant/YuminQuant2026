@@ -66,7 +66,7 @@ class ResNetGRUAlphaModel(BarGRUAlphaModel):
 
 
 class _ResNetGRURegressor:
-    def __new__(cls, nn, params):
+    def __new__(cls, nn, params, *, encoder_only=False):
         import torch
 
         class Model(nn.Module):
@@ -80,10 +80,11 @@ class _ResNetGRURegressor:
                 encoded_size = params["conv_channels"] * (self.width - 2 * self.crop)
                 self.gru = nn.GRU(encoded_size, params["hidden_size"], num_layers=params["num_layers"],
                                   batch_first=True, dropout=params["dropout"] if params["num_layers"] > 1 else 0.0)
-                self.factor_head = nn.Linear(params["hidden_size"], params["base_factors"])
-                self.factor_norm = nn.BatchNorm1d(params["base_factors"])
-                self.output_norm = nn.BatchNorm1d(1)
-                self.register_buffer("equal_weights", torch.full((params["base_factors"],), 1.0 / params["base_factors"]))
+                if not encoder_only:
+                    self.factor_head = nn.Linear(params["hidden_size"], params["base_factors"])
+                    self.factor_norm = nn.BatchNorm1d(params["base_factors"])
+                    self.output_norm = nn.BatchNorm1d(1)
+                    self.register_buffer("equal_weights", torch.full((params["base_factors"],), 1.0 / params["base_factors"]))
 
             def encode_images(self, x):
                 # The provider is chronological: N x (30 * width) x channels.
@@ -91,16 +92,21 @@ class _ResNetGRURegressor:
                 shortcut = images[:, :, self.crop:-self.crop] if self.crop else images
                 return torch.relu(self.conv(images)) + self.shortcut(shortcut)
 
-            def forward_factors(self, x):
+            def encode(self, x):
                 features = self.encode_images(x).reshape(x.shape[0], 30, -1)
                 _, hidden = self.gru(features)
-                return self.factor_norm(self.factor_head(hidden[-1]))
+                return hidden[-1]
+
+            def forward_factors(self, x):
+                return self.factor_norm(self.factor_head(self.encode(x)))
 
             def combine(self, base):
                 score = base @ self.equal_weights
                 return self.output_norm(score[:, None]).reshape(-1)
 
             def forward(self, x):
+                if encoder_only:
+                    return self.encode(x)
                 return self.combine(self.forward_factors(x))
 
         return Model()

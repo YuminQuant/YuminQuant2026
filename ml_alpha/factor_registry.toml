@@ -137,3 +137,13 @@ model_class = "yq_ml_alpha.models.logsig_orthogonal_mlp_model.LogsigOrthogonalML
 output = "data/factors/stock/daily"
 label = "future_vwap_return_5d"
 tags = ["e2e", "logsig", "signature", "volume", "orthogonal_mlp", "neutralized", "DBZQ"]
+
+[[factors]]
+factor_id = "report_rptf_title"
+config = "factors/report_rptf_title.toml"
+status = "active"
+display_name = "Report title RPTF sentiment (local report_rc adaptation)"
+model_class = "yq_ml_alpha.models.report_sentiment_model.ReportTermFrequencyAlphaModel"
+output = "data/factors/stock/daily"
+label = "report_np_revision_current_fy"
+tags = ["e2e", "DFZQ", "analyst", "text", "rptf", "title_only", "monthly_update"]

@@ -58,22 +58,32 @@ class FactorHistory(DailyTensorSequence):
         return super().symbols(date)
 
 
-class GraphFactorFrameProvider(FeatureProvider):
+class FactorSequenceProvider(FeatureProvider):
+    """Complete eligible cross-sections with lazy, RAM-bounded factor histories."""
+
     def __init__(self, config, provider):
         self.feature_columns = list(provider.feature_columns)
         self.sequence = FactorHistory(config, provider)
-        self.relations = StockRelations(_project_path(config.model.params.get("relation_root", "data/derived/stock/relations")))
-
-    def dataset_identity(self):
-        return {"factor_history": "mad5_zscore_v1", "relations": self.relations.identity()}
 
     def set_calendar_dates(self, dates):
         self.sequence.set_calendar_dates(dates)
 
     def load(self, trade_date):
-        self.relations.identity()
         symbols = self.sequence.symbols(trade_date)
-        if symbols and not daily_path(self.relations.root, trade_date).exists():
-            raise FileNotFoundError(f"missing stock relations for {trade_date}; run derive-stock-relations")
-        # Keep only keys: current features and histories are read lazily with a RAM cap.
         return pd.DataFrame({"trade_date": [trade_date] * len(symbols), "ts_code": symbols})
+
+
+class GraphFactorFrameProvider(FactorSequenceProvider):
+    def __init__(self, config, provider):
+        super().__init__(config, provider)
+        self.relations = StockRelations(_project_path(config.model.params.get("relation_root", "data/derived/stock/relations")))
+
+    def dataset_identity(self):
+        return {"factor_history": "mad5_zscore_v1", "relations": self.relations.identity()}
+
+    def load(self, trade_date):
+        self.relations.identity()
+        frame = super().load(trade_date)
+        if not frame.empty and not daily_path(self.relations.root, trade_date).exists():
+            raise FileNotFoundError(f"missing stock relations for {trade_date}; run derive-stock-relations")
+        return frame

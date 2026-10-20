@@ -17,7 +17,8 @@ from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
-from yq_ml_alpha.features.graph_factor_frame import GraphFactorFrameProvider
+from yq_ml_alpha.features.graph_factor_frame import FactorSequenceProvider, GraphFactorFrameProvider
+from yq_ml_alpha.features.hist_factor_frame import HistFactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.rawbar import RawBarProvider
 from yq_ml_alpha.features.resnet_panel import ResNetPanelProvider
@@ -57,8 +58,8 @@ class DatasetBuilder:
         self._source_st_symbol_cache: dict[int, set[str]] = {}
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
-        graph_tensor = isinstance(self.feature_provider, GraphFactorFrameProvider)
-        lazy_tensor = isinstance(self.feature_provider, (DerivedChipAgeProvider, GraphFactorFrameProvider))
+        graph_tensor = isinstance(self.feature_provider, FactorSequenceProvider)
+        lazy_tensor = isinstance(self.feature_provider, (DerivedChipAgeProvider, FactorSequenceProvider))
         if lazy_tensor and (self.config.preprocess.cross_section_transform != "none" or self.config.materialize.cache_samples):
             raise ValueError("lazy tensors require transform=none and cache_samples=false")
         frames = []
@@ -425,7 +426,7 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return DerivedChipAgeProvider(config.features.root, config.features.params)
     if config.features.type == "derived_logsig":
         return DerivedLogsigProvider(config.features.root)
-    if config.features.type in {"factor_frame", "graph_factor_frame"}:
+    if config.features.type in {"factor_frame", "graph_factor_frame", "hist_factor_frame"}:
         excluded = {config.output.id}
         metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
         if metadata.exists():
@@ -436,6 +437,8 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         provider = FactorFrameProvider(config.features.root, config.features.columns, config.dates.train[1], excluded)
         if config.features.type == "graph_factor_frame":
             return GraphFactorFrameProvider(config, provider)
+        if config.features.type == "hist_factor_frame":
+            return HistFactorFrameProvider(config, provider)
         return provider
     if config.features.type == "raw_panel":
         return RawPanelProvider(config.features.root, config.features.columns)

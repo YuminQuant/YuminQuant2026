@@ -86,6 +86,16 @@ OpenMP conflicts through environment consistency, not the unsafe duplicate-runti
 通过公共 `build_windows` 处理标签到期与训练/验证隔离；不要在模型内部另写日期切分。
 此约定不改变 `models/` 中独立实验配置的窗口。
 
+研报文本属于事件样本，`analyst_report_events` 使用全部报告，按下一交易日
+映射可用日期，不使用 5 日抽样或未来收益标签。它沿用公共年度窗口、manifest、
+正式因子写入器，由事件适配流程处理报告标签与月度聚合。详见
+[REPORT_SENTIMENT.md](REPORT_SENTIMENT.md)。
+
+`hist_factor_frame` 为因子合成模型提供完整截面的惰性历史序列，复用
+`FactorSequenceProvider`，标签缺失只影响损失而不删除图节点。
+HIST 的主营业务 I 分类关系由 Rust `derive-hist-concepts` 生产。
+结构、时点规则与 CLI 见 [DFQ_HIST.md](DFQ_HIST.md)。
+
 | Task / 任务 | Files / 文件 |
 | --- | --- |
 | Experiment / 模型实验 | `models/<model_id>.toml`, catalog entry in `model_registry.toml` |

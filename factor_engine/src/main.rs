@@ -238,6 +238,27 @@ fn run_cli() -> Result<()> {
             let report = engine.run(&request)?;
             print_strategy_report(&report);
         }
+        "derive-hist-concepts" => {
+            let flags = parse_flags(&args[1..])?;
+            for key in flags.keys() {
+                if !["asset", "start-date", "end-date", "config", "date-batch-size"].contains(&key.as_str()) {
+                    return Err(yq_factor_engine::error::err(format!("unsupported derive-hist-concepts flag: --{key}")));
+                }
+            }
+            if flags.get("asset").map(String::as_str) != Some("stock") {
+                return Err(yq_factor_engine::error::err("derive-hist-concepts requires --asset stock"));
+            }
+            let date = |key: &str| -> Result<i32> {
+                parse_yyyymmdd(flags.get(key).ok_or_else(|| yq_factor_engine::error::err(format!("missing --{key}")))?, key)
+            };
+            let config = EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
+            yq_factor_engine::derive::hist_concepts::derive_hist_concepts(
+                &config, &yq_factor_engine::derive::hist_concepts::HistConceptRequest {
+                    start_date: date("start-date")?, end_date: date("end-date")?,
+                    date_batch_size: flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(20),
+                },
+            )?;
+        }
         "derive-stock-relations" => {
             let flags = parse_flags(&args[1..])?;
             for key in flags.keys() {
@@ -1326,6 +1347,7 @@ fn print_derive_consensus_report(report: &yq_factor_engine::AnalystConsensusRepo
 fn print_help() {
     println!("  derive-chip-age --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
     println!("  derive-stock-relations --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
+    println!("  derive-hist-concepts --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
     println!("  derive-logsig --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--threads 2] [--overwrite true|false]");
     println!("    raw minute volume -> 5m/20d/order10 (226 columns), daily Snappy derived/stock/logsig_v; sequential dates with rolling state");
     println!("YuminQuant factor engine MVP");

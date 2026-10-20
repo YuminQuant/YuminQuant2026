@@ -1,6 +1,22 @@
 version = 1
 
 [[models]]
+model_id = "mdl_000012"
+alpha_id = "mdl_000012"
+run_id = "mdl_000012"
+config = "models/mdl_000012.toml"
+status = "active"
+display_name = "DFZQ-HIST local factor sequence and dynamic industry-business concepts"
+description = "60 daily factor snapshots; corrected market-cap-weighted mainbz I concepts, top20 hidden concepts and double residual learning; single 10-day VWAP target and seed42."
+model_class = "yq_ml_alpha.models.hist_model.HISTAlphaModel"
+model_family = "hist"
+label = "future_vwap_return_10d"
+preprocess = "provider_mad5_zscore_label_rank_pct_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "hist_factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["DFZQ", "hist", "gru", "concept_graph", "factor_combination"]
+
+[[models]]
 model_id = "mdl_000011"
 alpha_id = "mdl_000011"
 run_id = "mdl_000011"

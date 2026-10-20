@@ -1,0 +1,80 @@
+factor_id = "report_rptf_title"
+tags = ["DFZQ", "analyst", "text", "rptf", "title_only", "monthly_update"]
+data_root = "data"
+data_version = "report_rc_title_v1"
+
+[output]
+kind = "factor"
+id = "report_rptf_title"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20100101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+# Every report event, including weekend publications mapped to the next session.
+train_frequency = "daily"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "report_np_revision_current_fy"
+lookahead_days = 0
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+
+[features]
+type = "analyst_report_events"
+root = "data/chn_stock_data/analyst_report"
+columns = ["report_title"]
+
+[features.params]
+revision_lookback_months = 12
+aggregation_months = 3
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+write_model_info = true
+
+[model]
+name = "report_term_frequency"
+class = "yq_ml_alpha.models.report_sentiment_model.ReportTermFrequencyAlphaModel"
+artifact_dir = "data/model_workspace/report_rptf_title/artifacts"
+
+[model.params]
+max_title_features = 1000
+prediction_batch_size = 4096
+# Explicit project baseline, avoiding different defaults across XGBoost versions.
+n_estimators = 100
+max_depth = 3
+learning_rate = 0.1
+objective = "reg:squarederror"
+subsample = 1.0
+colsample_bytree = 1.0
+reg_lambda = 1.0
+random_state = 42
+n_jobs = 8

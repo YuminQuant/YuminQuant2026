@@ -41,6 +41,8 @@ def predict_only(config_path: str | Path) -> list[Path]:
 
 def materialize_only(config_path: str | Path) -> list[Path]:
     config = _load_factor_config(config_path)
+    if config.features.type == "analyst_report_events":
+        raise ValueError("report events are read directly; factor-materialize is not supported")
     return materialize.run_config(config)
 
 
@@ -72,6 +74,9 @@ def all_metadata(
 
 def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     _ensure_factor_config(config)
+    if config.features.type == "analyst_report_events":
+        from yq_ml_alpha.pipelines.report_sentiment import execute
+        return execute(config, train=True, predict=True, resume=resume)
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
     writer = _new_writer(config)
@@ -156,6 +161,9 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
 
 def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     _ensure_factor_config(config)
+    if config.features.type == "analyst_report_events":
+        from yq_ml_alpha.pipelines.report_sentiment import execute
+        return execute(config, train=True, predict=False, resume=resume)
     calendar = TradingCalendar.load(config.data_root)
     dataset = DatasetBuilder(config)
     paths: list[Path] = []
@@ -189,6 +197,9 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
 
 def predict_config(config: MlAlphaConfig) -> list[Path]:
     _ensure_factor_config(config)
+    if config.features.type == "analyst_report_events":
+        from yq_ml_alpha.pipelines.report_sentiment import execute
+        return execute(config, train=False, predict=True)
     if config.dates.predict is None:
         return []
     calendar = TradingCalendar.load(config.data_root)

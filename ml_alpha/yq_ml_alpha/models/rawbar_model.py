@@ -72,6 +72,21 @@ def _fit_panel_stats(frame, columns, params, tensor):
     return lower, upper, mean, std
 
 
+def _register_panel_stats(model, stats=None):
+    """Checkpoint the train-only rawbar normalization, independent of the encoder."""
+    import torch
+
+    defaults = (np.full(6, -np.inf), np.full(6, np.inf), np.zeros(6), np.ones(6))
+    for name, values in zip(("panel_lower", "panel_upper", "panel_mean", "panel_std"),
+                            defaults if stats is None else stats):
+        model.register_buffer(name, torch.tensor(values, dtype=torch.float32))
+
+
+def _normalize_panel(torch, model, x):
+    x = torch.minimum(torch.maximum(x, model.panel_lower), model.panel_upper)
+    return (x - model.panel_mean) / model.panel_std
+
+
 class _RawBarRegressor:
     def __new__(cls, nn, params, stats=None):
         import torch
@@ -79,10 +94,7 @@ class _RawBarRegressor:
         class Model(nn.Module):
             def __init__(self):
                 super().__init__()
-                defaults = (np.full(6, -np.inf), np.full(6, np.inf), np.zeros(6), np.ones(6))
-                for name, values in zip(("panel_lower", "panel_upper", "panel_mean", "panel_std"),
-                                        defaults if stats is None else stats):
-                    self.register_buffer(name, torch.tensor(values, dtype=torch.float32))
+                _register_panel_stats(self, stats)
                 recurrent = nn.GRU if params["architecture"] in ("agru", "gru") else nn.LSTM
                 self.recurrent = recurrent(input_size=6, hidden_size=params["hidden_size"],
                                            num_layers=params["num_layers"], batch_first=True,
@@ -93,8 +105,7 @@ class _RawBarRegressor:
                 self.head = nn.Linear(params["hidden_size"], 1)
 
             def encode(self, x):
-                x = torch.minimum(torch.maximum(x, self.panel_lower), self.panel_upper)
-                x = (x - self.panel_mean) / self.panel_std
+                x = _normalize_panel(torch, self, x)
                 output, state = self.recurrent(x)
                 if params["architecture"] == "agru":
                     weights = torch.softmax(self.attention(output), dim=1)

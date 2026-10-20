@@ -1,4 +1,24 @@
 [[factors]]
+factor_id = "rawbar_restcn"
+config = "factors/rawbar_restcn.toml"
+status = "active"
+display_name = "Rawbar residual temporal convolution single-output alpha"
+model_class = "yq_ml_alpha.models.rawbar_restcn_model.RawBarRESTCNAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "rawbar", "restcn", "tcn", "ic_loss"]
+
+[[factors]]
+factor_id = "rawbar_transformer"
+config = "factors/rawbar_transformer.toml"
+status = "active"
+display_name = "Rawbar Time2Vec Transformer single-output alpha"
+model_class = "yq_ml_alpha.models.rawbar_transformer_model.RawBarTransformerAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "rawbar", "transformer", "time2vec", "ic_loss"]
+
+[[factors]]
 factor_id = "resnet_gru_week"
 config = "factors/resnet_gru_week.toml"
 status = "active"

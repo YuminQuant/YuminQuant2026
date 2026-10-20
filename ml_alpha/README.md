@@ -19,6 +19,8 @@ interfaces, performance conventions, leakage controls, and the handoff checklist
 
 Current formal factor configs:
 
+- `factors/rawbar_restcn.toml` / `factors/rawbar_transformer.toml`（与 rawbar AGRU/LSTM 共用输入，见 [RESTCN / Transformer 说明](docs/RAWBAR_TEMPORAL.md)）
+
 - `factors/resnet_gru_week.toml` / `factors/resnet_gru_msnew.toml`（见 [ResNet-GRU 数据与命令](docs/RESNET_GRU.md)）
 
 - `factors/bar_gru_15m.toml`

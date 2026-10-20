@@ -111,8 +111,6 @@ class BarGRUAlphaModel(AlphaModel):
                         train_count += batch_count
                     finally:
                         del x_tensor, y_tensor, pred, loss
-                if getattr(device, "type", None) == "cuda":
-                    torch.cuda.empty_cache()
 
             train_loss = train_loss_sum / train_count if train_count else None
             valid_loss = _eval_date_loss(
@@ -211,8 +209,9 @@ class BarGRUAlphaModel(AlphaModel):
                 x_np = _bar_tensor(data, context.feature_columns, batch_rows, self.params)
                 pred = self.model(torch.from_numpy(x_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
-        self.model.to("cpu")
-        _release_torch_memory(torch)
+        if not getattr(self, "_prediction_active", False):
+            self.model.to("cpu")
+            _release_torch_memory(torch)
         return pd.Series(scores, index=data.index, dtype="float32")
 
     def predict_bundle(self, bundle, context: ModelContext) -> pd.Series:
@@ -236,8 +235,9 @@ class BarGRUAlphaModel(AlphaModel):
                 x_np = _bar_tensor_from_array(tensor, batch_rows, self.params)
                 pred = self.model(torch.from_numpy(x_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
-        self.model.to("cpu")
-        _release_torch_memory(torch)
+        if not getattr(self, "_prediction_active", False):
+            self.model.to("cpu")
+            _release_torch_memory(torch)
         return pd.Series(scores, index=data.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:

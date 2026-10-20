@@ -182,7 +182,8 @@ class LogsigOrthogonalMLPAlphaModel(AlphaModel):
                     bases.append(self.model(torch.from_numpy(x[indices]).to(device)).cpu())
                 composite = _composite_factor(torch, torch.cat(bases, dim=0))
                 scores[rows] = composite.numpy().astype("float32")
-        self.model.to("cpu")
+        if not getattr(self, "_prediction_active", False):
+            self.model.to("cpu")
         series = pd.Series(scores, index=data.index, dtype="float32")
         zscored = series.groupby(data["trade_date"], group_keys=False).transform(_zscore_series).astype("float32")
         return _apply_rust_neutralization(

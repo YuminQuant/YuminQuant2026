@@ -120,8 +120,6 @@ class MultiBarGRUAlphaModel(AlphaModel):
                         train_count += batch_count
                     finally:
                         del daily_tensor, minute_tensor, y_tensor, pred, loss
-                if getattr(device, "type", None) == "cuda":
-                    torch.cuda.empty_cache()
 
             train_loss = train_loss_sum / train_count if train_count else None
             valid_loss = _eval_multi_date_loss(
@@ -220,8 +218,9 @@ class MultiBarGRUAlphaModel(AlphaModel):
                 daily_np, minute_np = _multi_bar_tensors(data, context.feature_columns, batch_rows, self.params)
                 pred = self.model(torch.from_numpy(daily_np).to(device), torch.from_numpy(minute_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
-        self.model.to("cpu")
-        _release_torch_memory(torch)
+        if not getattr(self, "_prediction_active", False):
+            self.model.to("cpu")
+            _release_torch_memory(torch)
         return pd.Series(scores, index=data.index, dtype="float32")
 
     def predict_bundle(self, bundle, context: ModelContext) -> pd.Series:
@@ -242,8 +241,9 @@ class MultiBarGRUAlphaModel(AlphaModel):
                 daily_np, minute_np = _multi_bar_batch(bundle.frame, context.feature_columns, batch_rows, self.params, tensors)
                 pred = self.model(torch.from_numpy(daily_np).to(device), torch.from_numpy(minute_np).to(device))
                 scores[start : start + len(batch_rows)] = pred.detach().cpu().numpy().astype("float32")
-        self.model.to("cpu")
-        _release_torch_memory(torch)
+        if not getattr(self, "_prediction_active", False):
+            self.model.to("cpu")
+            _release_torch_memory(torch)
         return pd.Series(scores, index=bundle.frame.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:

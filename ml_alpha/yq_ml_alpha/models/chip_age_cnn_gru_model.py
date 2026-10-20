@@ -180,16 +180,22 @@ class ChipAgeCNNGRUAlphaModel(AlphaModel):
             raise RuntimeError("chip model has not been fitted")
         device = self._device(torch)
         output = np.zeros(len(bundle.frame), dtype="float32")
-        for state in self.states:
+        network = getattr(self, "_prediction_network", None)
+        if network is None:
             network = _network(torch, self.params).to(device)
-            network.load_state_dict(state)
+            if getattr(self, "_prediction_active", False):
+                self._prediction_network = network
+        for state_index, state in enumerate(self.states):
+            if not getattr(self, "_prediction_active", False) or getattr(self, "_prediction_state_index", None) != state_index:
+                network.load_state_dict(state)
+                if getattr(self, "_prediction_active", False):
+                    self._prediction_state_index = state_index
             network.eval()
             with torch.no_grad():
                 for date, indices in bundle.frame.groupby("trade_date", sort=True).indices.items():
                     frame = bundle.frame.iloc[indices]
                     scores = self._scores(torch, network, bundle.tensor_source, int(date), frame.ts_code.tolist(), device, False)
                     output[indices] += scores.cpu().numpy() / len(self.states)
-            del network
         return pd.Series(output, index=bundle.frame.index, dtype="float32")
 
     def save(self, path):

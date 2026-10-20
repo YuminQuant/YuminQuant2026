@@ -28,9 +28,9 @@ class FactorHistory(DailyTensorSequence):
         self.first_date = self.available_dates[0]
 
     def day(self, date):
-        if date in self.cache:
-            self.cache.move_to_end(date)
-            return self.cache[date][0]
+        cached = self._cached(date)
+        if cached is not None:
+            return cached
         if not daily_path(self.root, date).exists():
             raise FileNotFoundError(f"missing factor history for {date}")
         frame = self.provider.load(date)
@@ -42,14 +42,7 @@ class FactorHistory(DailyTensorSequence):
         frame = apply_cross_section_transform(
             frame, "mad5_zscore_rank_label", self.columns, [], self.fill_value,
         ).set_index("ts_code")[self.columns].astype("float32")
-        size = int(frame.memory_usage(index=True, deep=True).sum())
-        while self.cache and self.cache_bytes + size > self.budget:
-            _, (_, removed) = self.cache.popitem(last=False)
-            self.cache_bytes -= removed
-        if size <= self.budget:
-            self.cache[date] = (frame, size)
-            self.cache_bytes += size
-        return frame
+        return self._remember(date, frame)
 
     def symbols(self, date):
         dates = self.window_dates(date)

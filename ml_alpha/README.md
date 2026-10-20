@@ -448,9 +448,13 @@ Each trained artifact has a `model.manifest.json` fingerprint covering actual tr
 
 ## Resource Controls / 资源控制
 
-Labeled bar-sequence bundles default to `[materialize].tensor_storage = "mmap"`. Tensors are spooled per date into temporary float32 files under the configured cache directory, avoiding a second full concatenated tensor in RAM. Row metadata remains in memory; prediction uses bounded date chunks. Use `"memory"` to opt out. Programmatic bundle owners should call `bundle.close()` when finished, especially on Windows.
+Labeled bar-sequence bundles default to `[materialize].tensor_storage = "indexed"`: task-local daily snapshots plus window indices, instead of repeatedly writing overlapping expanded tensors. The current date's window is assembled on demand and reused across stock batches. Explicit `"mmap"` retains expanded float32 tensors, and `"memory"` keeps them in RAM. Programmatic bundle owners must call `bundle.close()`; the shared fit/predict workflow closes bundles on completion or failure. See [performance workflow](docs/PERFORMANCE_WORKFLOW.md).
 
-带标签的 bar 序列默认使用 mmap 临时文件，按日追加 float32 tensor，避免在内存同时保留每日 tensor 和完整拼接副本。行索引仍在内存，mmap 也会使用操作系统页缓存，并不保证固定内存上限。直接使用 bundle 的调用者应在结束后调用 `close()`；CLI 正常阶段结束释放对象及临时文件。磁盘空间不足时可改为 `tensor_storage = "memory"`，但会增加内存需求。
+带标签的 bar 序列默认使用 indexed：在显式模型 workspace 临时保存一次单日基础数据，
+按窗口索引组装当前日期，复用于同日股票分块；不向 C 盘或系统临时目录写缓存。
+仍可选择原 `mmap` 展开模式或 `memory` 内存模式。索引、单日窗口与操作系统页缓存另占内存，
+不承诺固定总内存上限。直接使用 bundle 的调用者应在结束后调用 `close()`。
+多因子合并写出可通过 `factor-predict` 重复传入 `--config`，GPU 顺序运行模型。
 
 Logsig supports `features.params.feature_cache_dir` (enabled in its config). Deterministic per-date features are reused only when settings and source file sizes/mtime match. This disk cache persists across runs; remove its directory when no longer needed. It stores features, not fitted normalization or model weights. Daily output schema discovery is memoized per writer instead of rescanning all dates for every prediction chunk.
 

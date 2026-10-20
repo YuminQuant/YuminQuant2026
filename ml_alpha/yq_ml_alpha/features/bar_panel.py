@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import warnings
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
@@ -70,6 +71,7 @@ class BarPanelProvider(FeatureProvider):
             self.total_steps = self.steps_per_session
         self.feature_columns = _feature_columns(self.output_features, self.total_steps)
         self._session_cache: OrderedDict[Any, pd.DataFrame] = OrderedDict()
+        self._tensor_blocks = OrderedDict()
 
     def load(self, trade_date: int) -> pd.DataFrame:
         raise NotImplementedError("BarPanelProvider requires load_window(..., history_dates=...)")
@@ -323,13 +325,24 @@ class BarPanelProvider(FeatureProvider):
         for day_idx, session in enumerate(sessions):
             if session.empty:
                 continue
-            indexed = session.set_index("ts_code", drop=False)
             block_columns = [
                 _session_column(feature, bar_idx)
                 for bar_idx in range(self.steps_per_session)
                 for feature in self.output_features
             ]
-            block = indexed.reindex(symbols)[block_columns].to_numpy(dtype="float64", copy=False)
+            entry = self._tensor_blocks.get(id(session))
+            prepared = entry[1] if entry is not None and entry[0]() is session else None
+            if prepared is None:
+                prepared = (pd.Index(session.ts_code), session[block_columns].to_numpy(dtype="float64", copy=False))
+                self._tensor_blocks[id(session)] = (weakref.ref(session), prepared)
+                self._tensor_blocks.move_to_end(id(session))
+                while len(self._tensor_blocks) > max(1, self.lookback_sessions):
+                    self._tensor_blocks.popitem(last=False)
+            index, values = prepared
+            positions = index.get_indexer(symbols)
+            block = np.full((len(symbols), len(block_columns)), np.nan, dtype="float64")
+            found = positions >= 0
+            block[found] = values[positions[found]]
             start = day_idx * self.steps_per_session
             tensor[:, start : start + self.steps_per_session, :] = block.reshape(
                 len(symbols),

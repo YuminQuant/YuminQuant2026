@@ -185,6 +185,7 @@ class CrossSectionBarAlphaModel(BarGRUAlphaModel):
                         raise ValueError("non-finite graph prediction scores")
                     scores.loc[rows] = pred.cpu().numpy().astype("float32")
         finally:
-            self.model.to("cpu")
-            _release_torch_memory(torch)
+            if not getattr(self, "_prediction_active", False):
+                self.model.to("cpu")
+                _release_torch_memory(torch)
         return scores

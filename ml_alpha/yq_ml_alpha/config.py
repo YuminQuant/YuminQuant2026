@@ -97,7 +97,7 @@ class MaterializeConfig:
     cache_samples: bool = False
     cache_dir: Path = Path("data/model_workspace/cache")
     predict_batch_size: int = 20
-    tensor_storage: str = "mmap"
+    tensor_storage: str = "indexed"
 
 
 @dataclass(frozen=True)
@@ -249,7 +249,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             cache_samples=bool(materialize.get("cache_samples", False)),
             cache_dir=_project_path(materialize.get("cache_dir", data_root / "model_workspace" / run_id / "cache")),
             predict_batch_size=max(1, int(materialize.get("predict_batch_size", 20))),
-            tensor_storage=str(materialize.get("tensor_storage", "mmap")),
+            tensor_storage=str(materialize.get("tensor_storage", "indexed")),
         ),
         diagnostics=DiagnosticsConfig(
             enabled=bool(diagnostics.get("enabled", False)),

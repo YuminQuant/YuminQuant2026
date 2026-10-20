@@ -21,7 +21,11 @@ def main(argv: list[str] | None = None) -> None:
     ]
     for name in config_commands:
         command = subparsers.add_parser(name)
-        command.add_argument("--config", required=True, type=Path)
+        if name == "factor-predict":
+            command.add_argument("--config", required=True, type=Path, action="append",
+                                 help="repeat to predict compatible factors and merge their daily output writes")
+        else:
+            command.add_argument("--config", required=True, type=Path)
         if name in {"factor-run", "factor-train"}:
             command.add_argument("--resume", action="store_true", help="resume factor windows from existing outputs/artifacts")
     factor_metadata = subparsers.add_parser("factor-metadata")
@@ -44,7 +48,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "factor-train":
         paths = factor.train_only(args.config, resume=args.resume)
     elif args.command == "factor-predict":
-        paths = factor.predict_only(args.config)
+        if len(args.config) == 1:
+            paths = factor.predict_only(args.config[0])
+        else:
+            from yq_ml_alpha.pipelines.grouped_predict import predict_many
+            paths = predict_many(args.config)
     elif args.command == "factor-run":
         paths = factor.run(args.config, resume=args.resume)
     elif args.command == "factor-materialize":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterable, Literal
@@ -10,6 +11,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from yq_ml_alpha.data.stores import daily_path, read_daily
+from yq_ml_alpha.output.file_lock import daily_file_lock
 
 
 KEY_COLUMNS = ["trade_date", "ts_code"]
@@ -77,6 +79,35 @@ class DailyWideWriter:
                 missing.append(trade_date)
         return missing
 
+    def write_many(self, predictions: dict[str, pd.DataFrame], *,
+                   coverage_dates: dict[str, Iterable[int]] | None = None,
+                   schema_dates: Iterable[int] | None = None) -> list[Path]:
+        """Merge several factor columns with one read/compression/write per day.
+
+        Coverage is per column: a factor not covering a date is left untouched.
+        Empty predictions on a covered date intentionally replace it with NaN.
+        """
+        tasks = {}
+        for output_id, frame in predictions.items():
+            if not output_id or output_id in KEY_COLUMNS:
+                raise ValueError(f"invalid output column: {output_id}")
+            if not set([*KEY_COLUMNS, "score"]).issubset(frame.columns):
+                raise ValueError(f"{output_id}: missing prediction keys/score")
+            coverage = None if coverage_dates is None else coverage_dates.get(output_id, [])
+            grouped = _prediction_groups(frame)
+            for date in _coverage_dates(frame, coverage):
+                tasks.setdefault(date, {})[output_id] = grouped.get(date)
+        if not tasks:
+            return []
+        self._known_columns.update(predictions)
+        columns = self._schema_columns(sorted(tasks) if schema_dates is None else list(schema_dates))
+        items = sorted(tasks.items())
+        def write(item):
+            date, values = item
+            return self._write_columns_one(date, values, columns)
+        with ThreadPoolExecutor(max_workers=min(self.write_workers, len(items))) as pool:
+            return list(pool.map(write, items))
+
     def ensure_output_column(self, coverage_dates: Iterable[int]) -> list[Path]:
         dates = sorted({int(date) for date in coverage_dates})
         if not dates:
@@ -100,27 +131,52 @@ class DailyWideWriter:
         return [path for path in paths if path is not None]
 
     def _write_one(self, trade_date: int, daily: pd.DataFrame | None, columns: list[str]) -> Path:
+        return self._write_columns_one(trade_date, {self.output_id: daily}, columns)
+
+    def _write_columns_one(self, trade_date, daily_by_column, columns):
         path = self._path(trade_date)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        base = self._load_base(path, trade_date, daily)
-        values = _daily_values(trade_date, daily, self.output_id)
-        merged = _merge_values(base, values, self.output_id, columns)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        merged.to_parquet(tmp, index=False)
-        tmp.replace(path)
+        with daily_file_lock(path):
+            daily = next((value for value in daily_by_column.values() if value is not None and not value.empty), None)
+            base = self._load_base(path, trade_date, daily)
+            values = [
+                _daily_values(trade_date, frame, name).set_index(KEY_COLUMNS)
+                for name, frame in daily_by_column.items()
+            ]
+            joined = pd.concat(values, axis=1).reset_index()
+            base = base.drop(columns=list(daily_by_column), errors="ignore")
+            if joined.empty:
+                merged = base.copy()
+                for name in daily_by_column:
+                    merged[name] = np.nan
+            else:
+                joined["trade_date"] = joined["trade_date"].astype("int32")
+                merged = base.merge(joined, on=KEY_COLUMNS, how="outer", sort=False)
+            ordered = KEY_COLUMNS + sorted((set(columns) | set(merged.columns)) - set(KEY_COLUMNS))
+            merged = merged.reindex(columns=ordered).sort_values(KEY_COLUMNS).reset_index(drop=True)
+            merged["trade_date"] = merged["trade_date"].astype("int32")
+            merged[ordered[2:]] = merged[ordered[2:]].astype("float32")
+            self._atomic_write(path, merged)
         return path
+
+    @staticmethod
+    def _atomic_write(path, frame):
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            frame.to_parquet(tmp, index=False)
+            tmp.replace(path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
     def _ensure_output_column_one(self, trade_date: int, columns: list[str]) -> Path | None:
         path = self._path(trade_date)
-        if path.exists() and self.output_id in parquet_columns(path):
-            return None
-        path.parent.mkdir(parents=True, exist_ok=True)
-        base = self._load_base(path, trade_date, None)
-        values = pd.DataFrame(columns=[*KEY_COLUMNS, self.output_id])
-        merged = _merge_values(base, values, self.output_id, columns)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        merged.to_parquet(tmp, index=False)
-        tmp.replace(path)
+        with daily_file_lock(path):
+            if path.exists() and self.output_id in parquet_columns(path):
+                return None
+            base = self._load_base(path, trade_date, None)
+            values = pd.DataFrame(columns=[*KEY_COLUMNS, self.output_id])
+            merged = _merge_values(base, values, self.output_id, columns)
+            self._atomic_write(path, merged)
         return path
 
     def _schema_columns(self, dates: list[int]) -> list[str]:

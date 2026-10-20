@@ -71,8 +71,9 @@ BN 预测使用保存的运行统计量，推理分批不会重新拟合标准�
 
 派生半小时数据位于 `data/derived/stock/bar/30m/<year>/<date>.parquet`，为各模型共享。
 provider 只保留有界内存中的单日数据（week最多150日、msnew最多30日），没有新增磁盘缓存。
-训练复用公共 tensor/mmap 通路，临时样本位于各模型 D 盘 workspace 的 cache/scratch，
-按既有 bundle 生命周期释放；`cache_samples=false` 不代表禁用 mmap 工作文件。
+训练默认复用公共 indexed 单日快照与窗口索引通路，临时数据位于各模型 D 盘 workspace
+的 cache/scratch，按 bundle 生命周期释放；`cache_samples=false` 不代表禁用工作文件。
+原 `tensor_storage="mmap"` 仍可显式选择，详见 [PERFORMANCE_WORKFLOW.md](PERFORMANCE_WORKFLOW.md)。
 一个样本的特征 float32 体积：week 150×6×4=3600 字节，msnew 30×8×5×4=4800 字节，
 未计键、标签、模型中间激活和文件开销。不会把全部图片先保存成重复的派生窗口库。
 

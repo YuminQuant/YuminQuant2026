@@ -31,6 +31,16 @@ class TrainingWindow:
 
 
 def _predict_write_window(
+    config, dataset, writer, model, window, progress, calendar,
+    context=None, schema_dates=None,
+):
+    with model.prediction_session():
+        return _predict_write_window_active(
+            config, dataset, writer, model, window, progress, calendar, context, schema_dates,
+        )
+
+
+def _predict_write_window_active(
     config: MlAlphaConfig,
     dataset: DatasetBuilder,
     writer: Any,
@@ -49,17 +59,23 @@ def _predict_write_window(
         if predict_bundle.frame.empty:
             progress.step(f"write {batch_idx}/{len(batches)}")
             empty_prediction = _empty_prediction_frame()
-            written.extend(writer.write(empty_prediction, coverage_dates=dates, schema_dates=schema_dates))
+            try:
+                written.extend(writer.write(empty_prediction, coverage_dates=dates, schema_dates=schema_dates))
+            finally:
+                predict_bundle.close()
             del predict_bundle, empty_prediction
             continue
-        batch_context = context or _context(config, window.window_id, predict_bundle.feature_columns)
         progress.step(f"predict {batch_idx}/{len(batches)}")
-        score = _predict_model(model, predict_bundle, batch_context)
-        progress.step(f"write {batch_idx}/{len(batches)}")
-        prediction = _prediction_frame(predict_bundle.frame, score)
-        written.extend(
-            writer.write(prediction, coverage_dates=dates, schema_dates=schema_dates)
-        )
+        try:
+            batch_context = context or _context(config, window.window_id, predict_bundle.feature_columns)
+            score = _predict_model(model, predict_bundle, batch_context)
+            progress.step(f"write {batch_idx}/{len(batches)}")
+            prediction = _prediction_frame(predict_bundle.frame, score)
+            written.extend(
+                writer.write(prediction, coverage_dates=dates, schema_dates=schema_dates)
+            )
+        finally:
+            predict_bundle.close()
         del predict_bundle, score, prediction
     return written
 
@@ -234,11 +250,15 @@ def _load_bundle(
 
 
 def _fit_model(model: AlphaModel, train_bundle, valid_bundle, context: ModelContext) -> None:
-    fit_bundle = getattr(model, "fit_bundle", None)
-    if callable(fit_bundle) and (train_bundle.tensors is not None or getattr(train_bundle, "tensor_source", None) is not None):
-        fit_bundle(train_bundle, valid_bundle, context)
-        return
-    model.fit(train_bundle.frame, valid_bundle.frame, context)
+    try:
+        fit_bundle = getattr(model, "fit_bundle", None)
+        if callable(fit_bundle) and (train_bundle.tensors is not None or getattr(train_bundle, "tensor_source", None) is not None):
+            fit_bundle(train_bundle, valid_bundle, context)
+            return
+        model.fit(train_bundle.frame, valid_bundle.frame, context)
+    finally:
+        train_bundle.close()
+        valid_bundle.close()
 
 
 def _load_train_valid(config, dataset, calendar, window, progress):
@@ -247,7 +267,11 @@ def _load_train_valid(config, dataset, calendar, window, progress):
         progress.step("load_train")
         train = _load_bundle(config, dataset, calendar, window.train_dates, True, split_name="train")
         progress.step("load_valid")
-        valid = _load_bundle(config, dataset, calendar, window.valid_dates, True, split_name="valid")
+        try:
+            valid = _load_bundle(config, dataset, calendar, window.valid_dates, True, split_name="valid")
+        except BaseException:
+            train.close()
+            raise
         return train, valid
     if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel", "rawbar", "resnet_panel", "derived_chip_age", "graph_factor_frame", "hist_factor_frame"}:
         raise ValueError("validation_unit=rows supports tabular datasets only")

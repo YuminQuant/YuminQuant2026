@@ -27,6 +27,7 @@ from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
 from yq_ml_alpha.features.derived_chip_age import DerivedChipAgeProvider
 from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.data.tensor_storage import TensorSpool
+from yq_ml_alpha.data.indexed_panel import IndexedPanelStore, IndexedPanelTensor
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
 
@@ -35,9 +36,9 @@ class DatasetBundle:
     frame: pd.DataFrame
     feature_columns: list[str]
     label_column: str
-    tensors: dict[str, np.ndarray] | None = None
+    tensors: dict[str, np.ndarray | IndexedPanelTensor] | None = None
     tensor_columns: dict[str, list[str]] | None = None
-    storage: TensorSpool | None = None
+    storage: TensorSpool | IndexedPanelStore | None = None
     tensor_source: object | None = None
     full_cross_section: bool = False
 
@@ -57,6 +58,23 @@ class DatasetBuilder:
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
         self._source_st_symbol_cache: dict[int, set[str]] = {}
+
+    def close(self):
+        def clear(provider):
+            sequence = getattr(provider, "sequence", None)
+            if sequence is not None:
+                print(f"sequence-cache hits={sequence.cache_hits} misses={sequence.cache_misses} "
+                      f"uncached_reads={sequence.uncached_reads} "
+                      f"resident_mib={sequence.cache_bytes / 2**20:.1f}", flush=True)
+                sequence.close()
+            for name in ("_session_cache", "_sessions", "_bar_cache", "_tensor_blocks"):
+                cache = getattr(provider, name, None)
+                if cache is not None:
+                    cache.clear()
+            for _, child in getattr(provider, "panels", []):
+                clear(child)
+        clear(self.feature_provider)
+        self._source_st_symbol_cache.clear()
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
         graph_tensor = isinstance(self.feature_provider, FactorSequenceProvider)
@@ -209,6 +227,19 @@ class DatasetBuilder:
         return DatasetBundle(output, sequence_columns, self.config.label.id)
 
     def load_bar_panel(
+        self, dates, include_label, calendar,
+    ) -> DatasetBundle:
+        self._building_storage = None
+        try:
+            return self._load_bar_panel(dates, include_label, calendar)
+        except BaseException:
+            if self._building_storage is not None:
+                self._building_storage.close()
+            raise
+        finally:
+            self._building_storage = None
+
+    def _load_bar_panel(
         self,
         dates: list[int],
         include_label: bool,
@@ -219,9 +250,10 @@ class DatasetBuilder:
         frames = []
         tensor_chunks: list[dict[str, np.ndarray]] = []
         storage_mode = self.config.materialize.tensor_storage
-        if storage_mode not in {"mmap", "memory"}:
-            raise ValueError("materialize.tensor_storage must be mmap or memory")
+        if storage_mode not in {"indexed", "mmap", "memory"}:
+            raise ValueError("materialize.tensor_storage must be indexed, mmap or memory")
         spool = TensorSpool(Path(self.config.materialize.cache_dir) / "scratch") if storage_mode == "mmap" and include_label else None
+        self._building_storage = spool
         tensor_columns: dict[str, list[str]] | None = None
         total_dates = len(dates)
         split_name = "labeled" if include_label else "predict"
@@ -232,15 +264,23 @@ class DatasetBuilder:
                 f"bar-panel {split_name} cache_auto {self.feature_provider.cache_policy_summary()}",
                 flush=True,
             )
+        indexed = IndexedPanelStore(
+            Path(self.config.materialize.cache_dir) / "scratch", self.feature_provider,
+            lambda frame, tensors: self._preprocess_tensors(frame, tensors, False)[1],
+        ) if storage_mode == "indexed" and include_label else None
+        self._building_storage = indexed if indexed is not None else spool
+        provider = indexed.provider if indexed is not None else self.feature_provider
+        shapes = {}
         for date_idx, trade_date in enumerate(dates, start=1):
             history_dates = calendar.between(calendar.dates[0], trade_date)
             source_dates = self.feature_provider.required_history_dates(history_dates)
             progress = _bar_panel_progress(split_name, date_idx, total_dates, trade_date)
-            window = self.feature_provider.load_window_tensor(
+            source_st = self._source_st_symbols_by_date(source_dates)
+            window = provider.load_window_tensor(
                 trade_date,
                 history_dates,
                 exclude_bj=self.config.filters.exclude_bj,
-                st_symbols_by_date=self._source_st_symbols_by_date(source_dates),
+                st_symbols_by_date=source_st,
                 progress=progress,
             )
             progress(f"target_done feature_rows={len(window.frame)}")
@@ -249,6 +289,7 @@ class DatasetBuilder:
             frame = self.universe.filter(window.frame, trade_date)
             frame = self.filters.apply(frame, trade_date)
             frame = frame[["trade_date", "ts_code"]].reset_index(drop=True)
+            eligible_symbols = frame.ts_code.tolist()
             tensors = _select_tensors_by_symbols(
                 window.tensors,
                 window.frame["ts_code"].astype(str).tolist(),
@@ -269,14 +310,20 @@ class DatasetBuilder:
             else:
                 frame = frame.reset_index(drop=True)
             frames.append(frame)
-            if spool is not None:
+            if indexed is not None:
+                indexed.add(trade_date, history_dates,
+                            dict(exclude_bj=self.config.filters.exclude_bj, st_symbols_by_date=source_st),
+                            eligible_symbols, frame.ts_code.tolist())
+                shapes = {key: value.shape[1:] for key, value in tensors.items()}
+            elif spool is not None:
                 spool.append(tensors)
             else:
                 tensor_chunks.append(tensors)
             tensor_columns = window.tensor_columns
         if frames:
             output = pd.concat(frames, ignore_index=True)
-            output_tensors = spool.finish() if spool is not None else _concat_tensor_chunks(tensor_chunks)
+            output_tensors = (indexed.finish(output, shapes) if indexed is not None else
+                              spool.finish() if spool is not None else _concat_tensor_chunks(tensor_chunks))
         else:
             columns = ["trade_date", "ts_code"]
             if include_label:
@@ -290,7 +337,7 @@ class DatasetBuilder:
             self.config.label.id,
             tensors=output_tensors,
             tensor_columns=tensor_columns,
-            storage=spool,
+            storage=indexed if indexed is not None else spool,
             full_cross_section=self.feature_provider.requires_full_cross_section,
         )
 

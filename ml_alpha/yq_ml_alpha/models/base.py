@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pickle
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,31 @@ class ModelContext:
 
 
 class AlphaModel:
+    @contextmanager
+    def prediction_session(self):
+        """Keep device resources alive across date batches of one model window."""
+        previous = getattr(self, "_prediction_active", False)
+        self._prediction_active = True
+        try:
+            yield self
+        finally:
+            self._prediction_active = previous
+            if not previous:
+                for name in ("model", "_prediction_network"):
+                    module = getattr(self, name, None)
+                    if callable(getattr(module, "to", None)):
+                        module.to("cpu")
+                for module in getattr(self, "encoders", {}).values():
+                    if callable(getattr(module, "to", None)):
+                        module.to("cpu")
+                self.__dict__.pop("_prediction_network", None)
+                self.__dict__.pop("_prediction_state_index", None)
+                # Do not import/initialize Torch for sklearn-only workflows.
+                import sys
+                torch = sys.modules.get("torch")
+                if torch is not None and torch.cuda.is_initialized():
+                    torch.cuda.empty_cache()
+
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
         raise NotImplementedError
 

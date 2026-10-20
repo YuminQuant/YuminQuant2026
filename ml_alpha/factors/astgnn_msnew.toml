@@ -55,7 +55,7 @@ max_cache_sessions = 30
 
 [materialize]
 cache_samples = false
-tensor_storage = "mmap"
+tensor_storage = "indexed"
 cache_dir = "data/model_workspace/astgnn_msnew/cache"
 predict_batch_size = 20
 

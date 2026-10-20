@@ -90,13 +90,13 @@ BN 推理使用模型保存的统计量，不重新拟合样本外统计量。
 反向梯度、编码器和优化器还会额外占用显存。没有实际运行，不提供性能提升或显存峰值承诺。
 图、邻接矩阵和中间 64 因子不落盘，不新增图派生文件。
 
-日源缓存仅在内存有界保留。训练张量复用公共 mmap 工作流，显式配置：
+训练张量使用公共 indexed 单日快照与窗口索引工作流：
 
-- `data/model_workspace/astgnn_week/cache/scratch/tensor-*`
-- `data/model_workspace/astgnn_msnew/cache/scratch/tensor-*`
+- `data/model_workspace/astgnn_week/cache/scratch/indexed-*`
+- `data/model_workspace/astgnn_msnew/cache/scratch/indexed-*`
 
 路径在本项目 D 盘内，随 bundle 生命周期释放，不使用 C 盘或系统默认临时目录。
-`cache_samples=false` 禁用样本 Parquet 导出，不代表禁用上述临时 mmap。
+`cache_samples=false` 禁用样本 Parquet 导出，不代表禁用上述临时单日快照。
 每个样本 float32 特征净体积分别为 3600 / 4800 字节，按实际训练验证行数线性增长。
 不把重叠输入窗口新增为长期派生数据集。
 

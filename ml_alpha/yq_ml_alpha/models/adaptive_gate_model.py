@@ -115,7 +115,8 @@ class AdaptiveGateAlphaModel(MLPAlphaModel):
                     scores[start:start + len(frame)] = prediction.cpu().numpy()
         finally:
             self.model.cpu()
-            _release_torch_memory(torch)
+            if not getattr(self, "_prediction_active", False):
+                _release_torch_memory(torch)
         return pd.Series(scores, index=data.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:

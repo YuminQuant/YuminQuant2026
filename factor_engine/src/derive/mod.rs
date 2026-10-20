@@ -5,6 +5,7 @@ pub mod engine;
 pub mod logsig;
 pub mod request;
 pub mod storage;
+pub mod stock_relations;
 
 pub use analyst::{
     AnalystConsensusReport, AnalystConsensusRequest, DEFAULT_CONSENSUS_DATE_BATCH_SIZE,

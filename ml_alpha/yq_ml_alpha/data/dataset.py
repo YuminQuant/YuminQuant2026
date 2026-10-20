@@ -17,6 +17,7 @@ from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
+from yq_ml_alpha.features.graph_factor_frame import GraphFactorFrameProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.rawbar import RawBarProvider
 from yq_ml_alpha.features.resnet_panel import ResNetPanelProvider
@@ -56,9 +57,10 @@ class DatasetBuilder:
         self._source_st_symbol_cache: dict[int, set[str]] = {}
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
-        lazy_tensor = isinstance(self.feature_provider, DerivedChipAgeProvider)
+        graph_tensor = isinstance(self.feature_provider, GraphFactorFrameProvider)
+        lazy_tensor = isinstance(self.feature_provider, (DerivedChipAgeProvider, GraphFactorFrameProvider))
         if lazy_tensor and (self.config.preprocess.cross_section_transform != "none" or self.config.materialize.cache_samples):
-            raise ValueError("derived chip tensors require transform=none and cache_samples=false")
+            raise ValueError("lazy tensors require transform=none and cache_samples=false")
         frames = []
         total_dates = len(dates)
         split_name = split_name or ("labeled" if include_label else "predict")
@@ -88,14 +90,13 @@ class DatasetBuilder:
             if features.empty:
                 log_date("done", date_idx, trade_date, 0, date_started)
                 continue
-            frame = self.universe.filter(features, trade_date)
-            frame = self.filters.apply(frame, trade_date)
+            frame = features if graph_tensor else self.filters.apply(self.universe.filter(features, trade_date), trade_date)
             if include_label:
                 labels = read_daily(self.config.label.root, trade_date, [self.config.label.id])
                 frame = frame.merge(labels[["trade_date", "ts_code", self.config.label.id]], on=["trade_date", "ts_code"], how="left")
             if not lazy_tensor:
                 frame = self._preprocess(frame, include_label)
-            if include_label:
+            if include_label and not graph_tensor:
                 keep = np.isfinite(frame[self.config.label.id]) if lazy_tensor else frame[self.config.label.id].notna()
                 frame = frame.loc[keep]
             frames.append(frame)
@@ -424,7 +425,7 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return DerivedChipAgeProvider(config.features.root, config.features.params)
     if config.features.type == "derived_logsig":
         return DerivedLogsigProvider(config.features.root)
-    if config.features.type == "factor_frame":
+    if config.features.type in {"factor_frame", "graph_factor_frame"}:
         excluded = {config.output.id}
         metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
         if metadata.exists():
@@ -432,7 +433,10 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
                 tags = json.loads(row.tags_json or "[]")
                 if "model_generated" in tags or "deprecated" in tags:
                     excluded.add(row.output_column)
-        return FactorFrameProvider(config.features.root, config.features.columns, config.dates.train[1], excluded)
+        provider = FactorFrameProvider(config.features.root, config.features.columns, config.dates.train[1], excluded)
+        if config.features.type == "graph_factor_frame":
+            return GraphFactorFrameProvider(config, provider)
+        return provider
     if config.features.type == "raw_panel":
         return RawPanelProvider(config.features.root, config.features.columns)
     if config.features.type == "logsig_signature":

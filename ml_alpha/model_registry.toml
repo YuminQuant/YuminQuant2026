@@ -1,6 +1,23 @@
 version = 1
 
 [[models]]
+model_id = "mdl_000011"
+alpha_id = "mdl_000011"
+run_id = "mdl_000011"
+config = "models/mdl_000011.toml"
+status = "active"
+display_name = "DFZQ heterogeneous GNN + temporal GRU + two XGBoost rankers"
+description = "Three announcement-date stock relations; current formal factors and 40 daily factor snapshots; two frozen encoders, 20 Optuna trials per ranker, standardized scores summed."
+model_class = "yq_ml_alpha.models.graph_temporal_model.GraphTemporalAlphaModel"
+model_family = "graph_temporal_ranker"
+label = "future_vwap_return_10d"
+preprocess = "provider_mad5_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "graph_factor_frame: data/factors/stock/daily, columns=__all__"
+components = ["CI L1", "fund top10 coholdings", "analyst 6m coverage", "3-layer GNN", "40-day GRU", "two Optuna XGBoost rankers"]
+tags = ["DFZQ", "gnn", "gru", "factor_combination", "optuna", "xgboost"]
+
+[[models]]
 model_id = "mdl_000010"
 alpha_id = "mdl_000010"
 run_id = "mdl_000010"

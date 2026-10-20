@@ -25,6 +25,7 @@ env/
 # Notebooks and scratch files
 .ipynb_checkpoints/
 *.ipynb
+/tmp/
 
 # Editor / OS files
 .vscode/

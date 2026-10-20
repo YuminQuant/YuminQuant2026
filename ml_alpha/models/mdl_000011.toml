@@ -1,0 +1,84 @@
+run_id = "mdl_000011"
+alpha_id = "mdl_000011"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+# The provider applies MAD5/z-score independently on each historical feature date.
+# Labels remain raw; the neural model standardizes each date's finite labels.
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "graph_factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[features.params]
+sequence_length = 40
+memory_budget_mb = 512
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000011/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "heterogeneous_gnn_gru_ranker"
+class = "yq_ml_alpha.models.graph_temporal_model.GraphTemporalAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000011/artifacts"
+
+[model.params]
+relation_root = "data/derived/stock/relations"
+hidden_size = 32
+base_factors = 32
+gnn_layers = 3
+gru_layers = 2
+sequence_length = 40
+dropout = 0.5
+orthogonal_lambda = 0.05
+epochs = 100
+patience = 20
+lr = 0.001
+weight_decay = 0.0
+batch_size = 3000
+seed = 42
+device = "auto"
+ranker_device = "auto"
+ranker_trials = 20
+ranker_early_stopping = 20
+ranker_n_jobs = 4

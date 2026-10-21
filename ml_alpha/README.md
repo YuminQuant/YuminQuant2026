@@ -37,6 +37,11 @@ Current formal factor configs:
 
 ## CLI
 
+`models/mdl_000013.toml` adds DFQ-FactorVAE using 30-day histories from the
+formal factor library. It uses a single GRU, posterior/prior Gaussian factors,
+full-date attention and deterministic prior-mean predictions. See
+[FactorVAE architecture, local choices and commands](docs/FACTOR_VAE.md).
+
 `models/mdl_000011.toml` combines an industry/fund/analyst heterogeneous GNN
 with a 40-day factor-sequence GRU. Both branches feed independently tuned
 XGBoost Rankers. See [data requirements, architecture and commands](docs/GRAPH_TEMPORAL.md).

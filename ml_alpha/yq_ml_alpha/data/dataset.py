@@ -475,7 +475,7 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return DerivedChipAgeProvider(config.features.root, config.features.params)
     if config.features.type == "derived_logsig":
         return DerivedLogsigProvider(config.features.root)
-    if config.features.type in {"factor_frame", "graph_factor_frame", "hist_factor_frame"}:
+    if config.features.type in {"factor_frame", "factor_sequence", "graph_factor_frame", "hist_factor_frame"}:
         excluded = {config.output.id}
         metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
         if metadata.exists():
@@ -484,6 +484,8 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
                 if "model_generated" in tags or "deprecated" in tags:
                     excluded.add(row.output_column)
         provider = FactorFrameProvider(config.features.root, config.features.columns, config.dates.train[1], excluded)
+        if config.features.type == "factor_sequence":
+            return FactorSequenceProvider(config, provider)
         if config.features.type == "graph_factor_frame":
             return GraphFactorFrameProvider(config, provider)
         if config.features.type == "hist_factor_frame":

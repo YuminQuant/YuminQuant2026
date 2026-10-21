@@ -61,6 +61,9 @@ class FactorSequenceProvider(FeatureProvider):
     def set_calendar_dates(self, dates):
         self.sequence.set_calendar_dates(dates)
 
+    def dataset_identity(self):
+        return {"factor_history": "mad5_zscore_v1", "membership": "complete_history_before_label_join"}
+
     def load(self, trade_date):
         symbols = self.sequence.symbols(trade_date)
         return pd.DataFrame({"trade_date": [trade_date] * len(symbols), "ts_code": symbols})

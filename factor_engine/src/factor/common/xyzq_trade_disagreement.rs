@@ -7,8 +7,8 @@ use crate::core::{
     FactorValue, Frequency, IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec,
     Lookback,
 };
-use crate::data::DataPool;
-use crate::error::Result;
+use crate::data::{ColumnData, DataPool, Table};
+use crate::error::{err, Result};
 use crate::factor::common::stock_daily_ops::{is_bj_stock, neutralize_size_sector};
 use crate::factor::common::stock_minute_raw_spec;
 use crate::factor::Factor;
@@ -113,10 +113,35 @@ impl Factor for TradeDisagreement {
 
 #[derive(Clone, Copy, Default)]
 struct Minute {
-    open: Option<f64>,
     close: Option<f64>,
     vol: Option<f64>,
     amount: Option<f64>,
+}
+
+// Borrow source columns; convert individual values without a full f64 column copy.
+struct NumericColumn<'a>(&'a ColumnData);
+impl<'a> NumericColumn<'a> {
+    fn new(table: &'a Table, name: &str) -> Result<Self> {
+        match table.columns.get(name) {
+            Some(
+                c @ (ColumnData::F32(_)
+                | ColumnData::F64(_)
+                | ColumnData::I32(_)
+                | ColumnData::I64(_)),
+            ) => Ok(Self(c)),
+            Some(_) => Err(err(format!("column {name} cannot be cast to float64"))),
+            None => Err(err(format!("missing required column {name}"))),
+        }
+    }
+    fn get(&self, row: usize) -> Option<f64> {
+        match self.0 {
+            ColumnData::F32(v) => v[row].map(f64::from),
+            ColumnData::F64(v) => v[row],
+            ColumnData::I32(v) => v[row].map(f64::from),
+            ColumnData::I64(v) => v[row].map(|v| v as f64),
+            _ => unreachable!("numeric column validated on construction"),
+        }
+    }
 }
 struct Stock {
     code: String,
@@ -158,13 +183,13 @@ fn slot(time: &str) -> Option<usize> {
     }
 }
 
-fn stock_returns(minute: &[Minute]) -> Vec<Option<f64>> {
+fn stock_returns(minute: &[Minute], first_open: Option<f64>) -> Vec<Option<f64>> {
     (0..240)
         .map(|t| {
             ratio_return(
                 minute[t].close,
                 if t == 0 {
-                    minute[0].open
+                    first_open
                 } else {
                     minute[t - 1].close
                 },
@@ -208,19 +233,19 @@ pub fn minute_compute_many(
         };
         let code = table.required_utf8("ts_code")?;
         let time = table.required_utf8("trade_time")?;
-        let open = table.required_f64_cast("open")?;
-        let close = table.required_f64_cast("close")?;
+        let open = NumericColumn::new(table, "open")?;
+        let close = NumericColumn::new(table, "close")?;
         let vol = if need_volume {
-            Some(table.required_f64_cast("vol")?)
+            Some(NumericColumn::new(table, "vol")?)
         } else {
             None
         };
         let amount = if requested[4] {
-            Some(table.required_f64_cast("amount")?)
+            Some(NumericColumn::new(table, "amount")?)
         } else {
             None
         };
-        let mut grouped = BTreeMap::<&str, Vec<Minute>>::new();
+        let mut grouped = BTreeMap::<&str, (Option<f64>, Vec<Minute>)>::new();
         for row in 0..table.len {
             let (Some(code), Some(time)) = (code[row].as_deref(), time[row].as_deref()) else {
                 continue;
@@ -235,26 +260,29 @@ pub fn minute_compute_many(
             let Some(t) = slot(time) else {
                 continue;
             };
-            grouped
+            let (first_open, minute) = grouped
                 .entry(code)
-                .or_insert_with(|| vec![Minute::default(); 240])[t] = Minute {
-                open: positive(open[row]),
-                close: positive(close[row]),
+                .or_insert_with(|| (None, vec![Minute::default(); 240]));
+            if t == 0 {
+                *first_open = positive(open.get(row));
+            }
+            minute[t] = Minute {
+                close: positive(close.get(row)),
                 vol: vol
                     .as_ref()
-                    .and_then(|v| finite(v[row]))
+                    .and_then(|v| finite(v.get(row)))
                     .filter(|v| *v >= 0.0),
                 amount: amount
                     .as_ref()
-                    .and_then(|v| finite(v[row]))
+                    .and_then(|v| finite(v.get(row)))
                     .filter(|v| *v >= 0.0),
             };
         }
         let stocks: Vec<_> = grouped
             .into_iter()
-            .map(|(code, minute)| Stock {
+            .map(|(code, (first_open, minute))| Stock {
                 code: code.to_string(),
-                ret: stock_returns(&minute),
+                ret: stock_returns(&minute, first_open),
                 minute,
             })
             .collect();

@@ -95,6 +95,108 @@ struct Direction {
     minus: Vec<f64>,
 }
 
+impl Direction {
+    fn new(n: usize) -> Self {
+        Self {
+            b: [0.0; 5],
+            u: vec![0.0; n],
+            plus: vec![0.0; n],
+            minus: vec![0.0; n],
+        }
+    }
+}
+
+// Record the original Gauss-Jordan operations so both RHSs use identical arithmetic.
+struct Elimination {
+    pivots: [usize; 5],
+    divisors: [f64; 5],
+    multipliers: [[f64; 5]; 5],
+    k: usize,
+}
+impl Elimination {
+    fn new(mut a: [[f64; 5]; 5], k: usize) -> Option<Self> {
+        let mut result = Self {
+            pivots: [0; 5],
+            divisors: [0.0; 5],
+            multipliers: [[0.0; 5]; 5],
+            k,
+        };
+        for j in 0..k {
+            let pivot = (j..k).max_by(|&i, &l| a[i][j].abs().total_cmp(&a[l][j].abs()))?;
+            if !a[pivot][j].is_finite() || a[pivot][j].abs() < 1e-28 {
+                return None;
+            }
+            result.pivots[j] = pivot;
+            a.swap(j, pivot);
+            let d = a[j][j];
+            result.divisors[j] = d;
+            for l in j..k {
+                a[j][l] /= d;
+            }
+            for i in 0..k {
+                if i == j {
+                    continue;
+                }
+                let v = a[i][j];
+                result.multipliers[j][i] = v;
+                for l in j..k {
+                    a[i][l] -= v * a[j][l];
+                }
+            }
+        }
+        Some(result)
+    }
+    fn solve(&self, mut b: [f64; 5]) -> Option<[f64; 5]> {
+        for j in 0..self.k {
+            b.swap(j, self.pivots[j]);
+            b[j] /= self.divisors[j];
+            for i in 0..self.k {
+                if i != j {
+                    b[i] -= self.multipliers[j][i] * b[j];
+                }
+            }
+        }
+        b[..self.k].iter().all(|v| v.is_finite()).then_some(b)
+    }
+}
+
+struct DirectionWorkspace {
+    ds: Vec<f64>,
+    rhs: Vec<f64>,
+    tp: Vec<f64>,
+    tm: Vec<f64>,
+}
+impl DirectionWorkspace {
+    fn new(n: usize) -> Self {
+        Self {
+            ds: vec![0.0; n],
+            rhs: vec![0.0; n],
+            tp: vec![0.0; n],
+            tm: vec![0.0; n],
+        }
+    }
+    fn prepare(
+        &mut self,
+        x: &[[f64; 5]],
+        k: usize,
+        u: &[f64],
+        plus: &[f64],
+        minus: &[f64],
+        q: f64,
+    ) -> Option<Elimination> {
+        let mut gram = [[0.0; 5]; 5];
+        for i in 0..x.len() {
+            self.ds[i] = plus[i] / (q - u[i]) + minus[i] / (1.0 - q + u[i]);
+            for j in 0..k {
+                for l in 0..k {
+                    gram[j][l] += x[i][j] * x[i][l] / self.ds[i];
+                }
+            }
+        }
+        Elimination::new(gram, k)
+    }
+}
+
 fn direction(
     x: &[[f64; 5]],
     y: &[f64],
@@ -106,14 +208,13 @@ fn direction(
     q: f64,
     target: f64,
     affine: Option<&Direction>,
-) -> Option<Direction> {
+    work: &mut DirectionWorkspace,
+    elimination: &Elimination,
+    d: &mut Direction,
+) -> Option<()> {
     let n = y.len();
-    let mut gram = [[0.0; 5]; 5];
     let mut rhs_b = [0.0; 5];
-    let mut ds = vec![0.0; n];
-    let mut rhs = vec![0.0; n];
-    let mut tp = vec![0.0; n];
-    let mut tm = vec![0.0; n];
+    let DirectionWorkspace { ds, rhs, tp, tm } = work;
     for i in 0..n {
         let sp = q - u[i];
         let sm = 1.0 - q + u[i];
@@ -123,28 +224,19 @@ fn direction(
             tp[i] += d.plus[i] * d.u[i];
             tm[i] -= d.minus[i] * d.u[i];
         }
-        ds[i] = plus[i] / sp + minus[i] / sm;
         rhs[i] = y[i] - dot(&x[i], b, k) - plus[i] + minus[i] - tp[i] / sp + tm[i] / sm;
         for j in 0..k {
             rhs_b[j] += x[i][j] * (rhs[i] / ds[i] + u[i]);
-            for l in 0..k {
-                gram[j][l] += x[i][j] * x[i][l] / ds[i];
-            }
         }
     }
-    let db = solve(gram, rhs_b, k)?;
-    let mut d = Direction {
-        b: db,
-        u: vec![0.0; n],
-        plus: vec![0.0; n],
-        minus: vec![0.0; n],
-    };
+    let db = elimination.solve(rhs_b)?;
+    d.b = db;
     for i in 0..n {
         d.u[i] = (rhs[i] - dot(&x[i], &db, k)) / ds[i];
         d.plus[i] = (tp[i] + plus[i] * d.u[i]) / (q - u[i]);
         d.minus[i] = (tm[i] - minus[i] * d.u[i]) / (1.0 - q + u[i]);
     }
-    Some(d)
+    Some(())
 }
 
 fn step(d: &Direction, plus: &[f64], minus: &[f64], u: &[f64], q: f64) -> f64 {
@@ -185,6 +277,9 @@ pub fn quantile_residual(x: &[[f64; 5]], y: &[f64], q: f64) -> Option<Vec<f64>> 
     let mut u = vec![0.0; n];
     let mut plus: Vec<_> = y.iter().map(|v| v.max(0.0) + 1.0).collect();
     let mut minus: Vec<_> = y.iter().map(|v| (-v).max(0.0) + 1.0).collect();
+    let mut work = DirectionWorkspace::new(n);
+    let mut affine = Direction::new(n);
+    let mut d = Direction::new(n);
     for _ in 0..80 {
         let mu = (0..n)
             .map(|i| plus[i] * (q - u[i]) + minus[i] * (1.0 - q + u[i]))
@@ -200,7 +295,22 @@ pub fn quantile_residual(x: &[[f64; 5]], y: &[f64], q: f64) -> Option<Vec<f64>> 
             let residual: Vec<_> = (0..n).map(|i| (y[i] - dot(&x[i], &b, k)) * scale).collect();
             return residual.iter().all(|v| v.is_finite()).then_some(residual);
         }
-        let affine = direction(&x, &y, k, &b, &u, &plus, &minus, q, 0.0, None)?;
+        let elimination = work.prepare(&x, k, &u, &plus, &minus, q)?;
+        direction(
+            &x,
+            &y,
+            k,
+            &b,
+            &u,
+            &plus,
+            &minus,
+            q,
+            0.0,
+            None,
+            &mut work,
+            &elimination,
+            &mut affine,
+        )?;
         let a = step(&affine, &plus, &minus, &u, q);
         let mu_aff = (0..n)
             .map(|i| {
@@ -210,7 +320,7 @@ pub fn quantile_residual(x: &[[f64; 5]], y: &[f64], q: f64) -> Option<Vec<f64>> 
             .sum::<f64>()
             / (2 * n) as f64;
         let sigma = (mu_aff / mu).clamp(0.0, 1.0).powi(3);
-        let d = direction(
+        direction(
             &x,
             &y,
             k,
@@ -221,6 +331,9 @@ pub fn quantile_residual(x: &[[f64; 5]], y: &[f64], q: f64) -> Option<Vec<f64>> 
             q,
             sigma * mu,
             Some(&affine),
+            &mut work,
+            &elimination,
+            &mut d,
         )?;
         let a = 0.995 * step(&d, &plus, &minus, &u, q);
         if !a.is_finite() || a <= 0.0 {

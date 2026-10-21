@@ -1,0 +1,82 @@
+run_id = "mdl_000013"
+alpha_id = "mdl_000013"
+data_root = "data"
+output_root = "data/models"
+data_version = "factorvae_local_factors_v1"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_sequence"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[features.params]
+sequence_length = 30
+memory_budget_mb = 512
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "dfq_factor_vae"
+class = "yq_ml_alpha.models.factor_vae_model.FactorVAEAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000013/artifacts"
+
+[model.params]
+sequence_length = 30
+hidden_size = 32
+num_layers = 1
+num_portfolio = 100
+num_factor = 48
+epochs = 200
+patience = 20
+average_epochs = 5
+dates_per_epoch = 100
+# Encoder stock chunks only; portfolio/attention always use the full date.
+batch_size = 3000
+gradient_checkpointing = true
+lr = 0.0003
+weight_decay = 0.0
+kl_weight = 1.0
+min_delta = 0.00000001
+min_std = 0.000001
+seed = 42
+device = "auto"

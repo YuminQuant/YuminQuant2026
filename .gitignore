@@ -1,4 +1,6 @@
 # Local secrets and machine-specific configuration
+/AGENTS.md
+/NOTICE
 config.toml
 .env
 .env.*

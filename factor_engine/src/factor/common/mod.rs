@@ -53,6 +53,7 @@ pub mod xyzq_intraday_contrast;
 pub mod xyzq_intraday_distribution;
 pub mod xyzq_liquidity;
 pub mod xyzq_serial_structure;
+pub mod xyzq_trade_disagreement;
 pub mod xyzq_volume_shape;
 pub mod xyzq_vshape_structure;
 

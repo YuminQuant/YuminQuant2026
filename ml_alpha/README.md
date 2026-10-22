@@ -37,6 +37,10 @@ Current formal factor configs:
 
 ## CLI
 
+`models/mdl_000032.toml` adds a variational Neural ODE on 30-day factor histories:
+GRU encoding, fixed RK4 latent dynamics, Gaussian reconstruction and a terminal
+observation MLP. See [architecture, engineering choices and CLI](docs/DFQ_NEURAL_ODE.md).
+
 `models/mdl_000031.toml` adds DFQ-FactorGCL: binary main-business hypergraphs,
 learned hidden-factor prototypes and training-only temporal residual contrastive
 supervision. See [architecture, maturity safeguards and CLI](docs/DFQ_FACTOR_GCL.md).
@@ -209,7 +213,7 @@ LightGBM and `cutoff_<training_cutoff>_active_<activation_date>` for XGBoost:
 - `cache_samples=false`: no sample-cache output by default. Optuna studies
   run in memory; no SQLite study database or full trial-history file is saved.
 
-The numbered model catalog comprises `mdl_000001`–`mdl_000031`; see
+The numbered model catalog comprises `mdl_000001`–`mdl_000032`; see
 `model_registry.toml` and [the ID migration table](docs/HUATAI_BASELINES.md).
 Additional implementations remain available: untuned LightGBM,
 eLSTM+RankNet and generic sklearn adapters.

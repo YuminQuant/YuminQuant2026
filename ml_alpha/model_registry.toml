@@ -501,3 +501,19 @@ preprocess = "provider_zscore_clip3_label_rank_pct_zscore"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "concept_factor_sequence: data/factors/stock/daily, columns=__all__, length=30"
 tags = ["DFZQ", "factor_gcl", "hypergraph", "gru", "contrastive_learning", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000032"
+alpha_id = "mdl_000032"
+run_id = "mdl_000032"
+config = "models/mdl_000032.toml"
+status = "active"
+display_name = "DFQ variational Neural ODE local factor alpha"
+description = "30-day factor histories; GRU Gaussian initial state, time-conditioned latent ODE with fixed RK4, Gaussian history reconstruction and terminal reconstructed-observation MLP; deterministic posterior-mean inference."
+model_class = "yq_ml_alpha.models.neural_ode_model.NeuralODEAlphaModel"
+model_family = "neural_ode"
+label = "future_vwap_return_10d"
+preprocess = "provider_zscore_clip3_label_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_sequence: data/factors/stock/daily, columns=__all__, length=30"
+tags = ["DFZQ", "neural_ode", "vae", "gru", "factor_combination"]

@@ -1,0 +1,87 @@
+# DFQ-Neural ODE, local formal-factor inputs. See docs/DFQ_NEURAL_ODE.md.
+run_id = "mdl_000032"
+alpha_id = "mdl_000032"
+data_root = "data"
+output_root = "data/models"
+data_version = "neural_ode_local_factors_v1"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+# History normalization is owned by the sequence provider; labels by the model.
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_sequence"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[features.params]
+sequence_length = 30
+history_transform = "zscore_clip3"
+memory_budget_mb = 512
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "dfq_neural_ode"
+class = "yq_ml_alpha.models.neural_ode_model.NeuralODEAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000032/artifacts"
+
+[model.params]
+sequence_length = 30
+hidden_size = 128
+num_layers = 2
+latent_size = 64
+dynamics_size = 128
+# RK4 steps between adjacent observations, on the normalized interval [0, 1].
+ode_substeps = 1
+checkpoint_ode = true
+reconstruction_weight = 1.0
+kl_weight = 0.001
+epochs = 200
+patience = 20
+average_epochs = 5
+dates_per_epoch = 100
+# Stock chunks; one optimizer update per complete date.
+batch_size = 3000
+lr = 0.0001
+weight_decay = 0.0
+min_delta = 0.00000001
+seed = 42
+device = "cuda"

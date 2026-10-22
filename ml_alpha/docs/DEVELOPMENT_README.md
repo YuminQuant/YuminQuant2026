@@ -114,6 +114,12 @@ HIST 的主营业务 I 分类关系由 Rust `derive-hist-concepts` 生产。
 该声明默认 0，原配置窗口及默认 manifest 不变。未来 reader 只在训练期间创建，
 验证/预测只用历史输入。见 [DFQ_FACTOR_GCL.md](DFQ_FACTOR_GCL.md)。
 
+`mdl_000032` 的变分 Neural ODE 使用普通 `factor_sequence`，只重构已观测的
+30 日历史，复用公共标签到期边界，无需未来特征监督或新的派生库。
+纯 PyTorch 固定 RK4 通过时间段激活重算控制显存，收益头读取重构终值；
+验证/预测采用后验均值初值。模型结构、工程参数与 CLI 见
+[DFQ_NEURAL_ODE.md](DFQ_NEURAL_ODE.md)。
+
 | Task / 任务 | Files / 文件 |
 | --- | --- |
 | Experiment / 模型实验 | `models/<model_id>.toml`, catalog entry in `model_registry.toml` |

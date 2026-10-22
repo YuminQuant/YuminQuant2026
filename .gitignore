@@ -39,3 +39,4 @@ Thumbs.db
 # Rust build artifacts
 target/
 factor_engine/target/
+/factor_engine/target_liq_verify/

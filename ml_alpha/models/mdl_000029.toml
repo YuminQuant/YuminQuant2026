@@ -1,0 +1,73 @@
+# HTZQ AI 60: single NN, sample-weighted 10-class logistic ordinal loss.
+# No model ensemble. See docs/ORDINAL_REGRESSION.md.
+run_id = "mdl_000029"
+alpha_id = "mdl_000029"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "mad5_zscore_rank_label"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000029/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "ordinal_nn_sw"
+class = "yq_ml_alpha.models.ordinal_model.OrdinalAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000029/artifacts"
+
+[model.params]
+hidden_size = 64
+n_classes = 10
+rank_weight_half_life = 0.5
+negative_slope = 0.01
+lr = 0.0001
+weight_decay = 0.0
+epochs = 100
+patience = 20
+# Training uses a complete date per step; this is validation/inference chunk size.
+predict_batch_size = 3000
+seed = 42
+device = "cuda"

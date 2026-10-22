@@ -37,6 +37,10 @@ Current formal factor configs:
 
 ## CLI
 
+`models/mdl_000029.toml` adds the Huatai ordinal NN: one scalar network trained
+with sample-weighted 10-class logistic ordinal loss, without an ensemble.
+See [objective, report alignment and CLI](docs/ORDINAL_REGRESSION.md).
+
 `models/mdl_000028.toml` adds the Huatai investor-disagreement ensemble: 50 GPU
 LightGBM regressors, each using a seeded half-factor subset, then an equal-weight
 combination of daily standardized mean prediction and negative prediction std.
@@ -197,7 +201,7 @@ LightGBM and `cutoff_<training_cutoff>_active_<activation_date>` for XGBoost:
 - `cache_samples=false`: no sample-cache output by default. Optuna studies
   run in memory; no SQLite study database or full trial-history file is saved.
 
-The numbered model catalog comprises `mdl_000001`–`mdl_000028`; see
+The numbered model catalog comprises `mdl_000001`–`mdl_000029`; see
 `model_registry.toml` and [the ID migration table](docs/HUATAI_BASELINES.md).
 Additional implementations remain available: untuned LightGBM,
 eLSTM+RankNet and generic sklearn adapters.

@@ -453,3 +453,19 @@ preprocess = "mad5_zscore_features"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "factor_frame: data/factors/stock/daily, columns=__all__"
 tags = ["HTZQ", "lightgbm", "gpu", "ensemble", "disagreement", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000029"
+alpha_id = "mdl_000029"
+run_id = "mdl_000029"
+config = "models/mdl_000029.toml"
+status = "active"
+display_name = "HTZQ sample-weighted ordinal neural network"
+description = "One 64-unit NN with per-date 10-class logistic ordinal loss and return-rank half-life sample weights; scalar score, single seed42, no ensemble."
+model_class = "yq_ml_alpha.models.ordinal_model.OrdinalAlphaModel"
+model_family = "ordinal_nn"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_rank_label"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "nn", "ordinal_regression", "sample_weighted", "factor_combination"]

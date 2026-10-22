@@ -1,0 +1,83 @@
+# HTZQ report 80: 50 random-feature LightGBM investors; see docs/INVESTOR_DISAGREEMENT.md.
+# Final score = 0.5*zscore(mean prediction) + 0.5*zscore(-prediction std), per date.
+# GPU training is required by this config; no automatic CPU fallback.
+run_id = "mdl_000028"
+alpha_id = "mdl_000028"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "mad5_zscore_features"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000028/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "investor_disagreement"
+class = "yq_ml_alpha.models.investor_disagreement_model.InvestorDisagreementAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000028/artifacts"
+
+[model.params]
+n_investors = 50
+investor_feature_fraction = 0.5
+seed = 42
+prediction_batch_size = 10000
+
+[model.params.estimator]
+objective = "regression"
+device_type = "gpu"
+n_estimators = 100
+num_leaves = 31
+max_depth = -1
+learning_rate = 0.1
+min_child_samples = 20
+subsample = 1.0
+subsample_freq = 0
+colsample_bytree = 1.0
+reg_alpha = 0.0
+reg_lambda = 0.0
+max_bin = 255
+n_jobs = 8
+verbosity = -1

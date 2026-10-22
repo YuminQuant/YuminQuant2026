@@ -37,6 +37,11 @@ Current formal factor configs:
 
 ## CLI
 
+`models/mdl_000028.toml` adds the Huatai investor-disagreement ensemble: 50 GPU
+LightGBM regressors, each using a seeded half-factor subset, then an equal-weight
+combination of daily standardized mean prediction and negative prediction std.
+See [score semantics, resources and CLI](docs/INVESTOR_DISAGREEMENT.md).
+
 `models/mdl_000027.toml` adds the Huatai factor-time CNN: a single 10-channel
 5x5 convolution over five daily factor snapshots, no pooling, 100/70/40 dense
 layers and a scalar return head. It replaces the unconfigured legacy single-date
@@ -192,7 +197,7 @@ LightGBM and `cutoff_<training_cutoff>_active_<activation_date>` for XGBoost:
 - `cache_samples=false`: no sample-cache output by default. Optuna studies
   run in memory; no SQLite study database or full trial-history file is saved.
 
-The numbered model catalog comprises `mdl_000001`–`mdl_000027`; see
+The numbered model catalog comprises `mdl_000001`–`mdl_000028`; see
 `model_registry.toml` and [the ID migration table](docs/HUATAI_BASELINES.md).
 Additional implementations remain available: untuned LightGBM,
 eLSTM+RankNet and generic sklearn adapters.

@@ -437,3 +437,19 @@ preprocess = "mad5_zscore_features"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "factor_frame: data/factors/stock/daily, columns=__all__, daily sequence length 5"
 tags = ["HTZQ", "cnn", "regression", "factor_combination", "daily_sequence"]
+
+[[models]]
+model_id = "mdl_000028"
+alpha_id = "mdl_000028"
+run_id = "mdl_000028"
+config = "models/mdl_000028.toml"
+status = "active"
+display_name = "HTZQ investor recognition and disagreement ensemble"
+description = "50 fixed-parameter LightGBM GPU regressors, each using a seeded half-factor subset; equal-weight daily zscores of mean prediction and negative population standard deviation."
+model_class = "yq_ml_alpha.models.investor_disagreement_model.InvestorDisagreementAlphaModel"
+model_family = "investor_disagreement"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "lightgbm", "gpu", "ensemble", "disagreement", "factor_combination"]

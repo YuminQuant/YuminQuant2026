@@ -32,8 +32,9 @@ class MLPAlphaModel(AlphaModel):
         x_train = _features(train_data, context.feature_columns)
         y_train = train_data[context.label_column].astype("float32").to_numpy().reshape(-1, 1)
         self.input_dim = x_train.shape[1]
-        self.model = _build_network(nn, self.input_dim, self.params).to(device)
-        optimizer = torch.optim.Adam(
+        self.model = self._build_model(nn).to(device)
+        optimizer_cls = torch.optim.RMSprop if self.params["optimizer"] == "rmsprop" else torch.optim.Adam
+        optimizer = optimizer_cls(
             self.model.parameters(),
             lr=float(self.params["lr"]),
             weight_decay=float(self.params["weight_decay"]),
@@ -132,12 +133,16 @@ class MLPAlphaModel(AlphaModel):
             "device": str(device),
             "hidden_layers": list(self.params["hidden_layers"]),
             "activation": self.params["activation"],
+            "optimizer": self.params["optimizer"],
             "dropout": float(self.params["dropout"]),
             "lr": float(self.params["lr"]),
             "weight_decay": float(self.params["weight_decay"]),
             "batch_size": int(self.params["batch_size"]),
             "patience": int(self.params["patience"]),
         }
+
+    def _build_model(self, nn):
+        return _build_network(nn, self.input_dim, self.params)
 
     def predict(self, data: pd.DataFrame, context: ModelContext) -> pd.Series:
         if self.model is None:
@@ -195,7 +200,7 @@ class MLPAlphaModel(AlphaModel):
         model = cls()
         model.input_dim = int(checkpoint["input_dim"])
         model.params = _params(checkpoint["params"])
-        model.model = _build_network(nn, model.input_dim, model.params)
+        model.model = model._build_model(nn)
         model.model.load_state_dict(checkpoint["state_dict"])
         model.model.eval()
         model.loss_history = list(checkpoint.get("loss_history", []))
@@ -218,8 +223,11 @@ def _params(raw: dict[str, Any]) -> dict[str, Any]:
     params["device"] = str(params.get("device", "auto"))
     params["patience"] = int(params.get("patience", 10))
     params["activation"] = str(params.get("activation", "relu")).lower()
+    params["optimizer"] = str(params.get("optimizer", "adam")).lower()
     if params["activation"] not in {"relu", "tanh"}:
         raise ValueError("MLP activation must be relu or tanh")
+    if params["optimizer"] not in {"adam", "rmsprop"}:
+        raise ValueError("optimizer must be adam or rmsprop")
     if params["batch_size"] <= 0:
         raise ValueError("batch_size must be positive")
     return params

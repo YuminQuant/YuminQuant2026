@@ -37,6 +37,11 @@ Current formal factor configs:
 
 ## CLI
 
+`models/mdl_000027.toml` adds the Huatai factor-time CNN: a single 10-channel
+5x5 convolution over five daily factor snapshots, no pooling, 100/70/40 dense
+layers and a scalar return head. It replaces the unconfigured legacy single-date
+Conv1d implementation. See [architecture, local choices and CLI](docs/HUATAI_CNN.md).
+
 `models/mdl_000006.toml`–`mdl_000018.toml` add Huatai baseline configurations:
 Logistic, SGD hinge/modified Huber, SVR, GaussianNB, LDA/QDA, RandomForest,
 AdaBoost, GBDT, MLP, RNN and GRU. Regression-capable models predict returns;
@@ -187,10 +192,10 @@ LightGBM and `cutoff_<training_cutoff>_active_<activation_date>` for XGBoost:
 - `cache_samples=false`: no sample-cache output by default. Optuna studies
   run in memory; no SQLite study database or full trial-history file is saved.
 
-The numbered model catalog comprises `mdl_000001`–`mdl_000026`; see
+The numbered model catalog comprises `mdl_000001`–`mdl_000027`; see
 `model_registry.toml` and [the ID migration table](docs/HUATAI_BASELINES.md).
 Additional implementations remain available: untuned LightGBM,
-CNN, eLSTM+RankNet and generic sklearn adapters.
+eLSTM+RankNet and generic sklearn adapters.
 IC-sign equal weighting and feature-mean baselines are not learned ML models.
 BarGRU, MultiBarGRU, ResidualMultiBarGRU and LogsigOrthogonalMLP are currently
 configured in the formal factor layer. Removing the six legacy monthly

@@ -321,6 +321,7 @@ def _release_accelerator_memory() -> None:
 
 def _uses_sequence_dataset(config: MlAlphaConfig) -> bool:
     return config.model.class_path in {
+        "yq_ml_alpha.models.cnn_model.CNNAlphaModel",
         "yq_ml_alpha.models.elstm_ranknet_model.eLSTMRankNetAlphaModel",
         "yq_ml_alpha.models.sequence_model.RNNAlphaModel",
         "yq_ml_alpha.models.sequence_model.LSTMAlphaModel",

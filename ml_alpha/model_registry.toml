@@ -421,3 +421,19 @@ preprocess = "provider_mad5_zscore_label_mad5_zscore"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "factor_sequence: data/factors/stock/daily, columns=__all__"
 tags = ["DFZQ", "vae", "gru", "probabilistic_factor_model", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000027"
+alpha_id = "mdl_000027"
+run_id = "mdl_000027"
+config = "models/mdl_000027.toml"
+status = "active"
+display_name = "HTZQ factor-time convolutional return regression"
+description = "5 daily formal-factor snapshots; one 10-channel 5x5 valid convolution, no pooling, 100/70/40 dense layers and scalar MSE head; report dropout probability 0.8."
+model_class = "yq_ml_alpha.models.cnn_model.CNNAlphaModel"
+model_family = "factor_time_cnn"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__, daily sequence length 5"
+tags = ["HTZQ", "cnn", "regression", "factor_combination", "daily_sequence"]

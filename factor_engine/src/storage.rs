@@ -174,6 +174,14 @@ impl FactorStorage {
     }
 
     pub fn write_results(&self, results: &[FactorSeries]) -> Result<Vec<PathBuf>> {
+        self.write_results_with_progress(results, |_, _, _, _| {})
+    }
+
+    pub fn write_results_with_progress(
+        &self,
+        results: &[FactorSeries],
+        mut progress: impl FnMut(usize, usize, i32, &str),
+    ) -> Result<Vec<PathBuf>> {
         let mut grouped = BTreeMap::<_, BTreeMap<String, Vec<&crate::core::FactorValue>>>::new();
         for series in results {
             let column_name = series.spec.output_column();
@@ -188,12 +196,16 @@ impl FactorStorage {
             }
         }
 
+        let total = grouped.len();
         let mut written = Vec::new();
         for ((asset_class, frequency, trade_date), columns) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
+            progress(written.len(), total, trade_date, "merge");
             let table = merge_factor_columns(&path, frequency, trade_date, &columns)?;
+            progress(written.len(), total, trade_date, "write");
             write_parquet(&path, &table)?;
             written.push(path);
+            progress(written.len(), total, trade_date, "complete");
         }
         Ok(written)
     }

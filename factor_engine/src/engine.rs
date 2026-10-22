@@ -435,6 +435,13 @@ impl Engine {
                     );
                     let batch_requests = merge_requests(contextual_requirements.all.clone());
                     let load_started = Instant::now();
+                    progress.update(format!(
+                        "stage={} phase=load dates={}..{} factors={}",
+                        stage_name,
+                        batch_start_date,
+                        batch_end_date,
+                        batch_specs.len()
+                    ));
                     let mut pool = DataPool::load_with_financial_context(
                         &loader,
                         &batch_requests,
@@ -462,8 +469,19 @@ impl Engine {
                             &progress,
                         )?;
                         profiles.append(&mut raw_profiles);
+                        progress.update(format!(
+                            "stage={} phase=raw_panel dates={}..{}",
+                            stage_name, batch_start_date, batch_end_date
+                        ));
                         pool.set_intraday_daily_raw_panel(raw_table, &context)?;
                     }
+                    progress.update(format!(
+                        "stage={} phase=compute dates={}..{} factors={}",
+                        stage_name,
+                        batch_start_date,
+                        batch_end_date,
+                        batch_specs.len()
+                    ));
                     let compute_started = Instant::now();
                     let results = compute_factor_batch(
                         &batch_factors,
@@ -488,10 +506,27 @@ impl Engine {
                         })
                         .collect::<Vec<_>>();
                     let write_started = Instant::now();
+                    progress.update(format!(
+                        "stage={} phase=write_prepare dates={}..{}",
+                        stage_name, batch_start_date, batch_end_date
+                    ));
                     let written_paths = if context.target_dates.is_empty() {
                         Vec::new()
                     } else {
-                        storage.write_results(&results)?
+                        storage.write_results_with_progress(
+                            &results,
+                            |done, total, date, phase| {
+                                progress.update(format!(
+                                    "stage={} phase={} date={} files={}/{} elapsed_ms={}",
+                                    stage_name,
+                                    phase,
+                                    date,
+                                    done,
+                                    total,
+                                    write_started.elapsed().as_millis()
+                                ));
+                            },
+                        )?
                     };
                     let write_ms = write_started.elapsed().as_millis();
                     output_paths.extend(written_paths);
@@ -693,6 +728,11 @@ fn materialize_intraday_raw_table(
         .iter()
         .filter(|requirement| raw_id_set.contains(&requirement.spec.raw_id))
     {
+        progress.update(format!(
+            "stage=intraday_raw_cache_check raw={} dates={}",
+            requirement.spec.raw_id,
+            context.load_dates.len()
+        ));
         let mut missing_dates = storage
             .missing_dates(
                 &requirement.spec,
@@ -1217,6 +1257,11 @@ fn materialize_intraday_raw_table(
         storage.write_metadata(&materialized_specs)?;
     }
 
+    progress.update(format!(
+        "stage=intraday_raw_read dates={} raw={}",
+        context.load_dates.len(),
+        raw_ids.len()
+    ));
     Ok((
         storage.load_raw_by_dates(request.asset_class, raw_ids, &context.load_dates)?,
         profiles,

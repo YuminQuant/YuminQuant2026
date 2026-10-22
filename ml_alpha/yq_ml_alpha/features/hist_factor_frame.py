@@ -14,7 +14,7 @@ class HistFactorFrameProvider(FactorSequenceProvider):
         )
 
     def dataset_identity(self):
-        return {"factor_history": "mad5_zscore_v1", "concepts": self.concepts.identity(),
+        return {"factor_history": super().dataset_identity()["factor_history"], "concepts": self.concepts.identity(),
                 "market_cap": "daily_basic_total_mv"}
 
     def load(self, trade_date):

@@ -101,6 +101,12 @@ HIST 的主营业务 I 分类关系由 Rust `derive-hist-concepts` 生产。
 拒绝按行拆验证集，不在磁盘写预处理缓存。`mdl_000026` 的 FactorVAE 使用此入口，
 后验分支只用于训练，验证/预测只调用先验。见 [FACTOR_VAE.md](FACTOR_VAE.md)。
 
+`mdl_000030` 的 DFQ-TimesNet 同样使用 `factor_sequence`，通过
+`features.params.history_transform="zscore_clip3"` 对每个历史截面先 z-score、后 clip。
+该可选变换写入 provider 数据身份；未指定时保留现有 MAD5/zscore 及旧默认指纹。
+网络不跨股票交互，完整日期 MSE 可通过股票分块梯度累积执行，每日期只更新一次参数。
+固定 5/60 日周期、参数平均和数据口径见 [DFQ_TIMESNET.md](DFQ_TIMESNET.md)。
+
 | Task / 任务 | Files / 文件 |
 | --- | --- |
 | Experiment / 模型实验 | `models/<model_id>.toml`, catalog entry in `model_registry.toml` |

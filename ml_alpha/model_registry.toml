@@ -469,3 +469,19 @@ preprocess = "mad5_zscore_rank_label"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "factor_frame: data/factors/stock/daily, columns=__all__"
 tags = ["HTZQ", "nn", "ordinal_regression", "sample_weighted", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000030"
+alpha_id = "mdl_000030"
+run_id = "mdl_000030"
+config = "models/mdl_000030.toml"
+status = "active"
+display_name = "DFQ-TimesNet local factor sequence alpha"
+description = "60 daily formal-factor snapshots; token convolution, fixed 5/60 periods, shared two-stage Inception with equal means and residual; scalar last-step output, seed42."
+model_class = "yq_ml_alpha.models.timesnet_model.TimesNetAlphaModel"
+model_family = "timesnet"
+label = "future_vwap_return_10d"
+preprocess = "provider_zscore_clip3_label_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_sequence: data/factors/stock/daily, columns=__all__, length=60"
+tags = ["DFZQ", "timesnet", "inception", "fixed_periods", "factor_combination"]

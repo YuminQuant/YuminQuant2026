@@ -1,0 +1,83 @@
+# DFQ-TimesNet, local formal-factor inputs. See docs/DFQ_TIMESNET.md.
+run_id = "mdl_000030"
+alpha_id = "mdl_000030"
+data_root = "data"
+output_root = "data/models"
+data_version = "timesnet_local_factors_v1"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+# History normalization is owned by the sequence provider; labels by the model.
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_sequence"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[features.params]
+sequence_length = 60
+history_transform = "zscore_clip3"
+memory_budget_mb = 512
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "dfq_timesnet"
+class = "yq_ml_alpha.models.timesnet_model.TimesNetAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000030/artifacts"
+
+[model.params]
+sequence_length = 60
+hidden_size = 128
+feedforward_size = 128
+num_blocks = 1
+periods = [5, 60]
+num_kernels = 3
+epochs = 200
+patience = 20
+average_epochs = 5
+dates_per_epoch = 100
+# Stock chunks; one optimizer update per complete date.
+batch_size = 3000
+lr = 0.00009
+weight_decay = 0.0
+min_delta = 0.00000001
+seed = 42
+device = "cuda"

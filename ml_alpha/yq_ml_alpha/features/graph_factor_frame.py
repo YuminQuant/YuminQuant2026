@@ -22,6 +22,9 @@ class FactorHistory(DailyTensorSequence):
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
         self.fill_value = config.preprocess.feature_fill_value
+        self.history_transform = str(params.get("history_transform", "mad5_zscore_rank_label"))
+        if self.history_transform not in {"mad5_zscore_rank_label", "zscore_clip3"}:
+            raise ValueError("unsupported factor history_transform")
         self.available_dates = sorted(int(p.stem) for p in Path(self.root).glob("*/*.parquet"))
         if not self.available_dates:
             raise ValueError(f"no factor history under {self.root}")
@@ -40,7 +43,7 @@ class FactorHistory(DailyTensorSequence):
         # Normalize before label joining. Missing future labels never change graph inputs.
         frame[self.columns] = frame[self.columns].apply(pd.to_numeric, errors="coerce").astype("float64")
         frame = apply_cross_section_transform(
-            frame, "mad5_zscore_rank_label", self.columns, [], self.fill_value,
+            frame, self.history_transform, self.columns, [], self.fill_value,
         ).set_index("ts_code")[self.columns].astype("float32")
         return self._remember(date, frame)
 
@@ -62,7 +65,8 @@ class FactorSequenceProvider(FeatureProvider):
         self.sequence.set_calendar_dates(dates)
 
     def dataset_identity(self):
-        return {"factor_history": "mad5_zscore_v1", "membership": "complete_history_before_label_join"}
+        transform = "mad5_zscore_v1" if self.sequence.history_transform == "mad5_zscore_rank_label" else "zscore_clip3_v1"
+        return {"factor_history": transform, "membership": "complete_history_before_label_join"}
 
     def load(self, trade_date):
         symbols = self.sequence.symbols(trade_date)
@@ -75,7 +79,7 @@ class GraphFactorFrameProvider(FactorSequenceProvider):
         self.relations = StockRelations(_project_path(config.model.params.get("relation_root", "data/derived/stock/relations")))
 
     def dataset_identity(self):
-        return {"factor_history": "mad5_zscore_v1", "relations": self.relations.identity()}
+        return {"factor_history": super().dataset_identity()["factor_history"], "relations": self.relations.identity()}
 
     def load(self, trade_date):
         self.relations.identity()

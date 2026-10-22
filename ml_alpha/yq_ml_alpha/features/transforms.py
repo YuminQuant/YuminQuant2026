@@ -42,6 +42,18 @@ def available_transforms() -> list[str]:
     return sorted(TRANSFORM_REGISTRY)
 
 
+@register_transform("zscore_clip3")
+def _transform_zscore_clip3(frame, feature_columns, label_columns, feature_fill_value):
+    """Date-local zscore, then clip features only; no temporal normalization."""
+    output = frame.copy()
+    for column in feature_columns:
+        output[column] = output.groupby("trade_date", group_keys=False)[column].transform(_zscore_series).clip(-3.0, 3.0)
+    for column in label_columns:
+        if column in output.columns:
+            output[column] = output.groupby("trade_date", group_keys=False)[column].transform(_zscore_series)
+    return fill_feature_nan(output, feature_columns, feature_fill_value)
+
+
 def cross_section_rank(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     output = frame.copy()
     for column in columns:

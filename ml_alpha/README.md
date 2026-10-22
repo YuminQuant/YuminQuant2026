@@ -37,6 +37,10 @@ Current formal factor configs:
 
 ## CLI
 
+`models/mdl_000031.toml` adds DFQ-FactorGCL: binary main-business hypergraphs,
+learned hidden-factor prototypes and training-only temporal residual contrastive
+supervision. See [architecture, maturity safeguards and CLI](docs/DFQ_FACTOR_GCL.md).
+
 `models/mdl_000030.toml` adds DFQ-TimesNet on 60-day local factor histories:
 fixed 5/60-day periods, shared Inception convolutions, equal period fusion and
 a last-step scalar head. See [architecture, preprocessing and CLI](docs/DFQ_TIMESNET.md).
@@ -205,7 +209,7 @@ LightGBM and `cutoff_<training_cutoff>_active_<activation_date>` for XGBoost:
 - `cache_samples=false`: no sample-cache output by default. Optuna studies
   run in memory; no SQLite study database or full trial-history file is saved.
 
-The numbered model catalog comprises `mdl_000001`–`mdl_000030`; see
+The numbered model catalog comprises `mdl_000001`–`mdl_000031`; see
 `model_registry.toml` and [the ID migration table](docs/HUATAI_BASELINES.md).
 Additional implementations remain available: untuned LightGBM,
 eLSTM+RankNet and generic sklearn adapters.

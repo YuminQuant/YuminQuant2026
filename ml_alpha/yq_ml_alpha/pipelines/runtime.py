@@ -119,7 +119,7 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
 
 
 def _mature_dates(config, calendar, dates, training_date):
-    """Only labels fully observable at training-date close may enter fitting."""
+    """Labels and declared auxiliary supervision must mature by training-date close."""
     positions = {date: idx for idx, date in enumerate(calendar.dates)}
     horizon = _label_horizon(config)
     limit = positions[training_date]
@@ -135,7 +135,10 @@ def _label_horizon(config: MlAlphaConfig) -> int:
         horizon = int(match.group(1)) + 1
     if not isinstance(horizon, int) or horizon < 0:
         raise ValueError("label.lookahead_days must be a non-negative integer")
-    return horizon
+    auxiliary = config.features.params.get("supervision_lookahead_days", 0)
+    if isinstance(auxiliary, bool) or not isinstance(auxiliary, int) or auxiliary < 0:
+        raise ValueError("features.params.supervision_lookahead_days must be a non-negative integer")
+    return max(horizon, auxiliary)
 
 
 def _settled_dates(config, calendar, dates, prediction_start):
@@ -272,8 +275,11 @@ def _load_train_valid(config, dataset, calendar, window, progress):
         except BaseException:
             train.close()
             raise
+        for bundle in (train, valid):
+            bundle.information_cutoff = window.training_cutoff_date
+            bundle.supervision_lookahead_days = config.features.params.get("supervision_lookahead_days", 0)
         return train, valid
-    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel", "rawbar", "resnet_panel", "derived_chip_age", "factor_sequence", "graph_factor_frame", "hist_factor_frame"}:
+    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel", "rawbar", "resnet_panel", "derived_chip_age", "factor_sequence", "graph_factor_frame", "hist_factor_frame", "concept_factor_sequence"}:
         raise ValueError("validation_unit=rows supports tabular datasets only")
     progress.step("load_train_valid_pool")
     pool = _load_bundle(config, dataset, calendar, window.train_dates, True, split_name="train_valid_pool")

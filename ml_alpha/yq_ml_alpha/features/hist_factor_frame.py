@@ -5,6 +5,26 @@ from yq_ml_alpha.data.stores import daily_path
 from yq_ml_alpha.features.graph_factor_frame import FactorSequenceProvider
 
 
+class ConceptFactorSequenceProvider(FactorSequenceProvider):
+    """Factor histories plus dated binary concepts; no market-cap weighting."""
+
+    def __init__(self, config, provider):
+        super().__init__(config, provider)
+        self.concepts = HistConcepts(_project_path(
+            config.model.params.get("concept_root", "data/derived/stock/hist_concepts")))
+
+    def dataset_identity(self):
+        return {**super().dataset_identity(), "concepts": self.concepts.identity(),
+                "incidence": "asof_binary_no_market_cap"}
+
+    def load(self, trade_date):
+        self.concepts.identity()
+        frame = super().load(trade_date)
+        if not frame.empty and not daily_path(self.concepts.root, trade_date).exists():
+            raise FileNotFoundError(f"missing concepts on {trade_date}; run derive-hist-concepts")
+        return frame
+
+
 class HistFactorFrameProvider(FactorSequenceProvider):
     def __init__(self, config, provider):
         super().__init__(config, provider)

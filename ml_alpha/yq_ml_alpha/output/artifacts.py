@@ -36,6 +36,12 @@ def artifact_identity(config, window, dataset) -> dict:
             "training_cutoff_date": window.training_cutoff_date,
             "activation_date": window.activation_date,
         }
+    auxiliary = config.features.params.get("supervision_lookahead_days", 0)
+    if auxiliary:
+        identity["auxiliary_supervision"] = {
+            "lookahead_days": auxiliary,
+            "policy": "max_label_and_auxiliary_horizon_at_training_close_and_split",
+        }
     if config.train_scheme.validation_unit == "rows":
         identity["validation_split"] = {
             "unit": "rows", "ratio": config.train_scheme.validation_ratio,

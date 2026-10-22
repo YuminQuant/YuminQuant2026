@@ -11,9 +11,9 @@ from yq_ml_alpha.data.stores import daily_path
 
 
 class HistConcepts:
-    def __init__(self, root, basic_root):
+    def __init__(self, root, basic_root=None):
         self.root = Path(root)
-        self.basic_root = Path(basic_root)
+        self.basic_root = Path(basic_root) if basic_root is not None else None
         self.manifest = None
 
     def identity(self):
@@ -29,9 +29,7 @@ class HistConcepts:
             self.manifest = metadata
         return self.manifest
 
-    def load(self, date, symbols, device):
-        import torch
-
+    def _membership(self, date, symbols):
         self.identity()
         frame = pd.read_parquet(daily_path(self.root, date))
         keys = ["trade_date", "ts_code", "concept_id", "end_date", "available_date"]
@@ -46,6 +44,22 @@ class HistConcepts:
         frame = frame.loc[frame.ts_code.isin(positions)]
         group_index, groups = pd.factorize(frame.concept_id, sort=True)
         stock_index = frame.ts_code.map(positions).to_numpy(dtype=np.int64)
+        return stock_index, group_index, len(groups)
+
+    def load_binary(self, date, symbols, device):
+        """As-of 0/1 incidence, without a market-cap dependency."""
+        import torch
+
+        stocks, concepts, count = self._membership(date, symbols)
+        return (torch.as_tensor(stocks, dtype=torch.long, device=device),
+                torch.as_tensor(concepts, dtype=torch.long, device=device), count)
+
+    def load(self, date, symbols, device):
+        import torch
+
+        stock_index, group_index, count = self._membership(date, symbols)
+        if self.basic_root is None:
+            raise ValueError("HIST market-cap weighting requires basic_root")
         basic = pd.read_parquet(daily_path(self.basic_root, date), columns=["ts_code", "total_mv"])
         if basic.ts_code.duplicated().any():
             raise ValueError(f"duplicate market capitalization rows on {date}")
@@ -58,6 +72,6 @@ class HistConcepts:
         return (
             torch.as_tensor(stock_index, dtype=torch.long, device=device),
             torch.as_tensor(group_index, dtype=torch.long, device=device),
-            len(groups),
+            count,
             torch.as_tensor(caps, device=device),
         )

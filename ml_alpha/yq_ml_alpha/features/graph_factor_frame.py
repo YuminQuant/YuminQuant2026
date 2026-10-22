@@ -14,10 +14,12 @@ from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
 
 class FactorHistory(DailyTensorSequence):
-    def __init__(self, config, provider):
+    def __init__(self, config, provider, sequence_length=None, memory_budget_mb=None):
         params = config.features.params
         super().__init__(config.features.root, provider.feature_columns, (len(provider.feature_columns),),
-                         int(params.get("sequence_length", 40)), int(params.get("memory_budget_mb", 512)))
+                         int(params.get("sequence_length", 40) if sequence_length is None else sequence_length),
+                         int(params.get("memory_budget_mb", 512) if memory_budget_mb is None else memory_budget_mb))
+        self.config = config
         self.provider = provider
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
@@ -52,6 +54,13 @@ class FactorHistory(DailyTensorSequence):
         if not dates or dates[0] < self.first_date:
             return []
         return super().symbols(date)
+
+    def forward_view(self, length):
+        """Independent bounded reader for supervised future slices; caller must close it."""
+        view = FactorHistory(self.config, self.provider, sequence_length=length,
+                             memory_budget_mb=self.config.features.params.get("future_memory_budget_mb", 128))
+        view.set_calendar_dates(self.dates)
+        return view
 
 
 class FactorSequenceProvider(FeatureProvider):

@@ -485,3 +485,19 @@ preprocess = "provider_zscore_clip3_label_zscore"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "factor_sequence: data/factors/stock/daily, columns=__all__, length=60"
 tags = ["DFZQ", "timesnet", "inception", "fixed_periods", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000031"
+alpha_id = "mdl_000031"
+run_id = "mdl_000031"
+config = "models/mdl_000031.toml"
+status = "active"
+display_name = "DFQ-FactorGCL hypergraph and temporal residual contrastive alpha"
+description = "30-day local factor histories, binary main-business I concepts, 48 learned prototypes; training-only 10-day future GRU, shared historical incidence, temporal/cross-sectional contrastive losses and scalar historical prediction."
+model_class = "yq_ml_alpha.models.factor_gcl_model.FactorGCLAlphaModel"
+model_family = "factor_gcl"
+label = "future_vwap_return_10d"
+preprocess = "provider_zscore_clip3_label_rank_pct_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "concept_factor_sequence: data/factors/stock/daily, columns=__all__, length=30"
+tags = ["DFZQ", "factor_gcl", "hypergraph", "gru", "contrastive_learning", "factor_combination"]

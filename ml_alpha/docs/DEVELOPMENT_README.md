@@ -107,6 +107,13 @@ HIST 的主营业务 I 分类关系由 Rust `derive-hist-concepts` 生产。
 网络不跨股票交互，完整日期 MSE 可通过股票分块梯度累积执行，每日期只更新一次参数。
 固定 5/60 日周期、参数平均和数据口径见 [DFQ_TIMESNET.md](DFQ_TIMESNET.md)。
 
+`concept_factor_sequence` 为 FactorGCL 提供完整历史截面和主营业务 I 分类二值超图，
+复用 HIST 概念派生格式，不读取市值。需要未来特征作为辅助监督的配置必须声明
+`features.params.supervision_lookahead_days`，公共窗口按它与标签到期天数的最大值
+执行成熟度和训练/验证隔离；bundle 携带训练信息截止日供读取方复核。
+该声明默认 0，原配置窗口及默认 manifest 不变。未来 reader 只在训练期间创建，
+验证/预测只用历史输入。见 [DFQ_FACTOR_GCL.md](DFQ_FACTOR_GCL.md)。
+
 | Task / 任务 | Files / 文件 |
 | --- | --- |
 | Experiment / 模型实验 | `models/<model_id>.toml`, catalog entry in `model_registry.toml` |

@@ -1,4 +1,4 @@
-# DFQ-FactorVAE / mdl_000013
+# DFQ-FactorVAE / mdl_000026
 
 参考东方证券 2024-05-14《因子选股系列之一〇三：DFQ-FactorVAE：融合变分自编码器
 和概率动态因子模型的 alpha 预测方案》，架构依据第 7–11 页图 2、5、8、11，
@@ -7,7 +7,7 @@
 
 ## 输入与本地口径
 
-- `models/mdl_000013.toml`，输入为 `data/factors/stock/daily` 的有效正式因子。
+- `models/mdl_000026.toml`，输入为 `data/factors/stock/daily` 的有效正式因子。
   自动发现复用公共层规则：排除 metadata 标记为 `model_generated`、`deprecated`
   的列及自身输出列；metadata 应与本地因子库保持同步。
 - 每个样本使用包含当日在内的 **30 个连续交易日**，目标截面每 5 个交易日采样。
@@ -82,10 +82,10 @@ var_y[i] = sigma_alpha[i]^2 + sum_k beta[i,k]^2 * sigma_z[k]^2
   不包含股票索引、当前编码块、训练标签表、网络和优化器。不会落盘完整三年序列，
   也不会写 C 盘缓存。分块 CPU 输入会被检查点保留至当日反向结束，不能将缓存预算
   当作整个进程的内存上限。
-- 权重：`data/model_workspace/mdl_000013/artifacts/<window_id>/model.pkl`，
+- 权重：`data/model_workspace/mdl_000026/artifacts/<window_id>/model.pkl`，
   实际使用 torch checkpoint；同目录有 `model.manifest.json`、
   `loss_history.parquet`、`model_info.json`。checkpoint 保存列顺序、参数及结构版本。
-- 分数：`data/models/<year>/<YYYYMMDD>.parquet` 中的 `mdl_000013` 列，沿用公共日度宽表
+- 分数：`data/models/<year>/<YYYYMMDD>.parquet` 中的 `mdl_000026` 列，沿用公共日度宽表
   与 `trade_date`、`ts_code` 键，其他模型列保留。
 
 ## CLI
@@ -96,9 +96,9 @@ var_y[i] = sigma_alpha[i]^2 + sum_k beta[i,k]^2 * sigma_z[k]^2
 $py = 'D:\Users\Devin\anaconda383\python.exe'
 $env:PATH = 'D:\Users\Devin\anaconda383;D:\Users\Devin\anaconda383\Library\bin;D:\Users\Devin\anaconda383\Scripts;' + $env:PATH
 
-& $py -B -u -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000013.toml
-& $py -B -u -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000013.toml
+& $py -B -u -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000026.toml
+& $py -B -u -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000026.toml
 
 # 或一次完成训练和预测；不要在上面两条之后重复执行。
-& $py -B -u -m yq_ml_alpha model-run --config ml_alpha\models\mdl_000013.toml
+& $py -B -u -m yq_ml_alpha model-run --config ml_alpha\models\mdl_000026.toml
 ```

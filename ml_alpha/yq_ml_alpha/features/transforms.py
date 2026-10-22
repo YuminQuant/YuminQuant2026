@@ -165,6 +165,17 @@ def _zscore_log_rank_series(values: pd.Series) -> pd.Series:
     return transformed
 
 
+@register_transform("mad5_zscore_features")
+def _transform_mad5_zscore_features(
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+    label_columns: list[str],
+    feature_fill_value: float,
+) -> pd.DataFrame:
+    """Winsorize/standardize inputs while preserving original return labels."""
+    return _transform_mad5_zscore_rank_label(frame, feature_columns, [], feature_fill_value)
+
+
 @register_transform("mad5_zscore_rank_label")
 def _transform_mad5_zscore_rank_label(
     frame: pd.DataFrame,

@@ -1,0 +1,122 @@
+run_id = "mdl_000020"
+alpha_id = "mdl_000020"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20160101, 20211231]
+valid = [20220101, 20221231]
+predict = [20230101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "static"
+
+[label]
+id = "future_vwap_return_5d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "rank_gauss"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000020/cache"
+predict_batch_size = 20
+
+[model]
+name = "lightgbm_optuna"
+class = "yq_ml_alpha.models.lgbm_optuna_model.LightGBMOptunaAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000020/artifacts"
+
+[model.params]
+objective = "regression"
+# GPU is required: unavailable OpenCL support must raise, never fall back.
+device_type = "gpu"
+max_bin = 63
+subsample_freq = 1
+verbosity = -1
+random_state = 42
+n_jobs = -1
+
+[model.search]
+# Refit the selected parameters on train + validation after tuning.
+refit_on_validation = true
+n_trials = 20
+early_stopping_patience = 5
+# Relative MSE reduction of at least 0.01% resets patience.
+min_relative_improvement = 0.0001
+valid_fraction = 0.2
+random_state = 42
+show_progress_bar = false
+
+[model.search.space.n_estimators]
+type = "int"
+low = 300
+high = 800
+step = 100
+
+[model.search.space.learning_rate]
+type = "float"
+low = 0.005
+high = 0.2
+log = true
+
+[model.search.space.num_leaves]
+type = "int"
+low = 15
+high = 255
+
+[model.search.space.max_depth]
+type = "int"
+low = 3
+high = 12
+
+[model.search.space.min_child_samples]
+type = "int"
+low = 10
+high = 200
+
+[model.search.space.min_child_weight]
+type = "float"
+low = 0.0001
+high = 100.0
+log = true
+
+[model.search.space.subsample]
+type = "float"
+low = 0.5
+high = 1.0
+
+[model.search.space.colsample_bytree]
+type = "float"
+low = 0.5
+high = 1.0
+
+[model.search.space.reg_alpha]
+type = "float"
+low = 0.00000001
+high = 10.0
+log = true
+
+[model.search.space.reg_lambda]
+type = "float"
+low = 0.0001
+high = 100.0
+log = true

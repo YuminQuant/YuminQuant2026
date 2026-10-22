@@ -1,25 +1,28 @@
+# Huatai baseline adapted to the local factor library; see docs/HUATAI_BASELINES.md.
+# Train on each sampled date: top 30% = 1, bottom 30% = 0; predict all eligible stocks.
 run_id = "mdl_000006"
 alpha_id = "mdl_000006"
 data_root = "data"
 output_root = "data/models"
 
 [dates]
-train = [20110101, 20260424]
-valid = []
-predict = [20110101, 20260424]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
 
 [sample]
-train_frequency = "20"
+train_frequency = "5"
 predict_frequency = "daily"
 
 [train_scheme]
 type = "rolling"
-refit_frequency = "semiannual_end"
-train_lookback = "3y"
-validation_ratio = 0.2
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
 
 [label]
-id = "future_vwap_return_5d"
+id = "future_vwap_return_10d"
+lookahead_days = 11
 
 [universe]
 id = "mkt_all"
@@ -30,7 +33,7 @@ exclude_st = true
 exclude_bj = true
 
 [preprocess]
-cross_section_transform = "rank_gauss"
+cross_section_transform = "mad5_zscore_features"
 feature_fill_value = 0.0
 
 [features]
@@ -43,29 +46,22 @@ cache_samples = false
 cache_dir = "data/model_workspace/mdl_000006/cache"
 predict_batch_size = 20
 
-[model]
-name = "lstm"
-class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000006/artifacts"
-
-[model.params]
-sequence_length = 5
-sequence_frequency = "daily"
-hidden_size = 64
-num_layers = 1
-dropout = 0.0
-epochs = 100
-batch_size = 3000
-lr = 0.0001
-weight_decay = 0.0
-seed = 42
-device = "auto"
-patience = 10
-loss = "pearson_ic"
-
 [diagnostics]
 enabled = true
 print_epoch = true
 write_loss_history = true
 write_model_info = true
 write_window_summary = true
+
+[model]
+name = "logistic"
+class = "yq_ml_alpha.models.classical_model.LogisticRegressionAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000006/artifacts"
+
+[model.params]
+C = 0.001
+solver = "lbfgs"
+max_iter = 1000
+random_state = 42
+prediction_batch_size = 10000
+tail_fraction = 0.3

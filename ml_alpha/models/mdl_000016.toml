@@ -1,0 +1,71 @@
+# Huatai baseline adapted to the local factor library; see docs/HUATAI_BASELINES.md.
+# Regress untransformed 10-day VWAP returns; feature preprocessing does not alter labels.
+run_id = "mdl_000016"
+alpha_id = "mdl_000016"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "mad5_zscore_features"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000016/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "mlp"
+class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000016/artifacts"
+
+[model.params]
+hidden_layers = [40, 10]
+activation = "tanh"
+dropout = 0.2
+epochs = 100
+batch_size = 1000
+lr = 0.001
+weight_decay = 0.0
+seed = 42
+device = "auto"
+patience = 10

@@ -1,4 +1,4 @@
-# mdl_000011：异构图 GNN 与时序 GRU 因子合成
+# mdl_000024：异构图 GNN 与时序 GRU 因子合成
 
 依据东方证券《基于异构图神经网络的股票关联因子挖掘》
 （2024-01-02，因子选股系列之九十九）实现完整双分支。
@@ -94,7 +94,7 @@ GCN 邻居消息 = D^(-1/2) A D^(-1/2) H
 
 ```text
 T 日正式因子 ── 3 层异构 GNN ── 32 个弱因子 ── XGBoost Ranker ── 截面 z-score ─┐
-                                                                               ├─ 相加 → mdl_000011
+                                                                               ├─ 相加 → mdl_000024
 T-39..T 因子 ── 2 层 GRU ───── 32 个弱因子 ── XGBoost Ranker ── 截面 z-score ─┘
 ```
 
@@ -134,7 +134,7 @@ Ranker 搜索范围：
 
 ## 训练数据与信息边界
 
-配置 `models/mdl_000011.toml`：
+配置 `models/mdl_000024.toml`：
 
 - 每年重训，近 36 个自然月，前 33 月训练、后 3 月验证，每 5 个交易日采样。
 - 训练数据范围从 2016 年开始；计划从 2019 年起每日样本外预测。
@@ -193,13 +193,13 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-stock-rel
   --date-batch-size 20
 
 & $py -B -u -m yq_ml_alpha model-train `
-  --config ml_alpha\models\mdl_000011.toml
+  --config ml_alpha\models\mdl_000024.toml
 
 & $py -B -u -m yq_ml_alpha model-predict `
-  --config ml_alpha\models\mdl_000011.toml
+  --config ml_alpha\models\mdl_000024.toml
 
 # 如需一次完成训练和预测，用此命令替代上面两个命令。
-# & $py -B -u -m yq_ml_alpha model-run --config ml_alpha\models\mdl_000011.toml
+# & $py -B -u -m yq_ml_alpha model-run --config ml_alpha\models\mdl_000024.toml
 ```
 
 训练前还需确保对应日期的 `data/label/stock/daily` 中已有
@@ -207,10 +207,10 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-stock-rel
 
 产物：
 
-- 模型：`data/model_workspace/mdl_000011/artifacts/<window_id>/model.pkl`，
+- 模型：`data/model_workspace/mdl_000024/artifacts/<window_id>/model.pkl`，
   内容是 PyTorch checkpoint，包含两个编码器权重和两个 XGBoost Booster 原始字节。
 - 同目录 `model.manifest.json`、`loss_history.parquet`、`model_info.json`：
   配置指纹、每轮损失/验证指标，以及每路 20 次 trial 的参数、成绩和最佳迭代数。
 - 预测：`data/models/<year>/<YYYYMMDD>.parquet`，
-  宽表键为 `trade_date, ts_code`，新增信号列为 `mdl_000011`；
+  宽表键为 `trade_date, ts_code`，新增信号列为 `mdl_000024`；
   使用项目公共输出写入器保留其他模型列。

@@ -1,4 +1,4 @@
-# DFQ-HIST / mdl_000012
+# DFQ-HIST / mdl_000025
 
 参考东方证券 2024-02-07《DFQ-HIST：添加图信息的选股因子挖掘系统》，
 重点为第 6–9、13、16–17 页。结构图和公式优先于原版
@@ -7,7 +7,7 @@
 
 ## 本地版本范围
 
-这是 **因子合成模型**，管理在 `models/mdl_000012.toml`、
+这是 **因子合成模型**，管理在 `models/mdl_000025.toml`、
 `model_registry.toml`，不占用正式端到端因子的语义 ID。
 用户确认的首版范围：
 
@@ -106,7 +106,7 @@ N只股票 × 60交易日 × F个正式因子
 - 无入边锚点和零向量概念不参与后续注意力。按全体有效隐藏概念再次进行
   余弦 softmax 聚合，不通过股票分块裁剪关系。
 - 两个 backcast 相减，三个 forecast 向量相加后统一映射为标量。
-  不加入 XGBoost、Ranker 或与 mdl_000011 相同的正交因子损失。
+  不加入 XGBoost、Ranker 或与 mdl_000024 相同的正交因子损失。
 
 60 日序列、K=20、Dropout=0.1 等是用户确认的项目参数；
 GRU 的 2 层和 128 维由研报明确披露。模型输出是连续选股分数，
@@ -114,7 +114,7 @@ GRU 的 2 层和 128 维由研报明确披露。模型输出是连续选股分�
 
 ## 训练和防泄漏
 
-公共 `FactorSequenceProvider` 复用现有因子历史逻辑；mdl_000011 也沿用该公共基类，
+公共 `FactorSequenceProvider` 复用现有因子历史逻辑；mdl_000024 也沿用该公共基类，
 原有关系图、预处理和输出不变。
 
 - 每个历史日期独立做 MAD5 截尾、截面 z-score、缺失填 0；
@@ -166,19 +166,19 @@ $py = "D:\Users\Devin\anaconda383\python.exe"
 $env:PYTHONPATH = "$PWD\ml_alpha"
 $env:PATH = "D:\Users\Devin\anaconda383;D:\Users\Devin\anaconda383\Library\bin;D:\Users\Devin\anaconda383\Scripts;" + $env:PATH
 
-& $py -B -u -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000012.toml
-& $py -B -u -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000012.toml
+& $py -B -u -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000025.toml
+& $py -B -u -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000025.toml
 # 或训练与预测一起执行：
-& $py -B -u -m yq_ml_alpha model-run --config ml_alpha\models\mdl_000012.toml
+& $py -B -u -m yq_ml_alpha model-run --config ml_alpha\models\mdl_000025.toml
 ```
 
 概念只需覆盖目标样本日期，不必为60日输入额外扩展概念派生起点；
 因子历史本身仍需足够的前序交易日。10日VWAP标签已有对应库字段，
 其训练日期覆盖是否完整由正式运行加载时核对，不自动生成缺失标签。
 
-模型保存到 `data/model_workspace/mdl_000012/artifacts/annual_<year>/model.pkl`
+模型保存到 `data/model_workspace/mdl_000025/artifacts/annual_<year>/model.pkl`
 （Torch checkpoint，保存平均权重和精确因子顺序），以及公共 manifest、
-loss history 和 model info。预测列 `mdl_000012` 写入
+loss history 和 model info。预测列 `mdl_000025` 写入
 `data/models/<year>/<date>.parquet`，随后可由既有模型回测流程读取。
 
 这轮仅新增代码与文档、检查源数据格式；没有执行概念生成、训练、预测、

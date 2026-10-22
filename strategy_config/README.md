@@ -80,7 +80,7 @@ lot_size = 100
 model_root = "data/models"
 
 [strategy]
-signal_id = "mdl_000006"
+signal_id = "mdl_000019"
 signal_root = "data/models"
 rebalance_days = 5
 top_n = 20
@@ -150,7 +150,7 @@ T 日收盘信号在 T+1 开盘买入，T+6 开盘卖出，持有 5 个交易日
 
 股票账户自动读取 `chn_stock_data/dividend/*.parquet` 的已实施方案：登记日收盘锁定权益，除权日记送转股和税前现金股利，派息日前记应收款，送转股上市日前不可卖。真实未复权价格用于成交与估值；不再把除权降价单独当作亏损。`dividend_receivable` 纳入净资产但不可交易，`dividend_income_cum` 为累计税前现金股利。使用 `cash_div_tax`，不推算个人持有期差异化红利税；零碎送转股向下取整。缺派息/上市日期时警告并使用除权日。该模块处理分红送转，不模拟配股认购、合并换股等其他公司行动。
 
-本轮独立参数配置（初始资金均为 10 万、信号为 `mdl_000009`）：
+本轮独立参数配置（初始资金均为 10 万、信号为 `mdl_000022`）：
 
 ```powershell
 cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --config strategy_config/stock/strategy_001_top10_5d.toml
@@ -192,4 +192,4 @@ Minute valuation remains per bar in both output modes. Daily output only seriali
 
 `[strategy].exclude_top_n` 默认 0，必须小于 `top_n`。先取原 Top N，再剔除头部，不向后补位；余额仍遵循约等权整手分配。`[execution].respect_price_limits` 默认 true，设置 false 同时关闭策略分配和成交引擎中的涨停买入/跌停卖出限制；资金、整手、未上市送转股锁定、费用与行情缺失处理保持原样。
 
-初始资金 10 万元，信号 `mdl_000009`，持有 5 个交易日；NAV/PnL 都包含分红送转。研究结果位于本地 `strategy.ipynb`。
+初始资金 10 万元，信号 `mdl_000022`，持有 5 个交易日；NAV/PnL 都包含分红送转。研究结果位于本地 `strategy.ipynb`。

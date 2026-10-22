@@ -80,7 +80,7 @@ strategy_config/stock/strategy_001.toml
 
 逻辑 / Logic:
 
-- 读取 `data/models/{year}/{date}.parquet` 中的 `signal_id`，例如 `mdl_000006`。
+- 读取 `data/models/{year}/{date}.parquet` 中的 `signal_id`，例如 `mdl_000019`。
 - 每 `rebalance_days` 个交易日调仓一次。
 - 剔除 `.BJ`，选择因子值最高的 `top_n` 只股票。
 - 按账户权益等权目标市值下单。

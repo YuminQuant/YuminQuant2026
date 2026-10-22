@@ -1,0 +1,73 @@
+run_id = "mdl_000022"
+alpha_id = "mdl_000022"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20160101, 20260424]
+valid = []
+predict = [20180101, 20260424]
+
+[sample]
+train_frequency = "10"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "monthly_end"
+train_lookback = "24m"
+validation_ratio = 0.2
+validation_unit = "rows"
+prediction_activation = "after_label_maturity"
+start_from_features = true
+
+[label]
+id = "future_vwap_return_10d"
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "rank_gauss"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000022/cache"
+predict_batch_size = 20
+
+[model]
+name = "xgboost_fixed"
+class = "yq_ml_alpha.models.xgb_model.XGBoostAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000022/artifacts"
+
+[model.params]
+objective = "reg:squarederror"
+tree_method = "gpu_hist"
+gpu_id = 0
+predictor = "gpu_predictor"
+n_estimators = 600
+# Retain the user's earlier preference for a low fixed learning rate.
+learning_rate = 0.001
+max_depth = 6
+min_child_weight = 10.0
+subsample = 0.8
+colsample_bytree = 0.8
+reg_alpha = 0.1
+reg_lambda = 10.0
+gamma = 0.0
+random_state = 42
+n_jobs = -1
+# One fit per window on train + validation, matching 021's final-fit coverage.
+# No Optuna, preliminary fit, per-round validation or tree early stopping.
+fit_on_validation = true

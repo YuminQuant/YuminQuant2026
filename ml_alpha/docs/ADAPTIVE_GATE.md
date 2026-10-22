@@ -1,4 +1,4 @@
-# 单门自适应因子合成模型 mdl_000010
+# 单门自适应因子合成模型 mdl_000023
 
 依据华泰证券 2023-12-01《自适应网络：从削足适履到量体裁衣》，第 8 页图 6、
 第 9 页表 7、第 17–18 页单门参数。这是 `models/` 下的因子合成实验，
@@ -66,10 +66,10 @@ Adam lr=0.001、patience=20、单种子 42。研报的“batch size 32、每个�
 ```powershell
 $py = "D:\Users\Devin\anaconda383\python.exe"
 $env:PYTHONPATH = "$PWD\ml_alpha"
-& $py -B -u -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000010.toml
-& $py -B -u -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000010.toml
+& $py -B -u -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000023.toml
+& $py -B -u -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000023.toml
 ```
 
-权重、训练历史与门通过率诊断：`data/model_workspace/mdl_000010/artifacts`。
-信号根目录：`data/models`，按现有模型输出规范写入 `mdl_000010` 列。
+权重、训练历史与门通过率诊断：`data/model_workspace/mdl_000023/artifacts`。
+信号根目录：`data/models`，按现有模型输出规范写入 `mdl_000023` 列。
 不会写入正式端到端因子库。权重保存因子列顺序，预测列不一致直接报错。

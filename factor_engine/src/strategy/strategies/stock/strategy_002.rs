@@ -77,7 +77,7 @@ impl Strategy002 {
             signal_id: params
                 .get("signal_id")
                 .cloned()
-                .unwrap_or_else(|| "mdl_000009".into()),
+                .unwrap_or_else(|| "mdl_000022".into()),
             top_n: integer("top_n", 50)?,
             hold_days: integer("rebalance_days", 5)?,
             window,

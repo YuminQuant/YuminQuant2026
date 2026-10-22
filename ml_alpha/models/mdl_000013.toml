@@ -1,8 +1,9 @@
+# Huatai baseline adapted to the local factor library; see docs/HUATAI_BASELINES.md.
+# Regress untransformed 10-day VWAP returns; feature preprocessing does not alter labels.
 run_id = "mdl_000013"
 alpha_id = "mdl_000013"
 data_root = "data"
 output_root = "data/models"
-data_version = "factorvae_local_factors_v1"
 
 [dates]
 train = [20160101, 20251231]
@@ -32,20 +33,17 @@ exclude_st = true
 exclude_bj = true
 
 [preprocess]
-cross_section_transform = "none"
+cross_section_transform = "mad5_zscore_features"
 feature_fill_value = 0.0
 
 [features]
-type = "factor_sequence"
+type = "factor_frame"
 root = "data/factors/stock/daily"
 columns = "__all__"
 
-[features.params]
-sequence_length = 30
-memory_budget_mb = 512
-
 [materialize]
 cache_samples = false
+cache_dir = "data/model_workspace/mdl_000013/cache"
 predict_batch_size = 20
 
 [diagnostics]
@@ -56,27 +54,15 @@ write_model_info = true
 write_window_summary = true
 
 [model]
-name = "dfq_factor_vae"
-class = "yq_ml_alpha.models.factor_vae_model.FactorVAEAlphaModel"
+name = "random_forest"
+class = "yq_ml_alpha.models.tree_model.RandomForestAlphaModel"
 artifact_dir = "data/model_workspace/mdl_000013/artifacts"
 
 [model.params]
-sequence_length = 30
-hidden_size = 32
-num_layers = 1
-num_portfolio = 100
-num_factor = 48
-epochs = 200
-patience = 20
-average_epochs = 5
-dates_per_epoch = 100
-# Encoder stock chunks only; portfolio/attention always use the full date.
-batch_size = 3000
-gradient_checkpointing = true
-lr = 0.0003
-weight_decay = 0.0
-kl_weight = 1.0
-min_delta = 0.00000001
-min_std = 0.000001
-seed = 42
-device = "auto"
+n_estimators = 500
+max_features = "sqrt"
+min_samples_split = 50
+min_samples_leaf = 10
+n_jobs = 8
+bootstrap = true
+random_state = 42

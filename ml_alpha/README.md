@@ -37,22 +37,29 @@ Current formal factor configs:
 
 ## CLI
 
-`models/mdl_000013.toml` adds DFQ-FactorVAE using 30-day histories from the
+`models/mdl_000006.toml`–`mdl_000018.toml` add Huatai baseline configurations:
+Logistic, SGD hinge/modified Huber, SVR, GaussianNB, LDA/QDA, RandomForest,
+AdaBoost, GBDT, MLP, RNN and GRU. Regression-capable models predict returns;
+classification objectives retain per-date top/bottom 30% targets. Existing
+implementations are reused. Original IDs 000006–000013 moved to 000019–000026.
+See [baseline contracts, report alignment, migration and CLI](docs/HUATAI_BASELINES.md).
+
+`models/mdl_000026.toml` adds DFQ-FactorVAE using 30-day histories from the
 formal factor library. It uses a single GRU, posterior/prior Gaussian factors,
 full-date attention and deterministic prior-mean predictions. See
 [FactorVAE architecture, local choices and commands](docs/FACTOR_VAE.md).
 
-`models/mdl_000011.toml` combines an industry/fund/analyst heterogeneous GNN
+`models/mdl_000024.toml` combines an industry/fund/analyst heterogeneous GNN
 with a 40-day factor-sequence GRU. Both branches feed independently tuned
 XGBoost Rankers. See [data requirements, architecture and commands](docs/GRAPH_TEMPORAL.md).
 
-`models/mdl_000010.toml` adds a single-gate adaptive-depth factor combination
+`models/mdl_000023.toml` adds a single-gate adaptive-depth factor combination
 model using the existing daily factor library. It is a model-layer signal,
 not an end-to-end factor. See [adaptive network configuration and CLI](docs/ADAPTIVE_GATE.md).
 
 ### GPU Optuna models
 
-`models/mdl_000007.toml` is LightGBM + Optuna; `models/mdl_000008.toml`
+`models/mdl_000020.toml` is LightGBM + Optuna; `models/mdl_000021.toml`
 is XGBoost + Optuna. Both use all formal daily factors, cross-sectional
 `rank_gauss`, training and validation samples every 5 trading days, a 5-day future VWAP return label,
 and at most 20 TPE trials minimizing validation MSE. Both search 300-800 trees in
@@ -71,7 +78,7 @@ through 2026-04-24. The existing runtime removes samples whose labels cross
 split boundaries (6 trading days for this label); these purged samples are
 also absent from the final refit. No random validation split is used here.
 
-XGBoost (`mdl_000008`) uses `rolling`, `quarterly_end`, `train_lookback="24m"`,
+XGBoost (`mdl_000021`) uses `rolling`, `quarterly_end`, `train_lookback="24m"`,
 `validation_ratio=0.2` and `validation_unit="rows"`. Public runtime settings
 `start_from_features=true` and `prediction_activation="after_label_maturity"`
 start the first complete 24-calendar-month pool in the first month containing
@@ -92,19 +99,19 @@ below remains active. Final refitting uses both row partitions.
 这种按行划分不保证训练与验证之间的时间隔离；同日股票或重叠标签区间可能跨两侧。
 样本外预测仍独立遵守标签到期边界。manifest 会记录行划分规则及实际行数、边界股票。
 
-`mdl_000009` uses the ordinary `XGBoostAlphaModel` with the same 24-month,
+`mdl_000022` uses the ordinary `XGBoostAlphaModel` with the same 24-month,
 10-day sampling and `future_vwap_return_10d` labels, and refits at each month-end (`monthly_end`). It fixes 600 trees, learning rate 0.001,
 depth 6, min_child_weight 10, row/column subsampling 0.8, L1 0.1 and L2 10.
 There is no Optuna search. `model.params.fit_on_validation=true` combines the
-row-based train/validation partitions before one final fit, preserving 008's
+row-based train/validation partitions before one final fit, preserving 021's
 final-fit pooling approach without a preliminary fit or per-round evaluation.
-The 20% partition is therefore not a held-out performance estimate for 009.
+The 20% partition is therefore not a held-out performance estimate for 022.
 Existing ordinary XGBoost configs retain their behavior when this flag is absent.
 
 All model and factor training uses an end-of-day information cutoff T. Both
 training and validation rows must have labels fully observed by T close.
 For N-day VWAP returns, the last eligible feature date is T-(N+1) trading
-sessions: T-11 for 009 and T-6 for 008. Sampling may end earlier. Each window
+sessions: T-11 for 022 and T-6 for 021. Sampling may end earlier. Each window
 samples its trailing calendar-month range, then removes immature dates.
 The legacy `after_label_maturity` setting now fits only mature labels at the
 scheduled cutoff and activates the model on the next trading session. The
@@ -144,11 +151,11 @@ Set-Location D:\yuminwu_workspace\Internship\YuminQuant
 $py = 'D:\Users\Devin\anaconda383\python.exe'
 $env:PATH = 'D:\Users\Devin\anaconda383;D:\Users\Devin\anaconda383\Library\bin;D:\Users\Devin\anaconda383\Scripts;' + $env:PATH
 
-& $py -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000008.toml
-& $py -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000008.toml
+& $py -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000021.toml
+& $py -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000021.toml
 
-& $py -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000007.toml
-& $py -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000007.toml
+& $py -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000020.toml
+& $py -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000020.toml
 ```
 
 `model-run` combines training and prediction. XGBoost uses `gpu_hist`,
@@ -170,7 +177,7 @@ LightGBM and `cutoff_<training_cutoff>_active_<activation_date>` for XGBoost:
 
 - `data/models/<YYYY>/<YYYYMMDD>.parquet`: daily wide table keyed by
   `trade_date` (int32), `ts_code`; each model adds its own float32 column
-  `mdl_000007` / `mdl_000008`. Other model columns are retained. Run the
+  `mdl_000020` / `mdl_000021`. Other model columns are retained. Run the
   two prediction jobs sequentially because they share daily files.
 - `data/model_workspace/<model_id>/artifacts/<window_id>/model.pkl`: pickled
   model wrapper, fitted estimator, `best_params_`, `best_value_` and
@@ -180,10 +187,10 @@ LightGBM and `cutoff_<training_cutoff>_active_<activation_date>` for XGBoost:
 - `cache_samples=false`: no sample-cache output by default. Optuna studies
   run in memory; no SQLite study database or full trial-history file is saved.
 
-The numbered model catalog now comprises OLS, Lasso, Ridge, ElasticNet,
-PCA+OLS, LSTM, LightGBM+Optuna and XGBoost+Optuna (`mdl_000001`–`mdl_000008`).
-Additional implementations remain available: untuned LightGBM/XGBoost,
-RandomForest, MLP, RNN, GRU, CNN, eLSTM+RankNet and generic sklearn adapters.
+The numbered model catalog comprises `mdl_000001`–`mdl_000026`; see
+`model_registry.toml` and [the ID migration table](docs/HUATAI_BASELINES.md).
+Additional implementations remain available: untuned LightGBM,
+CNN, eLSTM+RankNet and generic sklearn adapters.
 IC-sign equal weighting and feature-mean baselines are not learned ML models.
 BarGRU, MultiBarGRU, ResidualMultiBarGRU and LogsigOrthogonalMLP are currently
 configured in the formal factor layer. Removing the six legacy monthly

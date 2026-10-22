@@ -32,7 +32,8 @@ class _SequenceAlphaModel(AlphaModel):
         x_train, self.input_size = _sequence_features(train_data, context.feature_columns, int(self.params["sequence_length"]))
         y_train = train_data[context.label_column].astype("float32").to_numpy().reshape(-1, 1)
         self.model = _SequenceRegressor(nn, self.rnn_type, self.input_size, self.params).to(device)
-        optimizer = torch.optim.Adam(
+        optimizer_cls = torch.optim.RMSprop if self.params["optimizer"] == "rmsprop" else torch.optim.Adam
+        optimizer = optimizer_cls(
             self.model.parameters(),
             lr=float(self.params["lr"]),
             weight_decay=float(self.params["weight_decay"]),
@@ -186,6 +187,8 @@ class _SequenceAlphaModel(AlphaModel):
             "hidden_size": int(self.params["hidden_size"]),
             "num_layers": int(self.params["num_layers"]),
             "dropout": float(self.params["dropout"]),
+            "output_dropout": float(self.params["output_dropout"]),
+            "optimizer": self.params["optimizer"],
             "lr": float(self.params["lr"]),
             "weight_decay": float(self.params["weight_decay"]),
             "batch_size": int(self.params["batch_size"]),
@@ -199,8 +202,12 @@ class _SequenceAlphaModel(AlphaModel):
         torch, _ = _torch_modules()
         self.model.eval()
         x, _ = _sequence_features(data, context.feature_columns, int(self.params["sequence_length"]))
+        score = np.empty(len(data), dtype=np.float32)
+        batch_size = int(self.params["batch_size"])
         with torch.no_grad():
-            score = self.model(torch.from_numpy(x)).numpy().reshape(-1)
+            for start in range(0, len(data), batch_size):
+                rows = slice(start, start + batch_size)
+                score[rows] = self.model(torch.from_numpy(x[rows])).numpy().reshape(-1)
         return pd.Series(score, index=data.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:
@@ -280,10 +287,11 @@ class _SequenceRegressor:
                     dropout=float(params["dropout"]) if int(params["num_layers"]) > 1 else 0.0,
                 )
                 self.head = nn.Linear(int(params["hidden_size"]), 1)
+                self.output_dropout = nn.Dropout(float(params["output_dropout"]))
 
             def forward(self, x):
                 output, _ = self.rnn(x)
-                return self.head(output[:, -1, :])
+                return self.head(self.output_dropout(output[:, -1, :]))
 
         return Model()
 
@@ -295,6 +303,8 @@ def _params(raw: dict[str, Any], rnn_type: str) -> dict[str, Any]:
     params["hidden_size"] = int(params.get("hidden_size", 64))
     params["num_layers"] = int(params.get("num_layers", 2))
     params["dropout"] = float(params.get("dropout", 0.10))
+    params["output_dropout"] = float(params.get("output_dropout", 0.0))
+    params["optimizer"] = str(params.get("optimizer", "adam")).lower()
     params["epochs"] = int(params.get("epochs", 50))
     params["batch_size"] = int(params.get("batch_size", 8192))
     params["lr"] = float(params.get("lr", 1e-3))
@@ -307,6 +317,12 @@ def _params(raw: dict[str, Any], rnn_type: str) -> dict[str, Any]:
         raise ValueError("sequence model loss must be one of: mse, pearson_ic")
     if params["sequence_length"] <= 0:
         raise ValueError("sequence_length must be positive")
+    if params["batch_size"] <= 0:
+        raise ValueError("batch_size must be positive")
+    if params["optimizer"] not in {"adam", "rmsprop"}:
+        raise ValueError("sequence optimizer must be adam or rmsprop")
+    if not 0.0 <= params["output_dropout"] < 1.0:
+        raise ValueError("output_dropout must be in [0, 1)")
     return params
 
 

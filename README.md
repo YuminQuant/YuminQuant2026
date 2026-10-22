@@ -129,7 +129,7 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- label-run --asse
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance 5
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance weekly --factor-batch-size 10 --date-batch-size 120
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --factor-batch-size 10 --date-batch-size 120
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000006 --factor-root data\models --groups 10 --rebalance 20 --factor-fill ffill
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000019 --factor-root data\models --groups 10 --rebalance 20 --factor-fill ffill
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --factor-root data\barra\stock\daily\CNE6 --groups 10 --rebalance 20 --neutralize barra:all+sector
 ```
 
@@ -173,7 +173,7 @@ Run from `ml_alpha` when you do not want to install the package:
 ```powershell
 Push-Location .\ml_alpha
 python -m yq_ml_alpha model-run --config models\mdl_000001.toml
-python -m yq_ml_alpha model-run --config models\mdl_000006.toml
+python -m yq_ml_alpha model-run --config models\mdl_000019.toml
 python -m yq_ml_alpha model-run --config models\monthly_elstm_ranknet_36.toml
 Pop-Location
 ```

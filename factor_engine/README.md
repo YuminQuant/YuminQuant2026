@@ -176,7 +176,7 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- label-run --asse
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors utd --groups 10 --rebalance 5
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance weekly --factor-batch-size 10 --date-batch-size 120
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --factor-batch-size 10 --date-batch-size 120
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000006 --factor-root data\models --factor-fill ffill --groups 10 --rebalance 20
+cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000019 --factor-root data\models --factor-fill ffill --groups 10 --rebalance 20
 cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --factor-root data\barra\stock\daily\CNE6 --groups 10 --rebalance 20
 ```
 
@@ -503,7 +503,7 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- metadata
 ### strategy002：Top50 开盘 30 分钟 TWAP
 
 配置：`strategy_config/stock/strategy_002.toml`。默认沿用 2020-01-01 至
-2026-04-24、初始资金 100000 元、mdl_000009、Top50、5 个交易日换仓。
+2026-04-24、初始资金 100000 元、mdl_000022、Top50、5 个交易日换仓。
 T 日收盘信号在 T+1 入场，下一批换仓日 T+6 出场；重复入选也卖出旧批次并买入新批次。
 
 ```powershell

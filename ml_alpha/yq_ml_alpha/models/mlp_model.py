@@ -42,13 +42,13 @@ class MLPAlphaModel(AlphaModel):
 
         x_valid = y_valid = None
         if not valid_data.empty and context.label_column in valid_data.columns:
-            x_valid = torch.from_numpy(_features(valid_data, context.feature_columns)).to(device)
+            x_valid = torch.from_numpy(_features(valid_data, context.feature_columns))
             y_valid = torch.from_numpy(
                 valid_data[context.label_column].astype("float32").to_numpy().reshape(-1, 1)
-            ).to(device)
+            )
 
-        x_tensor = torch.from_numpy(x_train).to(device)
-        y_tensor = torch.from_numpy(y_train).to(device)
+        x_tensor = torch.from_numpy(x_train)
+        y_tensor = torch.from_numpy(y_train)
         batch_size = int(self.params["batch_size"])
         epochs = int(self.params["epochs"])
         patience = int(self.params["patience"])
@@ -61,13 +61,13 @@ class MLPAlphaModel(AlphaModel):
 
         for epoch in range(1, epochs + 1):
             self.model.train()
-            order = torch.randperm(x_tensor.shape[0], device=device)
+            order = torch.randperm(x_tensor.shape[0])
             train_loss_sum = 0.0
             train_count = 0
             for start in range(0, x_tensor.shape[0], batch_size):
                 batch_idx = order[start : start + batch_size]
                 optimizer.zero_grad()
-                loss = loss_fn(self.model(x_tensor[batch_idx]), y_tensor[batch_idx])
+                loss = loss_fn(self.model(x_tensor[batch_idx].to(device)), y_tensor[batch_idx].to(device))
                 loss.backward()
                 optimizer.step()
                 batch_count = int(batch_idx.shape[0])
@@ -75,7 +75,10 @@ class MLPAlphaModel(AlphaModel):
                 train_count += batch_count
 
             train_loss = train_loss_sum / max(1, train_count)
-            valid_loss = _eval_loss(torch, loss_fn, self.model, x_valid, y_valid) if x_valid is not None else None
+            valid_loss = (
+                _eval_loss(torch, loss_fn, self.model, x_valid, y_valid, batch_size, device)
+                if x_valid is not None else None
+            )
             score_loss = valid_loss if valid_loss is not None else train_loss
             is_best = score_loss + 1e-12 < best_loss
             if is_best:
@@ -128,6 +131,7 @@ class MLPAlphaModel(AlphaModel):
             "best_loss": None if best_loss == float("inf") else best_loss,
             "device": str(device),
             "hidden_layers": list(self.params["hidden_layers"]),
+            "activation": self.params["activation"],
             "dropout": float(self.params["dropout"]),
             "lr": float(self.params["lr"]),
             "weight_decay": float(self.params["weight_decay"]),
@@ -140,8 +144,13 @@ class MLPAlphaModel(AlphaModel):
             raise RuntimeError("model is not fitted")
         torch, _ = _torch_modules()
         self.model.eval()
+        x = _features(data, context.feature_columns)
+        score = np.empty(len(data), dtype=np.float32)
+        batch_size = int(self.params["batch_size"])
         with torch.no_grad():
-            score = self.model(torch.from_numpy(_features(data, context.feature_columns))).numpy().reshape(-1)
+            for start in range(0, len(data), batch_size):
+                rows = slice(start, start + batch_size)
+                score[rows] = self.model(torch.from_numpy(x[rows])).numpy().reshape(-1)
         return pd.Series(score, index=data.index, dtype="float32")
 
     def save(self, path: str | Path) -> None:
@@ -208,6 +217,11 @@ def _params(raw: dict[str, Any]) -> dict[str, Any]:
     params["seed"] = int(params.get("seed", 42))
     params["device"] = str(params.get("device", "auto"))
     params["patience"] = int(params.get("patience", 10))
+    params["activation"] = str(params.get("activation", "relu")).lower()
+    if params["activation"] not in {"relu", "tanh"}:
+        raise ValueError("MLP activation must be relu or tanh")
+    if params["batch_size"] <= 0:
+        raise ValueError("batch_size must be positive")
     return params
 
 
@@ -227,7 +241,7 @@ def _build_network(nn, input_dim: int, params: dict[str, Any]):
     current_dim = input_dim
     for hidden_dim in params["hidden_layers"]:
         layers.append(nn.Linear(current_dim, hidden_dim))
-        layers.append(nn.ReLU())
+        layers.append(nn.Tanh() if params["activation"] == "tanh" else nn.ReLU())
         dropout = float(params["dropout"])
         if dropout > 0.0:
             layers.append(nn.Dropout(dropout))
@@ -267,11 +281,15 @@ def _set_seed(torch, seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _eval_loss(torch, loss_fn, model, x_valid, y_valid) -> float:
+def _eval_loss(torch, loss_fn, model, x_valid, y_valid, batch_size, device) -> float:
     model.eval()
+    loss_sum = 0.0
     with torch.no_grad():
-        loss = loss_fn(model(x_valid), y_valid)
-    return float(loss.detach().cpu().item())
+        for start in range(0, len(x_valid), batch_size):
+            rows = slice(start, start + batch_size)
+            loss = loss_fn(model(x_valid[rows].to(device)), y_valid[rows].to(device))
+            loss_sum += float(loss.detach().cpu().item()) * len(x_valid[rows])
+    return loss_sum / max(1, len(x_valid))
 
 
 def _cpu_state_dict(model):

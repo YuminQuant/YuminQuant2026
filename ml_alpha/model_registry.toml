@@ -1,70 +1,4 @@
 version = 1
-
-[[models]]
-model_id = "mdl_000013"
-alpha_id = "mdl_000013"
-run_id = "mdl_000013"
-config = "models/mdl_000013.toml"
-status = "active"
-display_name = "DFZQ FactorVAE local factor sequence alpha"
-description = "30-day formal factor histories; single GRU, 100 virtual portfolios, 48 Gaussian factors, full-date positive-cosine attention and probabilistic decoder; deterministic prior-mean score."
-model_class = "yq_ml_alpha.models.factor_vae_model.FactorVAEAlphaModel"
-model_family = "factor_vae"
-label = "future_vwap_return_10d"
-preprocess = "provider_mad5_zscore_label_mad5_zscore"
-train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
-features = "factor_sequence: data/factors/stock/daily, columns=__all__"
-tags = ["DFZQ", "vae", "gru", "probabilistic_factor_model", "factor_combination"]
-
-[[models]]
-model_id = "mdl_000012"
-alpha_id = "mdl_000012"
-run_id = "mdl_000012"
-config = "models/mdl_000012.toml"
-status = "active"
-display_name = "DFZQ-HIST local factor sequence and dynamic industry-business concepts"
-description = "60 daily factor snapshots; corrected market-cap-weighted mainbz I concepts, top20 hidden concepts and double residual learning; single 10-day VWAP target and seed42."
-model_class = "yq_ml_alpha.models.hist_model.HISTAlphaModel"
-model_family = "hist"
-label = "future_vwap_return_10d"
-preprocess = "provider_mad5_zscore_label_rank_pct_zscore"
-train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
-features = "hist_factor_frame: data/factors/stock/daily, columns=__all__"
-tags = ["DFZQ", "hist", "gru", "concept_graph", "factor_combination"]
-
-[[models]]
-model_id = "mdl_000011"
-alpha_id = "mdl_000011"
-run_id = "mdl_000011"
-config = "models/mdl_000011.toml"
-status = "active"
-display_name = "DFZQ heterogeneous GNN + temporal GRU + two XGBoost rankers"
-description = "Three announcement-date stock relations; current formal factors and 40 daily factor snapshots; two frozen encoders, 20 Optuna trials per ranker, standardized scores summed."
-model_class = "yq_ml_alpha.models.graph_temporal_model.GraphTemporalAlphaModel"
-model_family = "graph_temporal_ranker"
-label = "future_vwap_return_10d"
-preprocess = "provider_mad5_zscore"
-train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
-features = "graph_factor_frame: data/factors/stock/daily, columns=__all__"
-components = ["CI L1", "fund top10 coholdings", "analyst 6m coverage", "3-layer GNN", "40-day GRU", "two Optuna XGBoost rankers"]
-tags = ["DFZQ", "gnn", "gru", "factor_combination", "optuna", "xgboost"]
-
-[[models]]
-model_id = "mdl_000010"
-alpha_id = "mdl_000010"
-run_id = "mdl_000010"
-config = "models/mdl_000010.toml"
-status = "active"
-display_name = "Single-gate adaptive-depth factor combo"
-description = "All eligible formal factors; single hard Gumbel gate controlling the middle hidden layer; return-rank exponential weighted MSE plus gate-rate penalty; annual 33/3-month train/validation with 5-day sampling."
-model_class = "yq_ml_alpha.models.adaptive_gate_model.AdaptiveGateAlphaModel"
-model_family = "adaptive_gate_mlp"
-label = "future_vwap_return_10d"
-preprocess = "mad5_zscore_rank_label"
-train_scheme = "rolling_36m_annual_33m_train_3m_valid"
-features = "factor_frame: data/factors/stock/daily, columns=__all__"
-tags = ["adaptive_gate", "mlp", "factor_frame", "rolling", "rank_weighted_mse"]
-
 [[models]]
 model_id = "mdl_000001"
 alpha_id = "mdl_000001"
@@ -156,6 +90,214 @@ alpha_id = "mdl_000006"
 run_id = "mdl_000006"
 config = "models/mdl_000006.toml"
 status = "active"
+display_name = "HTZQ Logistic tail classifier"
+description = "Per-date top/bottom 30% return classes; middle excluded only from training labels. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.LogisticRegressionAlphaModel"
+model_family = "logistic"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "logistic", "classification", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000007"
+alpha_id = "mdl_000007"
+run_id = "mdl_000007"
+config = "models/mdl_000007.toml"
+status = "active"
+display_name = "HTZQ SGD linear SVM tail classifier"
+description = "Per-date top/bottom 30% return classes; middle excluded only from training labels. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.SGDLinearSVMAlphaModel"
+model_family = "sgd_hinge"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "sgd_hinge", "classification", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000008"
+alpha_id = "mdl_000008"
+run_id = "mdl_000008"
+config = "models/mdl_000008.toml"
+status = "active"
+display_name = "HTZQ SGD modified Huber tail classifier"
+description = "Per-date top/bottom 30% return classes; middle excluded only from training labels. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.SGDModifiedHuberAlphaModel"
+model_family = "sgd_modified_huber"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "sgd_modified_huber", "classification", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000009"
+alpha_id = "mdl_000009"
+run_id = "mdl_000009"
+config = "models/mdl_000009.toml"
+status = "active"
+display_name = "HTZQ RBF support vector return regression"
+description = "Raw 10-day VWAP return regression. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.SVRAlphaModel"
+model_family = "svr"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "svr", "regression", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000010"
+alpha_id = "mdl_000010"
+run_id = "mdl_000010"
+config = "models/mdl_000010.toml"
+status = "active"
+display_name = "HTZQ Gaussian Naive Bayes tail classifier"
+description = "Per-date top/bottom 30% return classes; middle excluded only from training labels. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.GaussianNBAlphaModel"
+model_family = "gaussian_nb"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "gaussian_nb", "classification", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000011"
+alpha_id = "mdl_000011"
+run_id = "mdl_000011"
+config = "models/mdl_000011.toml"
+status = "active"
+display_name = "HTZQ Linear discriminant tail classifier"
+description = "Per-date top/bottom 30% return classes; middle excluded only from training labels. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.LDAAlphaModel"
+model_family = "lda"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "lda", "classification", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000012"
+alpha_id = "mdl_000012"
+run_id = "mdl_000012"
+config = "models/mdl_000012.toml"
+status = "active"
+display_name = "HTZQ Quadratic discriminant tail classifier"
+description = "Per-date top/bottom 30% return classes; middle excluded only from training labels. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.QDAAlphaModel"
+model_family = "qda"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "qda", "classification", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000013"
+alpha_id = "mdl_000013"
+run_id = "mdl_000013"
+config = "models/mdl_000013.toml"
+status = "active"
+display_name = "HTZQ Random forest return regression"
+description = "Raw 10-day VWAP return regression. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.tree_model.RandomForestAlphaModel"
+model_family = "random_forest"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "random_forest", "regression", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000014"
+alpha_id = "mdl_000014"
+run_id = "mdl_000014"
+config = "models/mdl_000014.toml"
+status = "active"
+display_name = "HTZQ AdaBoost tree return regression"
+description = "Raw 10-day VWAP return regression. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.AdaBoostAlphaModel"
+model_family = "adaboost"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "adaboost", "regression", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000015"
+alpha_id = "mdl_000015"
+run_id = "mdl_000015"
+config = "models/mdl_000015.toml"
+status = "active"
+display_name = "HTZQ Gradient boosting tree return regression"
+description = "Raw 10-day VWAP return regression. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.classical_model.GradientBoostingAlphaModel"
+model_family = "gbdt"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "gbdt", "regression", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000016"
+alpha_id = "mdl_000016"
+run_id = "mdl_000016"
+config = "models/mdl_000016.toml"
+status = "active"
+display_name = "HTZQ Tanh 40-10 MLP return regression"
+description = "Raw 10-day VWAP return regression. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.mlp_model.MLPAlphaModel"
+model_family = "mlp"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "mlp", "regression", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000017"
+alpha_id = "mdl_000017"
+run_id = "mdl_000017"
+config = "models/mdl_000017.toml"
+status = "active"
+display_name = "HTZQ Two-layer RNN factor-sequence return regression"
+description = "Raw 10-day VWAP return regression. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.sequence_model.RNNAlphaModel"
+model_family = "rnn"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "rnn", "regression", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000018"
+alpha_id = "mdl_000018"
+run_id = "mdl_000018"
+config = "models/mdl_000018.toml"
+status = "active"
+display_name = "HTZQ Two-layer GRU factor-sequence return regression"
+description = "Raw 10-day VWAP return regression. Formal factor inputs; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.sequence_model.GRUAlphaModel"
+model_family = "gru"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_features"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "gru", "regression", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000019"
+alpha_id = "mdl_000019"
+run_id = "mdl_000019"
+config = "models/mdl_000019.toml"
+status = "active"
 display_name = "LSTM 5D daily factor-frame combo"
 description = "LSTM model using 5-day daily formal factor sequences to predict 5-day future VWAP return."
 model_class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
@@ -168,10 +310,10 @@ components = ["all formal stock daily factors", "daily sequence length 5", "LSTM
 tags = ["lstm", "factor_frame", "rank_gauss", "daily_sequence", "5d_label"]
 
 [[models]]
-model_id = "mdl_000007"
-alpha_id = "mdl_000007"
-run_id = "mdl_000007"
-config = "models/mdl_000007.toml"
+model_id = "mdl_000020"
+alpha_id = "mdl_000020"
+run_id = "mdl_000020"
+config = "models/mdl_000020.toml"
 status = "active"
 display_name = "lightgbm Optuna GPU fixed factor combo"
 description = "Sample every 5 trading days; tune on 2016-2021 with 2022 validation; refit on train plus validation, predict from 2023."
@@ -184,10 +326,10 @@ features = "factor_frame: data/factors/stock/daily, columns=__all__"
 tags = ["optuna", "gpu", "static", "factor_frame"]
 
 [[models]]
-model_id = "mdl_000008"
-alpha_id = "mdl_000008"
-run_id = "mdl_000008"
-config = "models/mdl_000008.toml"
+model_id = "mdl_000021"
+alpha_id = "mdl_000021"
+run_id = "mdl_000021"
+config = "models/mdl_000021.toml"
 status = "active"
 display_name = "XGBoost Optuna GPU quarterly rolling factor combo"
 description = "Start with 24 months from available factor data; quarterly refits, 5-day sampling; sort filtered labeled rows by date and symbol, use the last 20% for validation; use only labels mature at training cutoff and activate next session."
@@ -200,10 +342,10 @@ features = "factor_frame: data/factors/stock/daily, columns=__all__"
 tags = ["optuna", "gpu", "rolling", "factor_frame"]
 
 [[models]]
-model_id = "mdl_000009"
-alpha_id = "mdl_000009"
-run_id = "mdl_000009"
-config = "models/mdl_000009.toml"
+model_id = "mdl_000022"
+alpha_id = "mdl_000022"
+run_id = "mdl_000022"
+config = "models/mdl_000022.toml"
 status = "active"
 display_name = "XGBoost GPU fixed 600-tree rolling factor combo"
 description = "24-month monthly rolling windows, 10-day sampling and 10-day VWAP labels; fixed 600 trees at learning rate 0.001; one fit on the combined train/validation pool without tuning; use only labels mature at training cutoff and activate next session."
@@ -214,3 +356,68 @@ preprocess = "rank_gauss"
 train_scheme = "rolling_24m_monthly_row_80_20"
 features = "factor_frame: data/factors/stock/daily, columns=__all__"
 tags = ["fixed_params", "gpu", "rolling", "factor_frame"]
+
+[[models]]
+model_id = "mdl_000023"
+alpha_id = "mdl_000023"
+run_id = "mdl_000023"
+config = "models/mdl_000023.toml"
+status = "active"
+display_name = "Single-gate adaptive-depth factor combo"
+description = "All eligible formal factors; single hard Gumbel gate controlling the middle hidden layer; return-rank exponential weighted MSE plus gate-rate penalty; annual 33/3-month train/validation with 5-day sampling."
+model_class = "yq_ml_alpha.models.adaptive_gate_model.AdaptiveGateAlphaModel"
+model_family = "adaptive_gate_mlp"
+label = "future_vwap_return_10d"
+preprocess = "mad5_zscore_rank_label"
+train_scheme = "rolling_36m_annual_33m_train_3m_valid"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["adaptive_gate", "mlp", "factor_frame", "rolling", "rank_weighted_mse"]
+
+[[models]]
+model_id = "mdl_000024"
+alpha_id = "mdl_000024"
+run_id = "mdl_000024"
+config = "models/mdl_000024.toml"
+status = "active"
+display_name = "DFZQ heterogeneous GNN + temporal GRU + two XGBoost rankers"
+description = "Three announcement-date stock relations; current formal factors and 40 daily factor snapshots; two frozen encoders, 20 Optuna trials per ranker, standardized scores summed."
+model_class = "yq_ml_alpha.models.graph_temporal_model.GraphTemporalAlphaModel"
+model_family = "graph_temporal_ranker"
+label = "future_vwap_return_10d"
+preprocess = "provider_mad5_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "graph_factor_frame: data/factors/stock/daily, columns=__all__"
+components = ["CI L1", "fund top10 coholdings", "analyst 6m coverage", "3-layer GNN", "40-day GRU", "two Optuna XGBoost rankers"]
+tags = ["DFZQ", "gnn", "gru", "factor_combination", "optuna", "xgboost"]
+
+[[models]]
+model_id = "mdl_000025"
+alpha_id = "mdl_000025"
+run_id = "mdl_000025"
+config = "models/mdl_000025.toml"
+status = "active"
+display_name = "DFZQ-HIST local factor sequence and dynamic industry-business concepts"
+description = "60 daily factor snapshots; corrected market-cap-weighted mainbz I concepts, top20 hidden concepts and double residual learning; single 10-day VWAP target and seed42."
+model_class = "yq_ml_alpha.models.hist_model.HISTAlphaModel"
+model_family = "hist"
+label = "future_vwap_return_10d"
+preprocess = "provider_mad5_zscore_label_rank_pct_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "hist_factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["DFZQ", "hist", "gru", "concept_graph", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000026"
+alpha_id = "mdl_000026"
+run_id = "mdl_000026"
+config = "models/mdl_000026.toml"
+status = "active"
+display_name = "DFZQ FactorVAE local factor sequence alpha"
+description = "30-day formal factor histories; single GRU, 100 virtual portfolios, 48 Gaussian factors, full-date positive-cosine attention and probabilistic decoder; deterministic prior-mean score."
+model_class = "yq_ml_alpha.models.factor_vae_model.FactorVAEAlphaModel"
+model_family = "factor_vae"
+label = "future_vwap_return_10d"
+preprocess = "provider_mad5_zscore_label_mad5_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_sequence: data/factors/stock/daily, columns=__all__"
+tags = ["DFZQ", "vae", "gru", "probabilistic_factor_model", "factor_combination"]

@@ -98,7 +98,7 @@ HIST 的主营业务 I 分类关系由 Rust `derive-hist-concepts` 生产。
 
 `factor_sequence` 直接使用同一个 `FactorSequenceProvider`，无需图或概念派生数据。
 它在标签合并之前确定完整历史股票池，提供按日期标准化的连续交易日序列；
-拒绝按行拆验证集，不在磁盘写预处理缓存。`mdl_000013` 的 FactorVAE 使用此入口，
+拒绝按行拆验证集，不在磁盘写预处理缓存。`mdl_000026` 的 FactorVAE 使用此入口，
 后验分支只用于训练，验证/预测只调用先验。见 [FACTOR_VAE.md](FACTOR_VAE.md)。
 
 | Task / 任务 | Files / 文件 |

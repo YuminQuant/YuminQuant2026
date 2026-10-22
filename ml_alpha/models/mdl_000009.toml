@@ -1,28 +1,28 @@
+# Huatai baseline adapted to the local factor library; see docs/HUATAI_BASELINES.md.
+# Regress untransformed 10-day VWAP returns; feature preprocessing does not alter labels.
 run_id = "mdl_000009"
 alpha_id = "mdl_000009"
 data_root = "data"
 output_root = "data/models"
 
 [dates]
-train = [20160101, 20260424]
-valid = []
-predict = [20180101, 20260424]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
 
 [sample]
-train_frequency = "10"
+train_frequency = "5"
 predict_frequency = "daily"
 
 [train_scheme]
 type = "rolling"
-refit_frequency = "monthly_end"
-train_lookback = "24m"
-validation_ratio = 0.2
-validation_unit = "rows"
-prediction_activation = "after_label_maturity"
-start_from_features = true
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
 
 [label]
 id = "future_vwap_return_10d"
+lookahead_days = 11
 
 [universe]
 id = "mkt_all"
@@ -33,7 +33,7 @@ exclude_st = true
 exclude_bj = true
 
 [preprocess]
-cross_section_transform = "rank_gauss"
+cross_section_transform = "mad5_zscore_features"
 feature_fill_value = 0.0
 
 [features]
@@ -46,28 +46,22 @@ cache_samples = false
 cache_dir = "data/model_workspace/mdl_000009/cache"
 predict_batch_size = 20
 
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
 [model]
-name = "xgboost_fixed"
-class = "yq_ml_alpha.models.xgb_model.XGBoostAlphaModel"
+name = "svr"
+class = "yq_ml_alpha.models.classical_model.SVRAlphaModel"
 artifact_dir = "data/model_workspace/mdl_000009/artifacts"
 
 [model.params]
-objective = "reg:squarederror"
-tree_method = "gpu_hist"
-gpu_id = 0
-predictor = "gpu_predictor"
-n_estimators = 600
-# Retain the user's earlier preference for a low fixed learning rate.
-learning_rate = 0.001
-max_depth = 6
-min_child_weight = 10.0
-subsample = 0.8
-colsample_bytree = 0.8
-reg_alpha = 0.1
-reg_lambda = 10.0
-gamma = 0.0
-random_state = 42
-n_jobs = -1
-# One fit per window on train + validation, matching 008's final-fit coverage.
-# No Optuna, preliminary fit, per-round validation or tree early stopping.
-fit_on_validation = true
+kernel = "rbf"
+C = 1.0
+gamma = 0.01
+epsilon = 0.001
+cache_size = 512
+prediction_batch_size = 10000

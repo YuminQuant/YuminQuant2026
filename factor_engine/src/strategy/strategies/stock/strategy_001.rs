@@ -26,7 +26,7 @@ impl Strategy001 {
         let signal_id = params
             .get("signal_id")
             .cloned()
-            .unwrap_or_else(|| "mdl_000006".to_string());
+            .unwrap_or_else(|| "mdl_000019".to_string());
         let signal_root = params
             .get("signal_root")
             .map(std::path::PathBuf::from)

@@ -1,99 +1,60 @@
-# 分析师预测偏离度分析
+# Forecast Bias / 分析师预测偏离度
 
-独立读取本地原始数据，不改动一致预期生产表，不调用下载接口。
-需要 Python 3.11+、pandas、numpy、pyarrow、matplotlib（当前项目 Python 环境已具备）。
+本工具读取本地分析师年度预测和已披露实际财报，研究预测误差与预测跨度、市值和行业的关系。不下载数据，不修改一致预期生产表，也不生成交易因子。
 
-在项目根目录运行：
+This tool compares local annual analyst forecasts with disclosed financial results, grouping errors by forecast horizon, company size and industry. It neither downloads data nor modifies consensus tables or produces trading factors.
 
-```powershell
-# 研究 2015—2017 年发布、预测 2016 年年报的净利润预测
-python scripts/forecast_bias/analyze.py `
-  --start-date 20150101 --end-date 20171231 `
-  --metric np --forecast-year 2016 --save-observations
+## 安装与使用 / Setup and usage
 
-# 研究一段时间内发布的所有年度营业收入预测，使用申万一级行业
-python scripts/forecast_bias/analyze.py `
-  --start-date 20220101 --end-date 20231231 `
-  --metric op_rt --industry sw --as-of 20260424
+需要 Python 3.11+、pandas、numpy、pyarrow、matplotlib。从项目根目录运行，数据路径默认读取 `config.toml`。
 
-# EPS，多预测财年；自定义输出目录必须尚不存在
-python scripts/forecast_bias/analyze.py `
-  --start-date 20220101 --end-date 20241231 `
-  --metric eps --forecast-year 2023 2024 `
-  --output-dir scripts/forecast_bias/output/eps_2023_2024
+Requires Python 3.11+, pandas, numpy, pyarrow and matplotlib. Run from the repository root; data paths default to `config.toml`.
+
+```bash
+python scripts/forecast_bias/analyze.py --start-date 20220101 --end-date 20231231 --metric np --forecast-year 2023 --as-of 20260424
+python scripts/forecast_bias/analyze.py --start-date 20220101 --end-date 20231231 --metric op_rt --industry sw --as-of 20260424 --save-observations
 ```
 
-## 参数含义
-
-| 参数 | 含义 |
+| 参数 / Option | 含义 / Meaning |
 |---|---|
-| `--start-date / --end-date` | 必填；研报发布日期的闭区间，格式 YYYYMMDD，不是预测财年或财报公告区间 |
-| `--metric` | `np` 净利润（默认）、`op_rt` 营业收入、`eps` 每股收益 |
-| `--forecast-year` | 可选，一个或多个目标财年；例如 `2016` 对应 `2016Q4`；省略则包含区间内全部年度预测 |
-| `--as-of` | 允许读取的实际财报披露截止日期；默认运行当天，必须不早于 end-date；不是完整数据库历史快照 |
-| `--industry` | `ci` 中信一级（默认，接近研报）、`sw` 申万一级 |
-| `--size-bins` | 全市场市值分组数量，默认 10，小到大编号 |
-| `--max-size-age-days` | 报告日回溯最近市场截面的最大自然日数，默认 7，不使用未来市值 |
-| `--min-actual-abs` | 剔除实际值绝对值不超过该阈值的样本，默认 0；金额单位万元，EPS 单位元/股 |
-| `--min-count` | 图中展示一组所需最低样本数，默认 30；CSV 仍保留所有组 |
-| `--config` | 默认项目根目录 config.toml；读取其中 paths，不输出凭证 |
-| `--data-root` | 覆盖基础数据目录；配置中的相对路径以此为根，绝对路径仍按原配置使用 |
-| `--output-dir` | 自定义全新输出目录；默认自动生成带时间戳的目录，避免覆盖前次结果 |
-| `--save-observations` | 额外保存逐条可核对的预测、实际值、时间、市值、行业及误差明细 |
+| `--start-date / --end-date` | 研报日期闭区间，不是预测财年 / Inclusive report dates, not forecast fiscal years |
+| `--metric` | `np` 净利润、`op_rt` 收入、`eps` 每股收益 / Net profit, revenue or EPS |
+| `--forecast-year` | 可选一个或多个财年；只使用年度 Q4 预测 / Optional fiscal years; annual Q4 forecasts only |
+| `--as-of` | 实际财报可见截止日，默认当天且不得早于 end-date / Actual-disclosure cutoff; defaults to today and cannot precede end-date |
+| `--industry` | `ci` 中信一级（默认）或 `sw` 申万一级 / CITIC L1 (default) or SW L1 |
+| `--size-bins` | 市值分组数，默认 10 / Size groups, default 10 |
+| `--min-actual-abs` | 实际值绝对值下限，默认 0 / Minimum absolute actual value, default 0 |
+| `--config / --data-root` | 配置文件或数据根目录 / Configuration or data root |
+| `--output-dir` | 必须尚不存在的结果目录 / A new, non-existing output directory |
+| `--save-observations` | 保存逐条评价明细 / Save observation-level results |
 
-## 研究口径
+其他选项见 `python scripts/forecast_bias/analyze.py --help`。
+See `--help` for additional options.
 
-偏离度为 `abs(forecast - actual) / abs(actual)`，同时统计有符号误差
-`(forecast - actual) / abs(actual)`。CSV 中 0.2 表示 20%，图中以百分数显示。
-负实际利润可参与；零实际值排除，不加 epsilon，不截尾，接近零的利润可能导致很大的误差。
-推荐优先看中位数，并结合样本数、均值、P10、P90 和阈值敏感性判断。
+## 计算口径 / Methodology
 
-输入年度预测仅保留 `YYYYQ4`。原始研报净利润按项目既有约定对应实际归母净利润
-`n_income_attr_p`，收入对应 `revenue`，EPS 对应 `basic_eps`。
-实际金额从元除以 10000 转为万元；EPS 不换算。EPS 比较没有额外消除股本变化影响。
+偏离度为 `abs(forecast - actual) / abs(actual)`，另统计有符号误差 `(forecast - actual) / abs(actual)`。零实际值排除，负值可参与；不截尾或用 epsilon 替换分母。接近零的实际值可能产生极大误差，应结合中位数、分位数和样本数解读。
 
-实际值使用目标年报最早可见的合并报表记录（report_type 1/4），可见日期为
-`f_ann_date`，缺失则用 `ann_date`。同日优先类型 1，同类型优先较高 update_flag。
-不选择后来重述的数值，也不因首次实际指标为空而改用更晚修订；首次披露缺值直接排除。
-依赖本地数据保留完整版本，不能从现有文件恢复供应商已覆盖掉的原始历史。
-排除报告日期不早于实际披露日期的记录；只有日级时间，同日记录保守排除。
-未来实际值是事后评价标签，实际公告月份也是事后已知信息，不能直接作为当时交易信号。
+Absolute error is `abs(forecast - actual) / abs(actual)`; signed error retains the numerator's sign. Zero actuals are excluded, negative actuals are allowed, and no clipping or epsilon denominator is applied. Inspect medians, quantiles and counts because near-zero actuals can create extreme errors.
 
-每个“股票、报告日期、机构、作者字符串、标题、预测财年”保留最早更新时间的记录。
-不同日期的预测都参与，不像一致预期聚合那样只取每机构最新一条，也不将多人署名拆开重复计数。
-每条记录等权，所以覆盖密集的股票、机构权重较大；本工具复现描述性分组研究，非因果推断。
-`create_time` 是供应商更新时间，不假定它是首次录入时间，不据此伪造严格 PIT 数据库。
-未实现按研报类别筛选、ST/新股筛选，样本以本地年度预测和可匹配实际值为准。
+预测 `np/op_rt/eps` 分别对应实际 `n_income_attr_p/revenue/basic_eps`。实际金额从元换算为万元，EPS 不换算，也不额外调整股本变化。实际值取目标年报最早披露的合并报表（类型 1/4），日期用 `f_ann_date`，缺失才用 `ann_date`；同日优先类型 1，再优先较高 update_flag。首次披露缺值不会用后续修订补齐。
 
-三个属性：
+Forecasts map to attributable net profit, revenue and basic EPS. Monetary actuals are converted from yuan to ten-thousand yuan; EPS is not adjusted for share-count changes. Actuals use the earliest consolidated annual disclosure (types 1/4), preferring type 1 and higher update flags on ties. Missing first-disclosure values are not replaced with later revisions.
 
-1. **时间跨度**：年报实际首次公告月份与研报发布月份之差，和研报时间分组方法一致。
-   同月且报告早于公告时跨度为 0；明细另保留自然日跨度。
-2. **企业规模**：研报当日或此前最近一个市场文件的总市值 `total_mv`。
-   用该日全部有效市值股票的平均排名百分位划分组别，不在分析师覆盖股票中重新排名。
-   同市值保留同组，因此组数、人数可能不完全均等。市场文件选定后某股票缺值则不再逐股延续旧值。
-3. **行业**：研报发布日的历史一级行业，采用 `[in_date, out_date)` 区间。
-   多个同时有效的不同一级行业视为歧义，保留明细但不参与行业统计；不回填当前行业。
+只评价早于实际披露日的研报，同日保守排除。相同股票、报告日期、机构、作者、标题、财年的记录保留最早更新时间版本；不同日期预测仍全部等权参与，不等同于一致预期的每机构最新值聚合。
 
-三个分析分别使用各自可用样本：市值缺失不影响时间统计，行业缺失也不影响市值统计。
-合并多个预测财年时，样本结构可能混淆分组关系，因此同时提供按财年拆分的结果。
-此版不做行业、市值、时间的联合回归，也不生成分析师权重。
+Reports must precede actual disclosure; same-day reports are excluded. Duplicate report identities retain the earliest update, while different report dates remain equally weighted. This differs from latest-per-institution consensus aggregation.
 
-## 结果
+规模使用报告日或之前的市值截面，行业使用报告日历史分类；跨度为实际公告月份与报告月份之差。各分组使用各自有效样本，并提供按预测财年拆分的统计。
 
-默认写入本目录 `output/<指标>_<起止日期>_<运行时间>/`：
+Size uses market data on or before the report date; industry uses historical membership. Horizon is the month difference between actual disclosure and report publication. Each grouping uses its available observations, with fiscal-year breakdowns.
 
-- `bias_comparison.png`：时间、规模、行业三组偏离度中位数图；行业以代码标注，中文名称见 CSV。
-- `bias_by_time.csv`、`bias_by_size.csv`、`bias_by_industry.csv`：各组样本数、股票数、误差均值、中位数、P10/P90、有符号误差均值。
-- `bias_by_*_and_year.csv`：相同统计按目标预测财年拆分。
-- `run_metadata.json`：运行参数、数据路径、计算口径、逐步排除样本数与属性覆盖情况。
-- `observations.parquet`：可选逐条明细，便于进一步分析。
+## 输出与限制 / Outputs and limitations
 
-原始年度研报文件缺失、数据键冲突、无可评价样本等情况会明确报错。
-没有最终实际值的预测不纳入评价；应关注 metadata 中的排除比例，避免误读尚未成熟的预测样本。
+默认输出至本目录 `output/<指标>_<日期>_<时间戳>/`，包括比较图、`bias_by_*.csv`、`run_metadata.json`，以及可选 `observations.parquet`。运行信息记录过滤情况；缺少成熟实际值的预测不参与评价。
 
-验证脚本：
+Outputs go to a timestamped `output/` directory: comparison plots, grouped CSVs, run metadata and optional observations. Review exclusion counts; forecasts without mature actuals are omitted.
 
-```powershell
-python -m unittest discover -s scripts/forecast_bias -p "test_*.py" -v
-```
+这是事后描述性研究，不是严格 PIT 交易信号。供应商 `create_time` 不等同于首次可见时间，本地文件无法恢复被覆盖的历史版本；实际披露月份也是事后信息。未实现 ST/新股及研报类别筛选，也不生成分析师权重。
+
+This is retrospective descriptive research, not a strictly PIT trading signal. Vendor update timestamps do not establish first availability, overwritten history cannot be recovered, and actual-disclosure months are hindsight information. The tool does not filter ST/new listings or report categories, or generate analyst weights.

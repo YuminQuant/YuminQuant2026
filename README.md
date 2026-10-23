@@ -2,261 +2,106 @@
   <img src="docs/logo_v1.png" alt="YuminQuant logo" width="360">
 </p>
 
-# YuminQuant / 本地量化研究系统
+# YuminQuant / 量化研究工作台
 
-YuminQuant 是一个本地 parquet 数据湖、Rust 因子/回测/策略引擎，以及 Python ML alpha 和分析工具的组合项目。数据默认存放在本机 `data/` 下，不进入 Git。
+YuminQuant 将数据获取、派生数据、因子研究、机器学习和回测连接在一个本地优先的工作流中。Python 负责数据接口、模型与分析，Rust 负责因子、标签、风险暴露及回测计算。数据以 Parquet 存储，代码与生成的数据分开管理。
 
-YuminQuant is a local parquet-based quantitative research workspace. It combines Python data downloaders, a Rust factor/backtest/strategy engine, Python ML alpha tooling, and Python analysis helpers. The local `data/` directory is generated data and is intentionally not tracked by Git.
+YuminQuant is a local-first quantitative research workspace connecting data collection, derived datasets, factor research, machine learning and backtesting. Python provides downloaders, models and analysis; Rust provides factors, labels, risk exposures and simulation. Data is stored as Parquet and managed separately from source code.
 
-## License
+## 功能与模块 / Features and modules
 
-YuminQuant is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+| 模块 / Module | 覆盖内容 / Scope | 使用说明 / Guide |
+|---|---|---|
+| `data_manager`、`scripts` | 行情、财报、分析师、主营业务、基金等接口与历史/增量更新 / Market, financial, analyst, business and fund data; historical and incremental updates | [数据命令 / Data commands](docs/UPDATE_COMMANDS.md) |
+| `factor_engine` | 股票与期货因子、标签、Barra CNE6、派生数据、截面回测、事件驱动策略 / Stock and futures factors, labels, risk exposures, derived data and backtests | [Rust 引擎 / Rust engine](factor_engine/README.md) |
+| `ml_alpha` | 模型信号与端到端因子训练、推理、特征物化 / Model signals and end-to-end factors: training, inference and feature materialization | [ML Alpha](ml_alpha/README.md) |
+| `analysis_tools` | 回测读取、绩效/IC 报表与图表 / Backtest loading, performance/IC reports and plots | [分析工具 / Analysis](analysis_tools/README.md) |
+| `strategy_config` | 股票与期货策略 TOML / Stock and futures strategy configurations | [策略配置 / Strategy configs](strategy_config/README.md) |
 
-## 模块总览 / Module Map
+各数据接口的权限、历史范围与更新方式不同，接口存在不代表本地已下载数据。
+Data permissions, historical coverage and update schedules vary by endpoint. Available code does not imply that its input data is already present.
 
-公募基金基础信息、持仓、管理人、经理、业绩基准、规模、净值、分红及技术面接口见 [基金数据接入 / Fund Data](docs/fund_data.md)，支持历史初始化、修订审计和严格分页保护。持仓历史及增量按报告期下载、公告年分区并使用 ZSTD；其他日期型接口按自然日增量。默认仍只初始化 basic/portfolio，其他数据显式选择。
+## 准备工作 / Setup
 
-See [Fund Data / 基金数据接入](docs/fund_data.md) for all public-fund interfaces, initialization, revision auditing and pagination safeguards. Portfolio history and incremental refreshes query report periods and use ZSTD announcement-year partitions; other dated sources update by calendar date. Initialization defaults to basic/portfolio; additional sources are opt-in.
+安装 Rust stable/Cargo，并准备适合所选模块的 Python 环境。以下命令从仓库根目录运行；路径使用正斜杠，适用于 PowerShell 和常见 Linux shell。
 
-默认增量更新也包含 `fund_basic` 和 `fund_portfolio`，其他基金接口不默认开启。Default incremental updates also include `fund_basic` and `fund_portfolio`; other fund interfaces remain opt-in.
+Install Rust stable/Cargo and a Python environment suitable for the selected modules. Run the following commands from the repository root; forward-slash paths work in PowerShell and common Linux shells.
+
+```bash
+python -m pip install pandas numpy pyarrow tqdm tomli tushare
+cp config.example.toml config.toml
+cargo check --manifest-path factor_engine/Cargo.toml
+```
+
+在 `config.toml` 中设置自己的 `[paths].base_data_dir` 及数据接口凭证、频率限制，不要照搬他人的绝对路径。模型和绘图库按各模块说明另行安装。
+
+Set your own `[paths].base_data_dir`, API credentials and rate limits in `config.toml`. Do not copy another machine's absolute paths. Install model and plotting dependencies separately as described in their module guides.
+
+示例配置若未包含数据根目录，请在已有 `[paths]` 节内补充，不要重复声明该节：
+If the template omits the data root, add it inside the existing `[paths]` section without duplicating that section:
+
+```toml
+base_data_dir = "data"
+```
+
+此相对路径要求从仓库根目录运行；也可设置自己的绝对路径。
+This relative path assumes commands run from the repository root; an absolute path is also supported.
+
+## 一般流程 / Typical workflow
+
+先准备日历和所需原始数据，再生成依赖的派生数据、标签或风险暴露。使用单个因子和短日期区间验证配置后，再扩大计算范围。
+
+Prepare calendars and required raw inputs first, followed by any required derived data, labels or risk exposures. Start with one factor over a short interval before expanding a run.
+
+```bash
+python scripts/update_incremental.py --groups calendar stock_static
+python scripts/update_incremental.py --groups stock_daily --start-date 20260420 --end-date 20260424
+cargo run --release --manifest-path factor_engine/Cargo.toml -- metadata
+cargo run --release --manifest-path factor_engine/Cargo.toml -- list --asset stock --frequency daily --ids-only true
+cargo run --release --manifest-path factor_engine/Cargo.toml -- plan --asset stock --frequency daily --start-date 20260420 --end-date 20260424 --factors ret20
+cargo run --release --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260420 --end-date 20260424 --factors ret20 --date-batch-size 120 --profile
+```
+
+`plan` 查看计划而不生成因子，但不是完整的数据质量验证。示例日期不是运行限制，且回看窗口可能需要更早的数据。
+`plan` inspects execution without producing factors; it is not a complete data-quality check. Example dates are not restrictions, and lookback windows can require earlier inputs.
+
+## 数据与输出 / Data and outputs
+
+下列路径相对于配置的数据根目录；原始数据和计算产物不随 Git 分发。
+These paths are relative to the configured data root. Raw datasets and generated outputs are not distributed through Git.
 
 ```text
-YuminQuant/
-  data_manager/          # Python downloaders and Tushare client
-  scripts/               # Incremental update and maintenance scripts
-  factor_engine/         # Rust factors, labels, Barra, backtest, strategy
-  ml_alpha/              # Python ML alpha training and prediction package
-  analysis_tools/        # Python backtest result analysis helpers
-  strategy_config/       # Strategy TOML configs by asset class
-  docs/                  # Data-update docs
-  data/                  # Local generated parquet data, ignored by Git
+chn_stock_data/                          A 股原始数据 / A-share inputs
+fund_data/                              基金数据 / Fund data
+derived/                                派生数据 / Derived datasets
+factors/{asset}/{frequency}/{year}/      正式因子 / Formal factors
+label/{asset}/{frequency}/{year}/        收益标签 / Return labels
+barra/{asset}/daily/CNE6/{year}/          风险暴露 / Risk exposures
+models/{year}/                          模型信号 / Model signals
+model_workspace/                        模型与特征缓存 / Model artifacts and feature caches
+backtest/                               因子回测 / Factor backtests
+strategy/                               策略模拟 / Strategy simulations
 ```
 
-主要输出路径 / Main output paths:
+模型信号、正式因子和策略账户收益是不同产物，不能互换解释。标准命令默认本地 IO；可选存储扩展不代表所有输入、回测或派生入口都支持远程文件系统。
 
-```text
-data/factors/{asset}/{frequency}/{year}/{trade_date}.parquet
-data/factors/_cache/intraday_daily/chn_stock/{year}/{trade_date}.parquet
-data/barra/{asset}/daily/CNE6/{year}/{trade_date}.parquet
-data/label/{asset}/{frequency}/{year}/{trade_date}.parquet
-data/backtest/stock/daily/{returns,ic,factor_stats,holdings,industry_weights}/
-data/models/{year}/{trade_date}.parquet
-data/strategy/{asset_class}/{strategy_id}/holdings.parquet
-```
+Model signals, formal factors and strategy account returns are distinct outputs. Standard commands use local IO. Optional storage adapters do not imply universal remote-filesystem support for inputs, backtests or derived-data commands.
 
-## 环境与数据 / Setup And Data
+## 文档导航 / Documentation
 
-安装基础 Python 依赖，并复制本地配置：
+- [下载粒度 / Download granularity](docs/DOWNLOAD_GRANULARITY.md) · [基金接口 / Fund data](docs/fund_data.md)
+- [因子开发 / Factor development](factor_engine/docs/FACTOR_DEVELOPMENT_README.md)
+- [财务 PIT 因子 / Financial PIT factors](factor_engine/docs/FINANCIAL_FACTOR_DEVELOPMENT_README.md)
+- [基金持仓因子 / Fund-holdings factors](factor_engine/docs/FUND_HOLDINGS_FACTOR_DEVELOPMENT_README.md)
+- [一致预期指标 / Consensus indicators](factor_engine/docs/CONSENSUS_DERIVED_README.md)
+- [模型开发 / Model development](ml_alpha/docs/DEVELOPMENT_README.md)
+- [策略开发 / Strategy development](factor_engine/docs/STRATEGY_README.md)
 
-Install basic Python dependencies and create your local config:
+## 安全与许可 / Safety and license
 
-```powershell
-pip install pandas numpy pyarrow tqdm tomli tushare
-copy config.example.toml config.toml
-```
+凭证、本地配置、数据、模型和临时验证产物应保持未跟踪；提交前检查 `git status`。部署环境的鉴权和公司专用配置不属于公开项目。验证脚本及产物放在被忽略的 `tmp/`。
 
-在 `config.toml` 中填入 Tushare token。默认数据根目录是：
+Keep credentials, local configuration, datasets, models and validation artifacts untracked; inspect `git status` before committing. Environment-specific authentication and company deployment configuration belong outside the public project. Keep validation scripts and artifacts in ignored `tmp/`.
 
-Fill your Tushare token in `config.toml`. The default data root is:
-
-```text
-D:/yuminwu_workspace/Internship/YuminQuant/data
-```
-
-常用数据更新命令 / Common update commands:
-
-```powershell
-python scripts\update_incremental.py --groups calendar stock_static future_static index_static
-python scripts\update_incremental.py --groups stock_daily future_daily --start-date 20260214
-python scripts\update_incremental.py --groups stock_minute future_minute --start-date 20260214
-python scripts\update_incremental.py --groups stock_trade_filter --start-date 20160101 --end-date 20260424
-python scripts\update_incremental.py --groups index_weight --start-date 20090101 --end-date 20260331
-python scripts\update_incremental.py --groups stock_dividend --start-date 20090101 --end-date 20260424 --rebuild
-```
-
-更多下载说明见 / More downloader docs:
-
-- [docs/UPDATE_COMMANDS.md](docs/UPDATE_COMMANDS.md)
-- [docs/DOWNLOAD_GRANULARITY.md](docs/DOWNLOAD_GRANULARITY.md)
-
-## 常用 CLI 速查 / CLI Cheatsheet
-
-以下命令均从仓库根目录运行，除非特别说明。
-
-Run these commands from the repository root unless noted otherwise.
-
-### 因子 / Factors
-
-```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- metadata
-cargo run --release --manifest-path factor_engine\Cargo.toml -- list --asset stock --frequency daily --ids-only true
-cargo run --release --manifest-path factor_engine\Cargo.toml -- plan --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors utd
-cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors utd --profile
-cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags GFZQ --factor-batch-size 20 --date-batch-size 120 --profile --refresh-minute-cache
-```
-
-多 raw 共享 provider 示例：下面这组 V-shape 因子来自同一个分钟 provider。引擎会在同一批次里共享一次分钟扫描，并只物化本次选中因子需要的 sibling raw。
-
-Multi-raw provider example: these V-shape factors share one minute provider. In one factor batch, the engine scans the minute file once and materializes only the selected sibling raw columns.
-
-```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- run --asset stock --frequency daily --start-date 20260424 --end-date 20260424 --factors negv_mean,negv_max,negvwgt_mean,negvwgt_max,flash_crash_prob_v --profile --refresh-minute-cache
-```
-
-### 派生数据 / Derived Data
-
-一致预期派生数据生成日频宽表，输出路径为 `data/derived/stock/consensus/{trade_date}.parquet`。第一版对齐 `consensus.txt` 中的个股年度、滚动、评级和目标价指标，并使用 `fy0/fy1/fy2/fy3/roll` 后缀。由于朝阳永续文档没有披露“机构影响力 + 发布时间影响力”的具体权重函数，当前实现保留窗口、机构数门槛、type 和沿用规则，但默认聚合器为可替换的同权模型。
-
-Analyst consensus derived data is generated as one daily wide parquet file per trading day at `data/derived/stock/consensus/{trade_date}.parquet`. Version 1 follows the stock-level annual, rolling, rating, and target-price fields described in `consensus.txt`, with `fy0/fy1/fy2/fy3/roll` suffixes. The CYYS document does not disclose the exact institution-influence and publication-time weighting functions, so the engine keeps the windows, institution-count thresholds, type labels, and carry-forward behavior while using a replaceable equal-weight aggregator by default.
-
-```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- derive-consensus --start-date 20260401 --end-date 20260430 --date-batch-size 20
-```
-
-### Barra 与 Label / Barra And Labels
-
-```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- barra-metadata
-cargo run --release --manifest-path factor_engine\Cargo.toml -- barra-run --asset stock --frequency daily --start-date 20200101 --end-date 20201231 --families DIVIDEND_YIELD,GROWTH,LIQUIDITY,MOMENTUM,QUALITY,SENTIMENT,VALUE,VOLATILITY --date-batch-size 240 --profile
-
-cargo run --release --manifest-path factor_engine\Cargo.toml -- label-metadata
-cargo run --release --manifest-path factor_engine\Cargo.toml -- label-run --asset stock --frequency daily --start-date 20260101 --end-date 20260424 --label-batch-size 20 --profile
-```
-
-### 截面回测 / Cross-Sectional Backtest
-
-```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --factors peer_ds_by_t --groups 10 --rebalance 5
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --tags XYZQ --groups 10 --rebalance weekly --factor-batch-size 10 --date-batch-size 120
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --groups 10 --rebalance 5 --factor-batch-size 10 --date-batch-size 120
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000019 --factor-root data\models --groups 10 --rebalance 20 --factor-fill ffill
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20110101 --end-date 20260424 --all-factors --factor-root data\barra\stock\daily\CNE6 --groups 10 --rebalance 20 --neutralize barra:all+sector
-```
-
-常用参数 / Common flags:
-
-```text
---factors a,b,c | --tags XYZQ | --all-factors
---factor-root data\models
---label future_vwap_return_1d | future_vwap_return_20d
---groups 5|10|20
---rebalance daily|5|10|weekly|biweekly|monthly|quarterly
---factor-fill none|ffill
---universe mkt_all|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id
---benchmark mkt_mean|000300.SH|000905.SH|000852.SH|000985.CSI|custom_id
---neutralize none|sector|barra:SIZE|barra:SIZE+sector|barra:all+sector
---detail none|holdings|industry_weights|all
---detail-sector sw_l1|ci_l1
---factor-batch-size 10
---date-batch-size 120
-```
-
-External factor parquet schema repair:
-
-Use this when an external factor/model root fails in Rust backtest with Arrow
-schema errors such as `LargeUtf8`, `trade_date is i64`, or value columns stored
-as `float64`. The script rewrites only files whose schema needs casting. It
-normalizes key columns to Rust-compatible Arrow types and casts numeric output
-columns to `float32`.
-
-```powershell
-python scripts\cast_output_value_columns.py --root C:\Users\Devin\Desktop\Pred --start-date 20110101 --end-date 20260424 --dry-run
-python scripts\cast_output_value_columns.py --root C:\Users\Devin\Desktop\Pred --start-date 20110101 --end-date 20260424
-```
-
-### ML Alpha
-
-不需要安装包时，进入 `ml_alpha` 目录运行：
-
-Run from `ml_alpha` when you do not want to install the package:
-
-```powershell
-Push-Location .\ml_alpha
-python -m yq_ml_alpha model-run --config models\mdl_000001.toml
-python -m yq_ml_alpha model-run --config models\mdl_000019.toml
-python -m yq_ml_alpha model-run --config models\monthly_elstm_ranknet_36.toml
-Pop-Location
-```
-
-端到端 bar 序列因子现在使用 tensor 数据通路：`bar_panel` / `multi_bar_panel` 直接构造 `[N,T,F]`，并使用 `max_cache_sessions = "auto"` 控制 session cache。详见 [ml_alpha/README.md](ml_alpha/README.md)。
-
-End-to-end bar sequence factors now use a tensor data path: `bar_panel` / `multi_bar_panel` build `[N,T,F]` tensors directly and use `max_cache_sessions = "auto"` for session cache sizing. See [ml_alpha/README.md](ml_alpha/README.md).
-
-输出写入 / Output:
-
-```text
-data/models/{year}/{trade_date}.parquet
-```
-
-回测 ML alpha / Backtest ML alpha:
-
-```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- backtest --asset stock --frequency daily --start-date 20200101 --end-date 20260424 --factors mdl_000001 --factor-root data\models --groups 10 --rebalance 20
-```
-
-### Strategy
-
-策略模块是事件驱动的真实策略模拟器，输出账户和持仓 PnL，不是快速因子收益检验。
-
-The strategy module is an event-driven simulator for concrete trading strategies. It outputs account and holding snapshots rather than factor-test returns.
-
-```powershell
-cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\stock\strategy_001.toml
-cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\future\ag_sma_20.toml
-cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\future\ag_sma_20.toml --detail true
-```
-
-输出 / Output:
-
-```text
-data/strategy/stock/strategy_001/holdings.parquet
-data/strategy/future/ag_sma_20/holdings.parquet
-```
-
-## 开发教程入口 / Development Guides
-
-- 因子开发 / Factor development: [factor_engine/FACTOR_DEVELOPMENT_README.md](factor_engine/FACTOR_DEVELOPMENT_README.md)
-- 财务因子开发 / Financial factor development: [factor_engine/FINANCIAL_FACTOR_DEVELOPMENT_README.md](factor_engine/FINANCIAL_FACTOR_DEVELOPMENT_README.md)
-- Factor engine CLI: [factor_engine/README.md](factor_engine/README.md)
-- Strategy development: [factor_engine/STRATEGY_README.md](factor_engine/STRATEGY_README.md)
-- Strategy config: [strategy_config/README.md](strategy_config/README.md)
-- ML model development: [ml_alpha/README.md](ml_alpha/README.md)
-- Python analysis helpers: [analysis_tools/README.md](analysis_tools/README.md)
-
-## Python 分析工具 / Python Analysis Tools
-
-```python
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path("analysis_tools").resolve()))
-
-from yq_analysis.io import load_backtest_result
-from yq_analysis.report import make_backtest_report
-from yq_analysis.plots import plot_return_summary
-
-result = load_backtest_result(r"data/backtest/stock/daily", "acf")
-report = make_backtest_report(result["returns"], result["ic"], result["factor_stats"])
-fig = plot_return_summary(result["returns"], groups=10)
-```
-
-## Git 与数据安全 / Git And Data Safety
-
-本地密钥、数据和输出不会进入 Git：
-
-Local secrets and generated data are not tracked:
-
-```text
-config.toml
-data/
-target/
-.pytest_cache/
-analysis_tools/plots/
-```
-
-提交前建议检查 / Before committing:
-
-```powershell
-git status
-git diff --stat
-```
+本项目采用 Apache License 2.0，见 [LICENSE](LICENSE)。
+Licensed under Apache License 2.0; see [LICENSE](LICENSE).

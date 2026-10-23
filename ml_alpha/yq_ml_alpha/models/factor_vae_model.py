@@ -1,6 +1,8 @@
 """DFQ-FactorVAE with local factor sequences and a label-free prediction path."""
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 from collections import deque
 from pathlib import Path
 from time import perf_counter
@@ -322,15 +324,15 @@ class FactorVAEAlphaModel(MLPAlphaModel):
         if self.model is None:
             raise RuntimeError("cannot save an unfitted FactorVAE")
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(dict(version=1, model_kind="factor_vae", params=self.params,
+        artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
+        artifact_io.torch_save(dict(version=1, model_kind="factor_vae", params=self.params,
                         feature_columns=self.feature_columns, state_dict=_cpu_state_dict(self.model),
                         loss_history=self.loss_history, model_info=self.model_info), path)
 
     @classmethod
     def load(cls, path):
         torch, nn = _torch_modules()
-        saved = torch.load(path, map_location="cpu")
+        saved = artifact_io.torch_load(path, map_location="cpu")
         if saved.get("version") != 1 or saved.get("model_kind") != "factor_vae":
             raise ValueError("unsupported FactorVAE checkpoint")
         model = cls()

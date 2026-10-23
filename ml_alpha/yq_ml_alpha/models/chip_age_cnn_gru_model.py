@@ -1,4 +1,5 @@
 """Fixed CNN/GRU chip-age factor with whole-date Pearson IC optimization."""
+from yq_ml_alpha.output import artifact_io
 import json
 import random
 from pathlib import Path
@@ -203,17 +204,17 @@ class ChipAgeCNNGRUAlphaModel(AlphaModel):
         if not self.states:
             raise RuntimeError("cannot save unfitted chip model")
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(dict(params=self.params, states=self.states, loss_history=self.loss_history,
+        artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
+        artifact_io.torch_save(dict(params=self.params, states=self.states, loss_history=self.loss_history,
                         model_info=self.model_info), path)
 
     @classmethod
     def load(cls, path):
         import torch
         try:
-            saved = torch.load(path, map_location="cpu", weights_only=False)
+            saved = artifact_io.torch_load(path, map_location="cpu", weights_only=False)
         except TypeError:
-            saved = torch.load(path, map_location="cpu")
+            saved = artifact_io.torch_load(path, map_location="cpu")
         model = cls()
         model.params = _params(saved["params"])
         model.states = saved["states"]
@@ -223,13 +224,13 @@ class ChipAgeCNNGRUAlphaModel(AlphaModel):
 
     def write_diagnostics(self, context):
         paths = []
-        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(context.artifact_dir, parents=True, exist_ok=True)
         if context.diagnostics.get("write_loss_history", False):
             path = context.artifact_dir / "loss_history.parquet"
-            pd.DataFrame(self.loss_history).to_parquet(path, index=False)
+            artifact_io.write_parquet(pd.DataFrame(self.loss_history), path, index=False)
             paths.append(path)
         if context.diagnostics.get("write_model_info", False):
             path = context.artifact_dir / "model_info.json"
-            path.write_text(json.dumps(self.model_info, indent=2), encoding="utf-8")
+            artifact_io.write_text(path, json.dumps(self.model_info, indent=2), encoding="utf-8")
             paths.append(path)
         return paths

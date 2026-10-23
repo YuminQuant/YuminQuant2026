@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 
 from yq_ml_alpha.data.stores import daily_path, read_daily
 from yq_ml_alpha.output.file_lock import daily_file_lock
+from yq_ml_alpha.output import artifact_io
 
 
 KEY_COLUMNS = ["trade_date", "ts_code"]
@@ -72,7 +73,7 @@ class DailyWideWriter:
         missing = []
         for trade_date in dates:
             path = self._path(trade_date)
-            if not path.exists():
+            if not artifact_io.exists(path):
                 missing.append(trade_date)
                 continue
             if self.output_id not in parquet_columns(path):
@@ -160,6 +161,9 @@ class DailyWideWriter:
 
     @staticmethod
     def _atomic_write(path, frame):
+        if artifact_io.backend(path):
+            artifact_io.write_parquet(frame, path, index=False)
+            return
         tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         try:
             frame.to_parquet(tmp, index=False)
@@ -171,7 +175,7 @@ class DailyWideWriter:
     def _ensure_output_column_one(self, trade_date: int, columns: list[str]) -> Path | None:
         path = self._path(trade_date)
         with daily_file_lock(path):
-            if path.exists() and self.output_id in parquet_columns(path):
+            if artifact_io.exists(path) and self.output_id in parquet_columns(path):
                 return None
             base = self._load_base(path, trade_date, None)
             values = pd.DataFrame(columns=[*KEY_COLUMNS, self.output_id])
@@ -184,15 +188,15 @@ class DailyWideWriter:
             if trade_date in self._schema_dates_seen:
                 continue
             path = self._path(trade_date)
-            if path.exists():
+            if artifact_io.exists(path):
                 self._known_columns.update(parquet_columns(path))
             self._schema_dates_seen.add(trade_date)
         value_columns = sorted(column for column in self._known_columns if column not in KEY_COLUMNS)
         return KEY_COLUMNS + value_columns
 
     def _load_base(self, path: Path, trade_date: int, daily: pd.DataFrame | None) -> pd.DataFrame:
-        if path.exists():
-            return pd.read_parquet(path)
+        if artifact_io.exists(path):
+            return artifact_io.read_parquet(path)
         if self.base_root is not None:
             base = read_daily(self.base_root, trade_date, [])
             if not base.empty:
@@ -212,7 +216,7 @@ class DailyWideWriter:
 
 
 def parquet_columns(path: str | Path) -> list[str]:
-    return list(pq.read_schema(path).names)
+    return artifact_io.parquet_columns(path)
 
 
 def _coverage_dates(predictions: pd.DataFrame, coverage_dates: Iterable[int] | None) -> list[int]:

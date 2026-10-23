@@ -1,6 +1,8 @@
 """Huatai classical estimators using the shared model train/predict workflow."""
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 import inspect
 import json
 from pathlib import Path
@@ -157,9 +159,9 @@ class _ClassicalAlphaModel(AlphaModel):
     def write_diagnostics(self, context: ModelContext) -> list[Path]:
         if not context.diagnostics.get("enabled") or not context.diagnostics.get("write_model_info"):
             return []
-        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(context.artifact_dir, parents=True, exist_ok=True)
         path = context.artifact_dir / "model_info.json"
-        path.write_text(json.dumps(self.model_info, ensure_ascii=False, indent=2), encoding="utf-8")
+        artifact_io.write_text(path, json.dumps(self.model_info, ensure_ascii=False, indent=2), encoding="utf-8")
         return [path]
 
 

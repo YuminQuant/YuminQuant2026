@@ -503,3 +503,27 @@ Logsig 配置已启用确定性特征磁盘缓存：参数和源文件大小/修
 date-wise IC loss. It follows logsig_alpha_v's annual 36-month window (33 train + 3 validation) and stock universe.
 See [implementation and commands](docs/CHIP_AGE_ALPHA.md) for confirmed source
 assumptions, resource controls and the required historical label restoration.
+
+## Optional Artifact Storage / 可选产物存储
+
+本地入口保持原样，不注册后端就使用本地文件。外部部署入口可在训练/推理开始前调用
+`yq_ml_alpha.output.artifact_io.register(backend)`，仅接管明确映射的输出目录。
+公司鉴权、路径和远程实现放在仓库之外，不写入公开配置。
+
+Local execution remains the default. An external launcher can register an artifact
+backend once, before starting worker threads, without changing model algorithms.
+Remote paths must be mapped explicitly; no automatic fallback on remote errors.
+
+模型的 pickle/PyTorch checkpoint、manifest、诊断文件、每日预测宽表及因子 metadata
+通过统一辅助函数读写。开发新模型时使用 `artifact_io.open_file/torch_save/torch_load/
+write_parquet/write_text/mkdir`，不要直接把远程路径交给 `Path.open` 或 `torch.save`。
+每日宽表锁覆盖读取、按键合并和写入；后端负责原子提交，保留已有其他因子列。
+
+New models should use these helpers for checkpoint and diagnostic IO. The backend
+must provide seekable checkpoint reads, atomic output streams and distributed locks.
+Input features and tensor caches are separate and remain under their existing policy.
+
+跨节点训练/预测的临时输入路径会变化。后端可提供 `identity_path()`，把临时路径映射为
+稳定的数据来源标识，供 manifest 校验；仍需正确声明 `data_version`，不能跳过版本检查。
+Local manifest fingerprints are unchanged. Deployment-specific stable input
+identities prevent temporary task directories from invalidating otherwise identical models.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 import math
 import time
 from pathlib import Path
@@ -124,16 +126,16 @@ class AdaptiveGateAlphaModel(MLPAlphaModel):
             raise RuntimeError("model is not fitted")
         torch, _ = _torch_modules()
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
         self.model.cpu()
-        torch.save({"params": self.params, "feature_columns": self.feature_columns,
+        artifact_io.torch_save({"params": self.params, "feature_columns": self.feature_columns,
                     "state_dict": self.model.state_dict(), "loss_history": self.loss_history,
                     "model_info": self.model_info}, path)
 
     @classmethod
     def load(cls, path: str | Path) -> "AdaptiveGateAlphaModel":
         torch, nn = _torch_modules()
-        checkpoint = torch.load(Path(path), map_location="cpu")
+        checkpoint = artifact_io.torch_load(Path(path), map_location="cpu")
         wrapper = cls()
         wrapper.params = _params(checkpoint["params"])
         wrapper.feature_columns = list(checkpoint["feature_columns"])

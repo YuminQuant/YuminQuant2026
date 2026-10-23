@@ -1,3 +1,5 @@
+
+from yq_ml_alpha.output import artifact_io
 """DFZQ spatial/temporal factor combination, with two second-stage rankers."""
 from pathlib import Path
 from time import perf_counter
@@ -295,8 +297,8 @@ class GraphTemporalAlphaModel(MLPAlphaModel):
     def save(self, path):
         torch, _ = _torch_modules()
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(dict(version=1, params=self.params, feature_columns=self.feature_columns,
+        artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
+        artifact_io.torch_save(dict(version=1, params=self.params, feature_columns=self.feature_columns,
                         encoders={key: _cpu_state_dict(model) for key, model in self.encoders.items()},
                         rankers={key: bytes(model.save_raw()) for key, model in self.rankers.items()},
                         loss_history=self.loss_history, model_info=self.model_info), path)
@@ -305,7 +307,7 @@ class GraphTemporalAlphaModel(MLPAlphaModel):
     def load(cls, path):
         import xgboost as xgb
         torch, nn = _torch_modules()
-        saved = torch.load(path, map_location="cpu")
+        saved = artifact_io.torch_load(path, map_location="cpu")
         if saved.get("version") != 1:
             raise ValueError("unsupported graph/temporal checkpoint version")
         model = cls()

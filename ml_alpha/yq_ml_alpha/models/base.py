@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 import pickle
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -56,8 +58,8 @@ class AlphaModel:
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("wb") as file:
+        artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
+        with artifact_io.open_file(path, "wb") as file:
             pickle.dump(self, file)
 
     def write_diagnostics(self, context: ModelContext) -> list[Path]:
@@ -65,7 +67,7 @@ class AlphaModel:
 
     @classmethod
     def load(cls, path: str | Path) -> "AlphaModel":
-        with Path(path).open("rb") as file:
+        with artifact_io.open_file(Path(path), "rb") as file:
             return pickle.load(file)
 
 class MeanFeatureAlphaModel(AlphaModel):

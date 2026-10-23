@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 import json
 from pathlib import Path
 from typing import Any
@@ -49,7 +51,7 @@ class PCAOLSAlphaModel(AlphaModel):
         diagnostics = context.diagnostics
         if not diagnostics.get("enabled", False) or not diagnostics.get("write_model_info", False):
             return []
-        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(context.artifact_dir, parents=True, exist_ok=True)
         ratio = []
         if self.pca_ is not None:
             ratio = [float(value) for value in self.pca_.explained_variance_ratio_]
@@ -70,7 +72,7 @@ class PCAOLSAlphaModel(AlphaModel):
             "coef_abs_max": float(np.max(np.abs(coef[1:]))) if coef.size > 1 else None,
         }
         path = context.artifact_dir / "model_info.json"
-        with path.open("w", encoding="utf-8") as file:
+        with artifact_io.open_file(path, "w", encoding="utf-8") as file:
             json.dump(info, file, ensure_ascii=False, indent=2, default=_json_default)
         return [path]
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 import json
 from pathlib import Path
 
@@ -35,7 +37,7 @@ class LinearRegressionAlphaModel(AlphaModel):
         diagnostics = context.diagnostics
         if not diagnostics.get("enabled", False) or not diagnostics.get("write_model_info", False):
             return []
-        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(context.artifact_dir, parents=True, exist_ok=True)
         coef = self.coef_ if self.coef_ is not None else np.array([], dtype="float64")
         info = {
             "window_id": context.artifact_dir.name,
@@ -51,7 +53,7 @@ class LinearRegressionAlphaModel(AlphaModel):
             "coef_abs_max": float(np.max(np.abs(coef[1:]))) if coef.size > 1 else None,
         }
         path = context.artifact_dir / "model_info.json"
-        with path.open("w", encoding="utf-8") as file:
+        with artifact_io.open_file(path, "w", encoding="utf-8") as file:
             json.dump(info, file, ensure_ascii=False, indent=2)
         return [path]
 

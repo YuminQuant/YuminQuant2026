@@ -530,3 +530,25 @@ python analysis_tools/scripts/run_strategy002_research.py
   分钟行情按选股与持仓并集过滤读取；固定交易时钟保留停牌/空仓日，避免换仓周期漂移。
 - `holdings.parquet` 默认仅保留日终账户；`fills.csv` 保存全部分钟成交，包含价格、数量、费用和已实现 PnL。
   NAV/PnL 继续包含现有现金分红、送转股与应收分红核算；现金分红沿用税前口径。
+
+## Optional Artifact Backend / 可选产物存储后端
+
+标准 CLI 默认使用本地文件，现有配置与因子计算代码无需修改。部署入口可在启动工作线程前，
+调用 `artifact_io::register(Arc<dyn ArtifactBackend>)` 注册一次后端；只接管其 `handles(path)`
+匹配的产物路径。公司路径、鉴权、远程客户端和部署入口不属于本公开仓库。
+
+The standard CLI remains local by default. An external launcher may register one
+`ArtifactBackend` before starting workers. Only explicitly mapped artifact paths
+are intercepted; factor formulas, input loading and local IO stay unchanged.
+
+后端必须同时实现存在性检查、目录、Parquet 读回/写出及锁。日频宽表在同一锁内完成
+读取旧列、按股票/日期合并、原子替换；序列化或远端提交失败必须报错，不得静默回落本地。
+锁需覆盖跨进程竞争；异常退出后的遗留锁必须人工核查，不能擅自抢占。
+
+Backends must support read/merge/write locking and atomic publication, not only
+upload. Remote failure must propagate rather than silently creating a local file.
+Mapped incremental `ParquetStreamWriter` and predicate-filtered input reads are
+currently rejected explicitly: this hook is not a universal remote filesystem.
+
+当前接入的是因子/标签/Barra 的标准产物 IO；不代表所有回测、派生流式写入或任意
+`std::fs` 调用均已远程化。输入仍可由部署层有界缓存并在任务结束时清理。

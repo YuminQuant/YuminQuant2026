@@ -63,11 +63,17 @@ struct MetadataRow {
     updated_at: String,
 }
 
-struct FactorMetadataLock(PathBuf);
+struct FactorMetadataLock {
+    local_path: Option<PathBuf>,
+    _remote_guard: Option<Box<dyn crate::artifact_io::ArtifactGuard>>,
+}
 
 impl FactorMetadataLock {
     fn acquire(root: &Path) -> Result<Self> {
         let path = root.join("factor_metadata.lock");
+        if let Some(guard) = crate::artifact_io::lock(&path)? {
+            return Ok(Self { local_path: None, _remote_guard: Some(guard) });
+        }
         std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -78,13 +84,15 @@ impl FactorMetadataLock {
                     path.display()
                 ))
             })?;
-        Ok(Self(path))
+        Ok(Self { local_path: Some(path), _remote_guard: None })
     }
 }
 
 impl Drop for FactorMetadataLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if let Some(path) = &self.local_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -200,6 +208,7 @@ impl FactorStorage {
         let mut written = Vec::new();
         for ((asset_class, frequency, trade_date), columns) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
+            let _guard = crate::artifact_io::lock(&path)?;
             progress(written.len(), total, trade_date, "merge");
             let table = merge_factor_columns(&path, frequency, trade_date, &columns)?;
             progress(written.len(), total, trade_date, "write");
@@ -211,7 +220,7 @@ impl FactorStorage {
     }
 
     pub fn write_metadata(&self, specs: &[FactorSpec]) -> Result<()> {
-        std::fs::create_dir_all(&self.factor_root)?;
+        crate::artifact_io::create_dir_all(&self.factor_root)?;
         let _lock = FactorMetadataLock::acquire(&self.factor_root)?;
         let path = self.factor_root.join("factor_metadata.parquet");
 
@@ -234,9 +243,9 @@ impl FactorStorage {
         }
 
         let external_path = self.factor_root.join("factor_metadata.ml_alpha.parquet");
-        let external = if external_path.exists() {
+        let external = if crate::artifact_io::exists(&external_path)? {
             read_metadata_records(&external_path)?
-        } else if path.exists() {
+        } else if crate::artifact_io::exists(&path)? {
             read_metadata_records(&path)?
                 .into_iter()
                 .filter(|row| row.tags.iter().any(|tag| tag == "model_generated"))
@@ -291,7 +300,7 @@ impl FactorStorage {
 
     pub fn read_metadata(&self) -> Result<Vec<FactorMetadata>> {
         let path = self.factor_root.join("factor_metadata.parquet");
-        if !path.exists() {
+        if !crate::artifact_io::exists(&path)? {
             return Err(err(format!(
                 "factor metadata not found: {}. Run `metadata` first.",
                 path.display()
@@ -322,7 +331,7 @@ fn merge_factor_columns(
     trade_date: i32,
     updates: &BTreeMap<String, Vec<&crate::core::FactorValue>>,
 ) -> Result<Table> {
-    let existing = if path.exists() {
+    let existing = if crate::artifact_io::exists(&path)? {
         read_parquet(path, None)?
     } else {
         Table::empty()
@@ -447,6 +456,7 @@ impl LabelStorage {
         let mut written = Vec::new();
         for ((asset_class, frequency, trade_date), mut frame) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
+            let _guard = crate::artifact_io::lock(&path)?;
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
             let table =
                 pending_frame_to_table(frequency, trade_date, &frame, OutputValueDtype::F32)?;
@@ -457,7 +467,7 @@ impl LabelStorage {
     }
 
     pub fn write_metadata(&self, specs: &[LabelSpec]) -> Result<()> {
-        std::fs::create_dir_all(&self.label_root)?;
+        crate::artifact_io::create_dir_all(&self.label_root)?;
         let path = self.label_root.join("label_metadata.parquet");
 
         let updated_at = unix_timestamp_string();
@@ -484,7 +494,7 @@ impl LabelStorage {
 
     pub fn read_metadata(&self) -> Result<Vec<LabelMetadata>> {
         let path = self.label_root.join("label_metadata.parquet");
-        if !path.exists() {
+        if !crate::artifact_io::exists(&path)? {
             return Err(err(format!(
                 "label metadata not found: {}. Run `label-metadata` first.",
                 path.display()
@@ -545,6 +555,7 @@ impl BarraStorage {
         let mut written = Vec::new();
         for ((asset_class, frequency, trade_date), mut frame) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
+            let _guard = crate::artifact_io::lock(&path)?;
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
             let table =
                 pending_frame_to_table(frequency, trade_date, &frame, OutputValueDtype::F32)?;
@@ -555,7 +566,7 @@ impl BarraStorage {
     }
 
     pub fn write_metadata(&self, specs: &[BarraSpec]) -> Result<()> {
-        std::fs::create_dir_all(&self.barra_root)?;
+        crate::artifact_io::create_dir_all(&self.barra_root)?;
         let path = self.barra_root.join("barra_metadata.parquet");
 
         let updated_at = unix_timestamp_string();
@@ -583,7 +594,7 @@ impl BarraStorage {
 
     pub fn read_metadata(&self) -> Result<Vec<BarraMetadata>> {
         let path = self.barra_root.join("barra_metadata.parquet");
-        if !path.exists() {
+        if !crate::artifact_io::exists(&path)? {
             return Err(err(format!(
                 "barra metadata not found: {}. Run `barra-metadata` first.",
                 path.display()
@@ -625,7 +636,7 @@ impl IntradayDailyRawStorage {
         let mut missing = Vec::new();
         for date in dates {
             let path = self.output_path(spec.asset_class, *date);
-            if !path.exists() {
+            if !crate::artifact_io::exists(&path)? {
                 missing.push(*date);
                 continue;
             }
@@ -661,6 +672,7 @@ impl IntradayDailyRawStorage {
         let mut written = Vec::new();
         for ((asset_class, trade_date), mut frame) in grouped {
             let path = self.output_path(asset_class, trade_date);
+            let _guard = crate::artifact_io::lock(&path)?;
             merge_existing_output(&path, Frequency::Daily, trade_date, &mut frame)?;
             let table = pending_frame_to_table(
                 Frequency::Daily,
@@ -685,7 +697,7 @@ impl IntradayDailyRawStorage {
         let mut output = Table::empty();
         for date in dates {
             let path = self.output_path(asset_class, *date);
-            if !path.exists() {
+            if !crate::artifact_io::exists(&path)? {
                 continue;
             }
             let mut table = read_parquet(&path, Some(&requested))?;
@@ -706,7 +718,7 @@ impl IntradayDailyRawStorage {
 
     pub fn write_metadata(&self, specs: &[IntradayDailyRawSpec]) -> Result<()> {
         let path = self.metadata_path();
-        let mut rows = if path.exists() {
+        let mut rows = if crate::artifact_io::exists(&path)? {
             read_raw_metadata_records(&path)?
         } else {
             Vec::new()
@@ -738,7 +750,7 @@ impl IntradayDailyRawStorage {
 
     fn metadata_matches(&self, spec: &IntradayDailyRawSpec) -> Result<bool> {
         let path = self.metadata_path();
-        if !path.exists() {
+        if !crate::artifact_io::exists(&path)? {
             return Ok(false);
         }
         let rows = read_raw_metadata_records(&path)?;
@@ -784,7 +796,7 @@ fn merge_existing_output(
     trade_date: i32,
     frame: &mut PendingFrame,
 ) -> Result<()> {
-    if !path.exists() {
+    if !crate::artifact_io::exists(&path)? {
         return Ok(());
     }
     let table = read_parquet(path, None)?;

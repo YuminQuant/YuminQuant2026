@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from yq_ml_alpha.config import MlAlphaConfig
+from yq_ml_alpha.output import artifact_io
 
 
 METADATA_COLUMNS = [
@@ -33,14 +34,14 @@ def write_factor_metadata(config: MlAlphaConfig) -> Path | None:
     if not factor_id:
         raise ValueError("factor output requires factor_id or output.id")
     path = Path(config.output.root) / "factor_metadata.parquet"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
     with metadata_lock(path.parent):
         source = path.with_name("factor_metadata.ml_alpha.parquet")
         native = path.with_name("factor_metadata.rust.parquet")
         legacy = _read_existing(path)
         external_mask = legacy.tags_json.map(lambda value: "model_generated" in json.loads(value or "[]"))
-        rows = _read_existing(source) if source.exists() else legacy.loc[external_mask]
-        native_rows = _read_existing(native) if native.exists() else legacy.loc[~external_mask]
+        rows = _read_existing(source) if artifact_io.exists(source) else legacy.loc[external_mask]
+        native_rows = _read_existing(native) if artifact_io.exists(native) else legacy.loc[~external_mask]
         rows = rows.loc[rows["factor_id"] != factor_id].copy()
         rows = pd.concat([rows, pd.DataFrame([_metadata_row(config, factor_id)])], ignore_index=True)
         if set(rows.factor_id) & set(native_rows.factor_id):
@@ -54,6 +55,11 @@ def write_factor_metadata(config: MlAlphaConfig) -> Path | None:
 @contextmanager
 def metadata_lock(root: Path):
     path = root / "factor_metadata.lock"
+    store = artifact_io.backend(path)
+    if store:
+        with store.lock(path):
+            yield
+        return
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError as exc:
@@ -67,6 +73,9 @@ def metadata_lock(root: Path):
 
 def _write_atomic(path: Path, rows: pd.DataFrame) -> None:
     output = rows.sort_values(["asset_class", "frequency", "factor_id"]).reset_index(drop=True)
+    if artifact_io.backend(path):
+        artifact_io.write_parquet(output[METADATA_COLUMNS], path, index=False)
+        return
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         output[METADATA_COLUMNS].to_parquet(tmp, index=False)
@@ -77,9 +86,9 @@ def _write_atomic(path: Path, rows: pd.DataFrame) -> None:
 
 
 def _read_existing(path: Path) -> pd.DataFrame:
-    if not path.exists():
+    if not artifact_io.exists(path):
         return pd.DataFrame(columns=METADATA_COLUMNS)
-    frame = pd.read_parquet(path)
+    frame = artifact_io.read_parquet(path)
     for column in METADATA_COLUMNS:
         if column not in frame.columns:
             frame[column] = ""

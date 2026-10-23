@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 import gc
 import importlib
 import json
@@ -815,26 +817,26 @@ def _aggregate_diagnostics(config: MlAlphaConfig) -> list[Path]:
         return []
     artifacts = Path(config.model.artifact_dir)
     diagnostics_dir = artifacts.parent / "diagnostics"
-    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    artifact_io.mkdir(diagnostics_dir, parents=True, exist_ok=True)
     written: list[Path] = []
 
     if config.diagnostics.write_loss_history:
         frames = []
-        for path in sorted(artifacts.glob("*/loss_history.parquet")):
-            frames.append(pd.read_parquet(path))
+        for path in sorted(artifact_io.glob(artifacts, "*/loss_history.parquet")):
+            frames.append(artifact_io.read_parquet(path))
         if frames:
             out = diagnostics_dir / "loss_history.parquet"
-            pd.concat(frames, ignore_index=True).to_parquet(out, index=False)
+            artifact_io.write_parquet(pd.concat(frames, ignore_index=True), out, index=False)
             written.append(out)
 
     if config.diagnostics.write_window_summary:
         rows = []
-        for path in sorted(artifacts.glob("*/model_info.json")):
-            with path.open("r", encoding="utf-8") as file:
+        for path in sorted(artifact_io.glob(artifacts, "*/model_info.json")):
+            with artifact_io.open_file(path, "r", encoding="utf-8") as file:
                 rows.append(json.load(file))
         if rows:
             out = diagnostics_dir / "window_summary.parquet"
-            pd.DataFrame(rows).to_parquet(out, index=False)
+            artifact_io.write_parquet(pd.DataFrame(rows), out, index=False)
             written.append(out)
     return written
 

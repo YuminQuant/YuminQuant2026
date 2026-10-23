@@ -1,6 +1,8 @@
 """DFZQ report 86 RPTF: title log term-frequency -> earnings revision."""
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 from collections import Counter
 from importlib.metadata import version
 import json
@@ -148,9 +150,9 @@ class ReportTermFrequencyAlphaModel(AlphaModel):
         return pd.Series(result, index=data.index)
 
     def write_diagnostics(self, context):
-        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(context.artifact_dir, parents=True, exist_ok=True)
         info = context.artifact_dir / "model_info.json"
         vocab = context.artifact_dir / "vocabulary.json"
-        info.write_text(json.dumps(self.info, ensure_ascii=False, indent=2), encoding="utf-8")
-        vocab.write_text(json.dumps(self.vocabulary, ensure_ascii=False, indent=2), encoding="utf-8")
+        artifact_io.write_text(info, json.dumps(self.info, ensure_ascii=False, indent=2), encoding="utf-8")
+        artifact_io.write_text(vocab, json.dumps(self.vocabulary, ensure_ascii=False, indent=2), encoding="utf-8")
         return [info, vocab]

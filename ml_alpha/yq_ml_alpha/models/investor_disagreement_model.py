@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 import json
 import math
 from pathlib import Path
@@ -147,11 +149,11 @@ class InvestorDisagreementAlphaModel(AlphaModel):
     def write_diagnostics(self, context: ModelContext) -> list[Path]:
         if not context.diagnostics.get("enabled") or not context.diagnostics.get("write_model_info"):
             return []
-        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(context.artifact_dir, parents=True, exist_ok=True)
         info_path = context.artifact_dir / "model_info.json"
         history_path = context.artifact_dir / "investor_history.parquet"
-        info_path.write_text(json.dumps(self.model_info, ensure_ascii=False, indent=2), encoding="utf-8")
-        pd.DataFrame(self.investor_history).to_parquet(history_path, index=False)
+        artifact_io.write_text(info_path, json.dumps(self.model_info, ensure_ascii=False, indent=2), encoding="utf-8")
+        artifact_io.write_parquet(pd.DataFrame(self.investor_history), history_path, index=False)
         return [info_path, history_path]
 
 

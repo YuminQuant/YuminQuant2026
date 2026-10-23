@@ -5,6 +5,7 @@ from pathlib import Path
 import threading
 import time
 import weakref
+from yq_ml_alpha.output import artifact_io
 
 _locks = weakref.WeakValueDictionary()
 _guard = threading.Lock()
@@ -13,6 +14,11 @@ _guard = threading.Lock()
 @contextmanager
 def daily_file_lock(path, timeout=60.0):
     path = Path(path).resolve()
+    store = artifact_io.backend(path)
+    if store:
+        with store.lock(path):
+            yield
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with _guard:
         lock = _locks.setdefault(str(path), threading.RLock())

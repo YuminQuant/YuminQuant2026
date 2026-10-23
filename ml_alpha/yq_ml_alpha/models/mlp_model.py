@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from yq_ml_alpha.output import artifact_io
+
 import json
 import time
 from pathlib import Path
@@ -163,9 +165,9 @@ class MLPAlphaModel(AlphaModel):
             raise RuntimeError("model is not fitted")
         torch, _ = _torch_modules()
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
         self.model.to("cpu")
-        torch.save(
+        artifact_io.torch_save(
             {
                 "input_dim": self.input_dim,
                 "params": self.params,
@@ -180,15 +182,15 @@ class MLPAlphaModel(AlphaModel):
         diagnostics = _diagnostics(context)
         if not diagnostics["enabled"]:
             return []
-        context.artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_io.mkdir(context.artifact_dir, parents=True, exist_ok=True)
         written: list[Path] = []
         if diagnostics["write_loss_history"] and self.loss_history:
             path = context.artifact_dir / "loss_history.parquet"
-            pd.DataFrame(self.loss_history).to_parquet(path, index=False)
+            artifact_io.write_parquet(pd.DataFrame(self.loss_history), path, index=False)
             written.append(path)
         if diagnostics["write_model_info"] and self.model_info:
             path = context.artifact_dir / "model_info.json"
-            with path.open("w", encoding="utf-8") as file:
+            with artifact_io.open_file(path, "w", encoding="utf-8") as file:
                 json.dump(self.model_info, file, ensure_ascii=False, indent=2)
             written.append(path)
         return written
@@ -196,7 +198,7 @@ class MLPAlphaModel(AlphaModel):
     @classmethod
     def load(cls, path: str | Path) -> "MLPAlphaModel":
         torch, nn = _torch_modules()
-        checkpoint = torch.load(Path(path), map_location="cpu")
+        checkpoint = artifact_io.torch_load(Path(path), map_location="cpu")
         model = cls()
         model.input_dim = int(checkpoint["input_dim"])
         model.params = _params(checkpoint["params"])

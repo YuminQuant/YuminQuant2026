@@ -50,6 +50,12 @@ fn read_parquet_impl(
     predicate: Option<SymbolPredicate>,
     null_types: &BTreeMap<String, DataType>,
 ) -> Result<Table> {
+    if let Some(backend) = crate::artifact_io::backend(path) {
+        if predicate.is_some() || !null_types.is_empty() {
+            return Err(err("remote artifact reader does not support input-table filters"));
+        }
+        return backend.read_table(path, columns);
+    }
     let context = |error| {
         err(format!(
             "failed to read parquet {}: {error}",
@@ -156,6 +162,9 @@ fn read_parquet_impl(
 }
 
 pub fn parquet_column_names(path: &Path) -> Result<BTreeSet<String>> {
+    if let Some(backend) = crate::artifact_io::backend(path) {
+        return Ok(backend.read_table(path, None)?.columns.keys().cloned().collect());
+    }
     let file = File::open(path).map_err(|error| {
         err(format!(
             "failed to read parquet {}: {error}",
@@ -185,6 +194,9 @@ pub fn write_parquet_with_compression(
     table: &Table,
     compression: Compression,
 ) -> Result<()> {
+    if let Some(backend) = crate::artifact_io::backend(path) {
+        return backend.write_table(path, table, compression);
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -243,6 +255,9 @@ pub(crate) struct ParquetStreamWriter {
 
 impl ParquetStreamWriter {
     pub(crate) fn new(path: &Path, empty: &Table) -> Result<Self> {
+        if crate::artifact_io::backend(path).is_some() {
+            return Err(crate::error::err("incremental Parquet writer is not supported by the registered artifact backend"));
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -297,7 +312,7 @@ impl Drop for ParquetStreamWriter {
     }
 }
 
-fn table_record_batch(table: &Table) -> Result<RecordBatch> {
+pub fn table_record_batch(table: &Table) -> Result<RecordBatch> {
     let names = ordered_column_names(table);
     let schema = Arc::new(Schema::new(
         names
@@ -358,7 +373,7 @@ fn ordered_column_names(table: &Table) -> Vec<String> {
     names
 }
 
-fn table_from_record_batch(
+pub fn table_from_record_batch(
     batch: &RecordBatch,
     null_types: &BTreeMap<String, DataType>,
 ) -> Result<Table> {

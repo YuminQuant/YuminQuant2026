@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io
 
 import subprocess
 from pathlib import Path
@@ -93,14 +94,14 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
         resume_predict_dates: list[int] | None = None
         artifact_path = window_artifact_path(config.model.artifact_dir, window.window_id)
         if resume:
-            if artifact_path.exists():
+            if artifact_io.exists(artifact_path):
                 validate_manifest(artifact_path, config, window, dataset)
             resume_predict_dates = writer.dates_missing_output_column(window.predict_dates)
             if not resume_predict_dates:
                 validate_manifest(artifact_path, config, window, dataset)
                 progress.step("resume_skip output_complete")
                 continue
-            if artifact_path.exists():
+            if artifact_io.exists(artifact_path):
                 progress.step(f"resume_load_model missing_predict={len(resume_predict_dates)}")
                 model = model_class.load(artifact_path)
                 resume_window = _window_with_predict_dates(window, resume_predict_dates)
@@ -172,7 +173,7 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
-        if resume and path.exists():
+        if resume and artifact_io.exists(path):
             validate_manifest(path, config, window, dataset)
             progress.step("resume_skip artifact_exists")
             continue

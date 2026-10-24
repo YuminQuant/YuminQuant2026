@@ -65,6 +65,14 @@ The unified entrypoint refreshes metadata once before ML factor production; modu
 
 ## 研究与资源边界 / Research and resource boundaries
 
+Parquet 输入通过统一存储接口直接读取，本机与远程使用相同的按列读取逻辑。日表的 schema 和数据共用一次受控打开；可选缺失列仍填空，IO 或损坏文件错误不会退回全列读取。进程内 LRU 仅缓存原始 Arrow 表和 footer，不缓存预处理结果或模型输出，也不写节点磁盘缓存。
+
+Parquet inputs use the same projected reader through the storage backend locally and remotely. Daily schema checks and data reads share one managed file handle. Optional missing columns remain null; IO/corruption errors never trigger a full-column fallback. The process-local LRU stores only source Arrow tables and footers, not transformed samples or predictions, and never spills to node disk.
+
+`YQ_PARQUET_CACHE_BYTES` 默认 64 MiB，`YQ_PARQUET_METADATA_BYTES` 默认 8 MiB，设为 `0` 可关闭对应缓存。超大表正常读取但不留在缓存中；每次访问检查文件身份，写入、替换、删除会使缓存失效，DatasetBuilder 关闭时释放缓存。预算是额外的读取缓存上限，不是训练张量、已有特征窗口缓存和模型的总内存上限。
+
+`YQ_PARQUET_CACHE_BYTES` defaults to 64 MiB and `YQ_PARQUET_METADATA_BYTES` to 8 MiB; set either to `0` to disable that cache. Oversized tables are read without retention. File identity is checked on access; writes, replacement and deletion invalidate entries, and closing DatasetBuilder clears them. These budgets cover extra read caching, not the combined RAM of training tensors, existing feature-window caches and models.
+
 训练与验证必须遵守标签成熟时间；固定训练、滚动训练及验证划分不是全项目统一常量，以配置和专题说明为准。按行划分验证集不保证时间隔离，不能把它当作严格样本外检验。
 
 Training and validation must respect label maturity. Fixed/rolling training and validation splits are configuration-specific. Row-based validation does not guarantee temporal separation and is not a strict out-of-sample test.

@@ -408,7 +408,6 @@ def _train_only_sample_dates(config: MlAlphaConfig, calendar: TradingCalendar, t
 def _feature_start_month(config: MlAlphaConfig, calendar: TradingCalendar) -> int:
     """First month with actual factor values, not merely an empty daily file."""
     import numpy as np
-    import pyarrow.parquet as pq
     from yq_ml_alpha.data.stores import is_all_column_request, NON_FEATURE_COLUMNS
 
     if config.features.type != "factor_frame":
@@ -420,13 +419,14 @@ def _feature_start_month(config: MlAlphaConfig, calendar: TradingCalendar) -> in
         date = int(path.stem)
         if date not in trading_dates or date < config.dates.train[0] or date > config.dates.train[1]:
             continue
-        schema = data_io.parquet_schema(path).names
-        columns = ([c for c in schema if c not in NON_FEATURE_COLUMNS]
-                   if is_all_column_request(config.features.columns)
-                   else [c for c in config.features.columns if c in schema])
-        if not columns or data_io.parquet_file(path).metadata.num_rows == 0:
-            continue
-        values = data_io.read_parquet(path, columns=columns).astype("float64").to_numpy()
+        with data_io.open_parquet(path) as reader:
+            schema = reader.schema_arrow.names
+            columns = ([c for c in schema if c not in NON_FEATURE_COLUMNS]
+                       if is_all_column_request(config.features.columns)
+                       else [c for c in config.features.columns if c in schema])
+            if not columns or reader.metadata.num_rows == 0:
+                continue
+            values = reader.read(columns=columns).to_pandas().astype("float64").to_numpy()
         if np.isfinite(values).any():
             return max(config.dates.train[0], date // 100 * 100 + 1)
     raise ValueError(f"no usable factor data in training range under {config.features.root}")

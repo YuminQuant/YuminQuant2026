@@ -29,8 +29,8 @@ impl Label for StockDailyFutureVwapReturn20d {
                 "Future adjusted daily VWAP return from t+1 full-day VWAP to t+21 full-day VWAP."
                     .to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["amount", "vol"]),
-                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
+                DataRequest::new(DatasetId::StockDailyPv, &["amount", "vol"]).with_panel_only(),
+                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]).with_panel_only(),
             ],
             lookahead: Lookahead { trading_days: 21 },
         }
@@ -42,9 +42,9 @@ impl Label for StockDailyFutureVwapReturn20d {
         let vol = panel.column("vol")?;
         let vwap = amount.zip_binary(&vol, daily_vwap_from_amount_vol)?;
         let adj_factor =
-            panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+            panel.column_from_panel(data.daily_panel(DatasetId::StockAdjFactor)?, "adj_factor")?;
         let adjusted_vwap = vwap.zip_binary(&adj_factor, adjusted_value)?;
-        let label = adjusted_vwap.ts(|values| future_return(values, 21))?;
+        let label = adjusted_vwap.ts_parallel(|values| future_return(values, 21))?;
         Ok(label.to_label_series(self.spec()))
     }
 }

@@ -67,6 +67,12 @@ impl OutputBatch {
         }
     }
 
+    pub fn push_labels(&mut self, series: Vec<LabelSeries>) {
+        for series in series {
+            self.push(series.spec.asset_class, series.spec.frequency, series.spec.output_column(), series.values);
+        }
+    }
+
     fn push(&mut self, asset: AssetClass, frequency: Frequency, column: String, values: Vec<crate::core::FactorValue>) {
         for item in values {
             let date = item.key.trade_date();
@@ -99,6 +105,10 @@ impl OutputBatch {
     }
 
     pub fn write_barra(&mut self, storage: &BarraStorage) -> Result<Vec<PathBuf>> {
+        self.write(|asset, frequency, date| storage.output_path(asset, frequency, date))
+    }
+
+    pub fn write_labels(&mut self, storage: &LabelStorage) -> Result<Vec<PathBuf>> {
         self.write(|asset, frequency, date| storage.output_path(asset, frequency, date))
     }
 

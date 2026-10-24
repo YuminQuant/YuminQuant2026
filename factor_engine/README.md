@@ -109,6 +109,10 @@ Here `data` denotes the configured data root. Formal factor wide tables merge by
 
 ## 性能与数据边界 / Performance and data boundaries
 
+标签生产与因子复用相同的 date-batch 共享输入、受控线程池和有界批量写出工具。每个标签仍只看到自身声明的未来交易日窗口，只写目标日；不会把标签未来收益混入因子历史预热。多个标签批次在预算内合并后更新同一日宽表，保留其他列，统一使用 Snappy 和原子发布。本机和远程后端使用相同的计算与写出链路。
+
+Label production reuses the factor engine's date-batch shared inputs, bounded thread pool and buffered output tools. Each label retains its declared future window and writes target dates only; future label returns never enter factor warmup data. Label batches share daily-wide writes within the buffer budget, preserving other columns with Snappy and atomic publication. Local and remote backends use the same execution path.
+
 - `--threads` 控制线程数，`--date-batch-size` 和 `--factor-batch-size` 控制批量；用 `--profile` 观察加载、计算和写出时间，不把 batch 大小理解为内存硬上限。
   Threads and batch sizes tune execution; use profiling to distinguish loading, computation and writing. Batch size is not a hard memory cap.
 - 财报按公告日 PIT 查询，跨 batch 有界复用年度索引与股票状态；快变量及后处理遵循各因子定义，不统一按 tag 改变频率。

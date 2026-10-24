@@ -33,8 +33,8 @@ impl Label for StockDailyFutureCloseReturn20d {
             description: "Future adjusted close-to-close return from t+1 close to t+21 close."
                 .to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["close"]),
-                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
+                DataRequest::new(DatasetId::StockDailyPv, &["close"]).with_panel_only(),
+                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]).with_panel_only(),
             ],
             lookahead: Lookahead { trading_days: 21 },
         }
@@ -44,9 +44,9 @@ impl Label for StockDailyFutureCloseReturn20d {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let close = panel.column("close")?;
         let adj_factor =
-            panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+            panel.column_from_panel(data.daily_panel(DatasetId::StockAdjFactor)?, "adj_factor")?;
         let adjusted_close = close.zip_binary(&adj_factor, adjusted_value)?;
-        let label = adjusted_close.ts(|values| future_return(values, 21))?;
+        let label = adjusted_close.ts_parallel(|values| future_return(values, 21))?;
         Ok(label.to_label_series(self.spec()))
     }
 }

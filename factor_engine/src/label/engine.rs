@@ -12,7 +12,7 @@ use crate::core::{
     label_registry_key, AssetClass, DataRequest, DatasetId, FactorContext, Frequency,
     IntradayDailyRawRequest, IntradayDailyRawSeries, IntradayDailyRawSpec, LabelSeries, LabelSpec,
 };
-use crate::data::{DataCatalog, DataPool, MarketDataLoader, Table};
+use crate::data::{DataCatalog, DataPool, DisclosureTableCache, MarketDataLoader, Table};
 use crate::engine::{BatchProfile, FactorProfile};
 use crate::error::{err, Result};
 use crate::label::registry::{all_labels, label_map};
@@ -232,7 +232,63 @@ impl LabelEngine {
         let mut materialized_intraday_raw_dates = BTreeSet::new();
 
         for (date_batch_index, date_batch) in date_batches.iter().enumerate() {
+            let batch_start = *date_batch.first().expect("nonempty date batch");
+            let batch_end = *date_batch.last().expect("nonempty date batch");
+            let load_end = calendar.open_date_after(batch_end, max_lookahead)
+                .expect("target dates are filtered by global lookahead");
+            let input_context = FactorContext {
+                asset_class: request.asset_class,
+                frequency: request.frequency,
+                start_date: batch_start,
+                end_date: load_end,
+                load_start_date: batch_start,
+                load_dates: calendar.open_dates_between(batch_start, load_end),
+                target_dates: date_batch.clone(),
+            };
+            let request_batches = execution_stages.iter().flat_map(|stage| stage.batch_ranges.iter()
+                .map(|range| merge_requests(stage.label_indices[range.clone()].iter()
+                    .flat_map(|index| specs[*index].dependencies.clone())))).collect::<Vec<_>>();
+            let mut physical_requests = Vec::new();
             for stage in &execution_stages {
+                for range in &stage.batch_ranges {
+                    let indices = &stage.label_indices[range.clone()];
+                    let lookahead = indices.iter().map(|index| specs[*index].lookahead.trading_days)
+                        .max().unwrap_or(0);
+                    let mut context = input_context.clone();
+                    context.end_date = calendar.open_date_after(batch_end, lookahead).expect("lookahead");
+                    context.load_dates = calendar.open_dates_between(batch_start, context.end_date);
+                    for index in indices {
+                        physical_requests.extend(specs[*index].dependencies.iter().map(|request|
+                            request.clone().with_explicit_dates(request.resolved_dates(&context))));
+                    }
+                }
+            }
+            let physical_requests = merge_requests(physical_requests);
+            let mut disclosure_cache = DisclosureTableCache::default();
+            let shared_started = Instant::now();
+            let inputs = DataPool::load_reused_batch_inputs(&loader, &physical_requests, &request_batches,
+                &input_context, &mut disclosure_cache, None)?;
+            let shared_load_ms = shared_started.elapsed().as_millis();
+            let mut shared_load_pending = true;
+            let mut output = crate::storage::OutputBatch::default();
+            for (stage_index, stage) in execution_stages.iter().enumerate() {
+                let mut raw_inputs = DataPool::default();
+                let raw_ids = raw_ids_for_label_indices(&labels, &stage.label_indices);
+                let mut raw_load_ms = 0;
+                if !raw_ids.is_empty() {
+                    let started = Instant::now();
+                    let mut raw_context = input_context.clone();
+                    raw_context.end_date = calendar.open_date_after(batch_end, stage.max_lookahead)
+                        .expect("lookahead");
+                    raw_context.load_dates = calendar.open_dates_between(batch_start, raw_context.end_date);
+                    let (table, raw_profiles) = materialize_label_intraday_raw_table(
+                        &raw_ids, &raw_providers, &loader, &raw_storage, &calendar, request,
+                        &raw_context, date_batch_index + 1, thread_pool.as_ref(),
+                        &mut materialized_intraday_raw_dates)?;
+                    profiles.extend(raw_profiles);
+                    raw_inputs.set_intraday_daily_raw_panel(table, &raw_context)?;
+                    raw_load_ms = started.elapsed().as_millis();
+                }
                 for (label_batch_index, range) in stage.batch_ranges.iter().enumerate() {
                     let batch_indices = &stage.label_indices[range.clone()];
                     let batch_specs = batch_indices
@@ -280,37 +336,19 @@ impl LabelEngine {
                         target_dates: date_batch.clone(),
                     };
 
-                    let raw_ids = raw_ids_for_label_indices(&labels, batch_indices);
-                    let (raw_table, raw_profiles) = if raw_ids.is_empty() {
-                        (None, Vec::new())
-                    } else {
-                        let (table, raw_profiles) = materialize_label_intraday_raw_table(
-                            &raw_ids,
-                            &raw_providers,
-                            &loader,
-                            &raw_storage,
-                            &calendar,
-                            request,
-                            &batch_context,
-                            date_batch_index + 1,
-                            thread_pool.as_ref(),
-                            &mut materialized_intraday_raw_dates,
-                        )?;
-                        (Some(table), raw_profiles)
-                    };
-                    profiles.extend(raw_profiles);
-
                     let batch_requests = merge_requests(
                         batch_specs
                             .iter()
                             .flat_map(|spec| spec.dependencies.clone()),
                     );
                     let load_started = Instant::now();
-                    let mut pool = DataPool::load(&loader, &batch_requests, &batch_context)?;
-                    if let Some(raw_table) = raw_table.clone() {
-                        pool.set_intraday_daily_raw_panel(raw_table, &batch_context)?;
-                    }
-                    let load_ms = load_started.elapsed().as_millis();
+                    let mut pool = inputs.load_from_batch_inputs(&loader, &batch_requests, &batch_context,
+                        &mut disclosure_cache)?;
+                    pool.share_intraday_daily_raw(&raw_inputs, &batch_context);
+                    let load_ms = load_started.elapsed().as_millis()
+                        + if shared_load_pending { shared_load_ms } else { 0 }
+                        + if label_batch_index == 0 { raw_load_ms } else { 0 };
+                    shared_load_pending = false;
                     let compute_started = Instant::now();
                     let results = compute_label_batch(
                         &batch_labels,
@@ -332,11 +370,16 @@ impl LabelEngine {
                         })
                         .collect::<Vec<_>>();
                     let write_started = Instant::now();
-                    let written_paths = storage.write_results(&results)?;
+                    let result_rows = results.iter().map(|series| series.values.len()).sum();
+                    output.push_labels(results);
+                    let last_batch = stage_index + 1 == execution_stages.len()
+                        && label_batch_index + 1 == stage.batch_ranges.len();
+                    let written_paths = if output.full()? || last_batch {
+                        output.write_labels(&storage)?
+                    } else { Vec::new() };
                     let write_ms = write_started.elapsed().as_millis();
                     output_paths.extend(written_paths);
                     if request.profile {
-                        let result_rows = results.iter().map(|series| series.values.len()).sum();
                         profiles.push(BatchProfile {
                             stage: stage.name.to_string(),
                             date_batch_index: date_batch_index + 1,

@@ -33,8 +33,8 @@ impl Label for StockDailyFutureOpenReturn1d {
             description: "Future adjusted open-to-open return from t+1 open to t+2 open."
                 .to_string(),
             dependencies: vec![
-                DataRequest::new(DatasetId::StockDailyPv, &["open"]),
-                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]),
+                DataRequest::new(DatasetId::StockDailyPv, &["open"]).with_panel_only(),
+                DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]).with_panel_only(),
             ],
             lookahead: Lookahead { trading_days: 2 },
         }
@@ -44,9 +44,9 @@ impl Label for StockDailyFutureOpenReturn1d {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let open = panel.column("open")?;
         let adj_factor =
-            panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+            panel.column_from_panel(data.daily_panel(DatasetId::StockAdjFactor)?, "adj_factor")?;
         let adjusted_open = open.zip_binary(&adj_factor, adjusted_value)?;
-        let label = adjusted_open.ts(|values| future_return(values, 2))?;
+        let label = adjusted_open.ts_parallel(|values| future_return(values, 2))?;
         Ok(label.to_label_series(self.spec()))
     }
 }

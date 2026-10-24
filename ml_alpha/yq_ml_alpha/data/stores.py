@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
-import pyarrow.parquet as pq
 
 
 KEY_COLUMNS = ["trade_date", "ts_code"]
@@ -17,17 +16,15 @@ def daily_path(root: str | Path, trade_date: int) -> Path:
     return root / str(trade_date // 10000) / f"{trade_date}.parquet"
 
 
-def read_daily(root: str | Path, trade_date: int, columns: Iterable[str]) -> pd.DataFrame:
+def read_daily(root: str | Path, trade_date: int, columns: Iterable[str], *, required=()) -> pd.DataFrame:
     path = daily_path(root, trade_date)
     requested = _dedupe([*KEY_COLUMNS, *columns])
-    if not data_io.exists(path):
-        return pd.DataFrame(columns=requested)
     try:
-        available = set(parquet_columns(path))
-        existing = [column for column in requested if column in available]
-        frame = data_io.read_parquet(path, columns=existing)
-    except Exception:
-        frame = data_io.read_parquet(path)
+        frame = data_io.read_projected_frame(path, requested, required=required)
+    except FileNotFoundError:
+        if required:
+            raise
+        return pd.DataFrame(columns=requested)
     for column in requested:
         if column not in frame.columns:
             frame[column] = pd.NA

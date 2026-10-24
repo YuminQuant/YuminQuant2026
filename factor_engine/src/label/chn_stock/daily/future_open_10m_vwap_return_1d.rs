@@ -47,7 +47,7 @@ impl Label for StockDailyFutureOpen10mVwapReturn1d {
             description:
                 "Future adjusted return from t+1 09:31-09:40 VWAP to t+2 09:31-09:40 VWAP."
                     .to_string(),
-            dependencies: vec![DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"])],
+            dependencies: vec![DataRequest::new(DatasetId::StockAdjFactor, &["adj_factor"]).with_panel_only()],
             lookahead: Lookahead { trading_days: 2 },
         }
     }
@@ -82,9 +82,9 @@ impl Label for StockDailyFutureOpen10mVwapReturn1d {
         let panel = data.intraday_daily_raw_panel(RAW_ID)?;
         let raw_vwap = panel.column(RAW_ID)?;
         let adj_factor =
-            panel.column_from_table(data.daily(DatasetId::StockAdjFactor)?, "adj_factor")?;
+            panel.column_from_panel(data.daily_panel(DatasetId::StockAdjFactor)?, "adj_factor")?;
         let adjusted_vwap = raw_vwap.zip_binary(&adj_factor, adjusted_value)?;
-        let label = adjusted_vwap.ts(|values| future_return(values, 2))?;
+        let label = adjusted_vwap.ts_parallel(|values| future_return(values, 2))?;
         Ok(label.to_label_series(self.spec()))
     }
 }

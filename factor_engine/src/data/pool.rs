@@ -301,6 +301,14 @@ impl DataPool {
         self.trading_calendar = Some(calendar);
     }
 
+    pub(crate) fn share_intraday_daily_raw(&mut self, source: &Self, context: &FactorContext) {
+        let dates = context.load_dates.iter().copied().collect();
+        self.intraday_daily_raw = source.intraday_daily_raw.as_ref()
+            .map(|table| table_slice_dates_or_clone(table, &dates));
+        self.intraday_daily_raw_panel = source.intraday_daily_raw_panel.as_ref().map(|panel|
+            panel.slice_dates(&context.load_dates).with_target_dates(&context.target_dates).compact_instruments());
+    }
+
     pub fn trading_calendar(&self) -> Result<&crate::calendar::TradingCalendar> {
         self.trading_calendar
             .as_deref()

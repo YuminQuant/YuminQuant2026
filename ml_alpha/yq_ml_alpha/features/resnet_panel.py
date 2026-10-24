@@ -1,5 +1,4 @@
 from __future__ import annotations
-from yq_ml_alpha.output import artifact_io as data_io
 
 from collections import OrderedDict
 from pathlib import Path
@@ -7,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from yq_ml_alpha.data.stores import daily_path, parquet_columns, read_daily
+from yq_ml_alpha.data.stores import daily_path, read_daily
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarTensorWindow, _feature_columns
 
@@ -139,12 +138,7 @@ class ResNetPanelProvider(FeatureProvider):
 
 def _read_required(root, date, columns):
     path = daily_path(root, date)
-    if not data_io.exists(path):
-        raise FileNotFoundError(f"resnet_panel missing source {path}; msnew requires Rust derive-bar --bar-size 30")
-    missing = set(["ts_code", *columns]) - set(parquet_columns(path))
-    if missing:
-        raise ValueError(f"resnet_panel missing columns {sorted(missing)} in {path}")
-    frame = read_daily(root, date, columns)
+    frame = read_daily(root, date, columns, required=["ts_code", *columns])
     if not frame.empty and not frame.trade_date.eq(date).all():
         raise ValueError(f"resnet_panel mismatched trade_date in {path}")
     return frame

@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -113,7 +114,7 @@ pub fn derive_analyst_consensus(
             state.ingest_until(trade_date, &analyst_rows, &mut analyst_row_cursor);
             let output = if date_batch.contains(&trade_date) {
                 let output_path = consensus_output_path(&config.data_root, trade_date);
-                if output_path.exists() && !request.overwrite {
+                if output_path.storage_exists() && !request.overwrite {
                     report.skipped_existing_dates.push(trade_date);
                     progress.tick(format!("date={trade_date} skipped existing"));
                     None

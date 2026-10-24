@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -20,7 +21,7 @@ pub fn write_backtest_outputs(
     industry_weights: &[IndustryWeight],
     barra_exposure: &[BarraExposureRecord],
 ) -> Result<Vec<PathBuf>> {
-    std::fs::create_dir_all(output_dir)?;
+    crate::artifact_io::create_dir_all(output_dir)?;
     remove_legacy_outputs(output_dir)?;
     let mut written = Vec::new();
 
@@ -75,7 +76,7 @@ pub fn write_backtest_outputs(
 
 fn factor_metric_path(output_dir: &Path, factor_id: &str, metric_file: &str) -> Result<PathBuf> {
     let factor_dir = output_dir.join(safe_file_stem(factor_id));
-    std::fs::create_dir_all(&factor_dir)?;
+    crate::artifact_io::create_dir_all(&factor_dir)?;
     Ok(factor_dir.join(metric_file))
 }
 
@@ -87,8 +88,8 @@ fn remove_legacy_outputs(output_dir: &Path) -> Result<()> {
         "factor_stats.parquet",
     ] {
         let path = output_dir.join(name);
-        if path.exists() {
-            std::fs::remove_file(path)?;
+        if path.storage_exists() {
+            crate::artifact_io::remove_file(path)?;
         }
     }
 
@@ -99,8 +100,8 @@ fn remove_legacy_outputs(output_dir: &Path) -> Result<()> {
         "ic_decay.parquet",
     ] {
         let path = legacy_detail.join(name);
-        if path.exists() {
-            std::fs::remove_file(path)?;
+        if path.storage_exists() {
+            crate::artifact_io::remove_file(path)?;
         }
     }
     Ok(())

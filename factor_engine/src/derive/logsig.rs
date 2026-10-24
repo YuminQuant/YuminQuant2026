@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -193,7 +194,7 @@ pub fn derive_logsig(
             continue;
         }
         let path = derived_logsig_path(&config.data_root, date);
-        if !request.overwrite && path.exists() {
+        if !request.overwrite && path.storage_exists() {
             report.skipped_existing_dates.push(date);
             progress.tick(format!("date={date} skipped existing"));
             continue;
@@ -208,11 +209,11 @@ pub fn derive_logsig(
         let temp = path.with_extension(format!("{}.tmp", std::process::id()));
         let result: Result<()> = (|| {
             write_derived_parquet(&temp, &table)?;
-            std::fs::rename(&temp, &path)?;
+            crate::artifact_io::rename(&temp, &path)?;
             Ok(())
         })();
         if result.is_err() {
-            let _ = std::fs::remove_file(&temp);
+            let _ = crate::artifact_io::remove_file(&temp);
         }
         result?;
         report.processed_dates += 1;

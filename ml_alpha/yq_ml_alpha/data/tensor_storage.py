@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import tempfile
+import os
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -48,4 +50,64 @@ class TensorSpool:
 
     def __del__(self):
         if hasattr(self, "maps"):
+            self.close()
+
+
+class MemoryTensorSpool:
+    """Remote training retains one window in RAM and never spills to disk."""
+    _guard = threading.Lock()
+    _reserved = 0
+    def __init__(self):
+        self.chunks = {}
+        self.maps = {}
+        self.bytes = 0
+        self.limit = int(os.environ.get('YQ_TENSOR_MEMORY_BYTES', str(2 * 1024**3)))
+
+    def _reserve(self, cost):
+        with self._guard:
+            if type(self)._reserved + cost > self.limit:
+                raise MemoryError('Concurrent training tensors exceed the configured RAM budget; reduce the window or increase memory')
+            type(self)._reserved += cost
+
+    def _release(self, cost):
+        with self._guard:
+            type(self)._reserved -= cost
+
+    def append(self, tensors):
+        if self.chunks and set(tensors) != set(self.chunks):
+            raise ValueError('tensor branches changed within a bundle')
+        cost = sum(np.asarray(v).size * 4 for v in tensors.values())
+        for key, values in tensors.items():
+            previous=self.chunks.get(key,[])
+            if previous and previous[0].shape[1:] != values.shape[1:]:
+                raise ValueError('tensor shape changed within a bundle')
+        self._reserve(cost)
+        self.bytes += cost
+        for key, values in tensors.items():
+            array = np.asarray(values, dtype='float32')
+            previous = self.chunks.setdefault(key, [])
+            previous.append(array)
+
+    def finish(self):
+        for key in list(self.chunks):
+            chunks = self.chunks[key]
+            cost = sum(v.nbytes for v in chunks)
+            extra=cost if len(chunks)>1 else 0
+            self._reserve(extra)
+            try:
+                self.maps[key] = chunks[0] if len(chunks) == 1 else np.concatenate(chunks, axis=0)
+                chunks.clear()
+            finally:
+                self._release(extra)
+            del self.chunks[key]
+        return self.maps
+
+    def close(self):
+        self.chunks.clear()
+        self.maps.clear()
+        self._release(self.bytes)
+        self.bytes = 0
+
+    def __del__(self):
+        if hasattr(self, 'bytes'):
             self.close()

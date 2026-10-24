@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from pathlib import Path
 from typing import Iterable
@@ -19,14 +20,14 @@ def daily_path(root: str | Path, trade_date: int) -> Path:
 def read_daily(root: str | Path, trade_date: int, columns: Iterable[str]) -> pd.DataFrame:
     path = daily_path(root, trade_date)
     requested = _dedupe([*KEY_COLUMNS, *columns])
-    if not path.exists():
+    if not data_io.exists(path):
         return pd.DataFrame(columns=requested)
     try:
         available = set(parquet_columns(path))
         existing = [column for column in requested if column in available]
-        frame = pd.read_parquet(path, columns=existing)
+        frame = data_io.read_parquet(path, columns=existing)
     except Exception:
-        frame = pd.read_parquet(path)
+        frame = data_io.read_parquet(path)
     for column in requested:
         if column not in frame.columns:
             frame[column] = pd.NA
@@ -52,13 +53,13 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 def parquet_columns(path: str | Path) -> list[str]:
-    return list(pq.read_schema(path).names)
+    return list(data_io.parquet_schema(path).names)
 
 
 def discover_value_columns(root: str | Path, end_date: int | None = None, excluded=()) -> list[str]:
     output = []
     seen = set(NON_FEATURE_COLUMNS) | set(excluded)
-    for path in sorted(Path(root).glob("*/*.parquet")):
+    for path in sorted(data_io.glob(Path(root), "*/*.parquet")):
         if end_date is not None and int(path.stem) > end_date:
             continue
         for column in parquet_columns(path):

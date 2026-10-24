@@ -36,10 +36,10 @@ The second command installs several optional dependencies; select only what you 
 
 ```bash
 python -m yq_ml_alpha --help
-python -m yq_ml_alpha model-train --config ml_alpha/models/mdl_000001.toml
-python -m yq_ml_alpha model-predict --config ml_alpha/models/mdl_000001.toml
-python -m yq_ml_alpha factor-train --config ml_alpha/factors/bar_gru_15m.toml
-python -m yq_ml_alpha factor-predict --config ml_alpha/factors/bar_gru_15m.toml
+python scripts/yq.py model-train --config ml_alpha/models/mdl_000001.toml
+python scripts/yq.py model-predict --config ml_alpha/models/mdl_000001.toml
+python scripts/yq.py factor-train --config ml_alpha/factors/bar_gru_15m.toml
+python scripts/yq.py factor-predict --config ml_alpha/factors/bar_gru_15m.toml
 python -m yq_ml_alpha factor-metadata
 ```
 
@@ -51,6 +51,9 @@ python -m yq_ml_alpha factor-metadata
 Use `factor-metadata-all` to refresh Rust and ML metadata. ML factors maintain their own metadata source; do not manually register models by editing the merged table.
 
 ## 输出与复用 / Outputs and reuse
+
+统一入口在正式 ML 因子生产前刷新一次 metadata；原模块命令保留。远程训练默认单任务，张量仅保留在当前窗口内存并受预算限制，不在节点写 memmap。详见[统一计算与存储](../factor_engine/docs/ARTIFACT_STORAGE.md)。
+The unified entrypoint refreshes metadata once before ML factor production; module commands remain available. Remote training defaults to one task with budgeted, window-local RAM tensors rather than node memmaps. See [execution and storage](../factor_engine/docs/ARTIFACT_STORAGE.md).
 
 - 模型信号通常写入 `data/models/{year}/{date}.parquet`；正式因子写入 `data/factors/stock/daily/{year}/{date}.parquet`。
   Model signals normally go to `data/models`; formal factors go to the daily factor library.

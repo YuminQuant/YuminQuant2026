@@ -1,5 +1,6 @@
 """Local analyst-report events; forecasts are labels, never text-model inputs."""
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from time import perf_counter
 
@@ -25,7 +26,7 @@ class AnalystReportDataset:
         self.feature_provider = self
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
-        self.files = {int(p.stem): p for p in config.features.root.glob("*.parquet")
+        self.files = {int(p.stem): p for p in data_io.glob(config.features.root, "*.parquet")
                       if p.stem.isdigit()}
         if not self.files:
             raise FileNotFoundError(f"no annual analyst reports: {config.features.root}")
@@ -60,7 +61,7 @@ class AnalystReportDataset:
         for year in range(max(read_lower.year, min(self.files)), max(dates) // 10000 + 1):
             if year not in self.files:
                 raise FileNotFoundError(f"missing analyst report year: {year}")
-            table = pd.read_parquet(self.files[year], columns=columns)
+            table = data_io.read_parquet(self.files[year], columns=columns)
             table = table.loc[
                 (table.report_date >= int(read_lower.strftime("%Y%m%d")))
                 & (table.report_date < max(dates))

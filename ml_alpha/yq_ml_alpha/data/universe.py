@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from pathlib import Path
 
@@ -40,11 +41,11 @@ class Universe:
 
 def _load_index_weight(data_root: Path, index_code: str) -> pd.DataFrame:
     root = data_root / "index_data" / "monthly_weight" / index_code.replace(".", "_")
-    if not root.exists():
+    if not data_io.exists(root):
         raise FileNotFoundError(f"missing index universe weights: {root}")
     frames = []
-    for path in sorted(root.rglob("*.parquet")):
-        table = pd.read_parquet(path, columns=["trade_date", "con_code", "weight"])
+    for path in sorted(data_io.glob(root,"**/*.parquet")):
+        table = data_io.read_parquet(path, columns=["trade_date", "con_code", "weight"])
         table = table.rename(columns={"con_code": "ts_code"})
         table = table.loc[table["weight"].astype(float) > 0, ["trade_date", "ts_code"]]
         frames.append(table)
@@ -55,7 +56,7 @@ def _load_index_weight(data_root: Path, index_code: str) -> pd.DataFrame:
 
 def _load_custom_universe(data_root: Path, universe_id: str) -> pd.DataFrame:
     path = data_root / "universe" / f"{universe_id}.parquet"
-    if not path.exists():
+    if not data_io.exists(path):
         raise FileNotFoundError(f"missing custom universe: {path}")
-    table = pd.read_parquet(path)
+    table = data_io.read_parquet(path)
     return table[["trade_date", "ts_code"]].astype({"trade_date": "int32"})

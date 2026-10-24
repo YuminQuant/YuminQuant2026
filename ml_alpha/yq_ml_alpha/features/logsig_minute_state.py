@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from collections import OrderedDict
 from pathlib import Path
@@ -30,9 +31,9 @@ def _minute_index(value: str | None) -> int:
 def read_minute_volume_day(path: Path, bar_size: int) -> tuple[np.ndarray, np.ndarray]:
     """Match derive-bar --columns volume, without materializing repeated strings."""
     slots = 240 // bar_size
-    if not path.exists():
+    if not data_io.exists(path):
         return np.array([], dtype=object), np.empty((0, slots), dtype=np.float64)
-    table = pq.read_table(path, columns=["ts_code", "trade_time", "vol"], use_threads=False)
+    table = data_io.read_arrow_table(path, columns=["ts_code", "trade_time", "vol"], use_threads=False)
     codes = table.column("ts_code").combine_chunks().dictionary_encode()
     times = table.column("trade_time").combine_chunks().dictionary_encode()
     symbols = np.asarray(codes.dictionary.to_pylist(), dtype=object)

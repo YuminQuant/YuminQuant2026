@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,7 @@ class TradingCalendar:
     @classmethod
     def load(cls, data_root: str | Path = "data", exchange: str = "SSE") -> "TradingCalendar":
         path = Path(data_root) / "calendar" / f"trade_cal_{exchange}.parquet"
-        table = pd.read_parquet(path, columns=["cal_date", "is_open"])
+        table = data_io.read_parquet(path, columns=["cal_date", "is_open"])
         dates = table.loc[table["is_open"].astype(int) == 1, "cal_date"].astype(int).tolist()
         return cls(sorted(dates))
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 import os
 import uuid
@@ -166,11 +167,11 @@ class DailyWideWriter:
             return
         tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         try:
-            frame.to_parquet(tmp, index=False)
-            tmp.replace(path)
+            data_io.write_parquet(frame, tmp, index=False)
+            data_io.replace(tmp, path)
         finally:
-            if tmp.exists():
-                tmp.unlink()
+            if data_io.exists(tmp):
+                data_io.unlink(tmp)
 
     def _ensure_output_column_one(self, trade_date: int, columns: list[str]) -> Path | None:
         path = self._path(trade_date)

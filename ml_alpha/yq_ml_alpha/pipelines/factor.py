@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 from yq_ml_alpha.output import artifact_io
 
 import subprocess
@@ -49,14 +50,8 @@ def materialize_only(config_path: str | Path) -> list[Path]:
 
 def metadata_only(config_paths: list[str | Path] | None = None, config_dir: str | Path | None = None) -> list[Path]:
     paths = _metadata_config_paths(config_paths, config_dir)
-    written: list[Path] = []
-    seen: set[Path] = set()
-    for path in paths:
-        metadata_path = write_factor_metadata(_load_factor_config(path, allow_deprecated=True))
-        if metadata_path is not None and metadata_path not in seen:
-            written.append(metadata_path)
-            seen.add(metadata_path)
-    return written
+    from yq_ml_alpha.output.factor_metadata import write_factor_metadata_many
+    return write_factor_metadata_many([_load_factor_config(path, allow_deprecated=True) for path in paths])
 
 
 def all_metadata(
@@ -254,7 +249,7 @@ def _metadata_config_paths(config_paths: list[str | Path] | None, config_dir: st
     if config_paths:
         return [Path(path) for path in config_paths]
     root = Path(config_dir) if config_dir is not None else Path(__file__).resolve().parents[2] / "factors"
-    paths = sorted(root.glob("*.toml"))
+    paths = sorted(data_io.glob(root, "*.toml"))
     if not paths:
         raise FileNotFoundError(f"no factor TOML files found under {root}")
     return paths

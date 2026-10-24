@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from pathlib import Path
 from dataclasses import asdict
@@ -71,8 +72,8 @@ def save_manifest(path: Path, config, window, dataset) -> None:
         artifact_io.write_text(destination, _canonical(payload), encoding="utf-8")
         return
     temporary = destination.with_name(f"{destination.name}.{os.getpid()}.tmp")
-    temporary.write_text(_canonical(payload), encoding="utf-8")
-    temporary.replace(destination)
+    data_io.write_text(temporary, _canonical(payload), encoding="utf-8")
+    data_io.replace(temporary, destination)
 
 
 def validate_manifest(path: Path, config, window, dataset) -> None:

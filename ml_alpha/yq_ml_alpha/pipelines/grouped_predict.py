@@ -18,6 +18,12 @@ def predict_many(config_paths):
     if not config_paths:
         raise ValueError("grouped prediction needs at least one factor config")
     configs = [_load_factor_config(path) for path in config_paths]
+    return predict_many_configs(configs)
+
+
+def predict_many_configs(configs):
+    if not configs:
+        raise ValueError("grouped prediction needs at least one factor config")
     if len({config.output.id for config in configs}) != len(configs):
         raise ValueError("grouped prediction requires distinct factor ids")
     first = configs[0]

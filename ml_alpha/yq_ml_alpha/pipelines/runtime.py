@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from yq_ml_alpha.output import artifact_io
 
@@ -392,19 +393,19 @@ def _feature_start_month(config: MlAlphaConfig, calendar: TradingCalendar) -> in
     if config.features.type != "factor_frame":
         raise ValueError("start_from_features currently requires factor_frame")
     trading_dates = set(calendar.dates)
-    for path in sorted(config.features.root.glob("*/*.parquet")):
+    for path in sorted(data_io.glob(config.features.root, "*/*.parquet")):
         if not path.stem.isdigit():
             continue
         date = int(path.stem)
         if date not in trading_dates or date < config.dates.train[0] or date > config.dates.train[1]:
             continue
-        schema = pq.read_schema(path).names
+        schema = data_io.parquet_schema(path).names
         columns = ([c for c in schema if c not in NON_FEATURE_COLUMNS]
                    if is_all_column_request(config.features.columns)
                    else [c for c in config.features.columns if c in schema])
-        if not columns or pq.ParquetFile(path).metadata.num_rows == 0:
+        if not columns or data_io.parquet_file(path).metadata.num_rows == 0:
             continue
-        values = pd.read_parquet(path, columns=columns).astype("float64").to_numpy()
+        values = data_io.read_parquet(path, columns=columns).astype("float64").to_numpy()
         if np.isfinite(values).any():
             return max(config.dates.train[0], date // 100 * 100 + 1)
     raise ValueError(f"no usable factor data in training range under {config.features.root}")

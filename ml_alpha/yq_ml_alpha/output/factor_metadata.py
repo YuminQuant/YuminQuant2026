@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 import json
 import os
@@ -30,6 +31,21 @@ METADATA_COLUMNS = [
 def write_factor_metadata(config: MlAlphaConfig) -> Path | None:
     if config.output.kind != "factor" or not config.output.write_metadata:
         return None
+    if os.environ.get('YQ_METADATA_MANAGED') == '1':
+        return Path(config.output.root) / 'factor_metadata.parquet'
+    return write_factor_metadata_many([config])[0]
+
+
+def write_factor_metadata_many(configs, *, replace_all=False):
+    groups = {}
+    for config in configs:
+        if config.output.kind == 'factor' and config.output.write_metadata:
+            groups.setdefault(Path(config.output.root), []).append(config)
+    return [_write_metadata_group(root, values, replace_all) for root, values in groups.items()]
+
+
+def _write_metadata_group(root, configs, replace_all):
+    config = configs[0]
     factor_id = config.factor_id or config.output.id
     if not factor_id:
         raise ValueError("factor output requires factor_id or output.id")
@@ -40,10 +56,16 @@ def write_factor_metadata(config: MlAlphaConfig) -> Path | None:
         native = path.with_name("factor_metadata.rust.parquet")
         legacy = _read_existing(path)
         external_mask = legacy.tags_json.map(lambda value: "model_generated" in json.loads(value or "[]"))
-        rows = _read_existing(source) if artifact_io.exists(source) else legacy.loc[external_mask]
+        rows = (_read_existing(source) if artifact_io.exists(source) else legacy.loc[external_mask])
+        if replace_all:
+            rows = rows.iloc[0:0]
         native_rows = _read_existing(native) if artifact_io.exists(native) else legacy.loc[~external_mask]
-        rows = rows.loc[rows["factor_id"] != factor_id].copy()
-        rows = pd.concat([rows, pd.DataFrame([_metadata_row(config, factor_id)])], ignore_index=True)
+        additions = [_metadata_row(item, item.factor_id or item.output.id) for item in configs]
+        ids = [item['factor_id'] for item in additions]
+        if len(set(ids)) != len(ids):
+            raise ValueError('Duplicate ML factor metadata IDs')
+        rows = rows.loc[~rows["factor_id"].isin(ids)].copy()
+        rows = pd.concat([rows, pd.DataFrame(additions)], ignore_index=True)
         if set(rows.factor_id) & set(native_rows.factor_id):
             raise ValueError("Rust and ml_alpha factor metadata IDs collide")
         _write_atomic(source, rows)
@@ -54,21 +76,9 @@ def write_factor_metadata(config: MlAlphaConfig) -> Path | None:
 
 @contextmanager
 def metadata_lock(root: Path):
-    path = root / "factor_metadata.lock"
-    store = artifact_io.backend(path)
-    if store:
-        with store.lock(path):
-            yield
-        return
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as exc:
-        raise RuntimeError(f"metadata writer is active (or stale lock after crash): {path}") from exc
-    try:
-        os.close(fd)
+    from yq_ml_alpha.output.file_lock import daily_file_lock
+    with daily_file_lock(root / "factor_metadata"):
         yield
-    finally:
-        path.unlink()
 
 
 def _write_atomic(path: Path, rows: pd.DataFrame) -> None:
@@ -78,11 +88,11 @@ def _write_atomic(path: Path, rows: pd.DataFrame) -> None:
         return
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        output[METADATA_COLUMNS].to_parquet(tmp, index=False)
-        tmp.replace(path)
+        data_io.write_parquet(output[METADATA_COLUMNS], tmp, index=False)
+        data_io.replace(tmp, path)
     finally:
-        if tmp.exists():
-            tmp.unlink()
+        if data_io.exists(tmp):
+            data_io.unlink(tmp)
 
 
 def _read_existing(path: Path) -> pd.DataFrame:

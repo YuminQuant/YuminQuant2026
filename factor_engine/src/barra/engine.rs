@@ -116,7 +116,7 @@ impl BarraEngine {
             ));
         }
 
-        let metadata = self.read_metadata()?;
+        let metadata = available_barra_specs().iter().map(BarraMetadata::from_spec).collect::<Vec<_>>();
         let selected_metadata = select_barra_metadata(request, &metadata);
         if let SelectionResult::Empty(message) = selected_metadata {
             return Ok(empty_barra_report(request, message));
@@ -133,7 +133,6 @@ impl BarraEngine {
             }
         }
         let mut selected_provider_ids = BTreeMap::<usize, BTreeSet<String>>::new();
-        let mut stale_ids = Vec::new();
         for metadata in &selected_metadata {
             let key = barra_registry_key(
                 &metadata.asset_class,
@@ -147,14 +146,8 @@ impl BarraEngine {
                     .or_default()
                     .insert(metadata.exposure_id.clone());
             } else {
-                stale_ids.push(metadata.exposure_id.clone());
+                return Err(err(format!("registry has no exposure implementation for {}",metadata.exposure_id)));
             }
-        }
-        if !stale_ids.is_empty() {
-            return Err(err(format!(
-                "barra_metadata.parquet is stale; missing registered implementation(s): {}. Run `barra-metadata` again.",
-                stale_ids.join(",")
-            )));
         }
         if let Some(families) = &request.families {
             let requested_families = families

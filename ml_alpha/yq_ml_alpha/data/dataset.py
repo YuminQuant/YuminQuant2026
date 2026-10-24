@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,7 @@ from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
 from yq_ml_alpha.features.derived_chip_age import DerivedChipAgeProvider
 from yq_ml_alpha.data.sampler import sample_dates
-from yq_ml_alpha.data.tensor_storage import TensorSpool
+from yq_ml_alpha.data.tensor_storage import TensorSpool, MemoryTensorSpool
 from yq_ml_alpha.data.indexed_panel import IndexedPanelStore, IndexedPanelTensor
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
@@ -38,7 +39,7 @@ class DatasetBundle:
     label_column: str
     tensors: dict[str, np.ndarray | IndexedPanelTensor] | None = None
     tensor_columns: dict[str, list[str]] | None = None
-    storage: TensorSpool | IndexedPanelStore | None = None
+    storage: TensorSpool | MemoryTensorSpool | IndexedPanelStore | None = None
     tensor_source: object | None = None
     full_cross_section: bool = False
     information_cutoff: int | None = None
@@ -252,9 +253,14 @@ class DatasetBuilder:
         frames = []
         tensor_chunks: list[dict[str, np.ndarray]] = []
         storage_mode = self.config.materialize.tensor_storage
+        remote_memory = data_io.remote_enabled()
+        if remote_memory:
+            storage_mode = 'memory'
         if storage_mode not in {"indexed", "mmap", "memory"}:
             raise ValueError("materialize.tensor_storage must be indexed, mmap or memory")
         spool = TensorSpool(Path(self.config.materialize.cache_dir) / "scratch") if storage_mode == "mmap" and include_label else None
+        if remote_memory:
+            spool = MemoryTensorSpool()
         self._building_storage = spool
         tensor_columns: dict[str, list[str]] | None = None
         total_dates = len(dates)
@@ -358,10 +364,10 @@ class DatasetBuilder:
                 / str(trade_date // 10000)
                 / f"{trade_date}.parquet"
             )
-            if not path.exists():
+            if not data_io.exists(path):
                 raise FileNotFoundError(f"missing trade_filter for {trade_date}: {path}")
             if trade_date not in self._source_st_symbol_cache:
-                mask = pd.read_parquet(path, columns=["ts_code", "is_st"])
+                mask = data_io.read_parquet(path, columns=["ts_code", "is_st"])
                 st_mask = mask["is_st"].fillna(False).astype(bool)
                 self._source_st_symbol_cache[trade_date] = set(mask.loc[st_mask, "ts_code"].astype(str))
             symbols = self._source_st_symbol_cache[trade_date]
@@ -463,9 +469,9 @@ class DatasetBuilder:
         if not self.config.materialize.cache_samples or not dates:
             return
         cache_dir = Path(self.config.materialize.cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        data_io.mkdir(cache_dir, parents=True, exist_ok=True)
         split = "labeled" if include_label else "predict"
-        frame.to_parquet(cache_dir / f"{split}_{dates[0]}_{dates[-1]}.parquet", index=False)
+        data_io.write_parquet(frame, cache_dir / f"{split}_{dates[0]}_{dates[-1]}.parquet", index=False)
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
@@ -480,8 +486,8 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
     if config.features.type in {"factor_frame", "factor_sequence", "graph_factor_frame", "hist_factor_frame", "concept_factor_sequence"}:
         excluded = {config.output.id}
         metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
-        if metadata.exists():
-            for row in pd.read_parquet(metadata, columns=["output_column", "tags_json"]).itertuples(index=False):
+        if data_io.exists(metadata):
+            for row in data_io.read_parquet(metadata, columns=["output_column", "tags_json"]).itertuples(index=False):
                 tags = json.loads(row.tags_json or "[]")
                 if "model_generated" in tags or "deprecated" in tags:
                     excluded.add(row.output_column)

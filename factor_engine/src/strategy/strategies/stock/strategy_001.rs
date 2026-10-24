@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
@@ -198,7 +199,7 @@ pub(super) fn load_signal(
     let path = root
         .join((trade_date / 10_000).to_string())
         .join(format!("{trade_date}.parquet"));
-    if !path.exists() {
+    if !path.storage_exists() {
         return Ok(BTreeMap::new());
     }
     let columns = vec![

@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arrow_array::{new_null_array, BooleanArray, RecordBatch, StringArray};
@@ -50,19 +48,13 @@ fn read_parquet_impl(
     predicate: Option<SymbolPredicate>,
     null_types: &BTreeMap<String, DataType>,
 ) -> Result<Table> {
-    if let Some(backend) = crate::artifact_io::backend(path) {
-        if predicate.is_some() || !null_types.is_empty() {
-            return Err(err("remote artifact reader does not support input-table filters"));
-        }
-        return backend.read_table(path, columns);
-    }
     let context = |error| {
         err(format!(
             "failed to read parquet {}: {error}",
             path.display()
         ))
     };
-    let file = File::open(path).map_err(|error| context(error.to_string()))?;
+    let file = crate::artifact_io::open_reader(path).map_err(|error| context(error.to_string()))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|error| context(error.to_string()))?;
     let mut builder = builder.with_batch_size(65_536);
@@ -162,10 +154,7 @@ fn read_parquet_impl(
 }
 
 pub fn parquet_column_names(path: &Path) -> Result<BTreeSet<String>> {
-    if let Some(backend) = crate::artifact_io::backend(path) {
-        return Ok(backend.read_table(path, None)?.columns.keys().cloned().collect());
-    }
-    let file = File::open(path).map_err(|error| {
+    let file = crate::artifact_io::open_reader(path).map_err(|error| {
         err(format!(
             "failed to read parquet {}: {error}",
             path.display()
@@ -186,7 +175,7 @@ pub fn parquet_column_names(path: &Path) -> Result<BTreeSet<String>> {
 }
 
 pub fn write_parquet(path: &Path, table: &Table) -> Result<()> {
-    write_parquet_with_compression(path, table, Compression::UNCOMPRESSED)
+    write_parquet_with_compression(path, table, Compression::SNAPPY)
 }
 
 pub fn write_parquet_with_compression(
@@ -194,12 +183,6 @@ pub fn write_parquet_with_compression(
     table: &Table,
     compression: Compression,
 ) -> Result<()> {
-    if let Some(backend) = crate::artifact_io::backend(path) {
-        return backend.write_table(path, table, compression);
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let ordered_names = ordered_column_names(table);
     let fields = ordered_names
         .iter()
@@ -214,72 +197,28 @@ pub fn write_parquet_with_compression(
     let props = WriterProperties::builder()
         .set_compression(compression)
         .build();
-    static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_nanos();
-    let sequence = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp = path.with_extension(format!("{}.{}.{}.tmp", std::process::id(), nonce, sequence));
-    let file = File::create_new(&temp).map_err(|error| {
-        err(format!(
-            "failed to write parquet {}: {error}",
-            path.display()
-        ))
-    })?;
-    // Never truncate the previous output before a complete footer is durable.
-    let result: Result<()> = (|| {
-        let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
-        writer.write(&batch)?;
-        writer.close()?;
-        File::options().write(true).open(&temp)?.sync_all()?;
-        std::fs::rename(&temp, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result.map_err(|error| {
-        err(format!(
-            "failed to write parquet {}: {error}",
-            path.display()
-        ))
-    })
+    let file = crate::artifact_io::open_writer(path)?;
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
+    writer.write(&batch)?;
+    writer.into_inner()?.commit()
 }
 
 /// Incremental Parquet output. Only publish after the footer is complete and synced.
 pub(crate) struct ParquetStreamWriter {
     path: std::path::PathBuf,
-    temp: std::path::PathBuf,
-    writer: Option<ArrowWriter<File>>,
+    writer: Option<ArrowWriter<crate::artifact_io::AtomicWriter>>,
 }
 
 impl ParquetStreamWriter {
     pub(crate) fn new(path: &Path, empty: &Table) -> Result<Self> {
-        if crate::artifact_io::backend(path).is_some() {
-            return Err(crate::error::err("incremental Parquet writer is not supported by the registered artifact backend"));
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let temp = path.with_extension(format!(
-            "{}.{}.{}.tmp",
-            std::process::id(),
-            nonce,
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
         let batch = table_record_batch(empty)?;
-        let file = File::create_new(&temp)?;
+        let file = crate::artifact_io::open_writer(path)?;
         let mut out = Self {
             path: path.to_path_buf(),
-            temp,
             writer: None,
         };
         let props = WriterProperties::builder()
-            .set_compression(Compression::UNCOMPRESSED)
+            .set_compression(Compression::SNAPPY)
             .build();
         out.writer = Some(ArrowWriter::try_new(file, batch.schema(), Some(props))?);
         Ok(out)
@@ -298,9 +237,7 @@ impl ParquetStreamWriter {
         self.writer
             .take()
             .expect("writer already finished")
-            .close()?;
-        File::options().write(true).open(&self.temp)?.sync_all()?;
-        std::fs::rename(&self.temp, &self.path)?;
+            .into_inner()?.commit()?;
         Ok(self.path.clone())
     }
 }
@@ -308,7 +245,6 @@ impl ParquetStreamWriter {
 impl Drop for ParquetStreamWriter {
     fn drop(&mut self) {
         drop(self.writer.take());
-        let _ = std::fs::remove_file(&self.temp);
     }
 }
 

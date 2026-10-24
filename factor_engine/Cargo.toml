@@ -5,6 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
+bytes = "1"
 arrow-array = "57.0.0"
 arrow-schema = "57.0.0"
 parquet = { version = "57.0.0", features = ["arrow"] }

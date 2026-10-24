@@ -1,3 +1,4 @@
+from yq_ml_alpha.output import artifact_io as data_io
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,6 @@ class DerivedLogsigProvider(FeatureProvider):
 
     def load(self, trade_date):
         path = daily_path(self.root, trade_date)
-        if not path.exists():
+        if not data_io.exists(path):
             raise FileNotFoundError(f"Missing derived logsignature: {path}; run Rust derive-logsig first")
-        return pd.read_parquet(path, columns=["trade_date", "ts_code", *self.feature_columns])
+        return data_io.read_parquet(path, columns=["trade_date", "ts_code", *self.feature_columns])

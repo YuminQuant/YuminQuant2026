@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -93,7 +94,7 @@ pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<Ma
     let mut frames = Vec::new();
     for trade_date in dates {
         let path = daily_pv_path(data_root, *trade_date);
-        if !path.exists() {
+        if !path.storage_exists() {
             continue;
         }
         let columns = vec![
@@ -180,7 +181,7 @@ pub fn load_stock_minute_frames_for_run(
     let mut frames = Vec::new();
     for trade_date in dates {
         let path = minute_path(data_root, *trade_date);
-        if !path.exists() {
+        if !path.storage_exists() {
             if minute_limits {
                 return Err(crate::error::err(format!(
                     "missing minute file {}",
@@ -346,11 +347,11 @@ impl FutureDailyCache {
         let mut frames = Vec::new();
         for trade_date in dates {
             let path = future_daily_date_path(data_root, *trade_date);
-            let table = if path.exists() {
+            let table = if path.storage_exists() {
                 read_future_daily_table(&path)?
             } else {
                 let annual = future_daily_annual_path(data_root, *trade_date);
-                if !annual.exists() {
+                if !annual.storage_exists() {
                     continue;
                 }
                 self.day(&annual, *trade_date)?
@@ -436,7 +437,7 @@ pub fn load_future_minute_frames(
     let mut frames = Vec::new();
     for trade_date in dates {
         let path = future_minute_path(data_root, *trade_date);
-        if !path.exists() {
+        if !path.storage_exists() {
             continue;
         }
         let columns = vec![
@@ -532,7 +533,7 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
         .join("future_data")
         .join("basic")
         .join("fut_basic.parquet");
-    if !path.exists() {
+    if !path.storage_exists() {
         eprintln!(
             "[strategy warning] missing {}; using existing defaults",
             path.display()
@@ -650,7 +651,7 @@ fn load_trade_filter(data_root: &Path, trade_date: i32) -> Result<BTreeMap<Strin
         .join("trade_filter")
         .join((trade_date / 10_000).to_string())
         .join(format!("{trade_date}.parquet"));
-    if !path.exists() {
+    if !path.storage_exists() {
         eprintln!(
             "[strategy warning] missing {}; using existing defaults",
             path.display()

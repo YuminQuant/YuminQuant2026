@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -48,8 +49,8 @@ impl HoldingsWriter {
     pub fn finish(mut self) -> Result<PathBuf> {
         self.flush()?;
         let path = self.writer.finish()?;
-        if self.legacy.exists() {
-            std::fs::remove_file(self.legacy)?;
+        if self.legacy.storage_exists() {
+            crate::artifact_io::remove_file(self.legacy)?;
         }
         Ok(path)
     }

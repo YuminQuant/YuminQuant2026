@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -731,7 +732,7 @@ fn load_trade_filter_masks(
     for date in target_dates {
         let required = request.exclude_limit || (request.exclude_st && *date >= 20160101);
         let path = daily_trade_filter_path(&root, *date);
-        if !path.exists() {
+        if !path.storage_exists() {
             if required {
                 return Err(err(format!(
                     "missing stock trade filter for {date}: expected {}. Run: python scripts\\update_incremental.py --groups stock_trade_filter --start-date {date} --end-date {date}",
@@ -929,7 +930,7 @@ fn load_index_weight_records(
         .join("index_data")
         .join("monthly_weight")
         .join(index_code.replace('.', "_"));
-    if !code_dir.exists() {
+    if !code_dir.storage_exists() {
         return Err(err(format!(
             "missing index weight data for {index_code}: expected {}. Run: python scripts\\update_incremental.py --groups index_weight --ts-code {index_code}",
             code_dir.display()
@@ -983,9 +984,9 @@ fn collect_parquet_files_recursive(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn collect_parquet_files_recursive_into(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in std::fs::read_dir(root)? {
+    for entry in crate::artifact_io::read_dir(root)? {
         let path = entry?.path();
-        if path.is_dir() {
+        if path.storage_is_dir() {
             collect_parquet_files_recursive_into(&path, files)?;
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("parquet") {
             files.push(path);
@@ -1022,7 +1023,7 @@ fn load_custom_universe_records(
         .data_root
         .join("universe")
         .join(format!("{universe_id}.parquet"));
-    if !path.exists() {
+    if !path.storage_exists() {
         return Err(err(format!(
             "missing custom universe {universe_id}: expected {}",
             path.display()
@@ -1137,7 +1138,7 @@ fn select_factors(
     request: &BacktestRunRequest,
 ) -> Result<Vec<FactorMetadata>> {
     if let Some(root) = &request.factor_root {
-        if !root.exists() {
+        if !root.storage_exists() {
             return Err(err(format!(
                 "external factor root not found: {}",
                 root.display()
@@ -1255,16 +1256,16 @@ fn external_factor_ids_from_root(
 }
 
 fn collect_external_factor_columns(path: &Path, columns: &mut BTreeSet<String>) -> Result<()> {
-    if !path.exists() {
+    if !path.storage_exists() {
         return Ok(());
     }
-    if !path.is_dir() {
+    if !path.storage_is_dir() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(path)? {
+    for entry in crate::artifact_io::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        if path.storage_is_dir() {
             collect_external_factor_columns(&path, columns)?;
             continue;
         }
@@ -1392,7 +1393,7 @@ fn load_output_table(
     let mut table = Table::empty();
     for date in dates {
         let path = output_path(root, asset_class, frequency, model, barra_layout, *date);
-        if !path.exists() {
+        if !path.storage_exists() {
             continue;
         }
         let mut daily = read_parquet(&path, Some(&columns))?;
@@ -1431,7 +1432,7 @@ fn load_factor_output_table_with_presence(
         .collect::<BTreeMap<_, _>>();
     for date in dates {
         let path = factor_output_path(root, layout, asset_class, frequency, *date);
-        if !path.exists() {
+        if !path.storage_exists() {
             continue;
         }
         let schema_columns = parquet_column_names(&path)?;
@@ -1487,7 +1488,7 @@ fn initialize_factor_fill_state(
             break;
         }
         let path = factor_output_path(root, layout, asset_class, frequency, date);
-        if !path.exists() {
+        if !path.storage_exists() {
             continue;
         }
         let schema_columns = parquet_column_names(&path)?;
@@ -1539,13 +1540,13 @@ fn collect_parquet_dates_before(
     first_target_date: i32,
     dates: &mut Vec<i32>,
 ) -> Result<()> {
-    if !path.exists() {
+    if !path.storage_exists() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(path)? {
+    for entry in crate::artifact_io::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        if path.storage_is_dir() {
             collect_parquet_dates_before(&path, first_target_date, dates)?;
             continue;
         }
@@ -1687,7 +1688,7 @@ fn factor_root_layout(
     if root
         .join(asset_class.as_str())
         .join(frequency.as_str())
-        .exists()
+        .storage_exists()
     {
         FactorRootLayout::Standard
     } else {
@@ -1718,7 +1719,7 @@ fn direct_daily_output_path(root: &Path, trade_date: i32) -> PathBuf {
     let nested = root
         .join(year.to_string())
         .join(format!("{trade_date}.parquet"));
-    if nested.exists() {
+    if nested.storage_exists() {
         nested
     } else {
         root.join(format!("{trade_date}.parquet"))

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from pathlib import Path
 
@@ -27,14 +28,14 @@ class TradeFilters:
             / str(trade_date // 10000)
             / f"{trade_date}.parquet"
         )
-        if not path.exists():
+        if not data_io.exists(path):
             raise FileNotFoundError(f"missing trade_filter for {trade_date}: {path}")
         filter_columns = ["ts_code"]
         if self.config.exclude_limit:
             filter_columns.append("is_limit")
         if self.config.exclude_st:
             filter_columns.append("is_st")
-        mask = pd.read_parquet(path, columns=filter_columns)
+        mask = data_io.read_parquet(path, columns=filter_columns)
         output = output.merge(mask, on="ts_code", how="left")
         keep = pd.Series(True, index=output.index)
         if self.config.exclude_limit:

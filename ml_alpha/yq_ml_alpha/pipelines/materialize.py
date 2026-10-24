@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from pathlib import Path
 
@@ -38,8 +39,8 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
             continue
         frame = _load_bundle(config, dataset, calendar, dates, include_label=include_label).frame
         path = Path(config.materialize.cache_dir) / f"{split}_{dates[0]}_{dates[-1]}.parquet"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        frame.to_parquet(path, index=False)
+        data_io.mkdir(path.parent, parents=True, exist_ok=True)
+        data_io.write_parquet(frame, path, index=False)
         outputs.append(path)
     return outputs
 

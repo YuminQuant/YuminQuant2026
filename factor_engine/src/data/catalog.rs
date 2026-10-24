@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::path::{Path, PathBuf};
 
 use crate::core::{AssetClass, DatasetId};
@@ -115,7 +116,7 @@ impl DataCatalog {
                     .join(format!("{}.parquet", year)),
                 _ => continue,
             };
-            if path.exists() {
+            if path.storage_exists() {
                 paths.push(path);
             }
         }
@@ -174,7 +175,7 @@ impl DataCatalog {
                 .join(format!("{}.parquet", trade_date)),
             _ => return None,
         };
-        path.exists().then_some(path)
+        path.storage_exists().then_some(path)
     }
 
     pub fn index_daily_year_files(
@@ -194,7 +195,7 @@ impl DataCatalog {
                 .join("daily")
                 .join(&code_dir)
                 .join(format!("{}.parquet", year));
-            if path.exists() {
+            if path.storage_exists() {
                 paths.push(path);
             }
         }
@@ -211,7 +212,7 @@ impl DataCatalog {
             .join(&code_dir)
             .join(year.to_string())
             .join(format!("{}.parquet", trade_date));
-        path.exists().then_some(path)
+        path.storage_exists().then_some(path)
     }
 
     pub fn minute_file(&self, dataset: DatasetId, trade_date: i32) -> Option<PathBuf> {
@@ -231,7 +232,7 @@ impl DataCatalog {
                 .join(format!("{}.parquet", trade_date)),
             _ => return None,
         };
-        path.exists().then_some(path)
+        path.storage_exists().then_some(path)
     }
 
     pub fn stock_derived_bar_file(&self, bar_size: usize, trade_date: i32) -> Option<PathBuf> {
@@ -244,7 +245,7 @@ impl DataCatalog {
             .join(format!("{bar_size}m"))
             .join(year.to_string())
             .join(format!("{}.parquet", trade_date));
-        path.exists().then_some(path)
+        path.storage_exists().then_some(path)
     }
 
     pub fn stock_sw_classification_file(&self) -> Option<&Path> {
@@ -261,7 +262,7 @@ impl DataCatalog {
             .join("chn_stock_data")
             .join("info")
             .join("stock_basic.parquet");
-        path.exists().then_some(path)
+        path.storage_exists().then_some(path)
     }
 
     pub fn fund_basic_file(&self) -> PathBuf {
@@ -283,6 +284,6 @@ impl DataCatalog {
             .join(model)
             .join(year.to_string())
             .join(format!("{}.parquet", trade_date));
-        path.exists().then_some(path)
+        path.storage_exists().then_some(path)
     }
 }

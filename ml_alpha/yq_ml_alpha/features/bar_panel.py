@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 import inspect
 import warnings
@@ -683,20 +684,20 @@ def _steps_per_session(source_frequency: str, bar_size: int, lookback_sessions: 
 
 def _read_minute_session(root: Path, trade_date: int) -> pd.DataFrame:
     path = root / str(trade_date // 10000) / f"{trade_date}.parquet"
-    if not path.exists():
+    if not data_io.exists(path):
         return pd.DataFrame(columns=MINUTE_REQUIRED_COLUMNS)
-    return pd.read_parquet(path, columns=MINUTE_REQUIRED_COLUMNS)
+    return data_io.read_parquet(path, columns=MINUTE_REQUIRED_COLUMNS)
 
 
 def _read_derived_minute_session(root: Path, trade_date: int, bar_size: int) -> pd.DataFrame:
     path = root / str(trade_date // 10000) / f"{trade_date}.parquet"
-    if not path.exists():
+    if not data_io.exists(path):
         raise FileNotFoundError(
             f"missing derived minute bar file for {trade_date}: {path}. "
             "Run: cargo run --release --manifest-path factor_engine\\Cargo.toml -- "
             f"derive-bar --asset stock --source minute --bar-size {bar_size} --start-date {trade_date} --end-date {trade_date}"
         )
-    return pd.read_parquet(path, columns=DERIVED_MINUTE_REQUIRED_COLUMNS)
+    return data_io.read_parquet(path, columns=DERIVED_MINUTE_REQUIRED_COLUMNS)
 
 
 def _derived_minute_session_to_wide(

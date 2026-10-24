@@ -1,4 +1,5 @@
 """Bounded, read-only daily tensor sequences; no temporary files or disk cache."""
+from yq_ml_alpha.output import artifact_io as data_io
 from collections import OrderedDict
 from pathlib import Path
 
@@ -89,9 +90,9 @@ class DailyTensorSequence:
         if cached is not None:
             return cached
         path = daily_path(self.root, date)
-        if not path.exists():
+        if not data_io.exists(path):
             raise FileNotFoundError(f"Missing derived daily tensor: {path}; materialize derived data first")
-        frame = pd.read_parquet(path, columns=["trade_date", "ts_code", *self.columns])
+        frame = data_io.read_parquet(path, columns=["trade_date", "ts_code", *self.columns])
         if frame.ts_code.isna().any() or frame.ts_code.duplicated().any() or not frame.trade_date.eq(date).all():
             raise ValueError(f"invalid/duplicate daily tensor keys: {path}")
         frame = frame.set_index("ts_code")[self.columns].astype("float32")

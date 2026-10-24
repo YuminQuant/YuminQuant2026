@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::path::PathBuf;
 
 use rayon::prelude::*;
@@ -148,7 +149,7 @@ fn derive_one_stock_minute_bar_date(
     columns: &[String],
 ) -> Result<DeriveDateOutcome> {
     let output_path = derived_stock_bar_path(data_root, request.bar_size, trade_date);
-    if output_path.exists() && !request.overwrite {
+    if output_path.storage_exists() && !request.overwrite {
         return Ok(DeriveDateOutcome::SkippedExisting { trade_date });
     }
 

@@ -1,4 +1,5 @@
 //! Causal chip-age estimation. Engineering choices are recorded in manifest.json.
+use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::time::Instant;
@@ -184,7 +185,7 @@ fn full_day_suspensions(root: &Path, date: i32) -> Result<BTreeSet<String>> {
         .join("chn_stock_data/daily/suspend")
         .join((date / 10000).to_string())
         .join(format!("{date}.parquet"));
-    if !path.exists() {
+    if !path.storage_exists() {
         return Ok(BTreeSet::new());
     }
     let columns: Vec<String> = ["ts_code", "suspend_type", "suspend_timing"]
@@ -235,12 +236,12 @@ pub fn derive_chip_age(
             "chip-age output on C: is prohibited; configure data_root on D:",
         ));
     }
-    std::fs::create_dir_all(&root)?;
+    crate::artifact_io::create_dir_all(&root)?;
     let manifest = root.join("manifest.json");
     // Remove the readiness marker before changing any daily file. A failed run
     // cannot be consumed as a completed dataset by the Python provider.
-    if manifest.exists() {
-        std::fs::remove_file(&manifest)?;
+    if manifest.storage_exists() {
+        crate::artifact_io::remove_file(&manifest)?;
     }
     let calendar = TradingCalendar::load(&config.data_root, &config.stock_calendar_exchange)?;
     let targets = calendar.open_dates_between(start, end);
@@ -390,11 +391,11 @@ pub fn derive_chip_age(
                 );
                 let table = Table::new(columns)?;
                 let directory = root.join((date / 10000).to_string());
-                std::fs::create_dir_all(&directory)?;
+                crate::artifact_io::create_dir_all(&directory)?;
                 let path = directory.join(format!("{date}.parquet"));
                 let temp = path.with_extension(format!("{}.tmp", std::process::id()));
                 write_derived_parquet(&temp, &table)?;
-                std::fs::rename(temp, path)?;
+                crate::artifact_io::rename(temp, path)?;
             }
             let write_ms = if date >= start {
                 write_started.elapsed().as_secs_f64() * 1000.0
@@ -412,8 +413,8 @@ pub fn derive_chip_age(
         "overflow":"edge_bins","invalid_data":"reset_and_refill_window",
         "suspension":"explicit_full_day_carry_adjusted_close"}"#;
     let temp = manifest.with_extension("json.tmp");
-    std::fs::write(&temp, body)?;
-    std::fs::rename(temp, manifest)?;
+    crate::artifact_io::write(&temp, body)?;
+    crate::artifact_io::rename(temp, manifest)?;
     Ok(())
 }
 

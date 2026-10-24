@@ -100,7 +100,7 @@ impl LabelEngine {
             ));
         }
 
-        let metadata = self.read_metadata()?;
+        let metadata = available_label_specs().iter().map(LabelMetadata::from_spec).collect::<Vec<_>>();
         let selected_metadata = select_label_metadata(request, &metadata);
         if let SelectionResult::Empty(message) = selected_metadata {
             return Ok(empty_label_report(request, message));
@@ -111,7 +111,6 @@ impl LabelEngine {
 
         let mut registry = label_map();
         let mut labels = Vec::new();
-        let mut stale_ids = Vec::new();
         for metadata in &selected_metadata {
             let key = label_registry_key(
                 &metadata.asset_class,
@@ -121,14 +120,8 @@ impl LabelEngine {
             if let Some(label) = registry.remove(&key) {
                 labels.push(label);
             } else {
-                stale_ids.push(metadata.label_id.clone());
+                return Err(err(format!("registry has no label implementation for {}",metadata.label_id)));
             }
-        }
-        if !stale_ids.is_empty() {
-            return Err(err(format!(
-                "label_metadata.parquet is stale; missing registered implementation(s): {}. Run `label-metadata` again.",
-                stale_ids.join(",")
-            )));
         }
         if labels.is_empty() {
             return Ok(empty_label_report(

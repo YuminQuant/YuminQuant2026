@@ -1,5 +1,6 @@
 """Read sparse, dated HIST memberships and current market capitalization."""
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 import json
 from pathlib import Path
@@ -19,9 +20,9 @@ class HistConcepts:
     def identity(self):
         if self.manifest is None:
             path = self.root / "manifest.json"
-            if not path.exists():
+            if not data_io.exists(path):
                 raise FileNotFoundError(f"missing HIST concepts: {path}; run derive-hist-concepts")
-            metadata = json.loads(path.read_text(encoding="utf-8"))
+            metadata = json.loads(data_io.read_text(path, encoding="utf-8"))
             if (metadata.get("version") != "hist_mainbz_i_v1"
                     or metadata.get("source_type") != "I"
                     or metadata.get("availability") != "annual_next_may01_interim_sep01"):
@@ -31,7 +32,7 @@ class HistConcepts:
 
     def _membership(self, date, symbols):
         self.identity()
-        frame = pd.read_parquet(daily_path(self.root, date))
+        frame = data_io.read_parquet(daily_path(self.root, date))
         keys = ["trade_date", "ts_code", "concept_id", "end_date", "available_date"]
         if (frame[keys].isna().any().any() or not frame.trade_date.eq(date).all()
                 or frame.duplicated(["ts_code", "concept_id"]).any()
@@ -60,7 +61,7 @@ class HistConcepts:
         stock_index, group_index, count = self._membership(date, symbols)
         if self.basic_root is None:
             raise ValueError("HIST market-cap weighting requires basic_root")
-        basic = pd.read_parquet(daily_path(self.basic_root, date), columns=["ts_code", "total_mv"])
+        basic = data_io.read_parquet(daily_path(self.basic_root, date), columns=["ts_code", "total_mv"])
         if basic.ts_code.duplicated().any():
             raise ValueError(f"duplicate market capitalization rows on {date}")
         caps = pd.to_numeric(basic.set_index("ts_code").total_mv.reindex(symbols),

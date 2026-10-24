@@ -1,5 +1,6 @@
 """Report-event adapter using shared windows, artifacts and daily factor output."""
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from dataclasses import replace
 
@@ -47,7 +48,7 @@ def execute(config, *, train, predict, resume=False):
               f"cutoff={window.training_cutoff_date}", flush=True)
         path = window_artifact_path(config.model.artifact_dir, window.window_id)
         context = _context(config, window.window_id, dataset.feature_columns)
-        if train and not (resume and path.exists()):
+        if train and not (resume and data_io.exists(path)):
             train_frame = dataset.load(window.train_dates, include_label=True, split_name="train")
             valid_frame = dataset.load(window.valid_dates, include_label=True, split_name="valid")
             if train_frame.empty or valid_frame.empty:
@@ -82,7 +83,7 @@ def execute(config, *, train, predict, resume=False):
                         # A covered but delisted stock must not be resurrected in
                         # a daily output just because its report is still recent.
                         base_path = config.output.base_root / str(date // 10000) / f"{date}.parquet"
-                        codes = pd.read_parquet(base_path, columns=["ts_code"])["ts_code"]
+                        codes = data_io.read_parquet(base_path, columns=["ts_code"])["ts_code"]
                         daily = daily.loc[daily.ts_code.isin(codes)]
                         outputs.append(daily)
                         coverage.append(date)

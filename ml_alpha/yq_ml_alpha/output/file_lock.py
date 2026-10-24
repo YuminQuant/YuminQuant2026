@@ -1,4 +1,5 @@
 """Cross-process read/modify/write lock for a daily output file."""
+from yq_ml_alpha.output import artifact_io as data_io
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -19,13 +20,13 @@ def daily_file_lock(path, timeout=60.0):
         with store.lock(path):
             yield
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
+    data_io.mkdir(path.parent, parents=True, exist_ok=True)
     with _guard:
         lock = _locks.setdefault(str(path), threading.RLock())
     with lock:
         # Keep the lock inode: unlinking it could let a third writer bypass a
         # second writer already holding/opening the original lock file.
-        with path.with_name(path.name + ".lock").open("a+b") as handle:
+        with data_io.open_file(path.with_name(path.name + ".lock"), "a+b") as handle:
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
                 handle.write(b"\0")

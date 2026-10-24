@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from pathlib import Path
 from typing import Any
@@ -63,10 +64,10 @@ def _project_path(value: str | Path) -> Path:
 
 
 def _feature_ic_sign(path: Path, metric: str) -> float | None:
-    if not path.exists():
+    if not data_io.exists(path):
         return None
     try:
-        table = pd.read_parquet(path, columns=[metric])
+        table = data_io.read_parquet(path, columns=[metric])
     except Exception:
         return None
     values = pd.to_numeric(table[metric], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()

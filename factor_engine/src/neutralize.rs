@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -232,7 +233,7 @@ fn load_daily_barra_from_storage(
     columns: &[String],
 ) -> Result<BTreeMap<String, Vec<Option<f64>>>> {
     let path = barra_daily_path(&config.barra_root, asset_class, frequency, trade_date);
-    if !path.exists() {
+    if !path.storage_exists() {
         return Err(err(format!(
             "Barra exposure file not found for neutralization date {trade_date}: {}",
             path.display()

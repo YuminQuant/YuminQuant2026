@@ -33,7 +33,7 @@ pub struct Strategy002 {
     buys: BTreeMap<String, Leg>,
     sells: BTreeMap<String, Leg>,
     reserve: f64,
-    audit: Option<BufWriter<std::fs::File>>,
+    audit: Option<BufWriter<crate::artifact_io::AtomicWriter>>,
 }
 
 impl Strategy002 {
@@ -147,9 +147,9 @@ impl Strategy for Strategy002 {
     }
 
     fn on_start(&mut self, ctx: &mut StrategyContext) -> Result<()> {
-        std::fs::create_dir_all(ctx.config().output_dir())?;
-        let mut audit = BufWriter::new(std::fs::File::create(
-            ctx.config().output_dir().join("fills.csv"),
+        crate::artifact_io::create_dir_all(ctx.config().output_dir())?;
+        let mut audit = BufWriter::new(crate::artifact_io::open_writer(
+            &ctx.config().output_dir().join("fills.csv"),
         )?);
         writeln!(
             audit,
@@ -300,8 +300,9 @@ impl Strategy for Strategy002 {
         Ok(())
     }
     fn on_end(&mut self, _ctx: &mut StrategyContext) -> Result<()> {
-        if let Some(file) = &mut self.audit {
+        if let Some(mut file) = self.audit.take() {
             file.flush()?;
+            file.into_inner().map_err(|e| crate::error::err(e.to_string()))?.commit()?;
         }
         Ok(())
     }

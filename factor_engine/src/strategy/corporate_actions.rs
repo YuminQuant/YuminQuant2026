@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -25,14 +26,14 @@ impl CorporateActions {
     pub fn load(root: &Path, start: i32, end: i32) -> Result<Self> {
         let mut book = Self::default();
         let folder = root.join("chn_stock_data/dividend");
-        if !folder.exists() {
+        if !folder.storage_exists() {
             eprintln!(
                 "[strategy warning] missing stock dividend directory: {}",
                 folder.display()
             );
             return Ok(book);
         }
-        let mut paths = std::fs::read_dir(folder)?
+        let mut paths = crate::artifact_io::read_dir(folder)?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .filter(|p| p.extension().is_some_and(|s| s == "parquet"))

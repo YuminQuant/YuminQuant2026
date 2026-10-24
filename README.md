@@ -59,7 +59,7 @@ python scripts/update_incremental.py --groups stock_daily --start-date 20260420 
 cargo run --release --manifest-path factor_engine/Cargo.toml -- metadata
 cargo run --release --manifest-path factor_engine/Cargo.toml -- list --asset stock --frequency daily --ids-only true
 cargo run --release --manifest-path factor_engine/Cargo.toml -- plan --asset stock --frequency daily --start-date 20260420 --end-date 20260424 --factors ret20
-cargo run --release --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260420 --end-date 20260424 --factors ret20 --date-batch-size 120 --profile
+python scripts/yq.py run --asset stock --frequency daily --start-date 20260420 --end-date 20260424 --factors ret20 --date-batch-size 120 --profile
 ```
 
 `plan` 查看计划而不生成因子，但不是完整的数据质量验证。示例日期不是运行限制，且回看窗口可能需要更早的数据。
@@ -83,9 +83,9 @@ backtest/                               因子回测 / Factor backtests
 strategy/                               策略模拟 / Strategy simulations
 ```
 
-模型信号、正式因子和策略账户收益是不同产物，不能互换解释。标准命令默认本地 IO；可选存储扩展不代表所有输入、回测或派生入口都支持远程文件系统。
+模型信号、正式因子和策略账户收益是不同产物，不能互换解释。统一入口默认本地 IO，可由仓库外适配器接管远程存储与调度，见[计算与存储](factor_engine/docs/ARTIFACT_STORAGE.md)。
 
-Model signals, formal factors and strategy account returns are distinct outputs. Standard commands use local IO. Optional storage adapters do not imply universal remote-filesystem support for inputs, backtests or derived-data commands.
+Model signals, formal factors and strategy account returns are distinct outputs. The unified entrypoint defaults to local IO and can delegate remote storage/scheduling to an external adapter. See [execution and storage](factor_engine/docs/ARTIFACT_STORAGE.md).
 
 ## 文档导航 / Documentation
 

@@ -5,8 +5,17 @@ threads; model algorithms and input datasets do not depend on the backend.
 """
 from contextlib import contextmanager
 from pathlib import Path
+import os
+from types import SimpleNamespace
 
 _backend = None
+
+def read_path(path):
+    for line in os.environ.get('YQ_METADATA_SNAPSHOTS','').splitlines():
+        source, target = line.split('\t',1)
+        if Path(path) == Path(source):
+            return Path(target)
+    return Path(path)
 
 
 def register(backend):
@@ -21,6 +30,7 @@ def backend(path):
 
 
 def exists(path):
+    path = read_path(path)
     store = backend(path)
     return store.exists(Path(path)) if store else Path(path).exists()
 
@@ -48,6 +58,7 @@ def mkdir(path, **kwargs):
 
 @contextmanager
 def open_file(path, mode="r", **kwargs):
+    if mode.startswith('r'): path = read_path(path)
     store = backend(path)
     with (store.open(Path(path), mode, **kwargs) if store else Path(path).open(mode, **kwargs)) as stream:
         yield stream
@@ -64,6 +75,7 @@ def read_text(path, **kwargs):
 
 
 def write_parquet(frame, path, **kwargs):
+    kwargs.setdefault("compression", "snappy")
     if backend(path):
         with open_file(path, "wb") as stream:
             return frame.to_parquet(stream, **kwargs)
@@ -71,6 +83,7 @@ def write_parquet(frame, path, **kwargs):
 
 
 def read_parquet(path, **kwargs):
+    path = read_path(path)
     import pandas as pd
     if backend(path):
         with open_file(path, "rb") as stream:
@@ -78,7 +91,17 @@ def read_parquet(path, **kwargs):
     return pd.read_parquet(path, **kwargs)
 
 
+def read_arrow_table(path, **kwargs):
+    import pyarrow.parquet as pq
+    path=read_path(path)
+    if backend(path):
+        with open_file(path,'rb') as stream:
+            return pq.read_table(stream,**kwargs)
+    return pq.read_table(path,**kwargs)
+
+
 def parquet_columns(path):
+    path = read_path(path)
     import pyarrow.parquet as pq
     if backend(path):
         with open_file(path, "rb") as stream:
@@ -105,3 +128,67 @@ def torch_load(path, **kwargs):
         with open_file(path, "rb") as stream:
             return torch.load(stream, **kwargs)
     return torch.load(path, **kwargs)
+
+
+def remote_enabled():
+    return os.environ.get("YQ_STORAGE_BACKEND", "local") == "hdfs"
+
+
+def stat(path):
+    path = read_path(path)
+    store = backend(path)
+    if not store:
+        return Path(path).stat()
+    info = store.stat(Path(path))
+    return SimpleNamespace(st_size=info["size"], st_mtime_ns=info["modified_ms"] * 1_000_000,
+                           st_mtime=info["modified_ms"] / 1000)
+
+
+def is_file(path):
+    store = backend(path)
+    return store.is_file(Path(path)) if store else Path(path).is_file()
+
+
+def is_dir(path):
+    store = backend(path)
+    return store.is_dir(Path(path)) if store else Path(path).is_dir()
+
+
+def unlink(path, missing_ok=False):
+    store = backend(path)
+    if store:
+        if missing_ok and not store.exists(Path(path)):
+            return
+        return store.remove(Path(path))
+    return Path(path).unlink(missing_ok=missing_ok)
+
+
+def replace(path, destination):
+    store = backend(path)
+    if store:
+        store.replace(Path(path), Path(destination))
+        return Path(destination)
+    return Path(path).replace(destination)
+
+
+def read_bytes(path):
+    with open_file(path, "rb") as stream:
+        return stream.read()
+
+
+def write_bytes(path, payload):
+    with open_file(path, "wb") as stream:
+        return stream.write(payload)
+
+
+def parquet_schema(path):
+    import pyarrow.parquet as pq
+    with open_file(path, "rb") as stream:
+        return pq.read_schema(stream)
+
+
+def parquet_file(path):
+    path = read_path(path)
+    import pyarrow.parquet as pq
+    store = backend(path)
+    return pq.ParquetFile(store.input_file(Path(path)) if store else path)

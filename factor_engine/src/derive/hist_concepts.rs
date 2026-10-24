@@ -1,4 +1,5 @@
 //! DFQ-HIST main-business industry concepts with report-prescribed availability.
+use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
@@ -150,7 +151,7 @@ pub fn derive_hist_concepts(config: &EngineConfig, request: &HistConceptRequest)
     }
     let source = config.data_root.join("chn_stock_data/mainbz");
     let mut files = BTreeMap::new();
-    for entry in std::fs::read_dir(&source)? {
+    for entry in crate::artifact_io::read_dir(&source)? {
         let path = entry?.path();
         if path.extension().is_some_and(|v| v == "parquet") {
             if let Some(year) = path
@@ -186,8 +187,8 @@ pub fn derive_hist_concepts(config: &EngineConfig, request: &HistConceptRequest)
         .sort_by(|a, b| (a.available, &a.stock, a.period).cmp(&(b.available, &b.stock, b.period)));
     let root = config.data_root.join("derived/stock/hist_concepts");
     let manifest = root.join("manifest.json");
-    if manifest.exists() {
-        if std::fs::read_to_string(&manifest)?.trim() != manifest_text().trim() {
+    if manifest.storage_exists() {
+        if crate::artifact_io::read_to_string(&manifest)?.trim() != manifest_text().trim() {
             return Err(err(
                 "HIST concept version changed; use a clean derived directory",
             ));
@@ -241,7 +242,7 @@ pub fn derive_hist_concepts(config: &EngineConfig, request: &HistConceptRequest)
         }
     }
     let temporary = manifest.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&temporary, manifest_text())?;
-    std::fs::rename(temporary, manifest)?;
+    crate::artifact_io::write(&temporary, manifest_text())?;
+    crate::artifact_io::rename(temporary, manifest)?;
     Ok(())
 }

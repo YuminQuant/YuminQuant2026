@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 import importlib
 import hashlib
@@ -95,11 +96,11 @@ class LogsigSignatureProvider(FeatureProvider):
         fingerprint = self._source_fingerprint(source_dates)
         if self.read_only:
             manifest = cache_path.with_suffix(".json")
-            if not cache_path.exists() or not manifest.exists():
+            if not data_io.exists(cache_path) or not data_io.exists(manifest):
                 raise FileNotFoundError(f"Missing logsignature features for {trade_date}; run factor-materialize first")
-            if json.loads(manifest.read_text()) != fingerprint:
+            if json.loads(data_io.read_text(manifest)) != fingerprint:
                 raise ValueError(f"Stale logsignature features for {trade_date}; rerun factor-materialize")
-            return pd.read_parquet(cache_path)
+            return data_io.read_parquet(cache_path)
         if len(source_dates) < self.lookback_days:
             if progress is not None:
                 progress(
@@ -107,12 +108,12 @@ class LogsigSignatureProvider(FeatureProvider):
                     "step=insufficient_history"
                 )
             return self._store_features(trade_date, self._empty_frame(), fingerprint)
-        if cache_path is not None and cache_path.exists():
+        if cache_path is not None and data_io.exists(cache_path):
             manifest = cache_path.with_suffix(".json")
-            if manifest.exists() and json.loads(manifest.read_text()) == fingerprint:
+            if data_io.exists(manifest) and json.loads(data_io.read_text(manifest)) == fingerprint:
                 if progress is not None:
                     progress("step=feature_cache_hit")
-                return pd.read_parquet(cache_path)
+                return data_io.read_parquet(cache_path)
             # A rewritten source must invalidate the in-process bar cache too.
             for source_date in source_dates:
                 self._bar_cache.pop(source_date, None)
@@ -171,14 +172,14 @@ class LogsigSignatureProvider(FeatureProvider):
     def _store_features(self, trade_date: int, output: pd.DataFrame, fingerprint: list) -> pd.DataFrame:
         cache_path = self._feature_cache_path(trade_date)
         if cache_path is not None:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            data_io.mkdir(cache_path.parent, parents=True, exist_ok=True)
             temp = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
-            output.to_parquet(temp, index=False)
-            temp.replace(cache_path)
+            data_io.write_parquet(output, temp, index=False)
+            data_io.replace(temp, cache_path)
             manifest = cache_path.with_suffix(".json")
             temp_manifest = manifest.with_name(f"{manifest.name}.{os.getpid()}.tmp")
-            temp_manifest.write_text(json.dumps(fingerprint), encoding="utf-8")
-            temp_manifest.replace(manifest)
+            data_io.write_text(temp_manifest, json.dumps(fingerprint), encoding="utf-8")
+            data_io.replace(temp_manifest, manifest)
         return output
 
     def _feature_cache_path(self, trade_date: int) -> Path | None:
@@ -194,7 +195,7 @@ class LogsigSignatureProvider(FeatureProvider):
         result = []
         for date in dates:
             path = daily_path(self.root, date)
-            stat = path.stat() if path.exists() else None
+            stat = data_io.stat(path) if data_io.exists(path) else None
             result.append([date, stat.st_size if stat else None, stat.st_mtime_ns if stat else None])
         return result
 
@@ -250,7 +251,7 @@ class LogsigSignatureProvider(FeatureProvider):
         if self._calendar_dates:
             end = bisect_right(self._calendar_dates, trade_date)
             return self._calendar_dates[max(0, end - self.lookback_days):end]
-        candidates = sorted(int(path.stem) for path in self.root.glob("*/*.parquet"))
+        candidates = sorted(int(path.stem) for path in data_io.glob(self.root, "*/*.parquet"))
         history = [date for date in candidates if date <= trade_date]
         return history[-self.lookback_days :]
 
@@ -274,13 +275,13 @@ class LogsigSignatureProvider(FeatureProvider):
             return frame
         path = daily_path(self.root, trade_date)
         columns = ["trade_date", "ts_code", "bar_index", self.volume_column]
-        if not path.exists():
+        if not data_io.exists(path):
             if progress is not None:
                 progress(f"date={trade_date} cache=miss step=missing path={path}")
             return pd.DataFrame(columns=columns)
         if progress is not None:
             progress(f"date={trade_date} cache=miss step=read columns={','.join(columns)}")
-        frame = pd.read_parquet(path, columns=columns)
+        frame = data_io.read_parquet(path, columns=columns)
         frame = frame.dropna(subset=["trade_date", "ts_code", "bar_index", self.volume_column])
         frame["trade_date"] = frame["trade_date"].astype("int32")
         frame["bar_index"] = frame["bar_index"].astype("int32")

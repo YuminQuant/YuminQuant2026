@@ -1,5 +1,6 @@
 pub mod backtest;
 pub mod artifact_io;
+mod storage_io;
 pub mod barra;
 pub mod calendar;
 pub mod config;

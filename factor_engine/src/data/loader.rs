@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -112,7 +113,7 @@ impl DisclosureTableCache {
     ) -> Result<DisclosureCacheKey> {
         let key = DisclosureCacheKey { dataset, file };
         let requested = columns.iter().cloned().collect::<BTreeSet<_>>();
-        let metadata = std::fs::metadata(&key.file)?;
+        let metadata = crate::artifact_io::metadata(&key.file)?;
         let file_stamp = (metadata.len(), metadata.modified()?);
         let should_reload = self.yearly_tables.get(&key).is_none_or(|entry| {
             !requested.is_subset(&entry.loaded_columns) || entry.file_stamp != file_stamp
@@ -227,9 +228,9 @@ impl MarketDataLoader {
 
     pub fn fund_portfolio_history_files_before(&self, year: i32) -> Result<Vec<PathBuf>> {
         let directory = self.catalog.data_root().join("fund_data").join("portfolio");
-        if !directory.exists() { return Err(err(format!("fund portfolio directory not found: {}", directory.display()))); }
+        if !directory.storage_exists() { return Err(err(format!("fund portfolio directory not found: {}", directory.display()))); }
         let mut files = Vec::new();
-        for entry in std::fs::read_dir(directory)? {
+        for entry in crate::artifact_io::read_dir(directory)? {
             let path = entry?.path();
             if path.extension().is_some_and(|extension| extension == "parquet")
                 && file_stem_year(&path).is_some_and(|source_year| source_year < year)

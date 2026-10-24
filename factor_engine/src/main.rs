@@ -27,7 +27,11 @@ use yq_factor_engine::{
 const DEFAULT_LABEL_BATCH_SIZE: usize = 5;
 
 fn main() {
-    if let Err(error) = run_cli() {
+    let result = run_cli();
+    if std::env::args().any(|arg| arg == "--profile") {
+        eprintln!("{}", yq_factor_engine::artifact_io::profile());
+    }
+    if let Err(error) = result {
         eprintln!("error: {error}");
         std::process::exit(1);
     }
@@ -41,6 +45,38 @@ fn run_cli() -> Result<()> {
     }
 
     match args[0].as_str() {
+        "remove-factor-columns" => {
+            let flags = parse_flags(&args[1..])?;
+            let config = EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
+            let start = flags.get("start-date").ok_or_else(||yq_factor_engine::error::err("missing --start-date"))?.parse::<i32>()?;
+            let end = flags.get("end-date").ok_or_else(||yq_factor_engine::error::err("missing --end-date"))?.parse::<i32>()?;
+            if start > end { return Err(yq_factor_engine::error::err("start-date exceeds end-date")); }
+            let columns = parse_csv_values(flags.get("columns").ok_or_else(||yq_factor_engine::error::err("missing --columns"))?);
+            if columns.is_empty() { return Err(yq_factor_engine::error::err("empty --columns")); }
+            let root = flags.get("factor-root").map(PathBuf::from).unwrap_or_else(||config.factor_root.join("stock/daily"));
+            let storage = yq_factor_engine::storage::FactorStorage::new(config.factor_root);
+            let mut changed = 0;
+            for year in start/10_000..=end/10_000 {
+                let directory = root.join(year.to_string());
+                if !yq_factor_engine::artifact_io::exists(&directory)? { continue; }
+                for entry in yq_factor_engine::artifact_io::read_dir(directory)? {
+                    let path = entry?.path();
+                    if path.extension().and_then(|v|v.to_str()) != Some("parquet") { continue; }
+                    let Some(date) = path.file_stem().and_then(|v|v.to_str()).and_then(|v|v.parse::<i32>().ok()) else { continue; };
+                    if (start..=end).contains(&date) && storage.remove_columns(&path,&columns)? { changed += 1; }
+                }
+            }
+            println!("updated files: {changed}");
+        }
+        "calendar-dates" => {
+            let flags = parse_flags(&args[1..])?;
+            let config = EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
+            let exchange = flags.get("exchange").map(String::as_str).unwrap_or("SSE");
+            let calendar = yq_factor_engine::calendar::TradingCalendar::load(&config.data_root, exchange)?;
+            let start = flags.get("start-date").ok_or_else(||yq_factor_engine::error::err("missing --start-date"))?.parse::<i32>()?;
+            let end = flags.get("end-date").ok_or_else(||yq_factor_engine::error::err("missing --end-date"))?.parse::<i32>()?;
+            println!("{:?}", calendar.open_dates_between(start,end));
+        }
         "metadata" => {
             let flags = parse_flags(&args[1..])?;
             let engine = engine_from_flags(&flags)?;
@@ -196,10 +232,10 @@ fn run_cli() -> Result<()> {
             let report = engine.plan(&request)?;
             print_report("plan", &report);
         }
-        "run" => {
+        "run" | "raw-run" => {
             let request = parse_run_request(&args[1..], false)?;
             let engine = Engine::from_request(&request)?;
-            let report = engine.run(&request)?;
+            let report = if args[0] == "raw-run" { engine.prepare_raw(&request)? } else { engine.run(&request)? };
             print_report("run", &report);
         }
         "label-plan" => {

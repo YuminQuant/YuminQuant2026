@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::path::Path;
 
 use crate::data::parquet_io::read_parquet;
@@ -14,7 +15,7 @@ impl TradingCalendar {
         let path = data_root
             .join("calendar")
             .join(format!("trade_cal_{}.parquet", exchange));
-        if !path.exists() {
+        if !path.storage_exists() {
             return Err(err(format!("calendar file not found: {}", path.display())));
         }
         let columns = vec!["cal_date".to_string(), "is_open".to_string()];

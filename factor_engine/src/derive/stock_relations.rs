@@ -1,4 +1,5 @@
 //! Announcement-date stock/group memberships. Pairwise adjacency is never materialized.
+use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -34,7 +35,7 @@ type FundState = BTreeMap<String, FundEvent>;
 type Memberships = BTreeSet<(String, String, String)>;
 
 fn projected(path: &Path, columns: &[&str]) -> Result<Table> {
-    if !path.exists() {
+    if !path.storage_exists() {
         return Err(err(format!("missing relation source: {}", path.display())));
     }
     read_parquet(
@@ -44,14 +45,14 @@ fn projected(path: &Path, columns: &[&str]) -> Result<Table> {
 }
 
 fn yearly_files(root: &Path) -> Result<BTreeMap<i32, PathBuf>> {
-    if !root.exists() {
+    if !root.storage_exists() {
         return Err(err(format!(
             "missing relation source directory: {}",
             root.display()
         )));
     }
     let mut files = BTreeMap::new();
-    for entry in std::fs::read_dir(root)? {
+    for entry in crate::artifact_io::read_dir(root)? {
         let path = entry?.path();
         if path.extension().is_some_and(|s| s == "parquet") {
             if let Some(year) = path
@@ -319,8 +320,8 @@ pub fn derive_stock_relations(
             }
         }
     }
-    std::fs::create_dir_all(&root)?;
-    std::fs::write(root.join("manifest.json"), format!(
+    crate::artifact_io::create_dir_all(&root)?;
+    crate::artifact_io::write(root.join("manifest.json"), format!(
         "{{\"version\":\"{VERSION}\",\"relations\":[\"industry\",\"fund\",\"analyst\"],\"industry\":\"CI_L1\",\"fund_top_n\":10,\"fund_period\":\"latest_visible_per_fund\",\"analyst_window_months\":6,\"visibility\":\"announcement_or_report_date\",\"share_classes\":\"fund_code\"}}\n"
     ))?;
     Ok(())

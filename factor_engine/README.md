@@ -15,7 +15,7 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- help
 cargo run --release --manifest-path factor_engine/Cargo.toml -- metadata
 cargo run --release --manifest-path factor_engine/Cargo.toml -- list --asset stock --frequency daily --ids-only true
 cargo run --release --manifest-path factor_engine/Cargo.toml -- plan --asset stock --frequency daily --start-date 20260420 --end-date 20260424 --factors ret20
-cargo run --release --manifest-path factor_engine/Cargo.toml -- run --asset stock --frequency daily --start-date 20260420 --end-date 20260424 --factors ret20 --date-batch-size 120 --profile
+python scripts/yq.py run --asset stock --frequency daily --start-date 20260420 --end-date 20260424 --factors ret20 --date-batch-size 120 --profile
 ```
 
 使用 `--factors a,b` 或 `--tags tag` 选择因子，不能同时指定。实现或注册发生变化后刷新 metadata。模型生成因子由 Python 推理入口生产，不通过 Rust `run` 训练。
@@ -23,6 +23,9 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- run --asset stoc
 Select factors with either `--factors a,b` or `--tags tag`, not both. Refresh metadata after implementation or registry changes. Model-generated factors are produced by Python inference, not trained by Rust `run`.
 
 ## 派生数据 / Derived datasets
+
+统一入口生产前自动刷新一次 metadata；底层生产直接查代码 registry，不依赖 metadata 文件。分片、远程 IO、Snappy 和 `--single-task` 规则见[计算与存储](docs/ARTIFACT_STORAGE.md)。原 Cargo 命令仍可使用。
+The unified entrypoint refreshes metadata once; production selects code registries without a metadata-file gate. See [execution and storage](docs/ARTIFACT_STORAGE.md) for slicing, remote IO, Snappy and single-task behavior. Cargo commands remain available.
 
 支持分钟聚合 bar、一致预期日频宽表，以及成交量 logsignature 特征。
 Supported datasets include aggregated minute bars, daily consensus wide tables and volume logsignature features.

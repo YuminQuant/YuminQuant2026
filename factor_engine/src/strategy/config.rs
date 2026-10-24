@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::fs;
+use crate::artifact_io as fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{err, Result};

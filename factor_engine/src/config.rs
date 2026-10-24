@@ -1,4 +1,5 @@
-use std::fs;
+use crate::artifact_io::StoragePathExt;
+use crate::artifact_io as fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{err, Result};
@@ -20,7 +21,7 @@ impl EngineConfig {
     pub fn discover(config_path: Option<PathBuf>) -> Result<Self> {
         let config_path = match config_path {
             Some(path) => path,
-            None => discover_project_config()?,
+            None => std::env::var_os("YQ_ENGINE_CONFIG").map(PathBuf::from).map(Ok).unwrap_or_else(discover_project_config)?,
         };
         Self::from_project_config(config_path)
     }
@@ -30,9 +31,9 @@ impl EngineConfig {
         let data_root_value = parse_toml_string_value(&content, "base_data_dir")
             .ok_or_else(|| err("missing [paths].base_data_dir in project config"))?;
         let data_root = PathBuf::from(data_root_value);
-        let factor_root = data_root.join("factors");
-        let label_root = data_root.join("label");
-        let barra_root = data_root.join("barra");
+        let factor_root = parse_toml_string_value(&content,"factor_root").map(PathBuf::from).unwrap_or_else(||data_root.join("factors"));
+        let label_root = parse_toml_string_value(&content,"label_root").map(PathBuf::from).unwrap_or_else(||data_root.join("label"));
+        let barra_root = parse_toml_string_value(&content,"barra_root").map(PathBuf::from).unwrap_or_else(||data_root.join("barra"));
         let stock_sw_classification_path =
             parse_toml_string_value(&content, "stock_sw_classification_path")
                 .map(|value| normalize_data_path(&data_root, &value))
@@ -73,7 +74,7 @@ fn discover_project_config() -> Result<PathBuf> {
         cwd.join("..").join("..").join("config.toml"),
     ];
     for candidate in candidates {
-        if candidate.exists() {
+        if candidate.storage_exists() {
             return Ok(normalize_path(&candidate)?);
         }
     }
@@ -83,7 +84,7 @@ fn discover_project_config() -> Result<PathBuf> {
 }
 
 fn normalize_path(path: &Path) -> Result<PathBuf> {
-    if path.exists() {
+    if path.storage_exists() {
         Ok(path.canonicalize()?)
     } else {
         Ok(path.to_path_buf())

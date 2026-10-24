@@ -1,4 +1,5 @@
 from __future__ import annotations
+from yq_ml_alpha.output import artifact_io as data_io
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -157,10 +158,10 @@ class MlAlphaConfig:
 def load_config(path: str | Path) -> MlAlphaConfig:
     config_path = Path(path)
     if _TOML_BINARY_LOAD:
-        with config_path.open("rb") as file:
+        with data_io.open_file(config_path, "rb") as file:
             raw = _tomllib.load(file)
     else:
-        raw = _tomllib.load(str(config_path))
+        raw = _tomllib.loads(data_io.read_text(config_path, encoding='utf-8'))
 
     data_root = _project_path(raw.get("data_root", "data"))
     factor_id = raw.get("factor_id")

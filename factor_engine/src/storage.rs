@@ -64,35 +64,13 @@ struct MetadataRow {
 }
 
 struct FactorMetadataLock {
-    local_path: Option<PathBuf>,
-    _remote_guard: Option<Box<dyn crate::artifact_io::ArtifactGuard>>,
+    _guard: Option<Box<dyn crate::artifact_io::ArtifactGuard>>,
 }
 
 impl FactorMetadataLock {
     fn acquire(root: &Path) -> Result<Self> {
         let path = root.join("factor_metadata.lock");
-        if let Some(guard) = crate::artifact_io::lock(&path)? {
-            return Ok(Self { local_path: None, _remote_guard: Some(guard) });
-        }
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| {
-                err(format!(
-                    "metadata writer active or stale lock {}: {error}",
-                    path.display()
-                ))
-            })?;
-        Ok(Self { local_path: Some(path), _remote_guard: None })
-    }
-}
-
-impl Drop for FactorMetadataLock {
-    fn drop(&mut self) {
-        if let Some(path) = &self.local_path {
-            let _ = std::fs::remove_file(path);
-        }
+        Ok(Self { _guard: crate::artifact_io::lock(&path)? })
     }
 }
 
@@ -176,7 +154,61 @@ pub struct BarraMetadata {
     pub updated_at: String,
 }
 
+impl FactorMetadata {
+    pub fn from_spec(spec: &FactorSpec) -> Self {
+        Self {
+            factor_id: spec.id.clone(), aliases: spec.aliases.clone(),
+            aliases_json: string_list_json(&spec.aliases), version: spec.version.clone(),
+            output_column: spec.output_column(), name: spec.name.clone(),
+            asset_class: spec.asset_class.as_str().into(), frequency: spec.frequency.as_str().into(),
+            tags: spec.tags.clone(), tags_json: string_list_json(&spec.tags),
+            dependencies_json: dependencies_json(spec), description: spec.description.clone(),
+            updated_at: String::new(),
+        }
+    }
+}
+
+impl LabelMetadata {
+    pub fn from_spec(spec: &LabelSpec) -> Self {
+        Self {
+            label_id: spec.id.clone(), aliases: spec.aliases.clone(),
+            aliases_json: string_list_json(&spec.aliases), version: spec.version.clone(),
+            output_column: spec.output_column(), name: spec.name.clone(),
+            asset_class: spec.asset_class.as_str().into(), frequency: spec.frequency.as_str().into(),
+            tags: spec.tags.clone(), tags_json: string_list_json(&spec.tags),
+            dependencies_json: label_dependencies_json(spec), description: spec.description.clone(),
+            updated_at: String::new(),
+        }
+    }
+}
+
+impl BarraMetadata {
+    pub fn from_spec(spec: &BarraSpec) -> Self {
+        Self {
+            exposure_id: spec.id.clone(), aliases: spec.aliases.clone(),
+            aliases_json: string_list_json(&spec.aliases), version: spec.version.clone(),
+            output_column: spec.output_column(), name: spec.name.clone(), model: spec.model.clone(),
+            asset_class: spec.asset_class.as_str().into(), frequency: spec.frequency.as_str().into(),
+            tags: spec.tags.clone(), tags_json: string_list_json(&spec.tags),
+            dependencies_json: barra_dependencies_json(spec), description: spec.description.clone(),
+            updated_at: String::new(),
+        }
+    }
+}
+
 impl FactorStorage {
+    pub fn remove_columns(&self, path: &Path, columns: &[String]) -> Result<bool> {
+        if columns.iter().any(|c| matches!(c.as_str(), "trade_date" | "ts_code" | "trade_time")) {
+            return Err(err("cannot delete factor row keys"));
+        }
+        let _guard = crate::artifact_io::lock(path)?;
+        let mut table = read_parquet(path, None)?;
+        let previous = table.columns.len();
+        table.columns.retain(|name,_| !columns.contains(name));
+        if table.columns.len() == previous { return Ok(false); }
+        write_parquet(path, &table)?;
+        Ok(true)
+    }
     pub fn new(factor_root: PathBuf) -> Self {
         Self { factor_root }
     }
@@ -718,6 +750,7 @@ impl IntradayDailyRawStorage {
 
     pub fn write_metadata(&self, specs: &[IntradayDailyRawSpec]) -> Result<()> {
         let path = self.metadata_path();
+        let _guard = crate::artifact_io::lock(&path)?;
         let mut rows = if crate::artifact_io::exists(&path)? {
             read_raw_metadata_records(&path)?
         } else {

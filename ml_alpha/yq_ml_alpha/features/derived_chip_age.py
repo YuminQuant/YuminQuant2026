@@ -1,4 +1,5 @@
 """Read materialized chip-age tensors; never estimate chips during fitting."""
+from yq_ml_alpha.output import artifact_io as data_io
 import json
 from pathlib import Path
 
@@ -31,9 +32,9 @@ class DerivedChipAgeProvider(FeatureProvider):
     def dataset_identity(self):
         if self._manifest is None:
             path = self.root / "manifest.json"
-            if not path.exists():
+            if not data_io.exists(path):
                 raise FileNotFoundError(f"Missing chip-age manifest: {path}; run derive-chip-age first")
-            self._manifest = json.loads(path.read_text(encoding="utf-8"))
+            self._manifest = json.loads(data_io.read_text(path, encoding="utf-8"))
             if self._manifest.get("version") != self.expected_version:
                 raise ValueError("chip-age dataset version mismatch")
         return self._manifest

@@ -1,4 +1,5 @@
 """Sparse stock/group incidence; weighted stock pairs are never stored densely."""
+from yq_ml_alpha.output import artifact_io as data_io
 import json
 from pathlib import Path
 
@@ -20,9 +21,9 @@ class StockRelations:
     def identity(self):
         if self.manifest is None:
             path = self.root / "manifest.json"
-            if not path.exists():
+            if not data_io.exists(path):
                 raise FileNotFoundError(f"Missing stock relations: {path}; run derive-stock-relations")
-            manifest = json.loads(path.read_text(encoding="utf-8"))
+            manifest = json.loads(data_io.read_text(path, encoding="utf-8"))
             if manifest.get("version") != VERSION or tuple(manifest.get("relations", [])) != RELATIONS:
                 raise ValueError("stock relation dataset version/schema mismatch")
             self.manifest = manifest
@@ -31,9 +32,9 @@ class StockRelations:
     def load(self, date, symbols, device):
         self.identity()
         path = daily_path(self.root, date)
-        if not path.exists():
+        if not data_io.exists(path):
             raise FileNotFoundError(f"Missing stock relations for {date}: {path}")
-        frame = pd.read_parquet(path, columns=["trade_date", "relation", "group_id", "ts_code"])
+        frame = data_io.read_parquet(path, columns=["trade_date", "relation", "group_id", "ts_code"])
         if (frame.isna().any().any() or not frame.trade_date.eq(date).all()
                 or frame.duplicated(["relation", "group_id", "ts_code"]).any()
                 or not set(frame.relation).issubset(RELATIONS)):

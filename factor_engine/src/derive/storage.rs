@@ -1,3 +1,4 @@
+use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -39,29 +40,14 @@ pub fn write_derived_parquet(path: &Path, table: &Table) -> Result<()> {
 
 /// Replace requested columns for one date, retaining other columns and stock rows.
 pub(super) fn write_consensus_columns(path: &Path, updates: Table, date: i32) -> Result<()> {
-    let table = if path.exists() {
+    let _guard = crate::artifact_io::lock(path)?;
+    let table = if path.storage_exists() {
         merge_consensus_columns(read_parquet(path, None)?, updates, date)?
     } else {
         consensus_row_keys(&updates, date)?;
         updates
     };
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_nanos();
-    let temp = path.with_extension(format!("{}.{}.tmp", std::process::id(), nonce));
-    let result = (|| {
-        write_derived_parquet(&temp, &table)?;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&temp)?
-            .sync_all()?;
-        std::fs::rename(&temp, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
+    write_derived_parquet(path, &table)
 }
 
 fn consensus_row_keys(table: &Table, date: i32) -> Result<Vec<String>> {

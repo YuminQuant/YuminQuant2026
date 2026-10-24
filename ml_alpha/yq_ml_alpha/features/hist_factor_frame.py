@@ -1,4 +1,5 @@
 """HIST factor histories; label availability never defines graph membership."""
+from yq_ml_alpha.output import artifact_io as data_io
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.hist_concepts import HistConcepts
 from yq_ml_alpha.data.stores import daily_path
@@ -20,7 +21,7 @@ class ConceptFactorSequenceProvider(FactorSequenceProvider):
     def load(self, trade_date):
         self.concepts.identity()
         frame = super().load(trade_date)
-        if not frame.empty and not daily_path(self.concepts.root, trade_date).exists():
+        if not frame.empty and not data_io.exists(daily_path(self.concepts.root, trade_date)):
             raise FileNotFoundError(f"missing concepts on {trade_date}; run derive-hist-concepts")
         return frame
 
@@ -40,6 +41,6 @@ class HistFactorFrameProvider(FactorSequenceProvider):
     def load(self, trade_date):
         self.concepts.identity()
         frame = super().load(trade_date)
-        if not frame.empty and not daily_path(self.concepts.root, trade_date).exists():
+        if not frame.empty and not data_io.exists(daily_path(self.concepts.root, trade_date)):
             raise FileNotFoundError(f"missing HIST concepts on {trade_date}; run derive-hist-concepts")
         return frame

@@ -106,11 +106,15 @@ impl Engine {
     }
 
     pub fn plan(&self, request: &RunRequest) -> Result<RunReport> {
-        self.execute(request, true)
+        self.execute(request, true, false)
     }
 
     pub fn run(&self, request: &RunRequest) -> Result<RunReport> {
-        self.execute(request, request.dry_run)
+        self.execute(request, request.dry_run, false)
+    }
+
+    pub fn prepare_raw(&self, request: &RunRequest) -> Result<RunReport> {
+        self.execute(request, false, true)
     }
 
     pub fn write_metadata(&self) -> Result<usize> {
@@ -124,11 +128,11 @@ impl Engine {
         FactorStorage::new(self.config.factor_root.clone()).read_metadata()
     }
 
-    fn execute(&self, request: &RunRequest, dry_run: bool) -> Result<RunReport> {
+    fn execute(&self, request: &RunRequest, dry_run: bool, raw_only: bool) -> Result<RunReport> {
         validate_date_value(request.start_date, "start-date")?;
         validate_date_value(request.end_date, "end-date")?;
 
-        let metadata = self.read_metadata()?;
+        let metadata = available_specs().iter().map(FactorMetadata::from_spec).collect::<Vec<_>>();
         let selected_metadata = select_metadata(request, &metadata);
         if let SelectionResult::Empty(message) = selected_metadata {
             return Ok(empty_report(request, message));
@@ -151,7 +155,6 @@ impl Engine {
 
         let mut registry = factor_map();
         let mut factors = Vec::new();
-        let mut stale_ids = Vec::new();
         for metadata in &selected_metadata {
             let key = factor_registry_key(
                 &metadata.asset_class,
@@ -161,14 +164,8 @@ impl Engine {
             if let Some(factor) = registry.remove(&key) {
                 factors.push(factor);
             } else {
-                stale_ids.push(metadata.factor_id.clone());
+                return Err(err(format!("registry has no factor implementation for {}",metadata.factor_id)));
             }
-        }
-        if !stale_ids.is_empty() {
-            return Err(err(format!(
-                "factor_metadata.parquet is stale; missing registered implementation(s): {}. Run `metadata` again.",
-                stale_ids.join(",")
-            )));
         }
         if factors.is_empty() {
             return Ok(empty_report(
@@ -343,6 +340,30 @@ impl Engine {
         let mut disclosure_cache = DisclosureTableCache::default();
         let mut compute_states = BTreeMap::<String, Box<dyn Any + Send>>::new();
         let progress = ProgressBar::new("run", execution_batch_count, true);
+
+        if raw_only {
+            let ids = raw_requirements.iter().map(|r|r.spec.raw_id.clone()).collect::<Vec<_>>();
+            let raw_lookback = raw_requirements.iter().map(|r|r.daily_lookback).max().unwrap_or(0);
+            if !ids.is_empty() {
+                for (index, dates) in split_dates_by_chunk(&target_dates,request.date_batch_size.max(1)).into_iter().enumerate() {
+                    let start = dates[0]; let end = *dates.last().unwrap();
+                    let load_start = calendar.warmup_start(start,raw_lookback);
+                    let context = FactorContext { asset_class:request.asset_class, frequency:request.frequency,
+                        start_date:start,end_date:end,load_start_date:load_start,
+                        load_dates:calendar.open_dates_between(load_start,end),target_dates:dates };
+                    let (_, mut batch_profiles) = materialize_intraday_raw_table(&ids,&raw_requirements,&raw_providers,
+                        &loader,&raw_storage,&calendar,request,&context,index+1,1,thread_pool.as_ref(),
+                        &mut materialized_intraday_raw_dates,&progress)?;
+                    profiles.append(&mut batch_profiles);
+                }
+            }
+            progress.finish();
+            return Ok(RunReport { factor_count:0,output_file_count:0,load_start_date,target_dates,
+                effective_start_date:Some(effective_start_date),effective_end_date:Some(effective_end_date),
+                execution_stages,date_batch_count,factor_batch_count,execution_batch_count,
+                selected_factor_ids:specs.iter().map(|s|s.id.clone()).collect(),loaded_requests,
+                loaded_intraday_raw_requests,profiles,status_message:Some("Raw preparation complete".into()) });
+        }
 
         for group in &execution_groups {
             let group_specs = group
@@ -1495,7 +1516,7 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
         }
         if !missing.is_empty() {
             return SelectionResult::Empty(format!(
-                "No factors found in metadata for: {}",
+                "No factors found in the code registry for: {}",
                 missing.join(",")
             ));
         }
@@ -1517,7 +1538,7 @@ fn select_metadata(request: &RunRequest, metadata: &[FactorMetadata]) -> Selecti
         .collect::<Vec<_>>();
     if active.is_empty() {
         return SelectionResult::Empty(format!(
-            "No factors found in metadata for asset={} frequency={}.",
+            "No factors found in the code registry for asset={} frequency={}.",
             request.asset_class, request.frequency
         ));
     }

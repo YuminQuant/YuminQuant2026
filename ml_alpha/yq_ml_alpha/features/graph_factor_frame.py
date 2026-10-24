@@ -1,4 +1,5 @@
 """Daily normalized factor snapshots shared by graph and temporal encoders."""
+from yq_ml_alpha.output import artifact_io as data_io
 from pathlib import Path
 
 import pandas as pd
@@ -27,7 +28,7 @@ class FactorHistory(DailyTensorSequence):
         self.history_transform = str(params.get("history_transform", "mad5_zscore_rank_label"))
         if self.history_transform not in {"mad5_zscore_rank_label", "zscore_clip3"}:
             raise ValueError("unsupported factor history_transform")
-        self.available_dates = sorted(int(p.stem) for p in Path(self.root).glob("*/*.parquet"))
+        self.available_dates = sorted(int(p.stem) for p in data_io.glob(Path(self.root), "*/*.parquet"))
         if not self.available_dates:
             raise ValueError(f"no factor history under {self.root}")
         self.first_date = self.available_dates[0]
@@ -36,7 +37,7 @@ class FactorHistory(DailyTensorSequence):
         cached = self._cached(date)
         if cached is not None:
             return cached
-        if not daily_path(self.root, date).exists():
+        if not data_io.exists(daily_path(self.root, date)):
             raise FileNotFoundError(f"missing factor history for {date}")
         frame = self.provider.load(date)
         if frame.ts_code.isna().any() or frame.ts_code.duplicated().any() or not frame.trade_date.eq(date).all():
@@ -93,6 +94,6 @@ class GraphFactorFrameProvider(FactorSequenceProvider):
     def load(self, trade_date):
         self.relations.identity()
         frame = super().load(trade_date)
-        if not frame.empty and not daily_path(self.relations.root, trade_date).exists():
+        if not frame.empty and not data_io.exists(daily_path(self.relations.root, trade_date)):
             raise FileNotFoundError(f"missing stock relations for {trade_date}; run derive-stock-relations")
         return frame

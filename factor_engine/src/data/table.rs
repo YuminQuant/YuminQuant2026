@@ -19,6 +19,16 @@ pub enum ColumnData {
 }
 
 impl ColumnData {
+    pub(crate) fn numeric_at(&self, index: usize) -> Option<f64> {
+        match self {
+            Self::I32(values) => values[index].map(f64::from),
+            Self::I64(values) => values[index].map(|value| value as f64),
+            Self::F32(values) => values[index].map(f64::from),
+            Self::F64(values) => values[index],
+            _ => None,
+        }
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Self::Utf8(values) => values.len(),

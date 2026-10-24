@@ -86,8 +86,8 @@ fn sentiment_spec(id: &str) -> BarraSpec {
             .collect(),
         description: format!("CNE6 SENTIMENT exposure component {id}."),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyPv, &["close"]),
-            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+            DataRequest::new(DatasetId::StockDailyPv, &["close"]).with_panel_only(),
+            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]).with_panel_only(),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::new(
                 DatasetId::StockAnalystReport,

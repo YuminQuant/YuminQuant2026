@@ -24,6 +24,7 @@ pub struct DeriveBarRequest {
     pub end_date: i32,
     pub overwrite: bool,
     pub date_batch_size: usize,
+    pub threads: Option<usize>,
     pub project_config_path: Option<PathBuf>,
 }
 

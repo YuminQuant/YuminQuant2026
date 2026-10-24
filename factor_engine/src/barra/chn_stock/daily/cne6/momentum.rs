@@ -8,7 +8,7 @@ use crate::barra::BarraExposure;
 use crate::core::{
     AssetClass, BarraSeries, BarraSpec, DataRequest, DatasetId, FactorContext, Frequency, Lookback,
 };
-use crate::data::{DataPool, Table};
+use crate::data::DataPool;
 use crate::error::{err, Result};
 use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel, PanelColumn};
 use crate::operators::{ts_ew_regression_alpha_beta_residual_sigma, ts_ew_sum};
@@ -108,29 +108,25 @@ impl BarraExposure for StockDailyBarraCne6Momentum {
             .zip_binary(&index_panel.column("pre_close")?, arithmetic_return)?;
         let market_returns = expand_index_column(stock_panel, index_panel, &index_returns)?;
 
-        let short_term_reversal_raw_col = stock_log_returns.ts(short_term_reversal_raw)?;
+        let short_term_reversal_raw_col = stock_log_returns.ts_parallel(short_term_reversal_raw)?;
         let short_term_reversal = standardize_panel_industry_filled_weighted(
             &short_term_reversal_raw_col,
             &weights,
             data,
         )?;
-        let seasonality_raw_col = stock_log_returns.ts(seasonality_raw)?;
+        let seasonality_raw_col = stock_log_returns.ts_parallel(seasonality_raw)?;
         let seasonality =
             standardize_panel_industry_filled_weighted(&seasonality_raw_col, &weights, data)?;
-        let relative_strength_raw_col = stock_log_returns.ts(relative_strength_raw)?;
+        let relative_strength_raw_col = stock_log_returns.ts_parallel(relative_strength_raw)?;
         let relative_strength =
             standardize_panel_industry_filled_weighted(&relative_strength_raw_col, &weights, data)?;
         let historical_alpha_raw_col =
-            stock_returns.ts_binary(&market_returns, historical_alpha_raw)?;
+            stock_returns.ts_binary_parallel(&market_returns, historical_alpha_raw)?;
         let historical_alpha =
             standardize_panel_industry_filled_weighted(&historical_alpha_raw_col, &weights, data)?;
 
-        let industry_rs = stock_log_returns.ts(industry_relative_strength_raw)?;
-        let circ_mv = align_daily_table_column(
-            stock_panel,
-            data.daily(DatasetId::StockDailyBasic)?,
-            "circ_mv",
-        )?;
+        let industry_rs = stock_log_returns.ts_parallel(industry_relative_strength_raw)?;
+        let circ_mv = stock_panel.column_from_panel(data.daily_panel(DatasetId::StockDailyBasic)?, "circ_mv")?;
         let sqrt_mv = industry_rs.zip_binary(&circ_mv, |rs, mv| match (clean(rs), clean(mv)) {
             (Some(_), Some(mv)) if mv > 0.0 => Some(mv.sqrt()),
             _ => None,
@@ -179,8 +175,8 @@ fn momentum_spec(id: &str, aliases: &[&str], name: &str, description: &str) -> B
             .collect(),
         description: description.to_string(),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]),
-            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+            DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]).with_panel_only(),
+            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]).with_panel_only(),
             DataRequest::index_daily(MARKET_INDEX, &["close", "pre_close"]),
             DataRequest::new(DatasetId::StockCiClassification, &["l1_code"]),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
@@ -369,36 +365,6 @@ fn expand_index_column(
         }
     }
     stock_panel.column_from_values(values)
-}
-
-fn align_daily_table_column(
-    panel: &DailyPanel,
-    table: &Table,
-    column: &str,
-) -> Result<PanelColumn> {
-    let trade_dates = table.required_i32("trade_date")?;
-    let ts_codes = table.required_utf8("ts_code")?;
-    let column_values = table.required_f64_cast(column)?;
-    let mut by_key = HashMap::new();
-    for idx in 0..table.len {
-        let (Some(trade_date), Some(ts_code)) = (trade_dates[idx], ts_codes[idx].as_deref()) else {
-            continue;
-        };
-        by_key.insert((trade_date, ts_code), column_values[idx]);
-    }
-
-    let mut values = Vec::with_capacity(panel.shape_len());
-    for trade_date in panel.dates() {
-        for ts_code in panel.instruments() {
-            values.push(
-                by_key
-                    .get(&(*trade_date, ts_code.as_str()))
-                    .copied()
-                    .unwrap_or(None),
-            );
-        }
-    }
-    panel.column_from_values(values)
 }
 
 fn lag_values(values: &[Option<f64>], lag: usize) -> Vec<Option<f64>> {

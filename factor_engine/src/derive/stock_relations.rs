@@ -21,6 +21,7 @@ pub struct StockRelationsRequest {
     pub start_date: i32,
     pub end_date: i32,
     pub date_batch_size: usize,
+    pub threads: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -253,10 +254,7 @@ pub fn derive_stock_relations(
         }
     }
     let root = config.data_root.join("derived/stock/relations");
-    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(request.date_batch_size.min(workers))
-        .build()?;
+    let pool = crate::resources::thread_pool(request.threads)?;
     let mut processed = 0;
     for year in first_year..=last_year {
         let events = fund_events(&fund_files[&year])?;

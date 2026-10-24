@@ -15,6 +15,7 @@ pub mod logsig_signature;
 pub mod neutralize;
 pub mod operators;
 pub mod progress;
+pub mod resources;
 pub mod storage;
 pub mod strategy;
 

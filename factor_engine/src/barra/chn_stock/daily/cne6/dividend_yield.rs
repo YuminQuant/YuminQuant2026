@@ -91,7 +91,7 @@ impl StockDailyBarraCne6DividendYield {
     ) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let total_mv =
-            panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "total_mv")?;
+            panel.column_from_panel(data.daily_panel(DatasetId::StockDailyBasic)?, "total_mv")?;
         let dividends = data.dividend_reader()?;
         let analyst_reports = parse_analyst_records(data.analyst_report_reader()?)?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
@@ -127,8 +127,8 @@ fn dividend_yield_spec(id: &str, aliases: &[&str], name: &str, description: &str
             .collect(),
         description: description.to_string(),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyPv, &[]),
-            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv", "circ_mv"]),
+            DataRequest::new(DatasetId::StockDailyPv, &[]).with_panel_only(),
+            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv", "circ_mv"]).with_panel_only(),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::new(
                 DatasetId::StockDividend,

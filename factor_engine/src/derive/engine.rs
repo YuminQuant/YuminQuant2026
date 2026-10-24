@@ -73,9 +73,7 @@ impl DeriveEngine {
         let selected = selected_bar_columns(request.columns.as_deref())?;
         let columns = bar_source_columns(&selected);
         let mut report = DeriveBarReport::default();
-        let thread_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(request.date_batch_size)
-            .build()?;
+        let thread_pool = crate::resources::thread_pool(request.threads)?;
         for date_batch in dates.chunks(request.date_batch_size) {
             let outcomes = thread_pool.install(|| {
                 date_batch

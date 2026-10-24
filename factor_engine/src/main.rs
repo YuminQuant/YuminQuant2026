@@ -277,7 +277,7 @@ fn run_cli() -> Result<()> {
         "derive-hist-concepts" => {
             let flags = parse_flags(&args[1..])?;
             for key in flags.keys() {
-                if !["asset", "start-date", "end-date", "config", "date-batch-size"].contains(&key.as_str()) {
+                if !["asset", "start-date", "end-date", "config", "date-batch-size", "threads"].contains(&key.as_str()) {
                     return Err(yq_factor_engine::error::err(format!("unsupported derive-hist-concepts flag: --{key}")));
                 }
             }
@@ -292,13 +292,14 @@ fn run_cli() -> Result<()> {
                 &config, &yq_factor_engine::derive::hist_concepts::HistConceptRequest {
                     start_date: date("start-date")?, end_date: date("end-date")?,
                     date_batch_size: flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(20),
+                    threads: flags.get("threads").map(|value| value.parse()).transpose()?,
                 },
             )?;
         }
         "derive-stock-relations" => {
             let flags = parse_flags(&args[1..])?;
             for key in flags.keys() {
-                if !["asset", "start-date", "end-date", "config", "date-batch-size"].contains(&key.as_str()) {
+                if !["asset", "start-date", "end-date", "config", "date-batch-size", "threads"].contains(&key.as_str()) {
                     return Err(yq_factor_engine::error::err(format!("unsupported derive-stock-relations flag: --{key}")));
                 }
             }
@@ -313,6 +314,7 @@ fn run_cli() -> Result<()> {
                 &config, &yq_factor_engine::derive::stock_relations::StockRelationsRequest {
                     start_date: date("start-date")?, end_date: date("end-date")?,
                     date_batch_size: flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(20),
+                    threads: flags.get("threads").map(|value| value.parse()).transpose()?,
                 },
             )?;
         }
@@ -460,6 +462,7 @@ fn parse_derive_bar_request(args: &[String]) -> Result<DeriveBarRequest> {
         end_date,
         overwrite: flag_bool(&flags, "overwrite", true),
         date_batch_size,
+        threads: flags.get("threads").map(|value| value.parse()).transpose()?,
         project_config_path: flags
             .get("project-config")
             .or_else(|| flags.get("config"))

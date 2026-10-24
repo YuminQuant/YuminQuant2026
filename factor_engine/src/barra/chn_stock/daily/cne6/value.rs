@@ -2,7 +2,7 @@ use std::any::Any;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::barra::common::{
-    add_months, align_table_column, arithmetic_return, average_columns, clean, expand_index_column,
+    add_months, arithmetic_return, average_columns, clean, expand_index_column,
     fy1_quarter, log_return, panel_from_target_stock_map, safe_div, sqrt_circ_mv_weights,
     standardize_panel_industry_filled_weighted, zscore_panel_weighted_filled_zero,
 };
@@ -154,10 +154,10 @@ impl StockDailyBarraCne6Value {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
         let index_panel = data.index_daily_panel(MARKET_INDEX)?;
 
-        let basic_table = data.daily(DatasetId::StockDailyBasic)?;
-        let pb = align_table_column(panel, basic_table, "pb")?;
-        let pe_ttm = align_table_column(panel, basic_table, "pe_ttm")?;
-        let total_mv = align_table_column(panel, basic_table, "total_mv")?;
+        let basic = data.daily_panel(DatasetId::StockDailyBasic)?;
+        let pb = panel.column_from_panel(basic, "pb")?;
+        let pe_ttm = panel.column_from_panel(basic, "pe_ttm")?;
+        let total_mv = panel.column_from_panel(basic, "total_mv")?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
         let btop_raw = pb.map_values(|value| {
             clean(value).and_then(|value| (value.abs() > f64::EPSILON).then_some(1.0 / value))
@@ -207,14 +207,14 @@ impl StockDailyBarraCne6Value {
             .zip_binary(&index_panel.column("pre_close")?, arithmetic_return)?;
         let market_returns = expand_index_column(panel, index_panel, &index_returns)?;
 
-        let long_relative_strength_raw_col = stock_log_returns.ts(long_relative_strength_raw)?;
+        let long_relative_strength_raw_col = stock_log_returns.ts_parallel(long_relative_strength_raw)?;
         let long_relative_strength = standardize_panel_industry_filled_weighted(
             &long_relative_strength_raw_col,
             &weights,
             data,
         )?;
         let long_historical_alpha_raw_col =
-            stock_returns.ts_binary(&market_returns, long_historical_alpha_raw)?;
+            stock_returns.ts_binary_parallel(&market_returns, long_historical_alpha_raw)?;
         let long_historical_alpha = standardize_panel_industry_filled_weighted(
             &long_historical_alpha_raw_col,
             &weights,
@@ -414,11 +414,11 @@ fn value_spec(id: &str, name: &str, description: &str, lookback: usize) -> Barra
             .collect(),
         description: description.to_string(),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]),
+            DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]).with_panel_only(),
             DataRequest::new(
                 DatasetId::StockDailyBasic,
                 &["pb", "pe_ttm", "total_mv", "circ_mv"],
-            ),
+            ).with_panel_only(),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::financial_quarters(DatasetId::StockIncome, &["ebit"], 24),
             DataRequest::financial_quarters(DatasetId::StockCashFlow, &["n_cashflow_act"], 8),

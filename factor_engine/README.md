@@ -22,6 +22,29 @@ python scripts/yq.py run --asset stock --frequency daily --start-date 20260420 -
 
 Select factors with either `--factors a,b` or `--tags tag`, not both. Refresh metadata after implementation or registry changes. Model-generated factors are produced by Python inference, not trained by Rust `run`.
 
+## 计算资源与共享输入 / Compute resources and shared inputs
+
+因子、Barra 和标签生产通过 `--threads N` 指定计算线程数；未指定时，默认使用当前进程可用 CPU 配额的一半，至少为 1。显式线程数不得超过进程可用 CPU 或部署层声明的配额。线程数是上限，不保证所有阶段都能占满 CPU；IO 并发独立控制，不随计算线程数增大。
+
+Factor, Barra and label production accept `--threads N`. The default is half the effective process CPU allocation, with a minimum of one. Explicit values cannot exceed the process/deployment allocation. This is a concurrency ceiling, not a promise of full CPU utilization. IO concurrency is independent of compute threads.
+
+```bash
+python scripts/yq.py run --asset stock --frequency daily --start-date 20260413 --end-date 20260424 --factors ret20 --threads 8 --date-batch-size 120 --profile
+python scripts/yq.py barra-run --asset stock --frequency daily --start-date 20260413 --end-date 20260424 --threads 8 --exposure-batch-size 2 --profile
+```
+
+部署适配器可以申请 30 个 CPU、向引擎传入 `--threads 28`。计算批次和纯函数算子共用同一个 Rayon pool；股票内部时序、财务事件状态机仍按时间顺序推进。已有 `ts/cs` 的 `FnMut` 接口保持串行兼容；可并行的纯函数使用 `ts_parallel`、`ts_binary_parallel`、`cs_parallel`、`cs_binary_parallel` 或 `cs_by_group_parallel`。Barra 的主要时序及标准化步骤已接入这些接口。分钟 bar 的 `date-batch-size` 只控制日期批量，不再决定线程数。
+
+A deployment adapter may reserve 30 CPUs and pass `--threads 28`. Providers and pure operators share one Rayon pool; within-stock chronology and financial event state machines remain sequential. Existing `ts/cs` methods retain their serial `FnMut` contract. Pure kernels opt into the parallel variants listed above, already used by the main Barra time-series and standardization paths. Minute-bar `date-batch-size` controls date batching, not thread count.
+
+普通因子和 Barra 在每个 date batch 内共享已加载的日频输入，按请求合并物理读取；每个计算批次仍只看到自身声明的日期与列，稀疏请求不会混入其他请求的时点。普通因子只提前加载会被多个计算批次复用的依赖，单次依赖仍按需加载；单个 provider 不增加共享层。不再重复构建相同的行情表；panel-only 请求共享 panel，需要行表时仅保留所需日期/列，或按计算批次构建所需 panel，避免全历史行表与等价 panel 同时常驻。财务共享 PIT、report type、预热窗口及跨 batch 慢状态口径不变。
+
+Factors and Barra share daily inputs within each date batch, merging physical reads while retaining request-specific dates and columns. Sparse requests do not inherit other requests' dates. Ordinary factors preload only dependencies reused across compute batches; single-use inputs remain lazy and single-provider runs bypass sharing. Panel-only requests share panels; row tables retain only required dates/columns, or panels are built per compute batch, avoiding equivalent full-history representations. Shared financial PIT indexes, report preferences, warmup windows and cross-batch slow states retain their existing semantics.
+
+Parquet 随机读使用文件生命周期内的有界内存块缓冲，复用页头/页体重叠读取；不合并小文件，不增加节点磁盘数据缓存。输出仅累计目标日的列式数据，默认达到约 256 MiB 后分批发布；未达到阈值时，同日多批因子/暴露只合并写出一次。锁、Snappy、原子发布及保留已有其他列的规则不变。`YQ_OUTPUT_BUFFER_BYTES` 可调整发布缓冲阈值；它不是整个进程的内存限制。`--profile` 的读取字节/文件打开/区间读取/缓冲命中为客户端计数，不等于 DataNode 的全局 RPC 数。
+
+Parquet random reads use a bounded, per-file in-memory block buffer shared by page-header and page-body reads. Small files remain unchanged; no node disk data cache is introduced. Target-date columns are accumulated and flushed at an approximate 256 MiB threshold; batches below that threshold merge each day's outputs once. Locking, Snappy, atomic publication and preservation of unrelated columns remain unchanged. `YQ_OUTPUT_BUFFER_BYTES` changes this flush threshold, not the total process memory limit. Profile bytes, opens, range reads and cache hits are client-side counters, not global DataNode RPC counts.
+
 ## 派生数据 / Derived datasets
 
 统一入口生产前自动刷新一次 metadata；底层生产直接查代码 registry，不依赖 metadata 文件。分片、远程 IO、Snappy 和 `--single-task` 规则见[计算与存储](docs/ARTIFACT_STORAGE.md)。原 Cargo 命令仍可使用。

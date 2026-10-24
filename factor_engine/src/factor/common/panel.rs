@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
+use rayon::prelude::*;
 
 use crate::core::{
     BarraSeries, BarraSpec, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue,
@@ -9,7 +10,6 @@ use crate::data::Table;
 use crate::error::{err, Result};
 use crate::operators::cs_neutralize_regression;
 
-use super::collect_numeric_columns;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DailyPanelIndex {
@@ -75,14 +75,26 @@ impl DailyPanel {
     }
 
     pub fn from_table(table: &Table, context: &FactorContext) -> Result<Self> {
+        Self::from_table_impl(table, context, None)
+    }
+
+    pub(crate) fn from_table_columns(table: &Table, context: &FactorContext, names: &BTreeSet<String>) -> Result<Self> {
+        Self::from_table_impl(table, context, Some(names))
+    }
+
+    fn from_table_impl(table: &Table, context: &FactorContext, names: Option<&BTreeSet<String>>) -> Result<Self> {
         let ts_codes = table.required_utf8("ts_code")?;
         let trade_dates = table.required_i32("trade_date")?;
-        let numeric_columns = collect_numeric_columns(table, &["trade_date", "ts_code"])?;
+        let numeric_columns = table.columns.iter().filter(|(name, column)| names.is_none_or(|names| names.contains(*name))
+                && !matches!(name.as_str(), "trade_date" | "ts_code")
+                && matches!(column, crate::data::ColumnData::I32(_) | crate::data::ColumnData::I64(_)
+                    | crate::data::ColumnData::F32(_) | crate::data::ColumnData::F64(_)))
+                .map(|(name, column)| (name.clone(), column)).collect::<BTreeMap<_, _>>();
 
         let mut date_set = BTreeSet::new();
         let mut instrument_set = BTreeSet::new();
         for idx in 0..table.len {
-            let (Some(ts_code), Some(trade_date)) = (ts_codes[idx].clone(), trade_dates[idx])
+            let (Some(ts_code), Some(trade_date)) = (ts_codes[idx].as_deref(), trade_dates[idx])
             else {
                 continue;
             };
@@ -91,7 +103,7 @@ impl DailyPanel {
         }
 
         let dates = date_set.into_iter().collect::<Vec<_>>();
-        let instruments = instrument_set.into_iter().collect::<Vec<_>>();
+        let instruments = instrument_set.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let date_lookup = dates
             .iter()
             .enumerate()
@@ -110,21 +122,21 @@ impl DailyPanel {
             .collect::<BTreeMap<_, _>>();
 
         for idx in 0..table.len {
-            let (Some(ts_code), Some(trade_date)) = (ts_codes[idx].clone(), trade_dates[idx])
+            let (Some(ts_code), Some(trade_date)) = (ts_codes[idx].as_deref(), trade_dates[idx])
             else {
                 continue;
             };
             let Some(date_idx) = date_lookup.get(&trade_date).copied() else {
                 continue;
             };
-            let Some(instrument_idx) = instrument_lookup.get(&ts_code).copied() else {
+            let Some(instrument_idx) = instrument_lookup.get(ts_code).copied() else {
                 continue;
             };
             let offset = date_idx * instruments.len() + instrument_idx;
             present[offset] = true;
             for (name, source) in &numeric_columns {
                 if let Some(target) = columns.get_mut(name) {
-                    target[offset] = source[idx];
+                    target[offset] = source.numeric_at(idx);
                 }
             }
         }
@@ -275,10 +287,34 @@ impl DailyPanel {
         })
     }
 
+    pub(crate) fn compact_instruments(&self) -> Self {
+        let instruments = (0..self.index.instrument_count()).filter(|stock| {
+            (0..self.index.date_count()).any(|date| self.index.present[self.index.offset(date, *stock)])
+        }).collect::<Vec<_>>();
+        if instruments.len() == self.index.instrument_count() { return self.clone(); }
+        let offsets = (0..self.index.date_count()).flat_map(|date| instruments.iter()
+            .map(move |stock| self.index.offset(date, *stock))).collect::<Vec<_>>();
+        Self {
+            index: Arc::new(DailyPanelIndex {
+                dates: self.index.dates.clone(),
+                instruments: instruments.iter().map(|stock| self.index.instruments[*stock].clone()).collect(),
+                target_dates: self.index.target_dates.clone(),
+                present: offsets.iter().map(|offset| self.index.present[*offset]).collect(),
+            }),
+            columns: self.columns.iter().map(|(name, values)| (name.clone(),
+                Arc::new(offsets.iter().map(|offset| values[*offset]).collect()))).collect(),
+            aligned: Default::default(),
+        }
+    }
+
     pub fn column_from_table(&self, table: &Table, name: &str) -> Result<PanelColumn> {
         let ts_codes = table.required_utf8("ts_code")?;
         let trade_dates = table.required_i32("trade_date")?;
-        let source = table.required_f64_cast(name)?;
+        let source = table.columns.get(name).ok_or_else(|| err(format!("missing required column {name}")))?;
+        if !matches!(source, crate::data::ColumnData::I32(_) | crate::data::ColumnData::I64(_)
+            | crate::data::ColumnData::F32(_) | crate::data::ColumnData::F64(_)) {
+            return Err(err(format!("column {name} is not numeric")));
+        }
         let date_lookup = self
             .index
             .dates
@@ -295,17 +331,17 @@ impl DailyPanel {
             .collect::<HashMap<_, _>>();
         let mut values = vec![None; self.shape_len()];
         for idx in 0..table.len {
-            let (Some(trade_date), Some(ts_code)) = (trade_dates[idx], ts_codes[idx].clone())
+            let (Some(trade_date), Some(ts_code)) = (trade_dates[idx], ts_codes[idx].as_deref())
             else {
                 continue;
             };
             let Some(date_idx) = date_lookup.get(&trade_date).copied() else {
                 continue;
             };
-            let Some(instrument_idx) = instrument_lookup.get(&ts_code).copied() else {
+            let Some(instrument_idx) = instrument_lookup.get(ts_code).copied() else {
                 continue;
             };
-            values[self.index.offset(date_idx, instrument_idx)] = source[idx];
+            values[self.index.offset(date_idx, instrument_idx)] = source.numeric_at(idx);
         }
         self.column_from_values(values)
     }
@@ -538,6 +574,72 @@ impl PanelColumn {
         Ok(self.with_values(output))
     }
 
+    /// Pure kernels opt into parallelism without changing the existing FnMut API.
+    pub fn ts_parallel<F>(&self, f: F) -> Result<Self>
+    where F: Fn(&[Option<f64>]) -> Vec<Option<f64>> + Sync + Send {
+        if !crate::resources::parallel_work(self.values.len()) { return self.ts(f); }
+        self.ts_parallel_inputs(&[], |inputs| f(&inputs[0]))
+    }
+
+    pub fn ts_binary_parallel<F>(&self, other: &Self, f: F) -> Result<Self>
+    where F: Fn(&[Option<f64>], &[Option<f64>]) -> Vec<Option<f64>> + Sync + Send {
+        self.require_same_index(other)?;
+        if !crate::resources::parallel_work(self.values.len()) { return self.ts_binary(other, f); }
+        self.ts_parallel_inputs(&[other], |inputs| f(&inputs[0], &inputs[1]))
+    }
+
+    fn ts_parallel_inputs<F>(&self, others: &[&Self], f: F) -> Result<Self>
+    where F: Fn(&[Vec<Option<f64>>]) -> Vec<Option<f64>> + Sync {
+        let mut output = vec![None; self.values.len()];
+        let width = crate::resources::stock_wave_width(self.index.date_count(), others.len() + 1);
+        for start in (0..self.index.instrument_count()).step_by(width) {
+            let end = (start + width).min(self.index.instrument_count());
+            let results = (start..end).into_par_iter().map(|stock| {
+                let mut inputs = vec![self.series_for_instrument(stock)];
+                inputs.extend(others.iter().map(|column| column.series_for_instrument(stock)));
+                let computed = f(&inputs);
+                self.require_series_len(computed.len(), "ts_parallel")?;
+                Ok(computed)
+            }).collect::<Result<Vec<_>>>()?;
+            for (stock, computed) in (start..end).zip(results) {
+                self.write_series_for_instrument(stock, &computed, &mut output);
+            }
+        }
+        Ok(self.with_values(output))
+    }
+
+    pub fn cs_parallel<F>(&self, f: F) -> Result<Self>
+    where F: Fn(&[Option<f64>]) -> Vec<Option<f64>> + Sync + Send {
+        if !crate::resources::parallel_work(self.values.len()) { return self.cs(f); }
+        let mut output = vec![None; self.values.len()];
+        let width = self.index.instrument_count();
+        if width == 0 { return Ok(self.with_values(output)); }
+        output.par_chunks_mut(width).enumerate().try_for_each(|(date, row)| {
+            let computed = f(&self.values[date * width..(date + 1) * width]);
+            self.require_cross_section_len(computed.len(), "cs_parallel")?;
+            row.copy_from_slice(&computed);
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        })?;
+        Ok(self.with_values(output))
+    }
+
+    pub fn cs_binary_parallel<F>(&self, other: &Self, f: F) -> Result<Self>
+    where F: Fn(&[Option<f64>], &[Option<f64>]) -> Vec<Option<f64>> + Sync + Send {
+        self.require_same_index(other)?;
+        if !crate::resources::parallel_work(self.values.len()) { return self.cs_binary(other, f); }
+        let mut output = vec![None; self.values.len()];
+        let width = self.index.instrument_count();
+        if width == 0 { return Ok(self.with_values(output)); }
+        output.par_chunks_mut(width).enumerate().try_for_each(|(date, row)| {
+            let range = date * width..(date + 1) * width;
+            let computed = f(&self.values[range.clone()], &other.values[range]);
+            self.require_cross_section_len(computed.len(), "cs_binary_parallel")?;
+            row.copy_from_slice(&computed);
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        })?;
+        Ok(self.with_values(output))
+    }
+
     pub fn cs<F>(&self, mut f: F) -> Result<Self>
     where
         F: FnMut(&[Option<f64>]) -> Vec<Option<f64>>,
@@ -641,6 +743,26 @@ impl PanelColumn {
             self.require_cross_section_len(computed.len(), "cs_by_group")?;
             self.write_cross_section_for_date(date_idx, &computed, &mut output);
         }
+        Ok(self.with_values(output))
+    }
+
+    pub fn cs_by_group_parallel<GF, F>(&self, group_provider: GF, f: F) -> Result<Self>
+    where
+        GF: Fn(i32, &[String]) -> Vec<Option<String>> + Sync + Send,
+        F: Fn(&[Option<f64>], &[Option<String>]) -> Vec<Option<f64>> + Sync + Send,
+    {
+        if !crate::resources::parallel_work(self.values.len()) { return self.cs_by_group(group_provider, f); }
+        let mut output = vec![None; self.values.len()];
+        let width = self.index.instrument_count();
+        if width == 0 { return Ok(self.with_values(output)); }
+        output.par_chunks_mut(width).enumerate().try_for_each(|(date, row)| {
+            let groups = group_provider(self.index.dates[date], &self.index.instruments);
+            self.require_cross_section_len(groups.len(), "cs_by_group_parallel groups")?;
+            let computed = f(&self.values[date * width..(date + 1) * width], &groups);
+            self.require_cross_section_len(computed.len(), "cs_by_group_parallel")?;
+            row.copy_from_slice(&computed);
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        })?;
         Ok(self.with_values(output))
     }
 

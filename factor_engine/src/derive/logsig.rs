@@ -175,9 +175,7 @@ pub fn derive_logsig(
     );
     let loader = MarketDataLoader::new(DataCatalog::new(config.data_root.clone()));
     let columns = ["ts_code", "trade_time", "vol"].map(str::to_owned).to_vec();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(request.threads)
-        .build()?;
+    let pool = crate::resources::thread_pool(Some(request.threads))?;
     let mut window = VolumeWindow::default();
     let progress = ProgressBar::new("derive-logsig", targets.len(), true);
     for date in dates {

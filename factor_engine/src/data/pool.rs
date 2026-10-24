@@ -228,6 +228,75 @@ pub struct DataPool {
 }
 
 impl DataPool {
+    pub(crate) fn load_reused_batch_inputs(
+        loader: &MarketDataLoader, requests: &[DataRequest], request_batches: &[Vec<DataRequest>],
+        context: &FactorContext, disclosure_cache: &mut DisclosureTableCache,
+        financial_context: Option<Arc<FinancialBatchContext>>,
+    ) -> Result<Self> {
+        let mut counts = HashMap::<DatasetId, usize>::new();
+        for batch in request_batches {
+            for dataset in batch.iter().map(|request| request.dataset).collect::<BTreeSet<_>>() {
+                *counts.entry(dataset).or_default() += 1;
+            }
+        }
+        let requests = requests.iter().filter(|request| is_financial_context_dataset(request.dataset)
+            || counts.get(&request.dataset).copied().unwrap_or(0) > 1).cloned().collect::<Vec<_>>();
+        Self::load_batch_inputs(loader, &requests, context, disclosure_cache, financial_context)
+    }
+
+    /// Physical date-batch inputs. Financial sources remain in their shared PIT context;
+    /// minute tables retain the existing bounded streaming path.
+    pub fn load_batch_inputs(
+        loader: &MarketDataLoader,
+        requests: &[DataRequest],
+        context: &FactorContext,
+        disclosure_cache: &mut DisclosureTableCache,
+        financial_context: Option<Arc<FinancialBatchContext>>,
+    ) -> Result<Self> {
+        let daily = requests.iter().filter(|request| request.dataset.frequency() == Frequency::Daily)
+            .cloned().collect::<Vec<_>>();
+        Self::load_inputs(loader, &daily, context, disclosure_cache, financial_context, true)
+    }
+
+    pub fn load_from_batch_inputs(
+        &self,
+        loader: &MarketDataLoader,
+        requests: &[DataRequest],
+        context: &FactorContext,
+        disclosure_cache: &mut DisclosureTableCache,
+    ) -> Result<Self> {
+        let mut pool = self.view_for_requests(requests, context);
+        for request in requests {
+            let dataset = request.dataset;
+            if should_build_daily_panel(dataset) && dataset != DatasetId::IndexDaily
+                && !pool.daily_panels.contains_key(&dataset) {
+                if let Some(table) = pool.daily.get(&dataset) {
+                    let columns = requests.iter().filter(|r| r.dataset == dataset)
+                        .flat_map(|r| r.columns.iter().cloned()).collect();
+                    pool.daily_panels.insert(dataset, DailyPanel::from_table_columns(table, context, &columns)?);
+                }
+            }
+        }
+        // A physical union must not add instruments which only exist on other providers' dates.
+        for panel in pool.daily_panels.values_mut() { *panel = panel.compact_instruments(); }
+        for panel in pool.index_daily_panels.values_mut() { *panel = panel.compact_instruments(); }
+        let uncached = requests.iter().filter(|request| !is_financial_context_dataset(request.dataset)
+            && if request.dataset == DatasetId::IndexDaily {
+                request.entity_id.as_ref().is_none_or(|id| !self.index_daily_panels.contains_key(id))
+            } else {
+                !self.daily.get(&request.dataset).is_some_and(|table| request.columns.iter().all(|name| table.columns.contains_key(name)))
+                    && !self.daily_panels.get(&request.dataset).is_some_and(|panel| request.columns.iter().all(|name| panel.has_column(name)))
+            })
+            .cloned().collect::<Vec<_>>();
+        if !uncached.is_empty() {
+            let datasets = uncached.iter().map(|request| request.dataset).collect::<BTreeSet<_>>();
+            let complete = requests.iter().filter(|request| datasets.contains(&request.dataset)).cloned().collect::<Vec<_>>();
+            pool.extend(Self::load_with_financial_context(loader, &complete, context,
+                disclosure_cache, self.financial_context.clone())?);
+        }
+        Ok(pool)
+    }
+
     pub fn set_trading_calendar(&mut self, calendar: Arc<crate::calendar::TradingCalendar>) {
         self.trading_calendar = Some(calendar);
     }
@@ -261,6 +330,17 @@ impl DataPool {
         context: &FactorContext,
         disclosure_cache: &mut DisclosureTableCache,
         financial_context: Option<Arc<FinancialBatchContext>>,
+    ) -> Result<Self> {
+        Self::load_inputs(loader, requests, context, disclosure_cache, financial_context, false)
+    }
+
+    fn load_inputs(
+        loader: &MarketDataLoader,
+        requests: &[DataRequest],
+        context: &FactorContext,
+        disclosure_cache: &mut DisclosureTableCache,
+        financial_context: Option<Arc<FinancialBatchContext>>,
+        defer_raw_panels: bool,
     ) -> Result<Self> {
         let financial_context = match financial_context {
             Some(context) => Some(context),
@@ -344,8 +424,10 @@ impl DataPool {
             if dataset == DatasetId::StockBarraDaily {
                 let table =
                     loader.load_barra_daily(context.asset_class, "CNE6", &columns, &load_dates)?;
-                let panel = DailyPanel::from_table(&table, context)?;
-                pool.daily_panels.insert(dataset, panel);
+                if !defer_raw_panels || panel_only.contains(&dataset) {
+                    let panel = DailyPanel::from_table(&table, context)?;
+                    pool.daily_panels.insert(dataset, panel);
+                }
                 if !panel_only.contains(&dataset) {
                     pool.daily.insert(dataset, Arc::new(table));
                 }
@@ -354,11 +436,18 @@ impl DataPool {
             match dataset.frequency() {
                 Frequency::Daily => {
                     let table = loader.load_daily_by_dates(dataset, &columns, &load_dates)?;
-                    if should_build_daily_panel(dataset) {
+                    let row_requests = requests.iter().filter(|request| request.dataset == dataset && !request.panel_only).collect::<Vec<_>>();
+                    let row_dates = row_requests.iter().flat_map(|request| request.resolved_dates(context)).collect::<BTreeSet<_>>();
+                    let row_columns = row_requests.iter().flat_map(|request| request.columns.iter().cloned()).collect::<BTreeSet<_>>();
+                    let narrow_rows = row_dates.len() < load_dates.len() || row_columns.len() < columns.len();
+                    if should_build_daily_panel(dataset) && (!defer_raw_panels || panel_only.contains(&dataset) || narrow_rows) {
                         let panel = DailyPanel::from_table(&table, context)?;
                         pool.daily_panels.insert(dataset, panel);
                     }
                     if !panel_only.contains(&dataset) {
+                        let table = if defer_raw_panels && should_build_daily_panel(dataset) && narrow_rows {
+                            project_row_inputs(table, &row_dates, &row_columns)?
+                        } else { table };
                         pool.daily.insert(dataset, Arc::new(table));
                     }
                 }
@@ -509,6 +598,8 @@ impl DataPool {
             daily: self
                 .daily
                 .iter()
+                .filter(|(dataset, _)| panel_columns.contains_key(dataset)
+                    || (**dataset == DatasetId::StockBasic && needs_stock_universe_panel))
                 .filter(|(dataset, _)| !panel_only.contains(dataset))
                 .map(|(dataset, table)| {
                     let table = daily_panel_dates
@@ -521,12 +612,9 @@ impl DataPool {
             daily_panels: self
                 .daily_panels
                 .iter()
+                .filter(|(dataset, _)| panel_columns.contains_key(dataset))
                 .map(|(dataset, panel)| {
-                    let panel = if panel_only.contains(dataset) {
-                        panel.select_columns(&panel_columns[dataset])
-                    } else {
-                        panel.clone()
-                    };
+                    let panel = panel.select_columns(&panel_columns[dataset]);
                     let panel = daily_panel_dates
                         .get(dataset)
                         .map(|dates| {
@@ -560,6 +648,7 @@ impl DataPool {
             index_daily: self
                 .index_daily
                 .iter()
+                .filter(|(ts_code, _)| index_panel_dates.contains_key(*ts_code))
                 .map(|(ts_code, table)| {
                     let table = index_panel_dates
                         .get(ts_code)
@@ -571,6 +660,7 @@ impl DataPool {
             index_daily_panels: self
                 .index_daily_panels
                 .iter()
+                .filter(|(ts_code, _)| index_panel_dates.contains_key(*ts_code))
                 .map(|(ts_code, panel)| {
                     let panel = index_panel_dates
                         .get(ts_code)
@@ -817,6 +907,15 @@ impl DataPool {
     }
 
 
+}
+
+fn project_row_inputs(mut table: Table, dates: &BTreeSet<i32>, columns: &BTreeSet<String>) -> Result<Table> {
+    let selected = table.required_i32("trade_date")?.iter().enumerate()
+        .filter_map(|(index, date)| date.is_some_and(|date| dates.contains(&date)).then_some(index))
+        .collect::<Vec<_>>();
+    table.columns.retain(|name, _| columns.contains(name) || matches!(name.as_str(), "trade_date" | "ts_code"));
+    if selected.len() == table.len { return Ok(table); }
+    table.take(&selected)
 }
 
 fn panel_only_datasets(requests: &[DataRequest]) -> BTreeSet<DatasetId> {

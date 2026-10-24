@@ -88,7 +88,7 @@ fn size_spec(id: &str, name: &str, description: &str) -> BarraSpec {
             .collect(),
         description: description.to_string(),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]).with_panel_only(),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
         ],
         lookback: Lookback { trading_days: 0 },

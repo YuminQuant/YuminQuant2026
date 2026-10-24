@@ -2,7 +2,7 @@ use std::any::Any;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::barra::common::{
-    align_table_column, average_columns, clean, panel_from_target_stock_map, safe_div, sample_std,
+    average_columns, clean, panel_from_target_stock_map, safe_div, sample_std,
     slope_over_time, sqrt_circ_mv_weights, standardize_panel_industry_filled_weighted,
     zscore_panel_weighted_filled_zero,
 };
@@ -114,8 +114,7 @@ impl StockDailyBarraCne6Quality {
         shared_cache: &BarraSharedCache,
     ) -> Result<Vec<BarraSeries>> {
         let panel = data.daily_panel(DatasetId::StockDailyPv)?;
-        let basic_table = data.daily(DatasetId::StockDailyBasic)?;
-        let total_mv = align_table_column(panel, basic_table, "total_mv")?;
+        let total_mv = panel.column_from_panel(data.daily_panel(DatasetId::StockDailyBasic)?, "total_mv")?;
         let close = panel.column("close")?;
         let weights = sqrt_circ_mv_weights(panel, data)?;
 
@@ -337,8 +336,8 @@ fn quality_spec(id: &str) -> BarraSpec {
             .collect(),
         description: format!("CNE6 QUALITY exposure component {id}."),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyPv, &["close"]),
-            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv", "circ_mv"]),
+            DataRequest::new(DatasetId::StockDailyPv, &["close"]).with_panel_only(),
+            DataRequest::new(DatasetId::StockDailyBasic, &["total_mv", "circ_mv"]).with_panel_only(),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::financial_quarters(
                 DatasetId::StockIncome,

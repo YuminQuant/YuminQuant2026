@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::core::DatasetId;
 use crate::data::DataPool;
-use crate::data::Table;
 use crate::error::{err, Result};
 use crate::factor::common::{ClassificationLevel, ClassificationMap, DailyPanel, PanelColumn};
 use crate::operators::{cs_winsorize_quantile, cs_zscore};
@@ -28,7 +27,7 @@ pub fn zscore_cross_section_filled_zero(values: &[Option<f64>]) -> Vec<Option<f6
 }
 
 pub fn sqrt_circ_mv_weights(panel: &DailyPanel, data: &DataPool) -> Result<PanelColumn> {
-    let circ_mv = panel.column_from_table(data.daily(DatasetId::StockDailyBasic)?, "circ_mv")?;
+    let circ_mv = panel.column_from_panel(data.daily_panel(DatasetId::StockDailyBasic)?, "circ_mv")?;
     Ok(circ_mv
         .map_values(|value| clean(value).and_then(|value| (value > 0.0).then_some(value.sqrt()))))
 }
@@ -42,11 +41,11 @@ pub fn standardize_panel_industry_filled_weighted(
         data.daily(DatasetId::StockSwClassification)?,
         ClassificationLevel::Sector,
     )?;
-    let filled = values.cs_by_group(
+    let filled = values.cs_by_group_parallel(
         |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),
         fill_missing_with_group_median,
     )?;
-    let standardized = filled.cs_binary(weights, standardize_cross_section_weighted)?;
+    let standardized = filled.cs_binary_parallel(weights, standardize_cross_section_weighted)?;
     Ok(standardized.map_values(fill_standardized_value))
 }
 
@@ -54,7 +53,7 @@ pub fn zscore_panel_weighted_filled_zero(
     values: &PanelColumn,
     weights: &PanelColumn,
 ) -> Result<PanelColumn> {
-    let standardized = values.cs_binary(weights, zscore_cross_section_weighted)?;
+    let standardized = values.cs_binary_parallel(weights, zscore_cross_section_weighted)?;
     Ok(standardized.map_values(fill_standardized_value))
 }
 
@@ -115,7 +114,7 @@ pub fn standardize_panel_industry_filled(
         data.daily(DatasetId::StockSwClassification)?,
         ClassificationLevel::Sector,
     )?;
-    values.cs_by_group(
+    values.cs_by_group_parallel(
         |trade_date, ts_codes| sector_map.groups_for(trade_date, ts_codes),
         standardize_cross_section_industry_filled,
     )
@@ -225,10 +224,6 @@ pub fn average_columns(panel: &DailyPanel, columns: &[&PanelColumn]) -> Result<P
         values.push(average_available(&row));
     }
     panel.column_from_values(values)
-}
-
-pub fn align_table_column(panel: &DailyPanel, table: &Table, column: &str) -> Result<PanelColumn> {
-    panel.column_from_table(table, column)
 }
 
 pub fn arithmetic_return(close: Option<f64>, pre_close: Option<f64>) -> Option<f64> {

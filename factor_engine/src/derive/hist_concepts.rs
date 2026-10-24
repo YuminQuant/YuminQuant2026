@@ -53,6 +53,7 @@ pub struct HistConceptRequest {
     pub start_date: i32,
     pub end_date: i32,
     pub date_batch_size: usize,
+    pub threads: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -194,12 +195,7 @@ pub fn derive_hist_concepts(config: &EngineConfig, request: &HistConceptRequest)
             ));
         }
     }
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |v| v.get())
-        .min(4);
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
-        .build()?;
+    let pool = crate::resources::thread_pool(request.threads)?;
     let mut state = BTreeMap::new();
     let mut cursor = 0;
     let mut processed = 0;

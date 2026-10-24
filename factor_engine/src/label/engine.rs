@@ -850,15 +850,7 @@ fn split_dates_by_chunk(dates: &[i32], chunk_size: usize) -> Vec<Vec<i32>> {
 }
 
 fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>> {
-    match threads {
-        Some(0) => Err(err("threads must be greater than 0")),
-        Some(threads) => Ok(Some(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()?,
-        )),
-        None => Ok(None),
-    }
+    Ok(Some(crate::resources::thread_pool(threads)?))
 }
 
 fn compute_label_batch(

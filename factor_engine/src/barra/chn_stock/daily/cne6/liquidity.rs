@@ -73,13 +73,13 @@ impl BarraExposure for StockDailyBarraCne6Liquidity {
             clean(value).and_then(|value| (value >= 0.0).then_some(value / 100.0))
         });
 
-        let monthly_raw = turnover.ts(stom_raw)?;
+        let monthly_raw = turnover.ts_parallel(stom_raw)?;
         let monthly = standardize_panel_industry_filled_weighted(&monthly_raw, &weights, data)?;
-        let quarterly_raw = monthly_raw.ts(|values| stoq_or_stoa_from_stom(values, 3))?;
+        let quarterly_raw = monthly_raw.ts_parallel(|values| stoq_or_stoa_from_stom(values, 3))?;
         let quarterly = standardize_panel_industry_filled_weighted(&quarterly_raw, &weights, data)?;
-        let annual_raw = monthly_raw.ts(|values| stoq_or_stoa_from_stom(values, 12))?;
+        let annual_raw = monthly_raw.ts_parallel(|values| stoq_or_stoa_from_stom(values, 12))?;
         let annual = standardize_panel_industry_filled_weighted(&annual_raw, &weights, data)?;
-        let atvr_raw = turnover.ts(annualized_traded_value_ratio)?;
+        let atvr_raw = turnover.ts_parallel(annualized_traded_value_ratio)?;
         let atvr = standardize_panel_industry_filled_weighted(&atvr_raw, &weights, data)?;
 
         let composite_raw = monthly.zip_quaternary(
@@ -140,7 +140,7 @@ fn liquidity_spec(
         .collect(),
         description: description.to_string(),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f", "circ_mv"]),
+            DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f", "circ_mv"]).with_panel_only(),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
         ],
         lookback: Lookback {

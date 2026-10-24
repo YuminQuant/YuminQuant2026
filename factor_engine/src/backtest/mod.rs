@@ -158,11 +158,7 @@ fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>
     if threads == 0 {
         return Err(err("--threads must be greater than 0"));
     }
-    Ok(Some(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()?,
-    ))
+    Ok(Some(crate::resources::thread_pool(Some(threads))?))
 }
 
 fn default_output_dir(config: &EngineConfig, request: &BacktestRunRequest) -> PathBuf {

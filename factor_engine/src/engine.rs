@@ -438,6 +438,15 @@ impl Engine {
                     &context,
                     &mut disclosure_cache,
                 )?;
+                let shared_load_started = Instant::now();
+                let batch_inputs = if provider_batches.len() > 1 {
+                    let request_batches = provider_batches.iter().map(|batch| batch.iter()
+                        .flat_map(|index| specs[*index].dependencies.clone()).collect()).collect::<Vec<_>>();
+                    Some(DataPool::load_reused_batch_inputs(&loader, &group_requests, &request_batches, &context,
+                        &mut disclosure_cache, financial_context.clone())?)
+                } else { None };
+                let shared_load_ms = shared_load_started.elapsed().as_millis();
+                let mut batch_outputs = crate::storage::OutputBatch::default();
 
                 for (factor_batch_index, batch_indices) in provider_batches.iter().enumerate() {
                     let batch_specs = batch_indices
@@ -463,14 +472,14 @@ impl Engine {
                         batch_end_date,
                         batch_specs.len()
                     ));
-                    let mut pool = DataPool::load_with_financial_context(
-                        &loader,
-                        &batch_requests,
-                        &context,
-                        &mut disclosure_cache,
-                        financial_context.clone(),
-                    )?;
-                    let load_ms = load_started.elapsed().as_millis();
+                    let mut pool = if let Some(inputs) = &batch_inputs {
+                        inputs.load_from_batch_inputs(&loader, &batch_requests, &context, &mut disclosure_cache)?
+                    } else {
+                        DataPool::load_with_financial_context(&loader, &batch_requests, &context,
+                            &mut disclosure_cache, financial_context.clone())?
+                    };
+                    let load_ms = load_started.elapsed().as_millis()
+                        + if factor_batch_index == 0 { shared_load_ms } else { 0 };
                     pool.set_trading_calendar(Arc::clone(&factor_calendar));
                     let raw_ids = raw_ids_for_specs(&batch_specs);
                     if !raw_ids.is_empty() {
@@ -531,29 +540,17 @@ impl Engine {
                         "stage={} phase=write_prepare dates={}..{}",
                         stage_name, batch_start_date, batch_end_date
                     ));
-                    let written_paths = if context.target_dates.is_empty() {
-                        Vec::new()
+                    let result_rows: usize = results.iter().map(|series| series.values.len()).sum();
+                    let written_paths = if provider_batches.len() == 1 {
+                        storage.write_results(&results)?
                     } else {
-                        storage.write_results_with_progress(
-                            &results,
-                            |done, total, date, phase| {
-                                progress.update(format!(
-                                    "stage={} phase={} date={} files={}/{} elapsed_ms={}",
-                                    stage_name,
-                                    phase,
-                                    date,
-                                    done,
-                                    total,
-                                    write_started.elapsed().as_millis()
-                                ));
-                            },
-                        )?
+                        batch_outputs.push_factors(results);
+                        if batch_outputs.full()? { batch_outputs.write_factors(&storage)? } else { Vec::new() }
                     };
                     let write_ms = write_started.elapsed().as_millis();
                     output_paths.extend(written_paths);
                     if request.profile {
                         let provider_count = provider_count_for_factors(&batch_factors);
-                        let result_rows = results.iter().map(|series| series.values.len()).sum();
                         let disclosure_cache = disclosure_cache.profiles();
                         let financial_context_profile = if factor_batch_index == 0 {
                             pool.financial_context_profile()
@@ -585,6 +582,11 @@ impl Engine {
                         batch_end_date,
                         batch_specs.len()
                     ));
+                }
+                let write_started = Instant::now();
+                output_paths.extend(batch_outputs.write_factors(&storage)?);
+                if request.profile {
+                    if let Some(profile) = profiles.last_mut() { profile.write_ms += write_started.elapsed().as_millis(); }
                 }
                 disclosure_cache.retain_disclosure_windows(&group_disclosure_windows);
             }
@@ -2005,15 +2007,7 @@ fn provider_factor_batches(
 }
 
 fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>> {
-    match threads {
-        Some(0) => Err(err("threads must be greater than 0")),
-        Some(threads) => Ok(Some(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()?,
-        )),
-        None => Ok(None),
-    }
+    Ok(Some(crate::resources::thread_pool(threads)?))
 }
 
 fn request_has_daily_panel_dates(request: &DataRequest) -> bool {

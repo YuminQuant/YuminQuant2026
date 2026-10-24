@@ -42,6 +42,92 @@ struct PendingFrame {
     values: BTreeMap<OutputKey, BTreeMap<String, Option<f64>>>,
 }
 
+/// Target-only, columnar accumulation with one copy of each row key per day.
+#[derive(Default)]
+pub(crate) struct OutputBatch {
+    frames: BTreeMap<(AssetClass, Frequency, i32), OutputColumns>,
+}
+
+#[derive(Default)]
+struct OutputColumns {
+    keys: BTreeMap<OutputKey, usize>,
+    columns: BTreeMap<String, (Vec<Option<f64>>, Vec<bool>)>,
+}
+
+impl OutputBatch {
+    pub fn push_factors(&mut self, series: Vec<FactorSeries>) {
+        for series in series {
+            self.push(series.spec.asset_class, series.spec.frequency, series.spec.output_column(), series.values);
+        }
+    }
+
+    pub fn push_barra(&mut self, series: Vec<BarraSeries>) {
+        for series in series {
+            self.push(series.spec.asset_class, series.spec.frequency, series.spec.output_column(), series.values);
+        }
+    }
+
+    fn push(&mut self, asset: AssetClass, frequency: Frequency, column: String, values: Vec<crate::core::FactorValue>) {
+        for item in values {
+            let date = item.key.trade_date();
+            let key = match item.key {
+                FactorRowKey::Daily { ts_code, .. } => OutputKey { ts_code, trade_time: None },
+                FactorRowKey::Minute { ts_code, trade_time, .. } => OutputKey { ts_code, trade_time: Some(trade_time) },
+            };
+            let frame = self.frames.entry((asset, frequency, date)).or_default();
+            let next = frame.keys.len();
+            let index = *frame.keys.entry(key).or_insert(next);
+            let (data, changed) = frame.columns.entry(column.clone()).or_default();
+            if data.len() <= index { data.resize(index + 1, None); changed.resize(index + 1, false); }
+            data[index] = item.value;
+            changed[index] = true;
+        }
+    }
+
+    pub fn full(&self) -> Result<bool> {
+        let limit = std::env::var("YQ_OUTPUT_BUFFER_BYTES").ok().map(|value| value.parse::<usize>())
+            .transpose()?.unwrap_or(256 * 1024 * 1024);
+        if limit == 0 { return Err(err("YQ_OUTPUT_BUFFER_BYTES must be positive")); }
+        let bytes = self.frames.values().map(|frame| frame.keys.len() * 96 + frame.columns.values()
+            .map(|(data, changed)| data.capacity() * std::mem::size_of::<Option<f64>>() + changed.capacity() / 8 + 1)
+            .sum::<usize>()).sum::<usize>();
+        Ok(bytes >= limit)
+    }
+
+    pub fn write_factors(&mut self, storage: &FactorStorage) -> Result<Vec<PathBuf>> {
+        self.write(|asset, frequency, date| storage.output_path(asset, frequency, date))
+    }
+
+    pub fn write_barra(&mut self, storage: &BarraStorage) -> Result<Vec<PathBuf>> {
+        self.write(|asset, frequency, date| storage.output_path(asset, frequency, date))
+    }
+
+    fn write(&mut self, path: impl Fn(AssetClass, Frequency, i32) -> PathBuf) -> Result<Vec<PathBuf>> {
+        let mut written = Vec::new();
+        for ((asset, frequency, date), frame) in std::mem::take(&mut self.frames) {
+            let destination = path(asset, frequency, date);
+            let _guard = crate::artifact_io::lock(&destination)?;
+            let mut updates = BTreeMap::new();
+            for (name, (data, changed)) in frame.columns {
+                let values = frame.keys.iter().filter_map(|(key, index)| {
+                    if !changed.get(*index).copied().unwrap_or(false) { return None; }
+                    let key = match &key.trade_time {
+                        Some(time) => FactorRowKey::Minute { trade_date: date, ts_code: key.ts_code.clone(), trade_time: time.clone() },
+                        None => FactorRowKey::Daily { trade_date: date, ts_code: key.ts_code.clone() },
+                    };
+                    Some(crate::core::FactorValue { key, value: data[*index] })
+                }).collect::<Vec<_>>();
+                updates.insert(name, values);
+            }
+            let refs = updates.iter().map(|(name, values)| (name.clone(), values.iter().collect())).collect();
+            let table = merge_factor_columns(&destination, frequency, date, &refs)?;
+            write_parquet(&destination, &table)?;
+            written.push(destination);
+        }
+        Ok(written)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputValueDtype {
     F32,

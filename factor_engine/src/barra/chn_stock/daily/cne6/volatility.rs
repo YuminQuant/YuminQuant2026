@@ -96,9 +96,9 @@ impl BarraExposure for StockDailyBarraCne6Volatility {
         let historical_sigma =
             standardize_panel_industry_filled_weighted(&historical_sigma_raw, &weights, data)?;
         let daily_std_raw = stock_returns
-            .ts(|values| ts_ew_std_dev(values, WINDOW, MIN_PERIODS, DASTD_HALF_LIFE))?;
+            .ts_parallel(|values| ts_ew_std_dev(values, WINDOW, MIN_PERIODS, DASTD_HALF_LIFE))?;
         let daily_std = standardize_panel_industry_filled_weighted(&daily_std_raw, &weights, data)?;
-        let cumulative_range_raw = stock_returns.ts(cumulative_range_12m)?;
+        let cumulative_range_raw = stock_returns.ts_parallel(cumulative_range_12m)?;
         let cumulative_range =
             standardize_panel_industry_filled_weighted(&cumulative_range_raw, &weights, data)?;
 
@@ -156,8 +156,8 @@ fn volatility_spec(id: &str, aliases: &[&str], name: &str, description: &str) ->
             .collect(),
         description: description.to_string(),
         dependencies: vec![
-            DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]),
-            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]),
+            DataRequest::new(DatasetId::StockDailyPv, &["close", "pre_close"]).with_panel_only(),
+            DataRequest::new(DatasetId::StockDailyBasic, &["circ_mv"]).with_panel_only(),
             DataRequest::new(DatasetId::StockSwClassification, &["l1_code"]),
             DataRequest::index_daily(MARKET_INDEX, &["close", "pre_close"]),
         ],

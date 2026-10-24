@@ -313,6 +313,11 @@ impl BarraEngine {
                 &context,
                 &mut disclosure_cache,
             )?;
+            let shared_load_started = Instant::now();
+            let batch_inputs = DataPool::load_batch_inputs(&loader, &loaded_requests, &context,
+                &mut disclosure_cache, financial_context.clone())?;
+            let shared_load_ms = shared_load_started.elapsed().as_millis();
+            let mut batch_results = crate::storage::OutputBatch::default();
 
             for (exposure_batch_index, range) in exposure_ranges.iter().enumerate() {
                 let batch_entries = &selected_provider_entries[range.clone()];
@@ -341,14 +346,14 @@ impl BarraEngine {
                         .flat_map(|spec| spec.dependencies.clone()),
                 );
                 let load_started = Instant::now();
-                let pool = DataPool::load_with_financial_context(
+                let pool = batch_inputs.load_from_batch_inputs(
                     &loader,
                     &batch_requests,
                     &context,
                     &mut disclosure_cache,
-                    financial_context.clone(),
                 )?;
-                let load_ms = load_started.elapsed().as_millis();
+                let load_ms = load_started.elapsed().as_millis()
+                    + if exposure_batch_index == 0 { shared_load_ms } else { 0 };
                 let compute_started = Instant::now();
                 let results = compute_exposure_batch(
                     &batch_providers,
@@ -371,13 +376,13 @@ impl BarraEngine {
                             .count(),
                     })
                     .collect::<Vec<_>>();
+                let result_rows: usize = results.iter().map(|series| series.values.len()).sum();
                 let write_started = Instant::now();
-                let written_paths = storage.write_results(&results)?;
+                batch_results.push_barra(results);
+                if batch_results.full()? { output_paths.extend(batch_results.write_barra(&storage)?); }
                 let write_ms = write_started.elapsed().as_millis();
-                output_paths.extend(written_paths);
                 let stage_name = batch_stage_name(&batch_providers);
                 if request.profile {
-                    let result_rows = results.iter().map(|series| series.values.len()).sum();
                     let disclosure_cache = disclosure_cache.profiles();
                     let financial_context_profile = if exposure_batch_index == 0 {
                         pool.financial_context_profile()
@@ -410,6 +415,14 @@ impl BarraEngine {
                     batch_end_date,
                     batch_specs.len()
                 ));
+            }
+            // Only target-date values are retained; publish each daily wide table once.
+            let write_started = Instant::now();
+            output_paths.extend(batch_results.write_barra(&storage)?);
+            if request.profile {
+                if let Some(profile) = profiles.last_mut() {
+                    profile.write_ms += write_started.elapsed().as_millis();
+                }
             }
             disclosure_cache.retain_disclosure_windows(&disclosure_windows);
         }
@@ -727,15 +740,7 @@ fn batch_stage_name(providers: &[&BarraProvider]) -> String {
 }
 
 fn build_thread_pool(threads: Option<usize>) -> Result<Option<rayon::ThreadPool>> {
-    match threads {
-        Some(0) => Err(err("threads must be greater than 0")),
-        Some(threads) => Ok(Some(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()?,
-        )),
-        None => Ok(None),
-    }
+    Ok(Some(crate::resources::thread_pool(threads)?))
 }
 
 fn compute_exposure_batch(

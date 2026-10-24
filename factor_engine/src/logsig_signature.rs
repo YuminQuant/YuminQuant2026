@@ -226,6 +226,9 @@ pub fn logsig_signature_batch_from_volume(
     cols: usize,
     order: usize,
 ) -> Result<Vec<f32>> {
+    if rayon::current_thread_index().is_some() {
+        return logsig_signature_batch_current(volume, rows, cols, order);
+    }
     logsig_signature_batch_in_pool(volume, rows, cols, order, logsig_thread_pool())
 }
 
@@ -236,6 +239,10 @@ pub fn logsig_signature_batch_in_pool(
     order: usize,
     pool: &ThreadPool,
 ) -> Result<Vec<f32>> {
+    pool.install(|| logsig_signature_batch_current(volume, rows, cols, order))
+}
+
+fn logsig_signature_batch_current(volume: &[f32], rows: usize, cols: usize, order: usize) -> Result<Vec<f32>> {
     if rows == 0 {
         return Ok(Vec::new());
     }
@@ -253,7 +260,7 @@ pub fn logsig_signature_batch_in_pool(
     let kernel = signature_kernel(order)?;
     let logsig_width = kernel.projection.len();
     let mut output = vec![0.0f32; rows * logsig_width];
-    pool.install(|| {
+    {
         output
             .par_chunks_mut(logsig_width * 64)
             .zip(volume.par_chunks(cols * 64))
@@ -266,7 +273,7 @@ pub fn logsig_signature_batch_in_pool(
                     Ok(())
                 },
             )
-    })?;
+    }?;
     Ok(output)
 }
 

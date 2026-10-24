@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::VecDeque;
 use bytes::Bytes;
 use parquet::file::reader::{ChunkReader, Length};
 use crate::error::{err, Result};
@@ -46,12 +47,15 @@ static READ_NS: AtomicU64 = AtomicU64::new(0);
 static WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
 static WRITE_NS: AtomicU64 = AtomicU64::new(0);
 static OPEN_NS: AtomicU64 = AtomicU64::new(0);
+static READ_RANGES: AtomicU64 = AtomicU64::new(0);
+static READ_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub fn profile() -> String {
-    format!("storage read_bytes={} opens={} stats={} lists={} read_ms={} write_bytes={} open_ms={} write_ms={}",
+    format!("storage read_bytes={} opens={} stats={} lists={} read_ms={} write_bytes={} open_ms={} write_ms={} read_ranges={} read_cache_hits={}",
         READ_BYTES.load(Ordering::Relaxed), OPEN_FILES.load(Ordering::Relaxed),
         STAT_CALLS.load(Ordering::Relaxed), LIST_CALLS.load(Ordering::Relaxed),
         READ_NS.load(Ordering::Relaxed)/1_000_000, WRITE_BYTES.load(Ordering::Relaxed),
-        OPEN_NS.load(Ordering::Relaxed)/1_000_000, WRITE_NS.load(Ordering::Relaxed)/1_000_000)
+        OPEN_NS.load(Ordering::Relaxed)/1_000_000, WRITE_NS.load(Ordering::Relaxed)/1_000_000,
+        READ_RANGES.load(Ordering::Relaxed), READ_CACHE_HITS.load(Ordering::Relaxed))
 }
 pub fn register(backend: Arc<dyn ArtifactBackend>) -> Result<()> {
     BACKEND.set(backend).map_err(|_| err("storage backend already registered"))
@@ -143,15 +147,63 @@ impl ReadAt for LocalRead {
     }
 }
 #[derive(Clone)]
-pub struct StorageReader(Arc<dyn ReadAt>);
-impl Length for StorageReader { fn len(&self) -> u64 { self.0.len() } }
+pub struct StorageReader(Arc<BufferedRead>);
+const READ_BLOCK_BYTES: usize = 64 * 1024;
+const READ_CACHE_BLOCKS: usize = 16;
+struct BufferedRead {
+    source: Arc<dyn ReadAt>,
+    blocks: Mutex<VecDeque<(u64, Bytes)>>,
+}
+impl Length for StorageReader { fn len(&self) -> u64 { self.0.source.len() } }
 impl StorageReader {
+    fn new(source: Arc<dyn ReadAt>) -> Self {
+        Self(Arc::new(BufferedRead { source, blocks: Mutex::new(VecDeque::new()) }))
+    }
+
     fn range(&self, offset: u64, length: usize) -> io::Result<Bytes> {
-        let started = std::time::Instant::now();
-        let bytes = self.0.read_at(offset,length)?;
-        READ_BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-        READ_NS.fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
-        Ok(bytes)
+        if offset > self.len() || length as u64 > self.len() - offset {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "read range exceeds file length"));
+        }
+        if length == 0 { return Ok(Bytes::new()); }
+        let mut blocks = self.0.blocks.lock().map_err(io_error)?;
+        let mut cursor = offset;
+        let end = offset + length as u64;
+        let mut output = Vec::new();
+        while cursor < end {
+            let start = cursor / READ_BLOCK_BYTES as u64 * READ_BLOCK_BYTES as u64;
+            let bytes = if let Some(index) = blocks.iter().position(|(at, _)| *at == start) {
+                READ_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+                let entry = blocks.remove(index).expect("located cache block");
+                let bytes = entry.1.clone();
+                blocks.push_back(entry);
+                bytes
+            } else {
+                let needed = (end - start).div_ceil(READ_BLOCK_BYTES as u64)
+                    .min(READ_CACHE_BLOCKS as u64) * READ_BLOCK_BYTES as u64;
+                let size = (self.len() - start).min(needed) as usize;
+                let started = std::time::Instant::now();
+                let bytes = self.0.source.read_at(start, size)?;
+                if bytes.len() != size {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short storage read"));
+                }
+                READ_RANGES.fetch_add(1, Ordering::Relaxed);
+                READ_BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                READ_NS.fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+                for (index, block) in bytes.chunks(READ_BLOCK_BYTES).enumerate() {
+                    if blocks.len() == READ_CACHE_BLOCKS { blocks.pop_front(); }
+                    let from = index * READ_BLOCK_BYTES;
+                    blocks.push_back((start + from as u64, Bytes::copy_from_slice(block)));
+                }
+                bytes.slice(..bytes.len().min(READ_BLOCK_BYTES))
+            };
+            let from = (cursor - start) as usize;
+            let count = (end - cursor).min((bytes.len() - from) as u64) as usize;
+            if cursor == offset && count == length { return Ok(bytes.slice(from..from + count)); }
+            if output.is_empty() { output.reserve(length); }
+            output.extend_from_slice(&bytes[from..from + count]);
+            cursor += count as u64;
+        }
+        Ok(output.into())
     }
 }
 pub struct ReadCursor { reader: StorageReader, offset: u64, buffer: Bytes, position: usize }
@@ -159,7 +211,8 @@ impl Read for ReadCursor {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if out.is_empty() || self.offset >= self.reader.len() { return Ok(0); }
         if self.position == self.buffer.len() {
-            let length = (self.reader.len()-self.offset).min(1024*1024) as usize;
+            let remaining = READ_BLOCK_BYTES - self.offset as usize % READ_BLOCK_BYTES;
+            let length = (self.reader.len()-self.offset).min(remaining as u64) as usize;
             self.buffer = self.reader.range(self.offset,length)?; self.position = 0;
         }
         let count = out.len().min(self.buffer.len()-self.position);
@@ -180,14 +233,14 @@ pub fn open_reader(path: &Path) -> Result<StorageReader> {
     OPEN_FILES.fetch_add(1, Ordering::Relaxed);
     let started = std::time::Instant::now();
     if let Some(b) = backend(path) {
-        let reader = StorageReader(b.open_read(path)?);
+        let reader = StorageReader::new(b.open_read(path)?);
         OPEN_NS.fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64,Ordering::Relaxed);
         return Ok(reader);
     }
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     OPEN_NS.fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64,Ordering::Relaxed);
-    Ok(StorageReader(Arc::new(LocalRead { file:Mutex::new(file), len })))
+    Ok(StorageReader::new(Arc::new(LocalRead { file:Mutex::new(file), len })))
 }
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>> {
     let reader = open_reader(path.as_ref())?;

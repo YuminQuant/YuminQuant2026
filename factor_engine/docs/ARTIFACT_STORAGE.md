@@ -35,6 +35,27 @@ Existing slow/hold state survives within a task, not across tasks. Initializatio
 共享分钟 raw 先由整个区间的唯一准备任务生成，再运行日期消费者。它是正式可复用辅助产物，不是节点数据库缓存。`factor-batch-size` 仍控制每个任务内部的因子批量。
 One preparation task generates shared minute raw artifacts before date consumers start. These are reusable outputs, not node database caches. Factor batching remains internal to each task.
 
+每个独立子任务从自己的首个目标日向前读取预热交易日，不依赖前一个任务的内存。20 日有限窗口均值需 19 日历史；先算 5 日指标再做 20 日均值则需 23 日历史。引擎取普通 lookback、DataRequest 回看与 raw 依赖回看的最大值；生成历史 raw 时还会补足 raw 自身的分钟窗口。仅写目标日。历史文件缺失、新股历史不足或 EMA 等无限历史递推，不保证与无限长连续运行完全相同。
+Each independent task reads its own warmup. A 20-session finite mean needs 19 prior sessions; a 5-session metric followed by a 20-session mean needs 23. The engine takes the maximum of ordinary, DataRequest and raw-dependency lookbacks, adding the raw producer's own minute window for missing raw. Only target dates are written. Missing source history, new stocks and infinite-history recursions such as EMA can still differ from an uninterrupted run.
+
+## Independent training tasks / 独立训练任务
+
+训练按模型窗口拆分，不按因子 date-batch-size 切训练集。独立入口先用完整配置和日历规划窗口，保留原窗口 ID、训练/验证日期及标签成熟期清洗，再让每个子任务只训练一个模型。本机顺序执行，外部调度器可并发执行同一计划。规划不加载训练张量、不实例化模型。
+Training splits by model windows, not factor date batches. The dedicated entrypoint plans against the full configuration/calendar, retaining IDs, train/validation dates and label-maturity purging. Each child fits one model. Local tasks run sequentially; deployment schedulers may dispatch the same plan concurrently. Planning does not load tensors or instantiate models.
+
+```bash
+python scripts/train_models.py factor-train --config ml_alpha/factors/bar_gru_15m.toml --dry-run
+python scripts/train_models.py factor-train --config ml_alpha/factors/bar_gru_15m.toml --resume
+python scripts/train_models.py model-train --config ml_alpha/models/mdl_000001.toml
+python scripts/yq.py --split-training-windows factor-train --config ml_alpha/factors/bar_gru_15m.toml
+```
+
+通过配置 train_scheme.refit_frequency 选择更新频率。带 validation_lookback 的日历窗口支持 yearly_end、semiannual_end、quarterly_end、monthly_end，分别在年、半年、季度、月开始前一个交易日收盘拟合，并按配置回看历史。年度窗口继续使用 annual_YYYY，标识与日期口径不变。其他训练方案保留现有 refit 规则，包括固定交易日间隔；static 配置仍只有一个模型。
+Select cadence with train_scheme.refit_frequency. Calendar windows with validation_lookback support yearly, semiannual, quarterly and monthly refits at the preceding period's final trading close. Existing annual IDs and dates remain unchanged. Other schemes retain their refit rules, including fixed trading-day steps; static configurations still produce one model.
+
+子任务写各自的 artifact_dir/window_id/，不写预测列、不并发写汇总诊断；全部成功后由单独步骤汇总诊断。可用 --window-id annual_2020 单独重试；factor-train 的 --resume 继续校验模型 manifest。预测使用原配置寻找同一模型，不拆分有时序状态的预测。原 scripts/yq.py 训练命令不带拆分参数时仍是单任务。
+Each child writes its own artifact_dir/window_id/, without predictions or concurrent aggregate-diagnostic writes. A final step aggregates diagnostics only after all children succeed. Use --window-id annual_2020 for a retry; factor resume still validates manifests. Prediction locates the same models with the original configuration and retains sequential state. Ordinary training through scripts/yq.py remains single-task unless splitting is requested.
+
 ## Paths and adapters / 路径与适配器
 
 公共配置 `[paths]` 支持 `base_data_dir`，以及可选 `factor_root`、`label_root`、`barra_root`。默认仍为本地 `data/` 布局。`YQ_ENGINE_CONFIG` 可指定引擎配置；显式 CLI 配置优先。

@@ -156,8 +156,8 @@ def _build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Tra
     scheme = config.train_scheme.type.lower()
     if config.train_scheme.validation_lookback is not None:
         if not predict_dates:
-            raise ValueError("annual calendar windows require a prediction range, including for factor-train")
-        return _annual_calendar_windows(config, calendar, predict_dates, train_frequency)
+            raise ValueError("calendar refit windows require a prediction range, including for factor-train")
+        return _calendar_windows(config, calendar, predict_dates, train_frequency)
     if not predict_dates:
         if config.train_scheme.prediction_activation == "after_label_maturity":
             raise ValueError("after_label_maturity requires a prediction range with trading dates, including for model-train")
@@ -206,12 +206,29 @@ def _build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Tra
     return windows
 
 
-def _annual_calendar_windows(config, calendar, predict_dates, train_frequency):
-    """Fit at prior year-end close; preserve window identity for prediction subsets."""
+def _calendar_windows(config, calendar, predict_dates, train_frequency):
+    """Fit at the prior period close, with stable IDs for prediction subsets."""
+    frequency = config.train_scheme.refit_frequency.lower().strip()
+    if frequency in {"annual", "annual_end", "yearly", "yearly_end", "year_end"}:
+        months = 12
+    elif frequency in {"semiannual", "semiannual_end", "halfyear", "halfyear_end"}:
+        months = 6
+    elif frequency in {"quarterly", "quarterly_end"}:
+        months = 3
+    elif frequency in {"monthly", "monthly_end"}:
+        months = 1
+    else:
+        raise ValueError("validation_lookback requires annual, semiannual, quarterly or monthly refits")
     windows = []
-    for year in sorted({date // 10000 for date in predict_dates}):
-        anchor = (year - 1) * 10000 + 1231
-        cutoff = calendar.previous_open(year * 10000 + 101)
+    periods = sorted({(date // 10000, ((date // 100 % 100 - 1) // months) * months + 1)
+                      for date in predict_dates})
+    for year, month in periods:
+        start = pd.Timestamp(year=year, month=month, day=1)
+        stop = start + pd.DateOffset(months=months)
+        first = int(start.strftime("%Y%m%d"))
+        last = int((stop - pd.Timedelta(days=1)).strftime("%Y%m%d"))
+        anchor = int((start - pd.Timedelta(days=1)).strftime("%Y%m%d"))
+        cutoff = calendar.previous_open(first)
         if cutoff is None or cutoff > config.dates.train[1]:
             raise ValueError(f"{year}: training range/calendar does not cover prior year-end")
         lower = _lookback_start(config, calendar, anchor, cutoff, config.train_scheme.train_lookback)
@@ -224,14 +241,18 @@ def _annual_calendar_windows(config, calendar, predict_dates, train_frequency):
         train_dates = calendar.between(lower, train_end)
         if len(train_dates) < config.train_scheme.min_train_days:
             raise ValueError(f"{year}: insufficient training days")
-        year_dates = calendar.between(year * 10000 + 101, year * 10000 + 1231)
+        period_dates = calendar.between(first, last)
+        window_id = (f"annual_{year}" if months == 12 else
+                     f"semiannual_{year}_H{1 if month == 1 else 2}" if months == 6 else
+                     f"quarterly_{year}_Q{(month - 1) // 3 + 1}" if months == 3 else
+                     f"monthly_{year}{month:02d}")
         windows.append(TrainingWindow(
-            window_id=f"annual_{year}",
+            window_id=window_id,
             train_dates=sample_dates(calendar, (lower, train_end), train_frequency),
             valid_dates=sample_dates(calendar, (valid_start, cutoff), train_frequency),
-            predict_dates=[date for date in predict_dates if date // 10000 == year],
+            predict_dates=[date for date in predict_dates if first <= date <= last],
             training_cutoff_date=cutoff,
-            activation_date=year_dates[0],
+            activation_date=period_dates[0],
         ))
     return windows
 

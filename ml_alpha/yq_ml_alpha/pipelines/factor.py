@@ -33,8 +33,8 @@ def run(config_path: str | Path, *, resume: bool = False) -> list[Path]:
     return run_config(_load_factor_config(config_path), resume=resume)
 
 
-def train_only(config_path: str | Path, *, resume: bool = False) -> list[Path]:
-    return train_config(_load_factor_config(config_path), resume=resume)
+def train_only(config_path: str | Path, *, resume: bool = False, window_ids=None) -> list[Path]:
+    return train_config(_load_factor_config(config_path), resume=resume, window_ids=window_ids)
 
 
 def predict_only(config_path: str | Path) -> list[Path]:
@@ -155,15 +155,17 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     return written
 
 
-def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
+def train_config(config: MlAlphaConfig, *, resume: bool = False, window_ids=None) -> list[Path]:
     _ensure_factor_config(config)
+    from yq_ml_alpha.pipelines.training_tasks import training_windows, training_config_for_windows
+    config = training_config_for_windows(config, window_ids)
     if config.features.type == "analyst_report_events":
         from yq_ml_alpha.pipelines.report_sentiment import execute
-        return execute(config, train=True, predict=False, resume=resume)
+        return execute(config, train=True, predict=False, resume=resume, window_ids=window_ids)
     calendar = TradingCalendar.load(config.data_root)
-    dataset = DatasetBuilder(config)
     paths: list[Path] = []
-    windows = build_windows(config, calendar)
+    windows = training_windows(config, calendar, window_ids)
+    dataset = DatasetBuilder(config)
     progress = _Progress("ml-alpha factor train", len(windows))
     for idx, window in enumerate(windows, start=1):
         progress.window(idx, window)
@@ -186,7 +188,8 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
         paths.append(path)
         del model, train_bundle, valid_bundle
         _release_accelerator_memory()
-    paths.extend(_aggregate_diagnostics(config))
+    if window_ids is None:
+        paths.extend(_aggregate_diagnostics(config))
     progress.done()
     return paths
 

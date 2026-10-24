@@ -14,7 +14,9 @@ from yq_ml_alpha.output.factor_metadata import write_factor_metadata
 from yq_ml_alpha.pipelines.runtime import _context, _model_class, build_windows
 
 
-def execute(config, *, train, predict, resume=False):
+def execute(config, *, train, predict, resume=False, window_ids=None):
+    if window_ids is not None and predict:
+        raise ValueError("Window selection is training-only; report prediction requires sequential replay")
     _validate(config)
     model_class = _model_class(config.model.class_path)
     check = getattr(model_class, "check_dependencies", None)
@@ -27,6 +29,8 @@ def execute(config, *, train, predict, resume=False):
     # It never scores those old reports with the new year's fitted model.
     extended = _history_config(config)
     windows = build_windows(extended, calendar)
+    from yq_ml_alpha.pipelines.training_tasks import select_windows
+    windows = select_windows(windows, window_ids)
     if not windows:
         raise ValueError("no report training/prediction windows")
     writer = DailyWideWriter(

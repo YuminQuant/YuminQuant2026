@@ -1630,6 +1630,13 @@ fn spec_calendar_lookback_days(spec: &crate::core::FactorSpec) -> usize {
         .max()
         .unwrap_or(0)
         .max(spec.lookback.trading_days)
+        .max(
+            spec.intraday_raw_dependencies
+                .iter()
+                .map(|request| request.daily_lookback)
+                .max()
+                .unwrap_or(0),
+        )
 }
 
 #[derive(Clone, Debug, Default)]

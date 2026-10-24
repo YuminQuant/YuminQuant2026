@@ -39,6 +39,7 @@ python -m yq_ml_alpha --help
 python scripts/yq.py model-train --config ml_alpha/models/mdl_000001.toml
 python scripts/yq.py model-predict --config ml_alpha/models/mdl_000001.toml
 python scripts/yq.py factor-train --config ml_alpha/factors/bar_gru_15m.toml
+python scripts/train_models.py factor-train --config ml_alpha/factors/bar_gru_15m.toml --dry-run
 python scripts/yq.py factor-predict --config ml_alpha/factors/bar_gru_15m.toml
 python -m yq_ml_alpha factor-metadata
 ```
@@ -52,8 +53,8 @@ Use `factor-metadata-all` to refresh Rust and ML metadata. ML factors maintain t
 
 ## 输出与复用 / Outputs and reuse
 
-统一入口在正式 ML 因子生产前刷新一次 metadata；原模块命令保留。远程训练默认单任务，张量仅保留在当前窗口内存并受预算限制，不在节点写 memmap。详见[统一计算与存储](../factor_engine/docs/ARTIFACT_STORAGE.md)。
-The unified entrypoint refreshes metadata once before ML factor production; module commands remain available. Remote training defaults to one task with budgeted, window-local RAM tensors rather than node memmaps. See [execution and storage](../factor_engine/docs/ARTIFACT_STORAGE.md).
+统一入口在正式 ML 因子生产前刷新一次 metadata；原模块命令保留。普通训练入口默认单任务；scripts/train_models.py 按配置中的模型窗口拆成独立任务，本机顺序执行，部署调度器可并发。带 validation_lookback 的窗口支持年度、半年度、季度、月度更新；窗口 ID、标签清洗和模型路径保持一致。远程张量受预算限制，不在节点写 memmap。详见[统一计算与存储](../factor_engine/docs/ARTIFACT_STORAGE.md)。
+The unified entrypoint refreshes metadata once before ML factor production; module commands remain available. Ordinary training remains single-task. scripts/train_models.py creates one task per configured model window, sequential locally or concurrent through deployment scheduling. Calendar windows with validation_lookback support annual, semiannual, quarterly and monthly refits while retaining window IDs, label purging and artifact paths. Remote tensors stay within a RAM budget, not node memmaps. See [execution and storage](../factor_engine/docs/ARTIFACT_STORAGE.md).
 
 - 模型信号通常写入 `data/models/{year}/{date}.parquet`；正式因子写入 `data/factors/stock/daily/{year}/{date}.parquet`。
   Model signals normally go to `data/models`; formal factors go to the daily factor library.

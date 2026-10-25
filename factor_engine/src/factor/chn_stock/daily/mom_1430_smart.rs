@@ -20,10 +20,10 @@ const AM_SMART_TURNOVER_RAW_ID: &str = "mom1430_daily_am_smart_turnover";
 const PM_SMART_TURNOVER_RAW_ID: &str = "mom1430_daily_pm_smart_turnover";
 const LAST30_TURNOVER_RAW_ID: &str = "mom1430_daily_last30m_turnover";
 const RAW_VERSION: &str = "0.1.0";
-const VERSION: &str = "0.1.0";
+const VERSION: &str = "0.2.0";
 const WINDOW: usize = 20;
-const GROUP_COUNT: usize = 5;
-const GROUP_SIZE: usize = WINDOW / GROUP_COUNT;
+const TAIL_SIZE: usize = 4;
+const MIN_VALID_DAYS: usize = 2 * TAIL_SIZE;
 const FLOAT_SHARE_UNIT: f64 = 10_000.0;
 const SMART_MINUTES: usize = 24;
 
@@ -65,7 +65,7 @@ impl Factor for StockDailyMom1430Smart {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "Smart momentum factor combining AM/PM smart-turnover sorted intraday returns and previous-day last-30-minute-turnover sorted overnight returns.".to_string(),
+            description: "Smart momentum combining AM/PM smart-turnover sorted intraday returns and lagged last-30-minute-turnover sorted overnight returns; each 20-day window requires at least 8 valid pairs and uses disjoint lowest/highest 4-day tails.".to_string(),
             dependencies: vec![DataRequest::new(
                 DatasetId::StockDailyPv,
                 &["open", "pre_close"],
@@ -295,8 +295,8 @@ impl Factor for StockDailyMom1430Smart {
         let last30_turnover = panel
             .column(LAST30_TURNOVER_RAW_ID)?
             .ts(|values| ts_delay(values, 1))?;
-        let night_part1 = rolling_group_mean(&overnight_return, &last30_turnover, 0)?;
-        let night_part5 = rolling_group_mean(&overnight_return, &last30_turnover, 4)?;
+        let night_part1 = rolling_tail_mean(&overnight_return, &last30_turnover, false)?;
+        let night_part5 = rolling_tail_mean(&overnight_return, &last30_turnover, true)?;
         let night_1430 = weighted_pair(
             &night_part1.cs(cs_zscore)?,
             &night_part5.cs(cs_zscore)?,
@@ -306,8 +306,8 @@ impl Factor for StockDailyMom1430Smart {
 
         let am_return = panel.column(AM_RETURN_RAW_ID)?;
         let am_smart_turnover = panel.column(AM_SMART_TURNOVER_RAW_ID)?;
-        let am_part1 = rolling_group_mean(&am_return, &am_smart_turnover, 0)?;
-        let am_part5 = rolling_group_mean(&am_return, &am_smart_turnover, 4)?;
+        let am_part1 = rolling_tail_mean(&am_return, &am_smart_turnover, false)?;
+        let am_part5 = rolling_tail_mean(&am_return, &am_smart_turnover, true)?;
         let am_smart = weighted_pair(
             &am_part1.cs(cs_zscore)?,
             &am_part5.cs(cs_zscore)?,
@@ -317,8 +317,8 @@ impl Factor for StockDailyMom1430Smart {
 
         let pm_return = panel.column(PM_RETURN_RAW_ID)?;
         let pm_smart_turnover = panel.column(PM_SMART_TURNOVER_RAW_ID)?;
-        let pm_part1 = rolling_group_mean(&pm_return, &pm_smart_turnover, 0)?;
-        let pm_part5 = rolling_group_mean(&pm_return, &pm_smart_turnover, 4)?;
+        let pm_part1 = rolling_tail_mean(&pm_return, &pm_smart_turnover, false)?;
+        let pm_part5 = rolling_tail_mean(&pm_return, &pm_smart_turnover, true)?;
         let pm_smart = weighted_pair(
             &pm_part1.cs(cs_zscore)?,
             &pm_part5.cs(cs_zscore)?,
@@ -465,31 +465,25 @@ fn float_share_denominator(float_share: Option<f64>) -> Option<f64> {
     (denominator > f64::EPSILON).then_some(denominator)
 }
 
-fn rolling_group_mean(
+fn rolling_tail_mean(
     returns: &PanelColumn,
     sort_values: &PanelColumn,
-    group_idx: usize,
+    highest: bool,
 ) -> Result<PanelColumn> {
     returns.ts_binary(sort_values, |returns, sort_values| {
-        grouped_part_series(returns, sort_values, group_idx)
+        tail_mean_series(returns, sort_values, highest)
     })
 }
 
-fn grouped_part_series(
+fn tail_mean_series(
     returns: &[Option<f64>],
     sort_values: &[Option<f64>],
-    group_idx: usize,
+    highest: bool,
 ) -> Vec<Option<f64>> {
     let mut output = vec![None; returns.len()];
-    if group_idx >= GROUP_COUNT {
-        return output;
-    }
 
     for idx in 0..returns.len() {
-        if idx + 1 < WINDOW {
-            continue;
-        }
-        let start = idx + 1 - WINDOW;
+        let start = (idx + 1).saturating_sub(WINDOW);
         let mut pairs = Vec::<(f64, usize, f64)>::with_capacity(WINDOW);
         for window_idx in start..=idx {
             let (Some(return_value), Some(sort_value)) =
@@ -499,7 +493,7 @@ fn grouped_part_series(
             };
             pairs.push((sort_value, window_idx, return_value));
         }
-        if pairs.len() != WINDOW {
+        if pairs.len() < MIN_VALID_DAYS {
             continue;
         }
         pairs.sort_by(|left, right| {
@@ -507,13 +501,14 @@ fn grouped_part_series(
                 .total_cmp(&right.0)
                 .then_with(|| left.1.cmp(&right.1))
         });
-        let group_start = group_idx * GROUP_SIZE;
-        let group_end = group_start + GROUP_SIZE;
+        // Fixed four-day tails stay disjoint even when the 20-day window has gaps.
+        let group_start = if highest { pairs.len() - TAIL_SIZE } else { 0 };
+        let group_end = group_start + TAIL_SIZE;
         let sum = pairs[group_start..group_end]
             .iter()
             .map(|(_, _, return_value)| *return_value)
             .sum::<f64>();
-        output[idx] = Some(sum / GROUP_SIZE as f64);
+        output[idx] = Some(sum / TAIL_SIZE as f64);
     }
     output
 }

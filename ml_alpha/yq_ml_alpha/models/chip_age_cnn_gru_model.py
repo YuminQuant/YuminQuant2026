@@ -42,6 +42,12 @@ def _negative_ic(torch, scores, labels, eps):
 
 
 def _params(raw):
+    raw = dict(raw)
+    # Use the common configuration name while accepting existing checkpoints.
+    if "batch_size" in raw:
+        if "micro_batch_size" in raw and raw["micro_batch_size"] != raw["batch_size"]:
+            raise ValueError("batch_size and legacy micro_batch_size must agree")
+        raw["micro_batch_size"] = raw.pop("batch_size")
     defaults = dict(seeds=[42], epochs=100, patience=10, lr=0.001, weight_decay=0.0001,
                     dropout=0.1, device="cuda", micro_batch_size=256, min_stocks=20,
                     ic_eps=1e-8, gradient_clip=1.0, min_improvement=1e-5)

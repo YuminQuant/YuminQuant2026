@@ -13,7 +13,7 @@ base_root = "data/chn_stock_data/daily/pv"
 write_workers = 4
 
 [dates]
-train = [20130101, 20251231]
+train = [20110101, 20251231]
 predict = [20160101, 20260424]
 
 [sample]
@@ -23,7 +23,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "36m"
+train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500
 
@@ -69,7 +69,7 @@ write_window_summary = true
 [model]
 name = "chip_age_cnn_gru"
 class = "yq_ml_alpha.models.chip_age_cnn_gru_model.ChipAgeCNNGRUAlphaModel"
-artifact_dir = "data/model_workspace/chip_age_alpha/artifacts"
+artifact_dir = "data/model_workspace/chip_age_alpha/rolling60m_bs5000/artifacts"
 
 [model.params]
 seeds = [42]
@@ -80,7 +80,7 @@ weight_decay = 0.0001
 dropout = 0.1
 device = "cuda"
 # Encoder chunks only; BatchNorm and IC still use the entire date.
-micro_batch_size = 256
+batch_size = 5000
 min_stocks = 20
 ic_eps = 1e-8
 gradient_clip = 1.0

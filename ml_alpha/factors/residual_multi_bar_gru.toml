@@ -12,7 +12,7 @@ base_root = "data/chn_stock_data/daily/pv"
 write_workers = 4
 
 [dates]
-train = [20130101, 20251231]
+train = [20110101, 20251231]
 predict = [20160101, 20260424]
 
 [sample]
@@ -22,7 +22,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "36m"
+train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500
 
@@ -93,7 +93,7 @@ stage1_epochs = 100
 stage2_epochs = 100
 stage1_patience = 10
 stage2_patience = 10
-batch_size = 3000
+batch_size = 5000
 lr = 0.001
 weight_decay = 0.0
 seed = 42

@@ -14,6 +14,12 @@ use crate::error::{err, Result};
 use arrow_schema::DataType;
 
 const GRID: f64 = 0.01;
+const DATASET_MANIFEST: &str = r#"{"version":"chip_age_rolling250_v2","window_trading_days":250,
+    "turnover":"turnover_rate_f","replacement":"1-exp(-rate/100)",
+    "grid_log_step":0.01,"initialization":"zero_mass",
+    "normalization":"output_only","age_groups":[[1,2],[3,10],[11,100],[101,250]],
+    "overflow":"edge_bins","invalid_data":"reset_and_refill_window",
+    "suspension":"explicit_full_day_carry_adjusted_close"}"#;
 // Sorted sparse bins in contiguous storage; triangle emits bins in ascending order.
 type Distribution = Vec<(i32, f64)>;
 
@@ -238,10 +244,25 @@ pub fn derive_chip_age(
     }
     crate::artifact_io::create_dir_all(&root)?;
     let manifest = root.join("manifest.json");
-    // Remove the readiness marker before changing any daily file. A failed run
-    // cannot be consumed as a completed dataset by the Python provider.
-    if manifest.storage_exists() {
-        crate::artifact_io::remove_file(&manifest)?;
+    // This is definition identity, not a completeness marker. Annual shards own
+    // disjoint dates and publish it under one short lock, never deleting another
+    // shard's identity. The scheduler's afterok barrier establishes completeness.
+    {
+        let _guard = crate::artifact_io::lock(&manifest)?;
+        let expected: serde_json::Value = serde_json::from_str(DATASET_MANIFEST)?;
+        if manifest.storage_exists() {
+            let existing: serde_json::Value =
+                serde_json::from_str(&crate::artifact_io::read_to_string(&manifest)?)?;
+            if existing != expected {
+                return Err(err(
+                    "chip-age dataset identity differs; use a clean output directory",
+                ));
+            }
+        } else {
+            let temporary = manifest.with_extension(format!("{}.tmp", std::process::id()));
+            crate::artifact_io::write(&temporary, DATASET_MANIFEST)?;
+            crate::artifact_io::rename(temporary, &manifest)?;
+        }
     }
     let calendar = TradingCalendar::load(&config.data_root, &config.stock_calendar_exchange)?;
     let targets = calendar.open_dates_between(start, end);
@@ -405,16 +426,6 @@ pub fn derive_chip_age(
             println!("derive-chip-age date={date} rows={count} states={} invalid_reset={invalid} invalid_first20={invalid_symbols:?} turnover_above_100pct={high_turnover} warmup={} load_ms={load_ms:.1} compute_ms={compute_ms:.1} write_ms={write_ms:.1} day_ms={:.1} elapsed_s={:.1}", states.len(), date < start, day_started.elapsed().as_secs_f64() * 1000.0, run_started.elapsed().as_secs_f64());
         }
     }
-    // Definition identity stays stable when new OOS dates are appended.
-    let body = r#"{"version":"chip_age_rolling250_v2","window_trading_days":250,
-        "turnover":"turnover_rate_f","replacement":"1-exp(-rate/100)",
-        "grid_log_step":0.01,"initialization":"zero_mass",
-        "normalization":"output_only","age_groups":[[1,2],[3,10],[11,100],[101,250]],
-        "overflow":"edge_bins","invalid_data":"reset_and_refill_window",
-        "suspension":"explicit_full_day_carry_adjusted_close"}"#;
-    let temp = manifest.with_extension("json.tmp");
-    crate::artifact_io::write(&temp, body)?;
-    crate::artifact_io::rename(temp, manifest)?;
     Ok(())
 }
 

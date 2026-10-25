@@ -16,8 +16,8 @@ class ASTGNNAlphaModel(CrossSectionBarAlphaModel, ResNetGRUAlphaModel):
         params["grad_clip"] = float(params.get("grad_clip", 5.0))
         if not isinstance(params["gradient_checkpointing"], bool):
             raise ValueError("gradient_checkpointing must be a boolean")
-        if not 2 <= params["batch_size"] <= 3000 or params["graph_chunk_size"] < 1:
-            raise ValueError("ASTGNN requires encoder chunks of 2..3000 and positive graph chunks")
+        if not 2 <= params["batch_size"] <= 5000 or params["graph_chunk_size"] < 1:
+            raise ValueError("ASTGNN requires encoder chunks of 2..5000 and positive graph chunks")
         if any(params[key] < 1 for key in ("hidden_size", "num_layers", "epochs")) or params["patience"] < 0:
             raise ValueError("invalid ASTGNN training dimensions or epoch/patience settings")
         if not 0 <= params["dropout"] < 1:

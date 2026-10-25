@@ -12,7 +12,7 @@ base_root = "data/chn_stock_data/daily/pv"
 write_workers = 4
 
 [dates]
-train = [20130101, 20251231]
+train = [20110101, 20251231]
 predict = [20160101, 20260424]
 
 [sample]
@@ -22,12 +22,13 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "36m"
+train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500
 
 [label]
 id = "future_vwap_return_5d"
+lookahead_days = 6
 
 [universe]
 id = "mkt_all"
@@ -61,7 +62,7 @@ write_window_summary = true
 [model]
 name = "logsig_orthogonal_mlp"
 class = "yq_ml_alpha.models.logsig_orthogonal_mlp_model.LogsigOrthogonalMLPAlphaModel"
-artifact_dir = "data/model_workspace/logsig_alpha_v/artifacts"
+artifact_dir = "data/model_workspace/logsig_alpha_v/rolling60m_bs5000/artifacts"
 
 [model.params]
 base_factors = 8

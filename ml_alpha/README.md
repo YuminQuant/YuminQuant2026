@@ -57,6 +57,9 @@ The second command installs several optional dependencies; select only what you 
 
 ## 常用命令 / Common commands
 
+量价系列17份正式因子配置现采用年度重训、近60个月57/3划分、5日采样与5000股票编码块；
+标签成熟、筹码年度分片和独立产物目录见[量价滚动训练](docs/PRICE_FACTOR_ROLLING.md)。
+
 ```bash
 python -m yq_ml_alpha --help
 python scripts/yq.py model-train --config ml_alpha/models/mdl_000001.toml

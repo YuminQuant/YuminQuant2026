@@ -312,6 +312,28 @@ fn run_cli() -> Result<()> {
                 },
             )?;
         }
+        "derive-analyst-gat-inputs" => {
+            let flags = parse_flags(&args[1..])?;
+            for key in flags.keys() {
+                if !["asset", "start-date", "end-date", "config", "date-batch-size", "threads"].contains(&key.as_str()) {
+                    return Err(yq_factor_engine::error::err(format!("unsupported derive-analyst-gat-inputs flag: --{key}")));
+                }
+            }
+            if flags.get("asset").map(String::as_str) != Some("stock") {
+                return Err(yq_factor_engine::error::err("derive-analyst-gat-inputs requires --asset stock"));
+            }
+            let date = |key: &str| -> Result<i32> {
+                parse_yyyymmdd(flags.get(key).ok_or_else(|| yq_factor_engine::error::err(format!("missing --{key}")))?, key)
+            };
+            let config = EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
+            yq_factor_engine::derive::analyst_gat_inputs::derive_analyst_gat_inputs(
+                &config, &yq_factor_engine::derive::analyst_gat_inputs::AnalystGatInputsRequest {
+                    start_date: date("start-date")?, end_date: date("end-date")?,
+                    date_batch_size: flags.get("date-batch-size").map(|value| value.parse::<usize>()).transpose()?.unwrap_or(20),
+                    threads: flags.get("threads").map(|value| value.parse()).transpose()?,
+                },
+            )?;
+        }
         "derive-analyst-coverage" => {
             let flags = parse_flags(&args[1..])?;
             for key in flags.keys() {
@@ -1426,6 +1448,7 @@ fn print_help() {
     println!("  derive-chip-age --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
     println!("  derive-stock-relations --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
     println!("  derive-analyst-coverage --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--window-months 6] [--date-batch-size 20] [--threads N] [--config path]");
+    println!("  derive-analyst-gat-inputs --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--threads N] [--config path]");
     println!("  derive-hist-concepts --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
     println!("  derive-logsig --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--threads 2] [--overwrite true|false]");
     println!("    raw minute volume -> 5m/20d/order10 (226 columns), daily Snappy derived/stock/logsig_v; sequential dates with rolling state");

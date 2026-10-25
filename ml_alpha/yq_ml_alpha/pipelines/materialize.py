@@ -17,6 +17,8 @@ def run(config_path: str | Path) -> list[Path]:
 
 
 def run_config(config: MlAlphaConfig) -> list[Path]:
+    if config.features.type == "analyst_raw40_sequence":
+        raise ValueError("Analyst GAT inputs are derived data; use Rust derive-analyst-gat-inputs before factor-run")
     if config.features.type == "derived_chip_age":
         raise ValueError("Chip-age tensors are derived data; use derive-chip-age before factor-run")
     if config.features.type == "derived_logsig":

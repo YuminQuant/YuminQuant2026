@@ -1,4 +1,14 @@
 [[factors]]
+factor_id = "analyst_coverage_gat_40d"
+config = "factors/analyst_coverage_gat_40d.toml"
+status = "active"
+display_name = "40-day raw reversal, turnover and volatility analyst-coverage GAT"
+model_class = "yq_ml_alpha.models.analyst_coverage_gat_model.AnalystCoverageGATAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "HTZQ", "gat", "analyst_coverage", "raw40", "mse_loss"]
+
+[[factors]]
 factor_id = "astgnn_week"
 config = "factors/astgnn_week.toml"
 status = "active"

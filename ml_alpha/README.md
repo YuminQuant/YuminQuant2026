@@ -17,6 +17,9 @@
 
 Formal factor filenames, IDs and output columns use matching semantic names. Model IDs are separate from formal factor names. Implementations cover regression/classification, tree ensembles, sequence networks and graph models; each requires its own dependencies and data.
 
+`analyst_coverage_gat_40d` 使用原始行情派生的40日反转、换手率和波动率，
+结合分析师共同覆盖GAT生成单列正式因子；见 [Raw 40-day coverage GAT](docs/ANALYST_COVERAGE_GAT_40D.md)。
+
 `mdl_000035` 为华泰分析师共同覆盖 GAT：季度二值关系图与单日正式因子输入，
 单层注意力加独立残差投影输出一个分数。
 数据派生、网络和 CLI 见 [Analyst coverage GAT / 分析师共同覆盖](docs/ANALYST_COVERAGE_GAT.md)。

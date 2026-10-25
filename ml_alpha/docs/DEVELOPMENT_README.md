@@ -92,6 +92,12 @@ OpenMP conflicts through environment consistency, not the unsafe duplicate-runti
 独立生产，不依赖基金持仓；Python 按交易日历定位应有季度快照，缺失时报错。
 该数据身份与原日频三关系图独立。见 [ANALYST_COVERAGE_GAT.md](ANALYST_COVERAGE_GAT.md)。
 
+`analyst_raw40_sequence` 以同一覆盖股票provider包装 Rust 的
+`derive-analyst-gat-inputs` 三列输入，完整40日原始窗口先于模型预处理计算。
+窗口不完整行不进入图；新派生输入身份仅对该provider加入manifest，原
+`mdl_000035` 正式因子库输入的身份不变。正式输出见
+[ANALYST_COVERAGE_GAT_40D.md](ANALYST_COVERAGE_GAT_40D.md)。
+
 多标签训练在 `[label]` 主标签之外使用 `[[label.auxiliary]]`（id、lookahead_days），
 共用标签 root；公共 dataset 一次读取并按列预处理，`ModelContext.label_columns`
 保留主辅顺序。普通表/序列/bar 样本在特征预处理后剔除任一任务无效的标签行；

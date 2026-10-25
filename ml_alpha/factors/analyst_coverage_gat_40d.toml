@@ -1,0 +1,90 @@
+# HTZQ AI 58: raw 40-day reversal/turnover/volatility inputs and co-coverage GAT.
+factor_id = "analyst_coverage_gat_40d"
+tags = ["HTZQ", "gat", "analyst_coverage", "raw40", "mse_loss"]
+data_root = "data"
+data_version = "analyst_coverage_gat_raw40_v1"
+
+[output]
+kind = "factor"
+id = "analyst_coverage_gat_40d"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20130101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+# History normalization is owned by the sequence provider; labels by the model.
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "analyst_raw40_sequence"
+root = "data/derived/stock/analyst_gat_inputs"
+columns = ["return_40d", "turnover_mean_40d", "volatility_40d"]
+
+[features.params]
+sequence_length = 1
+history_transform = "mad5_zscore_rank_label"
+memory_budget_mb = 512
+coverage_root = "data/derived/stock/analyst_coverage"
+coverage_window_months = 6
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "analyst_coverage_gat_40d"
+class = "yq_ml_alpha.models.analyst_coverage_gat_model.AnalystCoverageGATAlphaModel"
+artifact_dir = "data/model_workspace/analyst_coverage_gat_40d/artifacts"
+
+[model.params]
+sequence_length = 1
+hidden_size = 5
+negative_slope = 0.2
+epochs = 100
+patience = 10
+lr = 0.0005
+weight_decay = 0.0
+# Project stock inputs in chunks; every attention query still sees ALL neighbors.
+batch_size = 3000
+graph_chunk_size = 512
+gradient_checkpointing = true
+min_delta = 0.000000000001
+seed = 42
+device = "cuda"

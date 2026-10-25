@@ -39,8 +39,14 @@ class AnalystFactorFrameProvider(FactorSequenceProvider):
             coverage=self.coverage.identity(),
             membership="visible_analyst_coverage_before_normalization_and_label_join",
         )
+        input_identity = getattr(self.sequence.provider, "dataset_identity", None)
+        if callable(input_identity):
+            identity["input_dataset"] = input_identity()
         return identity
 
     def load(self, trade_date):
         self.coverage.identity()
+        require_date = getattr(self.sequence.provider, "require_date", None)
+        if callable(require_date):
+            require_date(trade_date)
         return super().load(trade_date)

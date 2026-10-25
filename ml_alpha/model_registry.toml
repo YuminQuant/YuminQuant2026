@@ -597,3 +597,19 @@ preprocess = "raw_complete_decayed_event_counts"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "stock_events: own28 + summed Top3 related28; six-month quarterly analyst coverage"
 tags = ["HTZQ", "xgboost", "events", "analyst_coverage", "classification", "alpha_model"]
+
+[[models]]
+model_id = "mdl_000038"
+alpha_id = "mdl_000038"
+run_id = "mdl_000038"
+config = "models/mdl_000038.toml"
+status = "active"
+display_name = "HTZQ full-cross-section stock Transformer alpha"
+description = "Current formal factors as stock tokens, no position encoding; two post-norm encoders with global keys/values and bounded query blocks, DWA 10/20-day heads and equal mean prediction."
+model_class = "yq_ml_alpha.models.stock_transformer_model.StockTransformerAlphaModel"
+model_family = "stock_transformer"
+label = "future_vwap_return_10d + future_vwap_return_20d"
+preprocess = "provider_mad5_zscore_model_rank_zscore_dual_targets"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_sequence: data/factors/stock/daily, columns=__all__, length=1, complete eligible date"
+tags = ["HTZQ", "transformer", "stock_attention", "multi_task", "dwa", "factor_combination"]

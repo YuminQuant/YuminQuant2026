@@ -1,0 +1,92 @@
+# HTZQ AI69 stock-token Transformer. See docs/HUATAI_STOCK_TRANSFORMER.md.
+run_id = "mdl_000038"
+alpha_id = "mdl_000038"
+data_root = "data"
+output_root = "data/models"
+data_version = "huatai_stock_transformer_local_factors_v1"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[[label.auxiliary]]
+id = "future_vwap_return_20d"
+lookahead_days = 21
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+# The provider normalizes before labels are joined; targets belong to the model.
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_sequence"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[features.params]
+sequence_length = 1
+history_transform = "mad5_zscore_rank_label"
+memory_budget_mb = 512
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "stock_transformer"
+class = "yq_ml_alpha.models.stock_transformer_model.StockTransformerAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000038/artifacts"
+
+[model.params]
+sequence_length = 1
+num_layers = 2
+attention_heads = 2
+feedforward_size = 64
+dropout = 0.1
+# Hidden width of each prediction head; Transformer width is the factor count.
+hidden_size = 256
+negative_slope = 0.01
+weighting = "dwa"
+rank_weight_half_life = 0.5
+dwa_temperature = 2.0
+lr = 0.0001
+weight_decay = 0.0
+epochs = 200
+patience = 20
+# Query blocks see ALL current-date stocks as keys and values.
+batch_size = 3000
+attention_chunk_size = 512
+gradient_checkpointing = true
+min_delta = 0.000000000001
+seed = 42
+device = "cuda"

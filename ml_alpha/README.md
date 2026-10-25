@@ -28,6 +28,10 @@ Formal factor filenames, IDs and output columns use matching semantic names. Mod
 以及自身事件加Top3共同覆盖公司的事件；完整事件源尚待接入。
 输入协议、派生和CLI见 [Analyst events / 关联事件模型](docs/ANALYST_EVENTS.md)。
 
+`mdl_000038` 为华泰股票间Transformer：以当日股票为token，对完整股票截面做注意力，
+10／20日双任务采用DWA训练后等权输出。与现有单股票时间轴的`rawbar_transformer`独立，
+详见 [Stock Transformer / 股票间注意力](docs/HUATAI_STOCK_TRANSFORMER.md)。
+
 `mdl_000033` / `mdl_000034` 为华泰多任务因子合成 MLP，分别采用 UW / DWA 损失加权，
 共享网络同时预测 10/20 日收益排序，再等权输出单分数。
 结构、双标签到期隔离和 CLI 见 [Multi-task learning / 多任务学习](docs/HUATAI_MULTITASK.md)。

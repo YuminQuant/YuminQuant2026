@@ -747,21 +747,27 @@ fn materialize_intraday_raw_table(
     let mut stateful_requirements_by_dataset =
         BTreeMap::<(DatasetId, Option<usize>), Vec<(&IntradayRawRequirement, BTreeSet<i32>)>>::new(
         );
-    for requirement in requirements
+    let selected_requirements = requirements
         .iter()
         .filter(|requirement| raw_id_set.contains(&requirement.spec.raw_id))
-    {
-        progress.update(format!(
-            "stage=intraday_raw_cache_check raw={} dates={}",
-            requirement.spec.raw_id,
-            context.load_dates.len()
-        ));
-        let mut missing_dates = storage
-            .missing_dates(
-                &requirement.spec,
-                &context.load_dates,
-                request.refresh_minute_cache,
-            )?
+        .collect::<Vec<_>>();
+    progress.update(format!(
+        "stage=intraday_raw_cache_check raws={} dates={}",
+        selected_requirements.len(),
+        context.load_dates.len()
+    ));
+    let mut missing_by_raw = storage.missing_dates_many(
+        &selected_requirements
+            .iter()
+            .map(|requirement| &requirement.spec)
+            .collect::<Vec<_>>(),
+        &context.load_dates,
+        request.refresh_minute_cache,
+    )?;
+    for requirement in selected_requirements {
+        let mut missing_dates = missing_by_raw
+            .remove(&requirement.spec.raw_id)
+            .expect("cache check includes every selected raw")
             .into_iter()
             .collect::<BTreeSet<_>>();
         let raw_id = requirement.spec.raw_id.clone();

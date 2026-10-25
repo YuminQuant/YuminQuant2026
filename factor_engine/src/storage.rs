@@ -6,7 +6,7 @@ use crate::core::{
     AssetClass, BarraSeries, BarraSpec, FactorRowKey, FactorSeries, FactorSpec, Frequency,
     IntradayDailyRawSeries, IntradayDailyRawSpec, LabelSeries, LabelSpec,
 };
-use crate::data::parquet_io::{read_parquet, write_parquet};
+use crate::data::parquet_io::{parquet_column_names, read_parquet, write_parquet};
 use crate::data::table::{ColumnData, Table};
 use crate::error::{err, Result};
 
@@ -758,19 +758,70 @@ impl IntradayDailyRawStorage {
         dates: &[i32],
         refresh: bool,
     ) -> Result<Vec<i32>> {
-        if refresh || !self.metadata_matches(spec)? {
-            return Ok(dates.to_vec());
+        Ok(self
+            .missing_dates_many(&[spec], dates, refresh)?
+            .remove(&spec.raw_id)
+            .expect("cache check includes the requested raw"))
+    }
+
+    /// Share metadata and footer reads for this scan; no schema state survives it.
+    pub fn missing_dates_many(
+        &self,
+        specs: &[&IntradayDailyRawSpec],
+        dates: &[i32],
+        refresh: bool,
+    ) -> Result<BTreeMap<String, Vec<i32>>> {
+        let mut missing = specs
+            .iter()
+            .map(|spec| (spec.raw_id.clone(), Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+        if specs.is_empty() {
+            return Ok(missing);
         }
-        let mut missing = Vec::new();
-        for date in dates {
-            let path = self.output_path(spec.asset_class, *date);
-            if !crate::artifact_io::exists(&path)? {
-                missing.push(*date);
-                continue;
+        let metadata_path = self.metadata_path();
+        if refresh || !crate::artifact_io::exists(&metadata_path)? {
+            for values in missing.values_mut() {
+                values.extend_from_slice(dates);
             }
-            let table = read_parquet(&path, None)?;
-            if !table.columns.contains_key(&spec.raw_id) {
-                missing.push(*date);
+            return Ok(missing);
+        }
+        let rows = read_raw_metadata_records(&metadata_path)?;
+        let mut by_asset = BTreeMap::<AssetClass, Vec<&IntradayDailyRawSpec>>::new();
+        for spec in specs {
+            let matches = rows.iter().any(|row| {
+                row.raw_id == spec.raw_id
+                    && row.asset_class == spec.asset_class.as_str()
+                    && row.version == spec.version
+                    && row.source_dataset == spec.source_dataset.as_str()
+                    && row.source_bar_size == spec.source_bar_size.map(|value| value as i32)
+                    && row.window_days == spec.window_days as i32
+                    && parse_string_list_json(&row.columns_json) == spec.columns
+            });
+            if matches {
+                by_asset.entry(spec.asset_class).or_default().push(spec);
+            } else {
+                missing
+                    .get_mut(&spec.raw_id)
+                    .unwrap()
+                    .extend_from_slice(dates);
+            }
+        }
+        for (asset, specs) in by_asset {
+            for date in dates {
+                let path = self.output_path(asset, *date);
+                let columns = if crate::artifact_io::exists(&path)? {
+                    Some(parquet_column_names(&path)?)
+                } else {
+                    None
+                };
+                for spec in &specs {
+                    if columns
+                        .as_ref()
+                        .map_or(true, |names| !names.contains(&spec.raw_id))
+                    {
+                        missing.get_mut(&spec.raw_id).unwrap().push(*date);
+                    }
+                }
             }
         }
         Ok(missing)
@@ -875,23 +926,6 @@ impl IntradayDailyRawStorage {
         });
         let table = raw_metadata_rows_to_table(rows)?;
         write_parquet(&path, &table)
-    }
-
-    fn metadata_matches(&self, spec: &IntradayDailyRawSpec) -> Result<bool> {
-        let path = self.metadata_path();
-        if !crate::artifact_io::exists(&path)? {
-            return Ok(false);
-        }
-        let rows = read_raw_metadata_records(&path)?;
-        Ok(rows.iter().any(|row| {
-            row.raw_id == spec.raw_id
-                && row.asset_class == spec.asset_class.as_str()
-                && row.version == spec.version
-                && row.source_dataset == spec.source_dataset.as_str()
-                && row.source_bar_size == spec.source_bar_size.map(|value| value as i32)
-                && row.window_days == spec.window_days as i32
-                && parse_string_list_json(&row.columns_json) == spec.columns
-        }))
     }
 
     fn output_path(&self, asset_class: AssetClass, trade_date: i32) -> PathBuf {

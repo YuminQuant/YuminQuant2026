@@ -17,6 +17,10 @@
 
 Formal factor filenames, IDs and output columns use matching semantic names. Model IDs are separate from formal factor names. Implementations cover regression/classification, tree ensembles, sequence networks and graph models; each requires its own dependencies and data.
 
+`mdl_000033` / `mdl_000034` 为华泰多任务因子合成 MLP，分别采用 UW / DWA 损失加权，
+共享网络同时预测 10/20 日收益排序，再等权输出单分数。
+结构、双标签到期隔离和 CLI 见 [Multi-task learning / 多任务学习](docs/HUATAI_MULTITASK.md)。
+
 华泰多频率 GRU 系列包含 `bar_gru_15m`、`bar_gru_attention_15m`、
 `multi_bar_gru_daily_15m` 和 `residual_multi_bar_gru`；输入、网络、统一训练口径
 及命令见 [研报对齐说明 / Report alignment](docs/BAR_GRU_REPORT_ALIGNMENT.md)。

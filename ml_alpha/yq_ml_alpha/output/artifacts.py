@@ -16,6 +16,10 @@ def window_artifact_path(artifact_dir: str | Path, window_id: str) -> Path:
 
 
 def artifact_identity(config, window, dataset) -> dict:
+    label_identity = asdict(config.label)
+    # Keep existing single-label model fingerprints unchanged.
+    if not config.label.auxiliary:
+        label_identity.pop("auxiliary", None)
     identity = {
         "pipeline_version": 3,
         "training_information_cutoff": window.training_cutoff_date,
@@ -24,7 +28,7 @@ def artifact_identity(config, window, dataset) -> dict:
         "features": asdict(config.features),
         "feature_columns": list(dataset.feature_provider.feature_columns),
         "preprocess": asdict(config.preprocess),
-        "label": asdict(config.label),
+        "label": label_identity,
         "filters": asdict(config.filters),
         "universe": asdict(config.universe),
         "data_root": artifact_io.identity_path(config.data_root),

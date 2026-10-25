@@ -1,0 +1,79 @@
+# HTZQ AI 67 hard-sharing MLP, DWA. See docs/HUATAI_MULTITASK.md.
+run_id = "mdl_000034"
+alpha_id = "mdl_000034"
+data_root = "data"
+output_root = "data/models"
+data_version = "huatai_multitask_local_factors_v1"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[[label.auxiliary]]
+id = "future_vwap_return_20d"
+lookahead_days = 21
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "mad5_zscore_features"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000034/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "multi_task_dwa"
+class = "yq_ml_alpha.models.multi_task_model.MultiTaskAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000034/artifacts"
+
+[model.params]
+hidden_size = 256
+weighting = "dwa"
+negative_slope = 0.01
+rank_weight_half_life = 0.5
+dwa_temperature = 2.0
+lr = 0.0001
+weight_decay = 0.0
+epochs = 200
+patience = 20
+# Stock chunks; accumulate a complete date before each optimizer step.
+batch_size = 3000
+min_delta = 0.000000000001
+seed = 42
+device = "cuda"

@@ -130,18 +130,21 @@ def _mature_dates(config, calendar, dates, training_date):
 
 
 def _label_horizon(config: MlAlphaConfig) -> int:
-    horizon = config.label.lookahead_days
-    if horizon is None:
-        match = re.fullmatch(r"future_(?:vwap|open_\d+m_vwap)_return_(\d+)d", config.label.id)
-        if match is None:
-            raise ValueError("custom label requires label.lookahead_days to prevent temporal leakage")
-        horizon = int(match.group(1)) + 1
-    if not isinstance(horizon, int) or horizon < 0:
-        raise ValueError("label.lookahead_days must be a non-negative integer")
+    horizons = []
+    for label in (config.label, *config.label.auxiliary):
+        horizon = label.lookahead_days
+        if horizon is None:
+            match = re.fullmatch(r"future_(?:vwap|open_\d+m_vwap)_return_(\d+)d", label.id)
+            if match is None:
+                raise ValueError(f"custom label {label.id!r} requires lookahead_days to prevent temporal leakage")
+            horizon = int(match.group(1)) + 1
+        if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 0:
+            raise ValueError("label.lookahead_days must be a non-negative integer")
+        horizons.append(horizon)
     auxiliary = config.features.params.get("supervision_lookahead_days", 0)
     if isinstance(auxiliary, bool) or not isinstance(auxiliary, int) or auxiliary < 0:
         raise ValueError("features.params.supervision_lookahead_days must be a non-negative integer")
-    return max(horizon, auxiliary)
+    return max(*horizons, auxiliary)
 
 
 def _settled_dates(config, calendar, dates, prediction_start):
@@ -802,6 +805,7 @@ def _context(config: MlAlphaConfig, window_id: str, feature_columns: list[str] |
         model_params=config.model.params,
         model_search=config.model.search,
         diagnostics=config.diagnostics.__dict__,
+        label_columns=config.label.columns,
     )
 
 

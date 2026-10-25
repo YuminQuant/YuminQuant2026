@@ -517,3 +517,35 @@ preprocess = "provider_zscore_clip3_label_zscore"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "factor_sequence: data/factors/stock/daily, columns=__all__, length=30"
 tags = ["DFZQ", "neural_ode", "vae", "gru", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000033"
+alpha_id = "mdl_000033"
+run_id = "mdl_000033"
+config = "models/mdl_000033.toml"
+status = "active"
+display_name = "HTZQ hard-sharing multi-task MLP with uncertainty weighting"
+description = "Single-date formal factors; two shared 256-unit layers, independent 10/20-day rank-return heads, learned uncertainty loss weights; equal mean prediction, seed42."
+model_class = "yq_ml_alpha.models.multi_task_model.MultiTaskAlphaModel"
+model_family = "multi_task_uw"
+label = "future_vwap_return_10d + future_vwap_return_20d"
+preprocess = "mad5_zscore_features_model_rank_zscore_targets"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "mlp", "multi_task", "uncertainty_weight", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000034"
+alpha_id = "mdl_000034"
+run_id = "mdl_000034"
+config = "models/mdl_000034.toml"
+status = "active"
+display_name = "HTZQ hard-sharing multi-task MLP with dynamic weight averaging"
+description = "Single-date formal factors; two shared 256-unit layers, independent 10/20-day rank-return heads, DWA from preceding two epoch task losses; equal mean prediction, seed42."
+model_class = "yq_ml_alpha.models.multi_task_model.MultiTaskAlphaModel"
+model_family = "multi_task_dwa"
+label = "future_vwap_return_10d + future_vwap_return_20d"
+preprocess = "mad5_zscore_features_model_rank_zscore_targets"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "factor_frame: data/factors/stock/daily, columns=__all__"
+tags = ["HTZQ", "mlp", "multi_task", "dynamic_weight_average", "factor_combination"]

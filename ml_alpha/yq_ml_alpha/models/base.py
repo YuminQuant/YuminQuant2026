@@ -22,6 +22,7 @@ class ModelContext:
     model_params: dict[str, Any]
     model_search: dict[str, Any]
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    label_columns: list[str] = field(default_factory=list)
 
 
 class AlphaModel:

@@ -67,10 +67,36 @@ class PostprocessConfig:
 
 
 @dataclass(frozen=True)
+class AuxiliaryLabelConfig:
+    id: str
+    lookahead_days: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id.strip():
+            raise ValueError("auxiliary label.id must be a nonempty string")
+        horizon = self.lookahead_days
+        if horizon is not None and (isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 0):
+            raise ValueError("auxiliary label.lookahead_days must be a non-negative integer")
+
+
+@dataclass(frozen=True)
 class LabelConfig:
     id: str
     root: Path = Path("data/label/stock/daily")
     lookahead_days: int | None = None
+    auxiliary: tuple[AuxiliaryLabelConfig, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.auxiliary, tuple) or any(
+            not isinstance(label, AuxiliaryLabelConfig) for label in self.auxiliary
+        ):
+            raise ValueError("label.auxiliary must contain AuxiliaryLabelConfig entries")
+        if len(set(self.columns)) != len(self.columns):
+            raise ValueError("primary and auxiliary label IDs must be unique")
+
+    @property
+    def columns(self) -> list[str]:
+        return [self.id, *(label.id for label in self.auxiliary)]
 
 
 @dataclass(frozen=True)
@@ -228,6 +254,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             id=_required(label, "id", "label.id"),
             root=_project_path(label.get("root", data_root / "label" / "stock" / "daily")),
             lookahead_days=label.get("lookahead_days"),
+            auxiliary=_auxiliary_labels(label.get("auxiliary", [])),
         ),
         universe=UniverseConfig(id=universe.get("id", "mkt_all")),
         filters=FiltersConfig(
@@ -281,6 +308,20 @@ def load_config(path: str | Path) -> MlAlphaConfig:
         data_root=data_root,
         output_root=output_root,
     )
+
+
+def _auxiliary_labels(raw: Any) -> tuple[AuxiliaryLabelConfig, ...]:
+    if not isinstance(raw, list):
+        raise ValueError("label.auxiliary must be an array of tables")
+    output = []
+    for entry in raw:
+        if not isinstance(entry, dict) or set(entry).difference({"id", "lookahead_days"}):
+            raise ValueError("auxiliary labels support only id and lookahead_days, sharing label.root")
+        output.append(AuxiliaryLabelConfig(
+            id=_required(entry, "id", "label.auxiliary.id"),
+            lookahead_days=entry.get("lookahead_days"),
+        ))
+    return tuple(output)
 
 
 def _validate_train_scheme(section: TrainSchemeConfig) -> None:

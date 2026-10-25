@@ -86,6 +86,13 @@ OpenMP conflicts through environment consistency, not the unsafe duplicate-runti
 通过公共 `build_windows` 处理标签到期与训练/验证隔离；不要在模型内部另写日期切分。
 此约定不改变 `models/` 中独立实验配置的窗口。
 
+多标签训练在 `[label]` 主标签之外使用 `[[label.auxiliary]]`（id、lookahead_days），
+共用标签 root；公共 dataset 一次读取并按列预处理，`ModelContext.label_columns`
+保留主辅顺序。普通表/序列/bar 样本在特征预处理后剔除任一任务无效的标签行；
+要求完整截面的图模型继续保留未标记节点，由模型按任务处理监督掩码。
+预测不读取标签。公共窗口按所有任务及辅助监督的最长到期边界隔离；空 auxiliary
+不改变原单标签 manifest 指纹。UW/DWA 模型示例见 [HUATAI_MULTITASK.md](HUATAI_MULTITASK.md)。
+
 `bar_gru_attention_15m` 与普通 15 分钟 BarGRU 共用 `bar_panel` 和训练流程，
 只通过模型子类替换网络：全序列时间注意力摘要与末端隐状态拼接，经 BN/FC
 输出单因子。复现范围与 CLI 见 [BAR_GRU_REPORT_ALIGNMENT.md](BAR_GRU_REPORT_ALIGNMENT.md)。

@@ -117,12 +117,12 @@ class DatasetBuilder:
                 continue
             frame = features if graph_tensor else self.filters.apply(self.universe.filter(features, trade_date), trade_date)
             if include_label:
-                labels = read_daily(self.config.label.root, trade_date, [self.config.label.id])
-                frame = frame.merge(labels[["trade_date", "ts_code", self.config.label.id]], on=["trade_date", "ts_code"], how="left")
+                labels = self._read_labels(trade_date)
+                frame = frame.merge(labels, on=["trade_date", "ts_code"], how="left")
             if not lazy_tensor:
                 frame = self._preprocess(frame, include_label)
             if include_label and not graph_tensor:
-                keep = np.isfinite(frame[self.config.label.id]) if lazy_tensor else frame[self.config.label.id].notna()
+                keep = self._valid_label_rows(frame, finite=lazy_tensor)
                 frame = frame.loc[keep]
             frames.append(frame)
             total_rows += len(frame)
@@ -132,7 +132,7 @@ class DatasetBuilder:
         else:
             columns = ["trade_date", "ts_code", *self.feature_provider.feature_columns]
             if include_label:
-                columns.append(self.config.label.id)
+                columns.extend(self.config.label.columns)
             output = pd.DataFrame(columns=columns)
         self._maybe_cache(output, dates, include_label)
         if include_label:
@@ -209,14 +209,14 @@ class DatasetBuilder:
                 self.config.preprocess.feature_fill_value
             )
             if include_label:
-                labels = read_daily(self.config.label.root, trade_date, [self.config.label.id])
+                labels = self._read_labels(trade_date)
                 labels = self._preprocess_labels(labels)
                 frame = frame.merge(
-                    labels[["trade_date", "ts_code", self.config.label.id]],
+                    labels,
                     on=["trade_date", "ts_code"],
                     how="left",
                 )
-                frame = frame.loc[frame[self.config.label.id].notna()]
+                frame = frame.loc[self._valid_label_rows(frame)]
                 progress(f"label step=done rows={len(frame)}")
             progress(f"target_done feature_rows={len(frame)}")
             frames.append(frame)
@@ -226,7 +226,7 @@ class DatasetBuilder:
         else:
             columns = ["trade_date", "ts_code", *sequence_columns]
             if include_label:
-                columns.append(self.config.label.id)
+                columns.extend(self.config.label.columns)
             output = pd.DataFrame(columns=columns)
         self._maybe_cache(output, dates, include_label)
         return DatasetBundle(output, sequence_columns, self.config.label.id)
@@ -306,15 +306,15 @@ class DatasetBuilder:
                 frame["ts_code"].astype(str).tolist(),
             )
             if include_label:
-                labels = read_daily(self.config.label.root, trade_date, [self.config.label.id])
+                labels = self._read_labels(trade_date)
                 frame = frame.merge(
-                    labels[["trade_date", "ts_code", self.config.label.id]],
+                    labels,
                     on=["trade_date", "ts_code"],
                     how="left",
                 )
             frame, tensors = self._preprocess_tensors(frame, tensors, include_label)
             if include_label and not self.feature_provider.requires_full_cross_section:
-                keep = frame[self.config.label.id].notna().to_numpy()
+                keep = self._valid_label_rows(frame).to_numpy()
                 frame = frame.loc[keep].reset_index(drop=True)
                 tensors = _take_tensor_rows(tensors, keep)
             else:
@@ -337,7 +337,7 @@ class DatasetBuilder:
         else:
             columns = ["trade_date", "ts_code"]
             if include_label:
-                columns.append(self.config.label.id)
+                columns.extend(self.config.label.columns)
             output = pd.DataFrame(columns=columns)
             output_tensors, tensor_columns = _empty_provider_tensors(self.feature_provider)
         self._maybe_cache(output, dates, include_label)
@@ -377,9 +377,22 @@ class DatasetBuilder:
                 output[trade_date] = symbols
         return output
 
+    def _read_labels(self, trade_date: int) -> pd.DataFrame:
+        return read_daily(self.config.label.root, trade_date, self.config.label.columns)
+
+    def _valid_label_rows(self, frame: pd.DataFrame, *, finite: bool = False) -> pd.Series:
+        if self.config.label.auxiliary:
+            # Multi-task training uses only stocks whose complete target vector
+            # exists. This runs after feature transforms, preserving the same
+            # feature cross-section regardless of future-label availability.
+            labels = frame[self.config.label.columns].apply(pd.to_numeric, errors="coerce")
+            return labels.replace([np.inf, -np.inf], np.nan).notna().all(axis=1)
+        target = frame[self.config.label.id]
+        return np.isfinite(target) if finite else target.notna()
+
     def _preprocess(self, frame: pd.DataFrame, include_label: bool) -> pd.DataFrame:
         columns = list(self.feature_provider.feature_columns)
-        label_columns = [self.config.label.id] if include_label and self.config.label.id in frame.columns else []
+        label_columns = [column for column in self.config.label.columns if include_label and column in frame.columns]
         return apply_cross_section_transform(
             frame,
             self.config.preprocess.cross_section_transform,
@@ -393,7 +406,7 @@ class DatasetBuilder:
             frame,
             self.config.preprocess.cross_section_transform,
             [],
-            label_columns=[self.config.label.id] if self.config.label.id in frame.columns else [],
+            label_columns=[column for column in self.config.label.columns if column in frame.columns],
             feature_fill_value=self.config.preprocess.feature_fill_value,
         )
 

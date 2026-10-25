@@ -17,6 +17,10 @@
 
 Formal factor filenames, IDs and output columns use matching semantic names. Model IDs are separate from formal factor names. Implementations cover regression/classification, tree ensembles, sequence networks and graph models; each requires its own dependencies and data.
 
+华泰多频率 GRU 系列包含 `bar_gru_15m`、`bar_gru_attention_15m`、
+`multi_bar_gru_daily_15m` 和 `residual_multi_bar_gru`；输入、网络、统一训练口径
+及命令见 [研报对齐说明 / Report alignment](docs/BAR_GRU_REPORT_ALIGNMENT.md)。
+
 ## 安装 / Installation
 
 从仓库根目录安装，按所选配置选择 extras。GPU/CUDA/OpenCL 与模型库版本需要匹配，不要求所有机器采用同一个个人环境。

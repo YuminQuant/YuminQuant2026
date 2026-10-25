@@ -86,6 +86,10 @@ OpenMP conflicts through environment consistency, not the unsafe duplicate-runti
 通过公共 `build_windows` 处理标签到期与训练/验证隔离；不要在模型内部另写日期切分。
 此约定不改变 `models/` 中独立实验配置的窗口。
 
+`bar_gru_attention_15m` 与普通 15 分钟 BarGRU 共用 `bar_panel` 和训练流程，
+只通过模型子类替换网络：全序列时间注意力摘要与末端隐状态拼接，经 BN/FC
+输出单因子。复现范围与 CLI 见 [BAR_GRU_REPORT_ALIGNMENT.md](BAR_GRU_REPORT_ALIGNMENT.md)。
+
 研报文本属于事件样本，`analyst_report_events` 使用全部报告，按下一交易日
 映射可用日期，不使用 5 日抽样或未来收益标签。它沿用公共年度窗口、manifest、
 正式因子写入器，由事件适配流程处理报告标签与月度聚合。详见

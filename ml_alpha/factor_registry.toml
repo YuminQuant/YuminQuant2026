@@ -129,6 +129,16 @@ label = "future_vwap_return_10d"
 tags = ["e2e", "bar_gru", "minute", "ic_loss", "HTZQ"]
 
 [[factors]]
+factor_id = "bar_gru_attention_15m"
+config = "factors/bar_gru_attention_15m.toml"
+status = "active"
+display_name = "15m bar GRU with temporal attention end-to-end factor"
+model_class = "yq_ml_alpha.models.bar_gru_attention_model.BarGRUAttentionAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "bar_gru_attention", "minute", "attention", "ic_loss", "HTZQ"]
+
+[[factors]]
 factor_id = "multi_bar_gru_daily_15m"
 config = "factors/multi_bar_gru_daily_15m.toml"
 status = "active"

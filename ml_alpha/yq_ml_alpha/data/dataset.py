@@ -21,6 +21,7 @@ from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.graph_factor_frame import FactorSequenceProvider, GraphFactorFrameProvider
 from yq_ml_alpha.features.analyst_factor_frame import AnalystFactorFrameProvider
 from yq_ml_alpha.features.derived_analyst_gat import DerivedAnalystGATProvider
+from yq_ml_alpha.features.stock_events import StockEventsProvider
 from yq_ml_alpha.features.hist_factor_frame import HistFactorFrameProvider, ConceptFactorSequenceProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.rawbar import RawBarProvider
@@ -492,6 +493,8 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    if config.features.type == "stock_events":
+        return StockEventsProvider(config)
     if config.features.type == "analyst_raw40_sequence":
         provider = DerivedAnalystGATProvider(config.features.root, config.features.columns)
         return AnalystFactorFrameProvider(config, provider)

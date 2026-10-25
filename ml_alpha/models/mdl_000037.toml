@@ -1,0 +1,80 @@
+# HTZQ AI61 event XGBoost. Data contract: docs/ANALYST_EVENTS.md.
+run_id = "mdl_000037"
+alpha_id = "mdl_000037"
+data_root = "data"
+output_root = "data/models"
+data_version = "htzq61_events_v1"
+
+[dates]
+train = [20160101, 20251231]
+predict = [20190101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "36m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+# Counts are nonnegative; missing source categories must never be imputed.
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "stock_events"
+root = "data/derived/stock/stock_events"
+columns = "__all__"
+
+[features.params]
+include_related = true
+active_scope = "own"
+coverage_root = "data/derived/stock/analyst_coverage"
+coverage_window_months = 6
+top_neighbors = 3
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "event_xgboost"
+class = "yq_ml_alpha.models.event_xgb_model.EventXGBoostAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000037/artifacts"
+
+[model.params]
+# Multiclass XGBoost: 600 boosting rounds, three individual trees per round.
+n_estimators = 600
+max_depth = 3
+learning_rate = 0.03
+min_child_weight = 1.0
+subsample = 0.8
+colsample_bytree = 0.8
+reg_lambda = 1.0
+n_jobs = 4
+prediction_batch_size = 10000
+seed = 42
+device = "cuda"

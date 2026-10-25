@@ -8,6 +8,7 @@ pub mod logsig;
 pub mod request;
 pub mod storage;
 pub mod stock_relations;
+pub mod stock_events;
 pub mod hist_concepts;
 
 pub use analyst::{

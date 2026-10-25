@@ -565,3 +565,35 @@ preprocess = "provider_covered_mad5_zscore_label_zscore"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "analyst_factor_sequence: data/factors/stock/daily, columns=__all__, length=1"
 tags = ["HTZQ", "gat", "analyst_coverage", "residual", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000036"
+alpha_id = "mdl_000036"
+run_id = "mdl_000036"
+config = "models/mdl_000036.toml"
+status = "active"
+display_name = "HTZQ own-company event XGBoost alpha"
+description = "28 event categories over three calendar months, 20-session half-life; GPU ternary XGBoost, daily return terciles, P(top)-P(bottom). Requires complete canonical event data, not yet supplied."
+model_class = "yq_ml_alpha.models.event_xgb_model.EventXGBoostAlphaModel"
+model_family = "event_xgboost"
+label = "future_vwap_return_10d"
+preprocess = "raw_complete_decayed_event_counts"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "stock_events: own 28 categories, source completeness required"
+tags = ["HTZQ", "xgboost", "events", "classification", "alpha_model"]
+
+[[models]]
+model_id = "mdl_000037"
+alpha_id = "mdl_000037"
+run_id = "mdl_000037"
+config = "models/mdl_000037.toml"
+status = "active"
+display_name = "HTZQ own and associated-company event XGBoost alpha"
+description = "Own 28 plus summed 28 event features of Top3 quarterly co-covered companies, selected without event/label filtering; GPU ternary XGBoost. Complete canonical event data pending."
+model_class = "yq_ml_alpha.models.event_xgb_model.EventXGBoostAlphaModel"
+model_family = "related_event_xgboost"
+label = "future_vwap_return_10d"
+preprocess = "raw_complete_decayed_event_counts"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "stock_events: own28 + summed Top3 related28; six-month quarterly analyst coverage"
+tags = ["HTZQ", "xgboost", "events", "analyst_coverage", "classification", "alpha_model"]

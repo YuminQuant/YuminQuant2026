@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+from collections import Counter
 import json
 from pathlib import Path
 
@@ -33,6 +34,9 @@ class AnalystCoverage:
         self._cached_snapshot = None
         self._cached_memberships = None
         self._cached_symbols = None
+        self._neighbor_groups = None
+        self._neighbor_count = None
+        self._neighbor_cache = {}
 
     def identity(self):
         if self.manifest is None:
@@ -62,6 +66,9 @@ class AnalystCoverage:
         self._cached_snapshot = None
         self._cached_memberships = None
         self._cached_symbols = None
+        self._neighbor_groups = None
+        self._neighbor_count = None
+        self._neighbor_cache.clear()
 
     def snapshot_date(self, date):
         date = int(date)
@@ -93,6 +100,9 @@ class AnalystCoverage:
             self._cached_snapshot = snapshot
             self._cached_memberships = frame
             self._cached_symbols = frozenset(frame.ts_code)
+            self._neighbor_groups = None
+            self._neighbor_count = None
+            self._neighbor_cache.clear()
         return self._cached_memberships
 
     def covered_symbols(self, date):
@@ -108,6 +118,42 @@ class AnalystCoverage:
         if missing:
             raise ValueError(f"analyst graph contains uncovered stocks on {date}: {sorted(missing)[:5]}")
         return BinaryCoverageGraph(frame, symbols)
+
+    def top_neighbors(self, date, symbols, top_k=3):
+        """Rank the full snapshot by shared analyst count, excluding self.
+
+        Current event activity, labels and candidate-universe filters do not
+        affect the neighbor pool. Ties are resolved by stock code ascending.
+        Only one quarter and one requested K are cached; stock pairs are not.
+        """
+        if isinstance(top_k, bool) or int(top_k) != top_k or top_k < 1:
+            raise ValueError("top_k must be a positive integer")
+        top_k = int(top_k)
+        frame = self._memberships(date)
+        if self._neighbor_groups is None:
+            groups = {}
+            for _, rows in frame.groupby("group_id", sort=False):
+                members = tuple(rows.ts_code)
+                for stock in members:
+                    groups.setdefault(stock, []).append(members)
+            self._neighbor_groups = groups
+        if self._neighbor_count != top_k:
+            self._neighbor_count = top_k
+            self._neighbor_cache.clear()
+        result = {}
+        for stock in symbols:
+            if stock not in self._cached_symbols:
+                result[stock] = []
+                continue
+            if stock not in self._neighbor_cache:
+                counts = Counter()
+                for members in self._neighbor_groups[stock]:
+                    counts.update(members)
+                counts.pop(stock, None)
+                ordered = sorted(counts, key=lambda code: (-counts[code], code))
+                self._neighbor_cache[stock] = tuple(ordered[:top_k])
+            result[stock] = list(self._neighbor_cache[stock])
+        return result
 
 
 class BinaryCoverageGraph:

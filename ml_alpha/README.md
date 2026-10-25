@@ -24,6 +24,10 @@ Formal factor filenames, IDs and output columns use matching semantic names. Mod
 单层注意力加独立残差投影输出一个分数。
 数据派生、网络和 CLI 见 [Analyst coverage GAT / 分析师共同覆盖](docs/ANALYST_COVERAGE_GAT.md)。
 
+`mdl_000036` / `mdl_000037` 为华泰事件XGBoost分类模型，分别使用自身28类事件，
+以及自身事件加Top3共同覆盖公司的事件；完整事件源尚待接入。
+输入协议、派生和CLI见 [Analyst events / 关联事件模型](docs/ANALYST_EVENTS.md)。
+
 `mdl_000033` / `mdl_000034` 为华泰多任务因子合成 MLP，分别采用 UW / DWA 损失加权，
 共享网络同时预测 10/20 日收益排序，再等权输出单分数。
 结构、双标签到期隔离和 CLI 见 [Multi-task learning / 多任务学习](docs/HUATAI_MULTITASK.md)。

@@ -53,6 +53,15 @@ Use `factor-metadata-all` to refresh Rust and ML metadata. ML factors maintain t
 
 ## 输出与复用 / Outputs and reuse
 
+多模型训练支持按原始 refit 窗口独立调度；联合预测支持不同窗口，兼容输入共享、
+有界分数缓冲及每日多列一次写出。本地默认串行，可通过独立执行 TOML 开启并发。
+详见[多模型执行](docs/MULTI_MODEL_EXECUTION.md)，执行示例为 `execution.example.toml`。
+
+Multi-model fits can run as independent original refit windows. Grouped prediction
+supports different windows, compatible input sharing, bounded score buffers and
+one multi-column daily write. Local defaults are serial; a separate execution TOML
+controls concurrency. See [multi-model execution](docs/MULTI_MODEL_EXECUTION.md).
+
 统一入口在正式 ML 因子生产前刷新一次 metadata；原模块命令保留。普通训练入口默认单任务；scripts/train_models.py 按配置中的模型窗口拆成独立任务，本机顺序执行，部署调度器可并发。带 validation_lookback 的窗口支持年度、半年度、季度、月度更新；窗口 ID、标签清洗和模型路径保持一致。远程张量受预算限制，不在节点写 memmap。详见[统一计算与存储](../factor_engine/docs/ARTIFACT_STORAGE.md)。
 The unified entrypoint refreshes metadata once before ML factor production; module commands remain available. Ordinary training remains single-task. scripts/train_models.py creates one task per configured model window, sequential locally or concurrent through deployment scheduling. Calendar windows with validation_lookback support annual, semiannual, quarterly and monthly refits while retaining window IDs, label purging and artifact paths. Remote tensors stay within a RAM budget, not node memmaps. See [execution and storage](../factor_engine/docs/ARTIFACT_STORAGE.md).
 

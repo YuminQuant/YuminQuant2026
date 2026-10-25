@@ -31,6 +31,8 @@ from yq_ml_alpha.models.multi_bar_gru_model import (
 
 
 class ResidualMultiBarGRUAlphaModel(AlphaModel):
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
     """Two-stage daily-frozen residual GRU model for daily + intraday bar panels."""
 
     def __init__(self) -> None:

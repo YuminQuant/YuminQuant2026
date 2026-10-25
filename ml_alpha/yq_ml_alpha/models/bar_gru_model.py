@@ -15,6 +15,8 @@ from yq_ml_alpha.models.base import AlphaModel, ModelContext
 
 
 class BarGRUAlphaModel(AlphaModel):
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
     """End-to-end bar panel GRU trained with date-wise negative IC loss."""
 
     def __init__(self) -> None:

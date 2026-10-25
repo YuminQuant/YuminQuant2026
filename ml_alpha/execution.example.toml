@@ -1,0 +1,15 @@
+# Serial laptop defaults. Operational settings do not change model identities.
+# 本机默认串行；执行参数不改变模型身份或训练窗口。
+[execution]
+train_max_parallel = 1
+predict_max_parallel = 1
+model_predict_workers = 1
+threads = 1
+predict_task_days = 120
+write_workers = 1
+input_cache_mib = 64
+metadata_cache_mib = 8
+score_buffer_mib = 128
+model_cache_mib = 512
+max_resident_models = 2
+memory_budget_mib = 2048

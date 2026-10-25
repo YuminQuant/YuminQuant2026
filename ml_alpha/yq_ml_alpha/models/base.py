@@ -25,6 +25,21 @@ class ModelContext:
 
 
 class AlphaModel:
+    training_requires_previous_window = False
+    # Extensions opt in only when independent date tasks preserve their semantics.
+    prediction_replay_safe = False
+    prediction_inputs_readonly = False
+    prediction_cpu_parallel = False
+
+    def suspend_prediction_device(self):
+        """Offload known device modules without resetting a prediction session."""
+        for name in ('model', '_prediction_network'):
+            module = getattr(self, name, None)
+            if callable(getattr(module, 'to', None)):
+                module.to('cpu')
+        for module in getattr(self, 'encoders', {}).values():
+            if callable(getattr(module, 'to', None)):
+                module.to('cpu')
     @contextmanager
     def prediction_session(self):
         """Keep device resources alive across date batches of one model window."""
@@ -72,6 +87,9 @@ class AlphaModel:
 
 class MeanFeatureAlphaModel(AlphaModel):
     """Dependency-free smoke-test model that scores by row-wise feature mean."""
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
+    prediction_cpu_parallel = True
 
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
         return None

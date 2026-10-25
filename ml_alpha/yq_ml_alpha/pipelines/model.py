@@ -118,6 +118,7 @@ def train_config(config: MlAlphaConfig, *, window_ids=None) -> list[Path]:
         _release_accelerator_memory()
     if window_ids is None:
         paths.extend(_aggregate_diagnostics(config))
+    dataset.close()
     progress.done()
     return paths
 

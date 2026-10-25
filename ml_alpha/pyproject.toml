@@ -13,6 +13,7 @@ dependencies = [
   "pandas",
   "pyarrow",
   "numba",
+  "threadpoolctl>=3",
   "toml; python_version < '3.11'",
   "tomli; python_version < '3.11'",
 ]

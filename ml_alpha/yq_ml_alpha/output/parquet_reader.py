@@ -5,9 +5,23 @@ arrays; model transforms, split membership and tensors are never cached here.
 """
 from collections import OrderedDict
 from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import os
 from threading import RLock
+
+_projection_hints = ContextVar('ml_projection_hints', default={})
+
+
+@contextmanager
+def projected_inputs(requests):
+    """Union columns only; each caller still receives its own projected table."""
+    token = _projection_hints.set({str(path): tuple(dict.fromkeys(columns))
+                                   for path, columns in requests.items()})
+    try:
+        yield
+    finally:
+        _projection_hints.reset(token)
 
 
 def _budget(name, default):
@@ -98,6 +112,13 @@ class ParquetReadCache:
 
     def read(self, path, columns=None, *, allow_missing=False, required=(),
              use_threads=True, pandas_metadata=False):
+        from . import artifact_io as io
+        hint = _projection_hints.get().get(str(io.read_path(path).absolute()))
+        if hint and columns is not None and allow_missing and not set(hint) <= set(columns):
+            union = tuple(dict.fromkeys([*columns, *hint]))
+            table = self.read(path, union, allow_missing=True, required=required,
+                              use_threads=use_threads, pandas_metadata=pandas_metadata)
+            return table.select([name for name in columns if name in table.column_names])
         version = self.identity(path)
         requested = None if columns is None else tuple(dict.fromkeys(columns))
         key = (version, requested, allow_missing, tuple(required), pandas_metadata)

@@ -25,6 +25,8 @@ from yq_ml_alpha.models.base import AlphaModel, ModelContext
 
 
 class MultiBarGRUAlphaModel(AlphaModel):
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
     """Two-branch daily + intraday bar GRU trained with date-wise negative IC loss."""
 
     def __init__(self) -> None:

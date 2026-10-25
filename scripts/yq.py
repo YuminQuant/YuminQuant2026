@@ -120,14 +120,26 @@ def main(argv=None):
     if command in ML_COMMANDS:
         env=dict(os.environ)
         env['PYTHONPATH']=os.pathsep.join([str(ROOT/'ml_alpha'),env.get('PYTHONPATH','')])
+        config_count=sum(value == '--config' or value.startswith('--config=') for value in arguments)
+        multi_mode=(command in {'model-train','factor-train','model-predict','factor-predict'} and
+                    (config_count > 1 or option(arguments,'--execution-config') is not None
+                     or '--list-tasks' in arguments or option(arguments,'--task-id') is not None))
+        execution=option(arguments,'--execution-config')
+        if execution:
+            import tomllib
+            operational=tomllib.loads(Path(execution).read_text(encoding='utf-8')).get('execution',{})
+            threads=str(max(1,int(operational.get('threads',1))//int(operational.get('model_predict_workers',1))))
+            env.update({name:threads for name in ('OMP_NUM_THREADS','OPENBLAS_NUM_THREADS','MKL_NUM_THREADS','NUMEXPR_NUM_THREADS')})
         tasks = [dict(command=command,arguments=arguments)]
         aggregate = None
-        if options.split_training_windows:
+        if options.split_training_windows and not multi_mode:
             plan=json.loads(subprocess.check_output([sys.executable,'-B','-m','yq_ml_alpha',command,
                             *arguments,'--list-windows'],cwd=ROOT,env=env,text=True))
             tasks=split_training_tasks(command,arguments,plan)
             aggregate=training_aggregate_task(command,arguments,plan)
         if options.dry_run:
+            if multi_mode:
+                return subprocess.call([sys.executable,'-B','-m','yq_ml_alpha',command,*arguments,'--list-tasks'],cwd=ROOT,env=env)
             if options.split_training_windows:
                 print(json.dumps({'executor':'local','tasks':tasks,'after_success':aggregate},indent=2))
                 return 0

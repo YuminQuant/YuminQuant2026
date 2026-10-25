@@ -62,7 +62,7 @@ class DatasetBuilder:
         self.filters = TradeFilters(config.filters, config.data_root)
         self._source_st_symbol_cache: dict[int, set[str]] = {}
 
-    def close(self):
+    def close(self, *, clear_read_cache=True):
         def clear(provider):
             sequence = getattr(provider, "sequence", None)
             if sequence is not None:
@@ -78,7 +78,8 @@ class DatasetBuilder:
                 clear(child)
         clear(self.feature_provider)
         self._source_st_symbol_cache.clear()
-        data_io.invalidate_parquet()
+        if clear_read_cache:
+            data_io.invalidate_parquet()
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
         graph_tensor = isinstance(self.feature_provider, FactorSequenceProvider)

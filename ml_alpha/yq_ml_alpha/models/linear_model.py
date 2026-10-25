@@ -12,6 +12,9 @@ from yq_ml_alpha.models.base import AlphaModel, ModelContext
 
 
 class LinearRegressionAlphaModel(AlphaModel):
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
+    prediction_cpu_parallel = True
     def __init__(self) -> None:
         self.coef_: np.ndarray | None = None
         self.train_rows_: int = 0

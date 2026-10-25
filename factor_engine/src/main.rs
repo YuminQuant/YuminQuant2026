@@ -232,10 +232,26 @@ fn run_cli() -> Result<()> {
             let report = engine.plan(&request)?;
             print_report("plan", &report);
         }
-        "run" | "raw-run" => {
+        "run" | "raw-run" | "raw-metadata" => {
             let request = parse_run_request(&args[1..], false)?;
             let engine = Engine::from_request(&request)?;
-            let report = if args[0] == "raw-run" { engine.prepare_raw(&request)? } else { engine.run(&request)? };
+            let flags = parse_flags(&args[1..])?;
+            if flag_enabled(&flags, "owned-target-dates") && args[0] != "raw-run" {
+                return Err(yq_factor_engine::error::err("--owned-target-dates requires raw-run"));
+            }
+            if flag_enabled(&flags, "prepared-raw-only") && args[0] != "run" {
+                return Err(yq_factor_engine::error::err("--prepared-raw-only requires run"));
+            }
+            if args[0] == "raw-metadata" {
+                println!("raw metadata: {}", engine.write_raw_metadata(&request)?);
+                return Ok(());
+            }
+            let report = if args[0] == "raw-run" {
+                if flag_enabled(&flags, "owned-target-dates") { engine.prepare_owned_raw(&request)? }
+                else { engine.prepare_raw(&request)? }
+            } else if flag_enabled(&flags, "prepared-raw-only") {
+                engine.run_with_prepared_raw(&request)?
+            } else { engine.run(&request)? };
             print_report("run", &report);
         }
         "label-plan" => {

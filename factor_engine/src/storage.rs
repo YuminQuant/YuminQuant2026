@@ -895,6 +895,36 @@ impl IntradayDailyRawStorage {
         Ok(output)
     }
 
+    /// Persist explicit null/empty outputs so a completed owner is safe to read without fallback writes.
+    pub fn complete_prepared_dates(
+        &self,
+        asset: AssetClass,
+        raw_ids: &[String],
+        dates: &[i32],
+    ) -> Result<()> {
+        for date in dates {
+            let path = self.output_path(asset, *date);
+            let columns = if crate::artifact_io::exists(&path)? {
+                parquet_column_names(&path)?
+            } else {
+                BTreeSet::new()
+            };
+            if raw_ids.iter().all(|id| columns.contains(id)) { continue; }
+            let _guard = crate::artifact_io::lock(&path)?;
+            let mut table = if crate::artifact_io::exists(&path)? {
+                read_parquet(&path, None)?
+            } else {
+                let mut table = Table::empty();
+                table.insert("trade_date", ColumnData::I32(Vec::new()))?;
+                table.insert("ts_code", ColumnData::Utf8(Vec::new()))?;
+                table
+            };
+            ensure_raw_columns(&mut table, raw_ids)?;
+            write_parquet(&path, &table)?;
+        }
+        Ok(())
+    }
+
     pub fn write_metadata(&self, specs: &[IntradayDailyRawSpec]) -> Result<()> {
         let path = self.metadata_path();
         let _guard = crate::artifact_io::lock(&path)?;

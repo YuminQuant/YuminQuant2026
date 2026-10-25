@@ -94,6 +94,14 @@ pub struct Engine {
     config: EngineConfig,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum RawMode {
+    Inline,
+    Prepare,
+    Owned,
+    Prepared,
+}
+
 impl Engine {
     pub fn new(config: EngineConfig) -> Self {
         Self { config }
@@ -106,15 +114,35 @@ impl Engine {
     }
 
     pub fn plan(&self, request: &RunRequest) -> Result<RunReport> {
-        self.execute(request, true, false)
+        self.execute(request, true, RawMode::Inline)
     }
 
     pub fn run(&self, request: &RunRequest) -> Result<RunReport> {
-        self.execute(request, request.dry_run, false)
+        self.execute(request, request.dry_run, RawMode::Inline)
     }
 
     pub fn prepare_raw(&self, request: &RunRequest) -> Result<RunReport> {
-        self.execute(request, false, true)
+        self.execute(request, false, RawMode::Prepare)
+    }
+
+    pub fn prepare_owned_raw(&self, request: &RunRequest) -> Result<RunReport> {
+        self.execute(request, false, RawMode::Owned)
+    }
+
+    pub fn run_with_prepared_raw(&self, request: &RunRequest) -> Result<RunReport> {
+        if request.refresh_minute_cache {
+            return Err(err("prepared raw is read-only; refresh it in a preparation task"));
+        }
+        self.execute(request, request.dry_run, RawMode::Prepared)
+    }
+
+    pub fn write_raw_metadata(&self, request: &RunRequest) -> Result<usize> {
+        let report = self.plan(request)?;
+        let providers = intraday_raw_provider_map()?;
+        let specs = report.loaded_intraday_raw_requests.iter()
+            .map(|raw| providers[&raw.raw_id].spec.clone()).collect::<Vec<_>>();
+        IntradayDailyRawStorage::new(self.config.factor_root.clone()).write_metadata(&specs)?;
+        Ok(specs.len())
     }
 
     pub fn write_metadata(&self) -> Result<usize> {
@@ -128,7 +156,7 @@ impl Engine {
         FactorStorage::new(self.config.factor_root.clone()).read_metadata()
     }
 
-    fn execute(&self, request: &RunRequest, dry_run: bool, raw_only: bool) -> Result<RunReport> {
+    fn execute(&self, request: &RunRequest, dry_run: bool, raw_mode: RawMode) -> Result<RunReport> {
         validate_date_value(request.start_date, "start-date")?;
         validate_date_value(request.end_date, "end-date")?;
 
@@ -341,20 +369,24 @@ impl Engine {
         let mut compute_states = BTreeMap::<String, Box<dyn Any + Send>>::new();
         let progress = ProgressBar::new("run", execution_batch_count, true);
 
-        if raw_only {
+        if matches!(raw_mode, RawMode::Prepare | RawMode::Owned) {
             let ids = raw_requirements.iter().map(|r|r.spec.raw_id.clone()).collect::<Vec<_>>();
             let raw_lookback = raw_requirements.iter().map(|r|r.daily_lookback).max().unwrap_or(0);
             if !ids.is_empty() {
                 for (index, dates) in split_dates_by_chunk(&target_dates,request.date_batch_size.max(1)).into_iter().enumerate() {
                     let start = dates[0]; let end = *dates.last().unwrap();
-                    let load_start = calendar.warmup_start(start,raw_lookback);
+                    let load_start = calendar.warmup_start(start,
+                        if raw_mode == RawMode::Owned { 0 } else { raw_lookback });
                     let context = FactorContext { asset_class:request.asset_class, frequency:request.frequency,
                         start_date:start,end_date:end,load_start_date:load_start,
                         load_dates:calendar.open_dates_between(load_start,end),target_dates:dates };
                     let (_, mut batch_profiles) = materialize_intraday_raw_table(&ids,&raw_requirements,&raw_providers,
                         &loader,&raw_storage,&calendar,request,&context,index+1,1,thread_pool.as_ref(),
-                        &mut materialized_intraday_raw_dates,&progress)?;
+                        &mut materialized_intraday_raw_dates,&progress,raw_mode == RawMode::Owned)?;
                     profiles.append(&mut batch_profiles);
+                    if raw_mode == RawMode::Owned {
+                        raw_storage.complete_prepared_dates(request.asset_class, &ids, &context.target_dates)?;
+                    }
                 }
             }
             progress.finish();
@@ -483,7 +515,14 @@ impl Engine {
                     pool.set_trading_calendar(Arc::clone(&factor_calendar));
                     let raw_ids = raw_ids_for_specs(&batch_specs);
                     if !raw_ids.is_empty() {
-                        let (raw_table, mut raw_profiles) = materialize_intraday_raw_table(
+                        let (raw_table, mut raw_profiles) = if raw_mode == RawMode::Prepared {
+                            let specs = raw_ids.iter().map(|id| &raw_providers[id].spec).collect::<Vec<_>>();
+                            let missing = raw_storage.missing_dates_many(&specs, &context.load_dates, false)?;
+                            if let Some((id, dates)) = missing.iter().find(|(_, dates)| !dates.is_empty()) {
+                                return Err(err(format!("prepared raw cache is incomplete: {id} at {}; run its owner preparation first", dates[0])));
+                            }
+                            (raw_storage.load_raw_by_dates(request.asset_class, &raw_ids, &context.load_dates)?, Vec::new())
+                        } else { materialize_intraday_raw_table(
                             &raw_ids,
                             &raw_requirements,
                             &raw_providers,
@@ -497,7 +536,8 @@ impl Engine {
                             thread_pool.as_ref(),
                             &mut materialized_intraday_raw_dates,
                             &progress,
-                        )?;
+                            false,
+                        )? };
                         profiles.append(&mut raw_profiles);
                         progress.update(format!(
                             "stage={} phase=raw_panel dates={}..{}",
@@ -738,6 +778,7 @@ fn materialize_intraday_raw_table(
     thread_pool: Option<&rayon::ThreadPool>,
     materialized_intraday_raw_dates: &mut BTreeSet<(String, i32)>,
     progress: &ProgressBar,
+    owned_targets: bool,
 ) -> Result<(crate::data::Table, Vec<BatchProfile>)> {
     let raw_id_set =
         expand_raw_ids_to_selected_provider_siblings(raw_ids, requirements, providers)?;
@@ -974,6 +1015,12 @@ fn materialize_intraday_raw_table(
                             &raw_pool,
                         )?;
                         raw_series_list.retain(|series| requested.contains(&series.spec.raw_id));
+                        if owned_targets {
+                            let owned = job.context.target_dates.iter().copied().collect::<BTreeSet<_>>();
+                            for series in &mut raw_series_list {
+                                series.values.retain(|value| owned.contains(&value.key.trade_date()));
+                            }
+                        }
                         let returned = raw_series_list
                             .iter()
                             .map(|series| series.spec.raw_id.clone())
@@ -1282,7 +1329,7 @@ fn materialize_intraday_raw_table(
             materialized_specs.extend(specs);
         }
     }
-    if !materialized_specs.is_empty() {
+    if !owned_targets && !materialized_specs.is_empty() {
         storage.write_metadata(&materialized_specs)?;
     }
 

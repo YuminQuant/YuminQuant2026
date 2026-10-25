@@ -863,7 +863,8 @@ fn project_table_columns(table: &Table, columns: &[String]) -> Result<Table> {
 
 fn empty_disclosure_column(column: &str, len: usize) -> ColumnData {
     match column {
-        "ts_code" | "quarter" | "div_proc" | "bz_type" | "bz_item" | "bz_code" | "curr_type" => {
+        "ts_code" | "quarter" | "org_name" | "author_name" | "create_time" | "rating"
+        | "div_proc" | "bz_type" | "bz_item" | "bz_code" | "curr_type" => {
             ColumnData::Utf8(vec![None; len])
         }
         "ann_date" | "f_ann_date" | "end_date" | "report_date" | "ex_date" | "base_date" => {

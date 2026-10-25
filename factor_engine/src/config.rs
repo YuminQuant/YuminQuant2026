@@ -9,6 +9,7 @@ pub struct EngineConfig {
     pub project_config_path: PathBuf,
     pub data_root: PathBuf,
     pub factor_root: PathBuf,
+    pub intraday_raw_root: Option<PathBuf>,
     pub label_root: PathBuf,
     pub barra_root: PathBuf,
     pub stock_sw_classification_path: PathBuf,
@@ -32,6 +33,8 @@ impl EngineConfig {
             .ok_or_else(|| err("missing [paths].base_data_dir in project config"))?;
         let data_root = PathBuf::from(data_root_value);
         let factor_root = parse_toml_string_value(&content,"factor_root").map(PathBuf::from).unwrap_or_else(||data_root.join("factors"));
+        let intraday_raw_root = parse_toml_string_value(&content, "intraday_raw_root")
+            .map(|value| normalize_data_path(&data_root, &value));
         let label_root = parse_toml_string_value(&content,"label_root").map(PathBuf::from).unwrap_or_else(||data_root.join("label"));
         let barra_root = parse_toml_string_value(&content,"barra_root").map(PathBuf::from).unwrap_or_else(||data_root.join("barra"));
         let stock_sw_classification_path =
@@ -56,6 +59,7 @@ impl EngineConfig {
             project_config_path: path,
             data_root,
             factor_root,
+            intraday_raw_root,
             label_root,
             barra_root,
             stock_sw_classification_path,

@@ -17,7 +17,7 @@ pub struct FactorStorage {
 
 #[derive(Clone, Debug)]
 pub struct IntradayDailyRawStorage {
-    factor_root: PathBuf,
+    cache_root: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -749,7 +749,11 @@ impl BarraStorage {
 
 impl IntradayDailyRawStorage {
     pub fn new(factor_root: PathBuf) -> Self {
-        Self { factor_root }
+        Self::with_cache_root(factor_root.join("_cache").join("intraday_daily"))
+    }
+
+    pub fn with_cache_root(cache_root: PathBuf) -> Self {
+        Self { cache_root }
     }
 
     pub fn missing_dates(
@@ -960,19 +964,14 @@ impl IntradayDailyRawStorage {
 
     fn output_path(&self, asset_class: AssetClass, trade_date: i32) -> PathBuf {
         let year = trade_date / 10_000;
-        self.factor_root
-            .join("_cache")
-            .join("intraday_daily")
+        self.cache_root
             .join(intraday_daily_raw_namespace(asset_class))
             .join(year.to_string())
             .join(format!("{}.parquet", trade_date))
     }
 
     fn metadata_path(&self) -> PathBuf {
-        self.factor_root
-            .join("_cache")
-            .join("intraday_daily")
-            .join("raw_metadata.parquet")
+        self.cache_root.join("raw_metadata.parquet")
     }
 }
 

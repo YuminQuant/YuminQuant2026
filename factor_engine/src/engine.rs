@@ -141,8 +141,15 @@ impl Engine {
         let providers = intraday_raw_provider_map()?;
         let specs = report.loaded_intraday_raw_requests.iter()
             .map(|raw| providers[&raw.raw_id].spec.clone()).collect::<Vec<_>>();
-        IntradayDailyRawStorage::new(self.config.factor_root.clone()).write_metadata(&specs)?;
+        self.raw_storage().write_metadata(&specs)?;
         Ok(specs.len())
+    }
+
+    fn raw_storage(&self) -> IntradayDailyRawStorage {
+        match &self.config.intraday_raw_root {
+            Some(root) => IntradayDailyRawStorage::with_cache_root(root.clone()),
+            None => IntradayDailyRawStorage::new(self.config.factor_root.clone()),
+        }
     }
 
     pub fn write_metadata(&self) -> Result<usize> {
@@ -360,7 +367,7 @@ impl Engine {
             .with_stock_ci_classification_path(self.config.stock_ci_classification_path.clone());
         let loader = MarketDataLoader::new(catalog);
         let storage = FactorStorage::new(self.config.factor_root.clone());
-        let raw_storage = IntradayDailyRawStorage::new(self.config.factor_root.clone());
+        let raw_storage = self.raw_storage();
         let thread_pool = build_thread_pool(request.threads)?;
         let mut output_paths = BTreeSet::new();
         let mut profiles = Vec::new();

@@ -1,6 +1,45 @@
-# Raw Cache Ownership / Raw 缓存所有权
+# Raw Cache Placement / Raw 缓存位置
 
-The existing `run` and `raw-run` commands keep their default behavior. Parallel
+## Task-Local Cache / 任务独立缓存
+
+An optional `[paths].intraday_raw_root` redirects only minute-derived daily raw
+files and their metadata. Source inputs, final factors and factor metadata keep
+their existing roots. Without this setting, the existing persistent cache under
+`factor_root/_cache/intraday_daily` is unchanged.
+
+可选配置 `[paths].intraday_raw_root` 只改变分钟降频 raw 及其 metadata 的位置，
+不改变原始输入、正式因子及因子 metadata 的路径。未配置时仍使用原有的
+`factor_root/_cache/intraday_daily` 持久缓存，本地命令行为不变。
+
+```toml
+[paths]
+base_data_dir = "/project/data"
+factor_root = "/project/data/factors"
+intraday_raw_root = "/scratch/task-unique/intraday_raw"
+```
+
+The regular `run` command calculates missing raw with its declared warmup,
+reuses the cache within the task, and writes final factors. Parallel annual jobs
+must use different raw roots, including different paths when assigned to the
+same node. Warmup can overlap because no raw files are shared. This deliberately
+recomputes overlapping history rather than coordinating cross-task writers.
+
+正常 `run` 命令按已声明的预热计算缺失 raw，在任务内复用，再生成正式因子。
+并行年度子任务必须使用不同 raw 根目录，即使分配到同一节点也不能共用。
+跨年预热可以重叠，因为没有共享 raw 文件；代价是各任务独立计算重叠的历史。
+
+The deployment owns temporary-directory creation and cleanup after success,
+failure and catchable cancellation. Only the explicit raw directory may be local
+when inputs/final outputs use a remote backend. Node loss or an uncatchable kill
+requires an external terminal-task cleanup; shell traps alone cannot guarantee it.
+
+部署层负责创建独立目录，并在成功、失败及可捕获取消后清理。远程模式只允许
+显式 raw 目录落本地，原始数据和正式产物仍通过远程后端读取及写出。
+节点掉线或不可捕获强杀须由外部机制清理已结束任务残留，不能仅靠 shell trap 保证。
+
+## Explicit Shared Preparation / 显式共享准备
+
+The existing `run` and `raw-run` commands keep their default behavior. Shared parallel
 preparation is opt-in and does not change factor formulas or PIT visibility.
 
 原有 `run`、`raw-run` 的默认行为不变。并行准备为显式选项，不改变公式或 PIT 可见性。

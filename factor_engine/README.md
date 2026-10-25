@@ -24,10 +24,10 @@ Select factors with either `--factors a,b` or `--tags tag`, not both. Refresh me
 
 ## 计算资源与共享输入 / Compute resources and shared inputs
 
-并行 raw 准备及年度流水线的日期所有权、预热依赖和只读消费见
-[Raw 缓存流水线](docs/RAW_CACHE_PIPELINE.md)。
-See [raw cache pipelines](docs/RAW_CACHE_PIPELINE.md) for parallel preparation,
-date ownership, warmup dependencies and read-only factor consumption.
+任务独立 raw 缓存、清理边界及显式共享准备方式见
+[Raw 缓存位置](docs/RAW_CACHE_PIPELINE.md)。未配置时保留原有本地缓存路径。
+See [raw cache placement](docs/RAW_CACHE_PIPELINE.md) for task-local caching,
+cleanup boundaries and explicit shared preparation. Default local paths are unchanged.
 
 因子、Barra 和标签生产通过 `--threads N` 指定计算线程数；未指定时，默认使用当前进程可用 CPU 配额的一半，至少为 1。显式线程数不得超过进程可用 CPU 或部署层声明的配额。线程数是上限，不保证所有阶段都能占满 CPU；IO 并发独立控制，不随计算线程数增大。
 

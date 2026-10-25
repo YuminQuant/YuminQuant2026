@@ -1,4 +1,5 @@
 pub mod analyst;
+pub mod analyst_coverage;
 pub mod bar;
 pub mod chip_age;
 pub mod engine;

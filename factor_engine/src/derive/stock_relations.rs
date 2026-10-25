@@ -33,7 +33,7 @@ struct FundEvent {
 }
 
 type FundState = BTreeMap<String, FundEvent>;
-type Memberships = BTreeSet<(String, String, String)>;
+pub(super) type Memberships = BTreeSet<(String, String, String)>;
 
 fn projected(path: &Path, columns: &[&str]) -> Result<Table> {
     if !path.storage_exists() {
@@ -45,7 +45,7 @@ fn projected(path: &Path, columns: &[&str]) -> Result<Table> {
     )
 }
 
-fn yearly_files(root: &Path) -> Result<BTreeMap<i32, PathBuf>> {
+pub(super) fn yearly_files(root: &Path) -> Result<BTreeMap<i32, PathBuf>> {
     if !root.storage_exists() {
         return Err(err(format!(
             "missing relation source directory: {}",
@@ -149,13 +149,13 @@ fn apply_fund(state: &mut FundState, event: &FundEvent) {
 }
 
 #[derive(Clone)]
-struct AnalystEvent {
-    date: i32,
-    group: String,
-    stock: String,
+pub(super) struct AnalystEvent {
+    pub(super) date: i32,
+    pub(super) group: String,
+    pub(super) stock: String,
 }
 
-fn analyst_events(path: &Path) -> Result<Vec<AnalystEvent>> {
+pub(super) fn analyst_events(path: &Path) -> Result<Vec<AnalystEvent>> {
     let table = projected(path, &["ts_code", "report_date", "org_name", "author_name"])?;
     let stocks = table.required_utf8("ts_code")?;
     let dates = table.required_i32_date_cast("report_date")?;
@@ -186,7 +186,7 @@ fn analyst_events(path: &Path) -> Result<Vec<AnalystEvent>> {
         .collect())
 }
 
-fn membership_table(date: i32, rows: Memberships) -> Result<Table> {
+pub(super) fn membership_table(date: i32, rows: Memberships) -> Result<Table> {
     let mut relations = Vec::new();
     let mut groups = Vec::new();
     let mut stocks = Vec::new();

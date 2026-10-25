@@ -17,6 +17,10 @@
 
 Formal factor filenames, IDs and output columns use matching semantic names. Model IDs are separate from formal factor names. Implementations cover regression/classification, tree ensembles, sequence networks and graph models; each requires its own dependencies and data.
 
+`mdl_000035` 为华泰分析师共同覆盖 GAT：季度二值关系图与单日正式因子输入，
+单层注意力加独立残差投影输出一个分数。
+数据派生、网络和 CLI 见 [Analyst coverage GAT / 分析师共同覆盖](docs/ANALYST_COVERAGE_GAT.md)。
+
 `mdl_000033` / `mdl_000034` 为华泰多任务因子合成 MLP，分别采用 UW / DWA 损失加权，
 共享网络同时预测 10/20 日收益排序，再等权输出单分数。
 结构、双标签到期隔离和 CLI 见 [Multi-task learning / 多任务学习](docs/HUATAI_MULTITASK.md)。

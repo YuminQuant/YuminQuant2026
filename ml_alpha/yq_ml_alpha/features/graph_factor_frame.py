@@ -43,12 +43,17 @@ class FactorHistory(DailyTensorSequence):
         if frame.ts_code.isna().any() or frame.ts_code.duplicated().any() or not frame.trade_date.eq(date).all():
             raise ValueError(f"invalid factor snapshot keys on {date}")
         frame = self.filters.apply(self.universe.filter(frame, date), date)
+        frame = self._filter_frame(frame, date)
         # Normalize before label joining. Missing future labels never change graph inputs.
         frame[self.columns] = frame[self.columns].apply(pd.to_numeric, errors="coerce").astype("float64")
         frame = apply_cross_section_transform(
             frame, self.history_transform, self.columns, [], self.fill_value,
         ).set_index("ts_code")[self.columns].astype("float32")
         return self._remember(date, frame)
+
+    def _filter_frame(self, frame, date):
+        """Optional universe refinement before any cross-sectional normalization."""
+        return frame
 
     def symbols(self, date):
         dates = self.window_dates(date)

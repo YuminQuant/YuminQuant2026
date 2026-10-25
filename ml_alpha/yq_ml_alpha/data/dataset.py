@@ -19,6 +19,7 @@ from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.graph_factor_frame import FactorSequenceProvider, GraphFactorFrameProvider
+from yq_ml_alpha.features.analyst_factor_frame import AnalystFactorFrameProvider
 from yq_ml_alpha.features.hist_factor_frame import HistFactorFrameProvider, ConceptFactorSequenceProvider
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.rawbar import RawBarProvider
@@ -498,7 +499,7 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return DerivedChipAgeProvider(config.features.root, config.features.params)
     if config.features.type == "derived_logsig":
         return DerivedLogsigProvider(config.features.root)
-    if config.features.type in {"factor_frame", "factor_sequence", "graph_factor_frame", "hist_factor_frame", "concept_factor_sequence"}:
+    if config.features.type in {"factor_frame", "factor_sequence", "graph_factor_frame", "hist_factor_frame", "concept_factor_sequence", "analyst_factor_sequence"}:
         excluded = {config.output.id}
         metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
         if data_io.exists(metadata):
@@ -511,6 +512,8 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
             return FactorSequenceProvider(config, provider)
         if config.features.type == "graph_factor_frame":
             return GraphFactorFrameProvider(config, provider)
+        if config.features.type == "analyst_factor_sequence":
+            return AnalystFactorFrameProvider(config, provider)
         if config.features.type == "hist_factor_frame":
             return HistFactorFrameProvider(config, provider)
         if config.features.type == "concept_factor_sequence":

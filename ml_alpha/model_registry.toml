@@ -549,3 +549,19 @@ preprocess = "mad5_zscore_features_model_rank_zscore_targets"
 train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
 features = "factor_frame: data/factors/stock/daily, columns=__all__"
 tags = ["HTZQ", "mlp", "multi_task", "dynamic_weight_average", "factor_combination"]
+
+[[models]]
+model_id = "mdl_000035"
+alpha_id = "mdl_000035"
+run_id = "mdl_000035"
+config = "models/mdl_000035.toml"
+status = "active"
+display_name = "HTZQ analyst co-coverage residual graph attention alpha"
+description = "Current formal factors for analyst-covered stocks; quarterly six-month coverage, binary adjacency with self-loops, single-head 5D GAT and independent linear skip; scalar return score, seed42."
+model_class = "yq_ml_alpha.models.analyst_coverage_gat_model.AnalystCoverageGATAlphaModel"
+model_family = "analyst_coverage_gat"
+label = "future_vwap_return_10d"
+preprocess = "provider_covered_mad5_zscore_label_zscore"
+train_scheme = "rolling_36m_yearly_33m_train_3m_valid_5d_sample"
+features = "analyst_factor_sequence: data/factors/stock/daily, columns=__all__, length=1"
+tags = ["HTZQ", "gat", "analyst_coverage", "residual", "factor_combination"]

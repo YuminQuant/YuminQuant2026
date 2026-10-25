@@ -86,6 +86,12 @@ OpenMP conflicts through environment consistency, not the unsafe duplicate-runti
 通过公共 `build_windows` 处理标签到期与训练/验证隔离；不要在模型内部另写日期切分。
 此约定不改变 `models/` 中独立实验配置的窗口。
 
+`analyst_factor_sequence` 为单日分析师覆盖 GAT 提供完整截面，历史长度固定1。
+复用 `FactorHistory` 的 `_filter_frame` 扩展点，在公共截面标准化之前筛选可见覆盖股票；
+其他 provider 的默认扩展点直接返回原表。季度关系由 Rust `derive-analyst-coverage`
+独立生产，不依赖基金持仓；Python 按交易日历定位应有季度快照，缺失时报错。
+该数据身份与原日频三关系图独立。见 [ANALYST_COVERAGE_GAT.md](ANALYST_COVERAGE_GAT.md)。
+
 多标签训练在 `[label]` 主标签之外使用 `[[label.auxiliary]]`（id、lookahead_days），
 共用标签 root；公共 dataset 一次读取并按列预处理，`ModelContext.label_columns`
 保留主辅顺序。普通表/序列/bar 样本在特征预处理后剔除任一任务无效的标签行；

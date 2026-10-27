@@ -19,7 +19,7 @@ behavior. All commands below assume the repository root as the working directory
 | Artifacts / 模型产物 | `data/model_workspace/<id>/artifacts` | Weights, manifests and model diagnostics / 权重、校验清单和诊断 |
 | Temporary samples / 临时样本 | `data/model_workspace/<id>/cache` | Optional sample cache, not canonical features / 可选样本缓存，不是正式派生特征 |
 | Model signals / 实验信号 | `data/models` | Model-layer predictions / 模型层预测输出 |
-| Formal output / 正式输出 | `data/factors/stock/daily/<year>/<date>.parquet` | Final factor columns merged by shared writer / 公共写入器合并最终因子列 |
+| Formal output / 正式输出 | `data/factors/stock/daily/<year>/<date>_ml.parquet` | Final factor columns merged by shared writer / 公共写入器合并最终因子列 |
 
 `model_workspace` is not limited to weights, but reusable derived features must
 not be hidden there. In particular, volume logsignatures belong to

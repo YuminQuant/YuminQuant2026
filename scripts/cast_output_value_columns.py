@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ml_alpha"))
+from yq_ml_alpha.output.file_lock import daily_file_lock
 
 
 KEY_COLUMNS = {"trade_date", "ts_code", "trade_time"}
@@ -25,9 +29,10 @@ def parse_date(value: str, name: str) -> int:
 
 def iter_date_parquet_files(root: Path, start_date: int | None, end_date: int | None):
     for path in sorted(root.rglob("*.parquet")):
-        if not path.stem.isdigit():
+        stem = path.stem[:-3] if path.stem.endswith("_ml") else path.stem
+        if len(stem) != 8 or not stem.isdigit():
             continue
-        trade_date = int(path.stem)
+        trade_date = int(stem)
         if start_date is not None and trade_date < start_date:
             continue
         if end_date is not None and trade_date > end_date:
@@ -47,6 +52,11 @@ def cast_array(array: pa.ChunkedArray, target_type: pa.DataType, column: str) ->
 
 
 def cast_file(path: Path, dry_run: bool) -> tuple[list[str], list[str]]:
+    with daily_file_lock(path):
+        return _cast_file_locked(path, dry_run)
+
+
+def _cast_file_locked(path: Path, dry_run: bool) -> tuple[list[str], list[str]]:
     table = pq.read_table(path)
     value_columns = [column for column in table.column_names if column not in KEY_COLUMNS]
     changed: list[str] = []

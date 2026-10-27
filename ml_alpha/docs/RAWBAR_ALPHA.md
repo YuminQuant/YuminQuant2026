@@ -62,4 +62,4 @@ $env:PYTHONPATH = "$PWD\ml_alpha"
 
 也可拆为 `factor-train`、`factor-predict`。权重位于
 `data/model_workspace/rawbar_agru/artifacts` 和 `data/model_workspace/rawbar_lstm/artifacts`；
-因子列写入 `data/factors/stock/daily/<year>/<date>.parquet`。
+因子列写入 `data/factors/stock/daily/<year>/<date>_ml.parquet`。

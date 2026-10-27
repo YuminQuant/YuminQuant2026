@@ -412,24 +412,21 @@ def _feature_start_month(config: MlAlphaConfig, calendar: TradingCalendar) -> in
     """First month with actual factor values, not merely an empty daily file."""
     import numpy as np
     from yq_ml_alpha.data.stores import is_all_column_request, NON_FEATURE_COLUMNS
+    from yq_ml_alpha.data.factor_files import FactorFiles, factor_dates
 
     if config.features.type != "factor_frame":
         raise ValueError("start_from_features currently requires factor_frame")
     trading_dates = set(calendar.dates)
-    for path in sorted(data_io.glob(config.features.root, "*/*.parquet")):
-        if not path.stem.isdigit():
-            continue
-        date = int(path.stem)
+    files = FactorFiles(config.features.root)
+    for date in factor_dates(config.features.root):
         if date not in trading_dates or date < config.dates.train[0] or date > config.dates.train[1]:
             continue
-        with data_io.open_parquet(path) as reader:
-            schema = reader.schema_arrow.names
-            columns = ([c for c in schema if c not in NON_FEATURE_COLUMNS]
-                       if is_all_column_request(config.features.columns)
-                       else [c for c in config.features.columns if c in schema])
-            if not columns or reader.metadata.num_rows == 0:
-                continue
-            values = reader.read(columns=columns).to_pandas().astype("float64").to_numpy()
+        requested = None if is_all_column_request(config.features.columns) else config.features.columns
+        frame = files.read(date, requested)
+        columns = [c for c in frame if c not in NON_FEATURE_COLUMNS]
+        if not columns or frame.empty:
+            continue
+        values = frame[columns].astype("float64").to_numpy()
         if np.isfinite(values).any():
             return max(config.dates.train[0], date // 100 * 100 + 1)
     raise ValueError(f"no usable factor data in training range under {config.features.root}")

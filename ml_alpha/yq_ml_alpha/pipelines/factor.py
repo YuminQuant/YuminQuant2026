@@ -275,6 +275,7 @@ def _new_writer(config: MlAlphaConfig) -> DailyWideWriter:
         frequency=config.output.frequency,
         base_root=config.output.base_root,
         write_workers=config.output.write_workers,
+        file_suffix="_ml",
     )
 
 

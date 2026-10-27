@@ -57,7 +57,9 @@ def discover_value_columns(root: str | Path, end_date: int | None = None, exclud
     output = []
     seen = set(NON_FEATURE_COLUMNS) | set(excluded)
     for path in sorted(data_io.glob(Path(root), "*/*.parquet")):
-        if end_date is not None and int(path.stem) > end_date:
+        from yq_ml_alpha.data.factor_files import factor_file_date
+        date = factor_file_date(path)
+        if date is None or (end_date is not None and date > end_date):
             continue
         for column in parquet_columns(path):
             if column not in seen:

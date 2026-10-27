@@ -62,11 +62,38 @@ fn run_cli() -> Result<()> {
                 for entry in yq_factor_engine::artifact_io::read_dir(directory)? {
                     let path = entry?.path();
                     if path.extension().and_then(|v|v.to_str()) != Some("parquet") { continue; }
-                    let Some(date) = path.file_stem().and_then(|v|v.to_str()).and_then(|v|v.parse::<i32>().ok()) else { continue; };
+                    let Some(date) = yq_factor_engine::data::factor_files::factor_file_date(&path) else { continue; };
                     if (start..=end).contains(&date) && storage.remove_columns(&path,&columns)? { changed += 1; }
                 }
             }
             println!("updated files: {changed}");
+        }
+        "migrate-factor-files" => {
+            let flags = parse_flags(&args[1..])?;
+            let config = EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
+            let start = parse_yyyymmdd(flags.get("start-date").ok_or_else(||yq_factor_engine::error::err("missing --start-date"))?, "start-date")?;
+            let end = parse_yyyymmdd(flags.get("end-date").ok_or_else(||yq_factor_engine::error::err("missing --end-date"))?, "end-date")?;
+            if start > end { return Err(yq_factor_engine::error::err("start-date exceeds end-date")); }
+            let root = flags.get("factor-root").map(PathBuf::from).unwrap_or_else(||config.factor_root.join("stock/daily"));
+            let files = yq_factor_engine::data::factor_files::FactorFiles::new(&root)?;
+            let dry_run = flag_enabled(&flags, "dry-run");
+            let mut changed = 0;
+            for year in start/10_000..=end/10_000 {
+                let directory = root.join(year.to_string());
+                if !yq_factor_engine::artifact_io::exists(&directory)? { continue; }
+                for entry in yq_factor_engine::artifact_io::read_dir(directory)? {
+                    let path = entry?.path();
+                    if path.file_stem().and_then(|v|v.to_str()).is_some_and(|v| v.ends_with("_ml")) { continue; }
+                    let Some(date) = yq_factor_engine::data::factor_files::factor_file_date(&path) else { continue; };
+                    if !(start..=end).contains(&date) { continue; }
+                    let moved = files.migrate(&path, dry_run)?;
+                    if !moved.is_empty() {
+                        changed += 1;
+                        println!("{} date={date} columns={}", if dry_run {"would migrate"} else {"migrated"}, moved.join(","));
+                    }
+                }
+            }
+            println!("migration dates: {changed}; dry_run={dry_run}");
         }
         "calendar-dates" => {
             let flags = parse_flags(&args[1..])?;
@@ -1467,6 +1494,8 @@ fn print_derive_consensus_report(report: &yq_factor_engine::AnalystConsensusRepo
 }
 
 fn print_help() {
+    println!("  migrate-factor-files --start-date YYYYMMDD --end-date YYYYMMDD [--factor-root PATH] [--dry-run]");
+    println!("  remove-factor-columns --start-date YYYYMMDD --end-date YYYYMMDD --columns IDS [--factor-root PATH]");
     println!("  derive-chip-age --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
     println!("  derive-stock-relations --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
     println!("  derive-analyst-coverage --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--window-months 6] [--date-batch-size 20] [--threads N] [--config path]");

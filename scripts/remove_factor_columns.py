@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import pyarrow.parquet as pq
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ml_alpha"))
+from yq_ml_alpha.data.factor_files import factor_file_date
+from yq_ml_alpha.output.file_lock import daily_file_lock
 
 
 DEFAULT_COLUMNS = [
@@ -58,14 +63,21 @@ def iter_factor_files(root: Path, start_date: int, end_date: int):
         if not year_dir.exists():
             continue
         for path in sorted(year_dir.glob("*.parquet")):
-            if not path.stem.isdigit():
+            trade_date = factor_file_date(path)
+            if trade_date is None:
                 continue
-            trade_date = int(path.stem)
             if start_date <= trade_date <= end_date:
                 yield path, trade_date
 
 
 def remove_columns(path: Path, columns: list[str], dry_run: bool) -> list[str]:
+    if {"trade_date", "ts_code", "trade_time"}.intersection(columns):
+        raise ValueError("cannot remove factor row keys")
+    with daily_file_lock(path):
+        return _remove_columns_locked(path, columns, dry_run)
+
+
+def _remove_columns_locked(path: Path, columns: list[str], dry_run: bool) -> list[str]:
     column_set = set(columns)
     schema = pq.read_schema(path)
     schema_columns = list(schema.names)

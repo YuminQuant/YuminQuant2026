@@ -4,17 +4,19 @@ from pathlib import Path
 
 import pandas as pd
 
-from yq_ml_alpha.data.stores import discover_value_columns, is_all_column_request, read_daily
+from yq_ml_alpha.data.stores import discover_value_columns, is_all_column_request
+from yq_ml_alpha.data.factor_files import FactorFiles
 from yq_ml_alpha.features.base import FeatureProvider
 
 
 class FactorFrameProvider(FeatureProvider):
     def __init__(self, root: str | Path, columns: list[str] | str, end_date: int | None = None, excluded=()) -> None:
         self.root = Path(root)
+        self.files = FactorFiles(root)
         self.feature_columns = discover_value_columns(self.root, end_date, excluded) if is_all_column_request(columns) else list(columns)
 
     def load(self, trade_date: int) -> pd.DataFrame:
-        frame = read_daily(self.root, trade_date, self.feature_columns)
+        frame = self.files.read(trade_date, self.feature_columns)
         for column in self.feature_columns:
             if column not in frame.columns:
                 frame[column] = pd.NA

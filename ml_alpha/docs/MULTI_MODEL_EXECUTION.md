@@ -107,7 +107,7 @@ Both local and remote paths preserve the configured relative layout:
 ```text
 data/model_workspace/<run>/artifacts/<window_id>/model.pkl
 data/model_workspace/<run>/artifacts/<window_id>/model.manifest.json
-data/factors/stock/daily/<year>/<date>.parquet
+data/factors/stock/daily/<year>/<date>_ml.parquet
 data/models/<year>/<date>.parquet
 ```
 

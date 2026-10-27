@@ -1,0 +1,165 @@
+//! One logical daily factor table over independently committed manual/ML files.
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use crate::artifact_io::{self, StoragePathExt};
+use crate::data::parquet_io::{parquet_column_names, read_parquet, write_parquet};
+use crate::data::{ColumnData, Table};
+use crate::error::{err, Result};
+
+pub fn factor_file_date(path: &Path) -> Option<i32> {
+    if path.extension()?.to_str()? != "parquet" { return None; }
+    let stem = path.file_stem()?.to_str()?;
+    let date = stem.strip_suffix("_ml").unwrap_or(stem);
+    (date.len() == 8 && date.bytes().all(|c| c.is_ascii_digit())).then(|| date.parse().ok()).flatten()
+}
+
+pub fn ml_path(path: &Path) -> PathBuf {
+    path.with_file_name(format!("{}_ml.parquet", path.file_stem().unwrap_or_default().to_string_lossy()))
+}
+
+#[derive(Default)]
+pub struct FactorFiles {
+    owners: BTreeMap<String, String>,
+}
+
+impl FactorFiles {
+    pub fn new(root: &Path) -> Result<Self> {
+        let mut result = Self::default();
+        for parent in root.ancestors().take(3) {
+            let metadata = parent.join("factor_metadata.parquet");
+            if !metadata.storage_exists() { continue; }
+            let table = read_parquet(&metadata, Some(&["output_column".into(), "tags_json".into(), "storage_partition".into()]))?;
+            let names = table.required_utf8("output_column")?;
+            let tags = table.required_utf8("tags_json")?;
+            let partitions = table.columns.get("storage_partition").map(|_| table.required_utf8("storage_partition")).transpose()?;
+            for i in 0..table.len {
+                let column = names[i].as_deref().ok_or_else(|| err("null factor output_column"))?;
+                let tags: Vec<String> = serde_json::from_str(tags[i].as_deref().filter(|s| !s.is_empty()).unwrap_or("[]"))?;
+                let inferred = if tags.iter().any(|t| t == "model_generated") { "ml" } else { "manual" };
+                let owner = partitions.and_then(|values| values[i].as_deref()).filter(|s| !s.is_empty()).unwrap_or(inferred);
+                if owner != inferred { return Err(err(format!("invalid storage_partition for {column}: {owner}"))); }
+                if result.owners.insert(column.into(), owner.into()).is_some() {
+                    return Err(err(format!("duplicate factor metadata output_column: {column}")));
+                }
+            }
+            break;
+        }
+        Ok(result)
+    }
+
+    pub fn exists(&self, path: &Path) -> bool {
+        path.storage_exists() || ml_path(path).storage_exists()
+    }
+
+    pub fn read(&self, path: &Path, columns: Option<&[String]>) -> Result<Table> {
+        let manual = path.storage_exists();
+        let requested_manual = columns.is_some_and(|names| names.iter().any(|n| !is_key(n)) &&
+            names.iter().filter(|n| !is_key(n)).all(|n| self.owners.get(n).is_some_and(|p| p == "manual")));
+        let ml = ml_path(path);
+        let ml_exists = ml.storage_exists();
+        if !manual && !ml_exists { return Ok(Table::empty()); }
+        let ml_schema = if ml_exists && !requested_manual { parquet_column_names(&ml)? } else { BTreeSet::new() };
+        let manual_needed = columns.is_none_or(|names| names.iter().all(|n| is_key(n)) || names.iter().filter(|n| !is_key(n))
+            .any(|n| self.owners.get(n).is_some_and(|p| p == "manual") || !ml_schema.contains(n)));
+        let manual_schema = if manual && manual_needed { parquet_column_names(path)? } else { BTreeSet::new() };
+        let names = match columns {
+            Some(names) => names.iter().filter(|n| !is_key(n)).cloned().collect::<BTreeSet<_>>(),
+            None => manual_schema.iter().chain(&ml_schema).filter(|n| !is_key(n)).cloned().collect(),
+        };
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for name in names {
+            if self.owners.get(&name).is_none_or(|p| p != "manual") && ml_schema.contains(&name) {
+                right.push(name);
+            } else if manual_schema.contains(&name) {
+                left.push(name);
+            }
+        }
+        let mut tables = Vec::new();
+        for (source, selected) in [(path, left), (ml.as_path(), right)] {
+            if selected.is_empty() { continue; }
+            let projection = [vec!["trade_date".into(), "ts_code".into()], selected].concat();
+            tables.push(read_parquet(source, Some(&projection))?);
+        }
+        if tables.is_empty() {
+            tables.push(read_parquet(if manual { path } else { &ml }, Some(&["trade_date".into(), "ts_code".into()]))?);
+        }
+        merge_tables(tables, factor_file_date(path))
+    }
+
+    /// Explicit, restartable migration. Publish ML first, then remove old ML columns.
+    /// Writers normally take only their own file's lock; migration takes manual then ML.
+    pub fn migrate(&self, path: &Path, dry_run: bool) -> Result<Vec<String>> {
+        if !path.storage_exists() { return Ok(Vec::new()); }
+        let _manual = artifact_io::lock(path)?;
+        let columns = parquet_column_names(path)?;
+        let moving = columns.iter().filter(|c| self.owners.get(*c).is_some_and(|p| p == "ml")).cloned().collect::<Vec<_>>();
+        if moving.is_empty() || dry_run { return Ok(moving); }
+        let destination = ml_path(path);
+        let _ml = artifact_io::lock(&destination)?;
+        if destination.storage_exists() && parquet_column_names(&destination)?.iter()
+            .any(|c| self.owners.get(c).is_some_and(|owner| owner == "manual")) {
+            return Err(err("ML file contains a manual-owned column; resolve metadata ownership before migration"));
+        }
+        // Existing ML columns own their entire cross-section, including nulls.
+        let all = self.read(path, None)?;
+        let mut wanted = moving.iter().cloned().collect::<BTreeSet<_>>();
+        if destination.storage_exists() { wanted.extend(parquet_column_names(&destination)?.into_iter().filter(|c| !is_key(c))); }
+        let mut target = all.clone();
+        target.columns.retain(|name, _| is_key(name) || wanted.contains(name));
+        write_parquet(&destination, &target)?;
+        let mut original = read_parquet(path, None)?;
+        original.columns.retain(|name, _| !moving.contains(name));
+        write_parquet(path, &original)?;
+        Ok(moving)
+    }
+}
+
+fn is_key(name: &str) -> bool { matches!(name, "trade_date" | "ts_code") }
+
+fn merge_tables(tables: Vec<Table>, date: Option<i32>) -> Result<Table> {
+    let mut indexed = Vec::new();
+    let mut keys = BTreeSet::new();
+    for table in &tables {
+        let dates = table.required_i32_date_cast("trade_date")?;
+        let symbols = table.required_utf8("ts_code")?;
+        let mut indices = BTreeMap::new();
+        for i in 0..table.len {
+            let d = dates[i].ok_or_else(|| err("null factor trade_date"))?;
+            let symbol = symbols[i].as_ref().ok_or_else(|| err("null factor ts_code"))?;
+            if date.is_some_and(|expected| d != expected) { return Err(err("factor trade_date differs from filename")); }
+            let key = (d, symbol.clone());
+            if indices.insert(key.clone(), i).is_some() { return Err(err("duplicate daily factor row keys")); }
+            keys.insert(key);
+        }
+        indexed.push(indices);
+    }
+    if tables.len() == 1 {
+        return Ok(tables.into_iter().next().expect("one projected table"));
+    }
+    let keys = keys.into_iter().collect::<Vec<_>>();
+    let mut result = Table::empty();
+    result.insert("trade_date", ColumnData::I32(keys.iter().map(|k| Some(k.0)).collect()))?;
+    result.insert("ts_code", ColumnData::Utf8(keys.iter().map(|k| Some(k.1.clone())).collect()))?;
+    for (table, indices) in tables.iter().zip(indexed) {
+        let rows = keys.iter().map(|key| indices.get(key).copied()).collect::<Vec<_>>();
+        for (name, values) in &table.columns {
+            if is_key(name) { continue; }
+            if result.columns.contains_key(name) { return Err(err(format!("factor column has two owners: {name}"))); }
+            result.insert(name, reindex(values, &rows))?;
+        }
+    }
+    Ok(result)
+}
+
+fn reindex(column: &ColumnData, rows: &[Option<usize>]) -> ColumnData {
+    macro_rules! take { ($values:expr, $variant:ident) => {
+        ColumnData::$variant(rows.iter().map(|row| row.and_then(|i| $values[i].clone())).collect())
+    }; }
+    match column {
+        ColumnData::Utf8(v) => take!(v, Utf8), ColumnData::I32(v) => take!(v, I32),
+        ColumnData::I64(v) => take!(v, I64), ColumnData::F32(v) => take!(v, F32),
+        ColumnData::F64(v) => take!(v, F64), ColumnData::Bool(v) => take!(v, Bool),
+    }
+}

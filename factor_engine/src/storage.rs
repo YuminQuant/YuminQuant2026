@@ -213,6 +213,7 @@ pub struct FactorMetadata {
     pub dependencies_json: String,
     pub description: String,
     pub updated_at: String,
+    pub storage_partition: String,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +261,7 @@ impl FactorMetadata {
             tags: spec.tags.clone(), tags_json: string_list_json(&spec.tags),
             dependencies_json: dependencies_json(spec), description: spec.description.clone(),
             updated_at: String::new(),
+            storage_partition: "manual".into(),
         }
     }
 }
@@ -390,6 +392,11 @@ impl FactorStorage {
             .any(|row| ids.contains(row.factor_id.as_str()))
         {
             return Err(err("Rust and ml_alpha factor metadata IDs collide"));
+        }
+        let columns = rows.iter().map(|row| row.output_column.as_str())
+            .chain(external.iter().map(|row| row.output_column.as_str())).collect::<BTreeSet<_>>();
+        if columns.len() != rows.len() + external.len() {
+            return Err(err("Rust and ml_alpha metadata output columns must have one owner"));
         }
         let external_rows = external
             .into_iter()
@@ -1128,6 +1135,10 @@ fn read_metadata_records(path: &Path) -> Result<Vec<FactorMetadata>> {
             .and_then(|values| values[idx].clone())
             .unwrap_or_default();
         let tags_json_value = tags_json[idx].clone().unwrap_or_default();
+        let inferred = if parse_string_list_json(&tags_json_value).iter().any(|t| t == "model_generated") { "ml" } else { "manual" };
+        let partition = table.columns.get("storage_partition").map(|_| table.required_utf8("storage_partition")).transpose()?
+            .and_then(|values| values[idx].as_deref()).filter(|s| !s.is_empty()).unwrap_or(inferred);
+        if partition != inferred { return Err(err("factor storage_partition conflicts with model_generated tag")); }
         let row = FactorMetadata {
             factor_id: factor_id[idx].clone().unwrap_or_default(),
             aliases: parse_string_list_json(&aliases_json_value),
@@ -1142,6 +1153,7 @@ fn read_metadata_records(path: &Path) -> Result<Vec<FactorMetadata>> {
             dependencies_json: dependencies_json[idx].clone().unwrap_or_default(),
             description: description[idx].clone().unwrap_or_default(),
             updated_at: updated_at[idx].clone().unwrap_or_default(),
+            storage_partition: partition.into(),
         };
         rows.push(row);
     }
@@ -1279,6 +1291,9 @@ fn parse_string_list_json(value: &str) -> Vec<String> {
 
 fn metadata_rows_to_table(rows: Vec<MetadataRow>) -> Result<Table> {
     let mut table = Table::empty();
+    table.insert("storage_partition", ColumnData::Utf8(rows.iter().map(|row| Some(
+        if parse_string_list_json(&row.tags_json).iter().any(|tag| tag == "model_generated") { "ml" } else { "manual" }.into()
+    )).collect()))?;
     table.insert(
         "factor_id",
         ColumnData::Utf8(rows.iter().map(|row| Some(row.factor_id.clone())).collect()),

@@ -91,7 +91,7 @@ Q收盘使用 `(Q−6自然月,Q]` 的报告建图，样本日用最近 `Q<=T`�
 模型权重和诊断在：
 `data/model_workspace/analyst_coverage_gat_40d/artifacts/<window_id>/`。
 最终因子列合并写入：
-`data/factors/stock/daily/<year>/<YYYYMMDD>.parquet` 的 `analyst_coverage_gat_40d`。
+`data/factors/stock/daily/<year>/<YYYYMMDD>_ml.parquet` 的 `analyst_coverage_gat_40d`。
 未覆盖或历史不足的股票没有有效分数。
 metadata由公共factor入口写入，包含e2e/model_generated及HTZQ等标签；
 不会将中间三列或权重写入 `data/models`。

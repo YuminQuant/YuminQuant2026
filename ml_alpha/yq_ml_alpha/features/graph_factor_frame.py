@@ -7,6 +7,7 @@ import pandas as pd
 from yq_ml_alpha.data.daily_tensor_sequence import DailyTensorSequence
 from yq_ml_alpha.data.filters import TradeFilters
 from yq_ml_alpha.data.stores import daily_path
+from yq_ml_alpha.data.factor_files import factor_dates
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.stock_relations import StockRelations
@@ -28,7 +29,7 @@ class FactorHistory(DailyTensorSequence):
         self.history_transform = str(params.get("history_transform", "mad5_zscore_rank_label"))
         if self.history_transform not in {"mad5_zscore_rank_label", "zscore_clip3"}:
             raise ValueError("unsupported factor history_transform")
-        self.available_dates = sorted(int(p.stem) for p in data_io.glob(Path(self.root), "*/*.parquet"))
+        self.available_dates = factor_dates(self.root)
         if not self.available_dates:
             raise ValueError(f"no factor history under {self.root}")
         self.first_date = self.available_dates[0]
@@ -37,7 +38,8 @@ class FactorHistory(DailyTensorSequence):
         cached = self._cached(date)
         if cached is not None:
             return cached
-        if not data_io.exists(daily_path(self.root, date)):
+        files = getattr(self.provider, "files", None)
+        if not (files.exists(date) if files is not None else data_io.exists(daily_path(self.root, date))):
             raise FileNotFoundError(f"missing factor history for {date}")
         frame = self.provider.load(date)
         if frame.ts_code.isna().any() or frame.ts_code.duplicated().any() or not frame.trade_date.eq(date).all():

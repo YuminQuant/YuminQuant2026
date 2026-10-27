@@ -79,7 +79,7 @@ $env:PYTHONPATH = (Join-Path (Get-Location) 'ml_alpha')
 
 模型权重及诊断：`data/model_workspace/bar_gru_attention_15m/artifacts/<window_id>/`。
 正式因子列 `bar_gru_attention_15m` 合并写入
-`data/factors/stock/daily/<year>/<YYYYMMDD>.parquet`，券商 tag 为 `HTZQ`。
+`data/factors/stock/daily/<year>/<YYYYMMDD>_ml.parquet`，券商 tag 为 `HTZQ`。
 `cache_samples=false`；indexed 模式使用显式模型 workspace 下的任务临时快照，
 本机路径位于 D 盘，服务器路径相对其仓库目录；由公共流程结束时清理，不向 C 盘
 写缓存。运行时 `device="auto"` 优先使用可用 CUDA。

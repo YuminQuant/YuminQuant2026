@@ -102,7 +102,7 @@ BN 推理使用模型保存的统计量，不重新拟合样本外统计量。
 
 模型文件为各自 workspace 下 `artifacts/annual_<year>/model.pkl`（Torch checkpoint）；
 诊断文件在同一窗口目录。最终因子合并写到
-`data/factors/stock/daily/<year>/<date>.parquet`，列名分别为
+`data/factors/stock/daily/<year>/<date>_ml.parquet`，列名分别为
 `astgnn_week`、`astgnn_msnew`。正式数据和 metadata 由未来 CLI 执行时生成。
 
 ## 手动执行命令

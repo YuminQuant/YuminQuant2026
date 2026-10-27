@@ -115,6 +115,10 @@ def main(argv=None):
     if not rest:
         parser.error('Provide a command, e.g. run --asset stock --frequency daily --start-date ... --end-date ... --factors ...')
     command,arguments=rest[0],rest[1:]
+    if command == 'migrate-factor-files' and options.dry_run:
+        # Migration has a real read-only inspection step, beyond printing argv.
+        arguments=set_option(arguments,'--dry-run','true')
+        options.dry_run=False
     if options.split_training_windows and (options.single_task or command not in {'model-train','factor-train'}):
         parser.error('--split-training-windows requires a training command without --single-task')
     if command in ML_COMMANDS:

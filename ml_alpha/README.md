@@ -91,7 +91,7 @@ controls concurrency. See [multi-model execution](docs/MULTI_MODEL_EXECUTION.md)
 统一入口在正式 ML 因子生产前刷新一次 metadata；原模块命令保留。普通训练入口默认单任务；scripts/train_models.py 按配置中的模型窗口拆成独立任务，本机顺序执行，部署调度器可并发。带 validation_lookback 的窗口支持年度、半年度、季度、月度更新；窗口 ID、标签清洗和模型路径保持一致。远程张量受预算限制，不在节点写 memmap。详见[统一计算与存储](../factor_engine/docs/ARTIFACT_STORAGE.md)。
 The unified entrypoint refreshes metadata once before ML factor production; module commands remain available. Ordinary training remains single-task. scripts/train_models.py creates one task per configured model window, sequential locally or concurrent through deployment scheduling. Calendar windows with validation_lookback support annual, semiannual, quarterly and monthly refits while retaining window IDs, label purging and artifact paths. Remote tensors stay within a RAM budget, not node memmaps. See [execution and storage](../factor_engine/docs/ARTIFACT_STORAGE.md).
 
-- 模型信号通常写入 `data/models/{year}/{date}.parquet`；正式因子写入 `data/factors/stock/daily/{year}/{date}.parquet`。
+- 模型信号通常写入 `data/models/{year}/{date}.parquet`；ML 正式因子写入 `data/factors/stock/daily/{year}/{date}_ml.parquet`，手工因子保留 `{date}.parquet`。公共读取、并发及旧文件迁移见 [双文件存储](docs/FACTOR_FILE_PARTITIONS.md)。
   Model signals normally go to `data/models`; formal factors go to the daily factor library.
 - 模型、manifest 和特征缓存由配置的 `data/model_workspace/` 子目录管理。预测复用已训练模型，并检查配置/特征身份。
   Model artifacts, manifests and feature caches live in configured workspace directories. Inference reuses trained artifacts with identity checks.

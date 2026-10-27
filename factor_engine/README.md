@@ -139,3 +139,10 @@ cargo test --manifest-path factor_engine/Cargo.toml
 ```
 
 验证脚本与生成数据保留在忽略目录，不提交。Only source/documentation changes belong in commits; keep validation artifacts untracked.
+
+## 手工与 ML 因子的日文件
+
+手工因子写入 `<year>/<YYYYMMDD>.parquet`，ML 因子写入同目录的 `<YYYYMMDD>_ml.parquet`。
+公共读取层按列归属选择文件，回测和历史填充兼容两类文件及旧混合文件。
+旧列物理迁移使用 `migrate-factor-files --start-date YYYYMMDD --end-date YYYYMMDD [--dry-run]`；
+`remove-factor-columns` 会处理两类日文件。详见 [双文件存储协议](../ml_alpha/docs/FACTOR_FILE_PARTITIONS.md)。

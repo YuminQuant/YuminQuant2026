@@ -37,6 +37,7 @@ def execute(config, *, train, predict, resume=False, window_ids=None):
         config.output.root, config.output.id, layout="standard",
         asset=config.output.asset, frequency=config.output.frequency,
         base_root=config.output.base_root, write_workers=config.output.write_workers,
+        file_suffix="_ml",
     ) if predict else None
     output_dates = calendar.between(*config.dates.predict)
     first_event_date = calendar.previous_open(windows[0].predict_dates[0])

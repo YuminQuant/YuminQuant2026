@@ -112,7 +112,7 @@ pending user authorization.
   root. C: derivation output is rejected. Training sample disk caching is disabled.
 - Models: `data/model_workspace/chip_age_alpha/artifacts/annual_<prediction_year>/model.pkl`
   (torch checkpoint); manifests, loss_history.parquet and model_info.json alongside.
-- Scores: `data/factors/stock/daily/YYYY/YYYYMMDD.parquet`, column `chip_age_alpha`.
+- Scores: `data/factors/stock/daily/YYYY/YYYYMMDD_ml.parquet`, column `chip_age_alpha`.
 
 ## Commands (not executed during implementation)
 

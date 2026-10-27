@@ -103,6 +103,6 @@ $env:PYTHONPATH = "$PWD\ml_alpha"
 标签库需事先具有覆盖训练/验证样本的 future_vwap_return_10d。
 模型分别保存于 `data/model_workspace/resnet_gru_week/artifacts` 和
 `data/model_workspace/resnet_gru_msnew/artifacts`。最终分数由公共写入器合并到
-`data/factors/stock/daily/<year>/<date>.parquet`，对应同名因子列；64个内部因子不额外落盘。
+`data/factors/stock/daily/<year>/<date>_ml.parquet`，对应同名因子列；64个内部因子不额外落盘。
 配置与 registry 已登记；预测时由公共流程写入 metadata，也可用 `factor-metadata --config ...`
 显式同步元数据。本轮不修改已有正式因子数据。

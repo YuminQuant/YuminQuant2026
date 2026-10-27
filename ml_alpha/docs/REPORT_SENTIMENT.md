@@ -113,7 +113,7 @@ Jieba 固定 `0.42.1`；词典及词性表在内存初始化，绕开其默认�
 | 模型、词表、训练标签分布 | `data/model_workspace/report_rptf_title/artifacts/annual_<year>/model.pkl` |
 | 公共兼容性清单 | 同目录 `model.manifest.json` |
 | 可读词表、MSE诊断 | 同目录 `vocabulary.json`、`model_info.json` |
-| 正式单列因子 | `data/factors/stock/daily/<year>/<date>.parquet` 中 `report_rptf_title` |
+| 正式单列因子 | `data/factors/stock/daily/<year>/<date>_ml.parquet` 中 `report_rptf_title` |
 
 配置、特征或数据版本变化时，公共 manifest 要求重训。
 新增或修订历史源数据应更新配置 `data_version`，不要复用旧模型冒充新数据训练。

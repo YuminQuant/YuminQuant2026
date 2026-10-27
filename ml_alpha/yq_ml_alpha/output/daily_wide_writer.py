@@ -33,6 +33,7 @@ class DailyWideWriter:
         frequency: str = "daily",
         base_root: str | Path | None = None,
         write_workers: int = 4,
+        file_suffix: str = "",
     ) -> None:
         self.output_root = Path(output_root)
         self.output_id = output_id
@@ -40,6 +41,15 @@ class DailyWideWriter:
         self.asset = asset
         self.frequency = frequency
         self.base_root = Path(base_root) if base_root is not None else None
+        if file_suffix not in {"", "_ml"}:
+            raise ValueError("daily output file_suffix must be empty or _ml")
+        self.file_suffix = file_suffix
+        self._owners = {}
+        if file_suffix == "_ml":
+            from yq_ml_alpha.data.factor_files import FactorFiles
+            root = self.output_root / asset / frequency if layout == "standard" else self.output_root
+            self._owners = FactorFiles(root).owners
+            self._check_owner(output_id)
         self.write_workers = max(1, int(write_workers))
         self._schema_dates_seen: set[int] = set()
         self._known_columns = set(KEY_COLUMNS) | {output_id}
@@ -91,6 +101,7 @@ class DailyWideWriter:
         """
         tasks = {}
         for output_id, frame in predictions.items():
+            self._check_owner(output_id)
             if not output_id or output_id in KEY_COLUMNS:
                 raise ValueError(f"invalid output column: {output_id}")
             if not set([*KEY_COLUMNS, "score"]).issubset(frame.columns):
@@ -153,7 +164,10 @@ class DailyWideWriter:
             else:
                 joined["trade_date"] = joined["trade_date"].astype("int32")
                 merged = base.merge(joined, on=KEY_COLUMNS, how="outer", sort=False)
-            ordered = KEY_COLUMNS + sorted((set(columns) | set(merged.columns)) - set(KEY_COLUMNS))
+            # An absent ML column may still live in a legacy mixed file. Do not
+            # pad it with nulls merely because another date/model has that column.
+            names = set(merged.columns) if self.file_suffix == "_ml" else set(columns) | set(merged.columns)
+            ordered = KEY_COLUMNS + sorted(names - set(KEY_COLUMNS))
             merged = merged.reindex(columns=ordered).sort_values(KEY_COLUMNS).reset_index(drop=True)
             merged["trade_date"] = merged["trade_date"].astype("int32")
             merged[ordered[2:]] = merged[ordered[2:]].astype("float32")
@@ -180,11 +194,14 @@ class DailyWideWriter:
                 return None
             base = self._load_base(path, trade_date, None)
             values = pd.DataFrame(columns=[*KEY_COLUMNS, self.output_id])
-            merged = _merge_values(base, values, self.output_id, columns)
+            local_columns = [*base.columns, self.output_id] if self.file_suffix == "_ml" else columns
+            merged = _merge_values(base, values, self.output_id, local_columns)
             self._atomic_write(path, merged)
         return path
 
     def _schema_columns(self, dates: list[int]) -> list[str]:
+        if self.file_suffix == "_ml":
+            return KEY_COLUMNS + sorted(self._known_columns - set(KEY_COLUMNS))
         for trade_date in dates:
             if trade_date in self._schema_dates_seen:
                 continue
@@ -197,7 +214,10 @@ class DailyWideWriter:
 
     def _load_base(self, path: Path, trade_date: int, daily: pd.DataFrame | None) -> pd.DataFrame:
         if artifact_io.exists(path):
-            return artifact_io.read_parquet(path)
+            frame = artifact_io.read_parquet(path)
+            if self.file_suffix == "_ml" and any(self._owners.get(c) == "manual" for c in frame.columns):
+                raise ValueError(f"ML output contains manual-owned columns: {path}")
+            return frame
         if self.base_root is not None:
             base = read_daily(self.base_root, trade_date, [])
             if not base.empty:
@@ -212,8 +232,12 @@ class DailyWideWriter:
     def _path(self, trade_date: int) -> Path:
         year = str(trade_date // 10000)
         if self.layout == "standard":
-            return self.output_root / self.asset / self.frequency / year / f"{trade_date}.parquet"
-        return self.output_root / year / f"{trade_date}.parquet"
+            return self.output_root / self.asset / self.frequency / year / f"{trade_date}{self.file_suffix}.parquet"
+        return self.output_root / year / f"{trade_date}{self.file_suffix}.parquet"
+
+    def _check_owner(self, output_id):
+        if self.file_suffix == "_ml" and self._owners.get(output_id) == "manual":
+            raise ValueError(f"ML writer cannot update manual-owned factor: {output_id}")
 
 
 def parquet_columns(path: str | Path) -> list[str]:

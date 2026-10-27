@@ -21,6 +21,11 @@ Release builds are the default. Use `--no-build` to reuse a build or `--binary P
 生产入口先刷新一次相关 metadata。Rust、ML 来源分别为 `factor_metadata.rust.parquet` 和 `factor_metadata.ml_alpha.parquet`，合并表为 `factor_metadata.parquet`，两端规则相同。来源 ID 冲突报错，不相互覆盖。
 The entrypoint refreshes the relevant metadata once. Both backends use separate Rust and ML source tables plus the merged `factor_metadata.parquet`; colliding IDs fail rather than overwrite each other.
 
+日度因子按来源拆分：手工因子写 `<YYYYMMDD>.parquet`，ML 因子写同目录的
+`<YYYYMMDD>_ml.parquet`。元数据 `storage_partition` 明确列归属，公共读取和回测
+提供按键合并的逻辑视图；旧混合文件可兼容读取或显式迁移。两条生产链路分别
+锁定和原子发布自己的文件。详见[因子双文件协议](../../ml_alpha/docs/FACTOR_FILE_PARTITIONS.md)。
+
 底层因子、标签和 Barra 生产按代码 registry 选择实现，不要求 metadata 存在或检查是否过期。Metadata 是注册目录，并不保证每个历史日期已生成全部列。回测/模型仍可使用描述信息；部署层可通过 `YQ_METADATA_SNAPSHOTS` 指向提交端生成的只读 metadata 副本，避免并发读取正式目录。
 Factor, label and Barra production select code registries without a metadata existence/freshness gate. Metadata describes registration, not historical column availability. Backtests/models may still need descriptions; deployment launchers can supply read-only submission-time copies through `YQ_METADATA_SNAPSHOTS`.
 

@@ -22,7 +22,8 @@ def output_path(config, date):
     root = Path(config.output.root)
     if config.output.kind == 'factor':
         root = root / config.output.asset / config.output.frequency
-    return root / str(date // 10000) / f'{date}.parquet'
+    suffix = '_ml' if config.output.kind == 'factor' else ''
+    return root / str(date // 10000) / f'{date}{suffix}.parquet'
 
 
 def prediction_units(config, calendar):

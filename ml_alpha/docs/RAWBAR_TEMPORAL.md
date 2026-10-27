@@ -127,7 +127,7 @@ $env:PATH = "D:\Users\Devin\anaconda383;D:\Users\Devin\anaconda383\Library\bin;D
 
 - 权重：`data/model_workspace/<factor_id>/artifacts/<window_id>/model.pkl`，
   同目录保存 manifest、loss history、model info。
-- 日度因子：`data/factors/stock/daily/<year>/<YYYYMMDD>.parquet`，
+- 日度因子：`data/factors/stock/daily/<year>/<YYYYMMDD>_ml.parquet`，
   分别新增 `rawbar_restcn` 或 `rawbar_transformer` 列。
 - 元数据由公共因子流程写入，自动带 `e2e/model_generated`，
   并加入配置中的 `DFZQ` 和模型标签。

@@ -11,6 +11,7 @@ import pandas as pd
 
 from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.output import artifact_io
+from yq_ml_alpha.data.factor_files import normalize_metadata
 
 
 METADATA_COLUMNS = [
@@ -25,6 +26,7 @@ METADATA_COLUMNS = [
     "dependencies_json",
     "description",
     "updated_at",
+    "storage_partition",
 ]
 
 
@@ -68,6 +70,7 @@ def _write_metadata_group(root, configs, replace_all):
         rows = pd.concat([rows, pd.DataFrame(additions)], ignore_index=True)
         if set(rows.factor_id) & set(native_rows.factor_id):
             raise ValueError("Rust and ml_alpha factor metadata IDs collide")
+        normalize_metadata(pd.concat([native_rows, rows], ignore_index=True))
         _write_atomic(source, rows)
         _write_atomic(native, native_rows)
         _write_atomic(path, pd.concat([native_rows, rows], ignore_index=True))
@@ -99,6 +102,7 @@ def _read_existing(path: Path) -> pd.DataFrame:
     if not artifact_io.exists(path):
         return pd.DataFrame(columns=METADATA_COLUMNS)
     frame = artifact_io.read_parquet(path)
+    frame = normalize_metadata(frame)
     for column in METADATA_COLUMNS:
         if column not in frame.columns:
             frame[column] = ""
@@ -132,4 +136,5 @@ def _metadata_row(config: MlAlphaConfig, factor_id: str) -> dict[str, str]:
         "dependencies_json": json.dumps([dependencies], separators=(",", ":")),
         "description": description,
         "updated_at": str(int(time.time())),
+        "storage_partition": "ml",
     }

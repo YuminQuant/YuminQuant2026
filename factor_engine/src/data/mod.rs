@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod factor_files;
 pub mod fund_portfolio;
 pub mod loader;
 pub mod parquet_io;

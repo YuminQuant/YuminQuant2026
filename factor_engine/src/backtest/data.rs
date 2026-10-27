@@ -8,6 +8,7 @@ use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{AssetClass, Frequency};
 use crate::data::parquet_io::{parquet_column_names, read_parquet};
+use crate::data::factor_files::{FactorFiles, factor_file_date, ml_path};
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
 use crate::factor::common::{ClassificationLevel, ClassificationMap};
@@ -1299,6 +1300,7 @@ fn external_factor_metadata(
         dependencies_json: "[]".to_string(),
         description: "External factor supplied via --factor-root.".to_string(),
         updated_at: String::new(),
+        storage_partition: "manual".into(),
     }
 }
 
@@ -1430,12 +1432,15 @@ fn load_factor_output_table_with_presence(
         .iter()
         .map(|column| (column.clone(), BTreeSet::<i32>::new()))
         .collect::<BTreeMap<_, _>>();
+    let files = FactorFiles::new(root)?;
     for date in dates {
         let path = factor_output_path(root, layout, asset_class, frequency, *date);
-        if !path.storage_exists() {
+        if !files.exists(&path) {
             continue;
         }
-        let schema_columns = parquet_column_names(&path)?;
+        let mut daily = if frequency == Frequency::Daily { files.read(&path, Some(&columns))? }
+            else { read_parquet(&path, Some(&columns))? };
+        let schema_columns = daily.column_names();
         for column in requested_columns {
             if schema_columns.contains(column) {
                 if let Some(dates) = present_dates.get_mut(column) {
@@ -1443,7 +1448,6 @@ fn load_factor_output_table_with_presence(
                 }
             }
         }
-        let mut daily = read_parquet(&path, Some(&columns))?;
         ensure_table_columns(&mut daily, requested_columns)?;
         if table.columns.is_empty() {
             table = daily;
@@ -1482,16 +1486,20 @@ fn initialize_factor_fill_state(
     }
     let mut dates =
         available_factor_dates_before(root, layout, asset_class, frequency, first_target_date)?;
+    let files = FactorFiles::new(root)?;
     dates.sort_by(|left, right| right.cmp(left));
     for date in dates {
         if remaining.is_empty() {
             break;
         }
         let path = factor_output_path(root, layout, asset_class, frequency, date);
-        if !path.storage_exists() {
+        if !files.exists(&path) {
             continue;
         }
-        let schema_columns = parquet_column_names(&path)?;
+        let available = remaining.iter().cloned().collect::<Vec<_>>();
+        let table = if frequency == Frequency::Daily { files.read(&path, Some(&available))? }
+            else { read_parquet(&path, Some(&[vec!["trade_date".into(), "ts_code".into()], available].concat()))? };
+        let schema_columns = table.column_names();
         let columns_to_load = remaining
             .iter()
             .filter(|column| schema_columns.contains(*column))
@@ -1500,7 +1508,7 @@ fn initialize_factor_fill_state(
         if columns_to_load.is_empty() {
             continue;
         }
-        update_factor_fill_state_from_path(&path, date, &columns_to_load, instruments, state)?;
+        update_factor_fill_state_from_table(&table, date, &columns_to_load, instruments, state)?;
         for column in columns_to_load {
             remaining.remove(&column);
         }
@@ -1556,10 +1564,7 @@ fn collect_parquet_dates_before(
         if !extension.eq_ignore_ascii_case("parquet") {
             continue;
         }
-        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        let Ok(date) = stem.parse::<i32>() else {
+        let Some(date) = factor_file_date(&path) else {
             continue;
         };
         if date < first_target_date {
@@ -1569,18 +1574,13 @@ fn collect_parquet_dates_before(
     Ok(())
 }
 
-fn update_factor_fill_state_from_path(
-    path: &Path,
+fn update_factor_fill_state_from_table(
+    table: &Table,
     trade_date: i32,
     factor_columns: &[String],
     instruments: &[String],
     state: &mut FactorFillState,
 ) -> Result<()> {
-    let mut columns = vec!["trade_date".to_string(), "ts_code".to_string()];
-    for column in factor_columns {
-        columns.push(column.clone());
-    }
-    let table = read_parquet(path, Some(&columns))?;
     let trade_dates = table.required_i32_date_cast("trade_date")?;
     let ts_codes = table.required_utf8("ts_code")?;
     let instrument_lookup = instruments
@@ -1719,7 +1719,7 @@ fn direct_daily_output_path(root: &Path, trade_date: i32) -> PathBuf {
     let nested = root
         .join(year.to_string())
         .join(format!("{trade_date}.parquet"));
-    if nested.storage_exists() {
+    if nested.storage_exists() || ml_path(&nested).storage_exists() {
         nested
     } else {
         root.join(format!("{trade_date}.parquet"))

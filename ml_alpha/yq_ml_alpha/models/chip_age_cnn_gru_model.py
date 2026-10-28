@@ -66,6 +66,10 @@ def _params(raw):
 
 
 class ChipAgeCNNGRUAlphaModel(AlphaModel):
+    # Eval uses frozen network/BatchNorm states and independent daily tensors.
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
+
     def __init__(self):
         self.params = {}
         self.states = []
@@ -192,6 +196,9 @@ class ChipAgeCNNGRUAlphaModel(AlphaModel):
             network = _network(torch, self.params).to(device)
             if getattr(self, "_prediction_active", False):
                 self._prediction_network = network
+        else:
+            # Grouped prediction can offload a resident model between batches.
+            network.to(device)
         for state_index, state in enumerate(self.states):
             if not getattr(self, "_prediction_active", False) or getattr(self, "_prediction_state_index", None) != state_index:
                 network.load_state_dict(state)

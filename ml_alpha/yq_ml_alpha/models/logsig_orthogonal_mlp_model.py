@@ -17,6 +17,10 @@ from yq_ml_alpha.models.base import AlphaModel, ModelContext
 class LogsigOrthogonalMLPAlphaModel(AlphaModel):
     """MLP that turns signature features into decorrelated base factors."""
 
+    # All prediction normalization and neutralization use complete daily sections.
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
+
     def __init__(self) -> None:
         self.model = None
         self.input_dim: int | None = None
@@ -308,9 +312,9 @@ def _import_rust_neutralizer():
         raise ImportError(
             "LogsigOrthogonalMLPAlphaModel neutralize requires the factor_engine Rust "
             "Python extension `yq_factor_engine_py`. Build it from the repository root with:\n"
-            "D:\\Users\\Devin\\anaconda383\\python.exe -m pip install maturin\n"
-            "D:\\Users\\Devin\\anaconda383\\python.exe -m maturin develop --manifest-path "
-            "factor_engine\\python\\yq_factor_engine_py\\Cargo.toml"
+            "python -m pip install maturin\n"
+            "python -m maturin develop --manifest-path "
+            "factor_engine/python/yq_factor_engine_py/Cargo.toml"
         ) from exc
 
 

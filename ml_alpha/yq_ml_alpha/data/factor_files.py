@@ -52,8 +52,10 @@ def normalize_metadata(frame):
         raise ValueError("factor metadata storage_partition must be manual or ml")
     if not frame.storage_partition.eq(inferred).all():
         raise ValueError("factor ownership conflicts with model_generated metadata")
-    owners = frame.groupby("output_column").storage_partition.nunique()
-    if (owners > 1).any() or frame.output_column.duplicated().any():
+    scope = [name for name in ("asset_class", "frequency") if name in frame]
+    identity = [*scope, "output_column"]
+    owners = frame.groupby(identity, dropna=False).storage_partition.nunique()
+    if (owners > 1).any() or frame.duplicated(identity).any():
         raise ValueError("factor metadata output columns must have one owner")
     return frame
 
@@ -68,6 +70,13 @@ class FactorFiles:
         self.root = Path(root)
         path = metadata_path(root)
         metadata = normalize_metadata(io.read_parquet(path)) if path is not None else None
+        if metadata is not None:
+            asset, frequency = self.root.parent.name, self.root.name
+            if ("asset_class" in metadata and "frequency" in metadata
+                    and metadata.asset_class.eq(asset).any() and metadata.frequency.eq(frequency).any()):
+                metadata = metadata.loc[metadata.asset_class.eq(asset) & metadata.frequency.eq(frequency)]
+            if metadata.groupby("output_column").storage_partition.nunique().gt(1).any():
+                raise ValueError("factor metadata ownership is ambiguous; use an asset/frequency factor root")
         self.owners = {} if metadata is None else dict(zip(metadata.output_column, metadata.storage_partition))
 
     def exists(self, date):

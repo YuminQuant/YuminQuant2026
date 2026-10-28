@@ -29,19 +29,33 @@ impl FactorFiles {
         for parent in root.ancestors().take(3) {
             let metadata = parent.join("factor_metadata.parquet");
             if !metadata.storage_exists() { continue; }
-            let table = read_parquet(&metadata, Some(&["output_column".into(), "tags_json".into(), "storage_partition".into()]))?;
+            let table = read_parquet(&metadata, Some(&["output_column".into(), "tags_json".into(), "storage_partition".into(),
+                "asset_class".into(), "frequency".into()]))?;
             let names = table.required_utf8("output_column")?;
             let tags = table.required_utf8("tags_json")?;
             let partitions = table.columns.get("storage_partition").map(|_| table.required_utf8("storage_partition")).transpose()?;
+            let assets = table.columns.get("asset_class").map(|_| table.required_utf8("asset_class")).transpose()?;
+            let frequencies = table.columns.get("frequency").map(|_| table.required_utf8("frequency")).transpose()?;
+            let asset = root.parent().and_then(|path| path.file_name()).and_then(|name| name.to_str());
+            let frequency = root.file_name().and_then(|name| name.to_str());
+            let scoped = asset.is_some() && frequency.is_some()
+                && assets.is_some_and(|values| values.iter().any(|value| value.as_deref() == asset))
+                && frequencies.is_some_and(|values| values.iter().any(|value| value.as_deref() == frequency));
+            let mut identities = BTreeSet::new();
             for i in 0..table.len {
+                if scoped && (assets.unwrap()[i].as_deref() != asset || frequencies.unwrap()[i].as_deref() != frequency) { continue; }
                 let column = names[i].as_deref().ok_or_else(|| err("null factor output_column"))?;
+                let identity = (assets.and_then(|values| values[i].as_deref()).unwrap_or(""),
+                    frequencies.and_then(|values| values[i].as_deref()).unwrap_or(""), column);
+                if !identities.insert(identity) { return Err(err(format!("duplicate factor metadata output_column: {column}"))); }
                 let tags: Vec<String> = serde_json::from_str(tags[i].as_deref().filter(|s| !s.is_empty()).unwrap_or("[]"))?;
                 let inferred = if tags.iter().any(|t| t == "model_generated") { "ml" } else { "manual" };
                 let owner = partitions.and_then(|values| values[i].as_deref()).filter(|s| !s.is_empty()).unwrap_or(inferred);
                 if owner != inferred { return Err(err(format!("invalid storage_partition for {column}: {owner}"))); }
-                if result.owners.insert(column.into(), owner.into()).is_some() {
-                    return Err(err(format!("duplicate factor metadata output_column: {column}")));
+                if result.owners.get(column).is_some_and(|previous| previous != owner) {
+                    return Err(err(format!("ambiguous factor metadata ownership for {column}; use an asset/frequency factor root")));
                 }
+                result.owners.insert(column.into(), owner.into());
             }
             break;
         }

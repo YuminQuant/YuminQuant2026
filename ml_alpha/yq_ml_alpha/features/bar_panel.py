@@ -718,6 +718,9 @@ def _derived_minute_session_to_wide(
         data = data.loc[~data["ts_code"].isin(st_symbols)].copy()
     if data.empty:
         return pd.DataFrame(columns=columns)
+    # A zero-turnover minute bar contributes a zero VWAP input, including older
+    # derived files that stored the undefined ratio as null.
+    data.loc[data["volume"].eq(0) & data["vwap"].isna(), "vwap"] = 0.0
     data["__bar_idx"] = pd.to_numeric(data["bar_index"], errors="coerce")
     data = data.loc[data["__bar_idx"].notna()].copy()
     data["__bar_idx"] = data["__bar_idx"].astype("int16")
@@ -786,7 +789,11 @@ def _aggregate_minute_session(
     agg["__bar_idx"] = agg["__bar_idx"].astype("int16")
     agg = agg.loc[(agg["__bar_idx"] >= 0) & (agg["__bar_idx"] < steps_per_session)].copy()
     agg = agg.rename(columns={"vol": "volume"})
-    agg["vwap"] = np.where(agg["volume"].astype("float64").abs() > 1e-12, agg["amount"] / agg["volume"], np.nan)
+    agg["vwap"] = np.where(
+        agg["volume"].astype("float64").abs() > 1e-12,
+        agg["amount"] / agg["volume"],
+        np.where(agg["volume"].eq(0), 0.0, np.nan),
+    )
     return _bars_to_wide(agg, steps_per_session, strict)
 
 

@@ -126,7 +126,13 @@ impl BarBuilder {
     }
 
     fn finish(self, bar_size: usize) -> DerivedBarRow {
-        let vwap = (self.volume > 0.0).then_some(self.amount / self.volume);
+        let vwap = if self.volume > 0.0 {
+            Some(self.amount / self.volume)
+        } else if self.volume == 0.0 {
+            Some(0.0)
+        } else {
+            None
+        };
         DerivedBarRow {
             trade_date: self.trade_date,
             trade_time: bar_end_label(self.bar_index, bar_size),

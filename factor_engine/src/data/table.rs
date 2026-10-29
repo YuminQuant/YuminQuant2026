@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray,
+    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array,
+    LargeStringArray, StringArray,
 };
 use arrow_schema::{DataType, Field};
 
@@ -170,6 +171,9 @@ impl ColumnData {
     }
 
     pub fn from_arrow(array: &ArrayRef) -> Result<Self> {
+        if let Some(values) = array.as_any().downcast_ref::<LargeStringArray>() {
+            return Ok(Self::Utf8(values.iter().map(|value| value.map(str::to_owned)).collect()));
+        }
         if let Some(values) = array.as_any().downcast_ref::<StringArray>() {
             return Ok(Self::Utf8(
                 (0..values.len())

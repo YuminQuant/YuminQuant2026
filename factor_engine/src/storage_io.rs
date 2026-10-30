@@ -26,7 +26,19 @@ pub trait ReadAt: Send + Sync {
     fn read_at(&self, offset: u64, length: usize) -> io::Result<Bytes>;
 }
 pub trait AtomicWrite: Write + Send { fn commit(self: Box<Self>) -> Result<()>; }
+#[derive(Clone, Copy, Debug)]
+pub struct ReadOptions {
+    pub concurrency: usize,
+    pub opens_per_second: f64,
+    pub prefetch_bytes: usize,
+}
+impl Default for ReadOptions {
+    fn default() -> Self {
+        Self { concurrency: 4, opens_per_second: 10.0, prefetch_bytes: 128 * 1024 * 1024 }
+    }
+}
 pub trait ArtifactBackend: Send + Sync {
+    fn read_options(&self) -> ReadOptions { ReadOptions::default() }
     fn handles(&self, path: &Path) -> bool;
     fn stat(&self, path: &Path) -> Result<Option<FileInfo>>;
     fn list(&self, path: &Path) -> Result<Vec<PathBuf>>;
@@ -49,13 +61,35 @@ static WRITE_NS: AtomicU64 = AtomicU64::new(0);
 static OPEN_NS: AtomicU64 = AtomicU64::new(0);
 static READ_RANGES: AtomicU64 = AtomicU64::new(0);
 static READ_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static READ_HANDLES: AtomicU64 = AtomicU64::new(0);
+static PEAK_READ_HANDLES: AtomicU64 = AtomicU64::new(0);
+static OPEN_HISTOGRAM: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+const OPEN_BUCKET_MS: [u64; 16] = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000, u64::MAX];
+fn record_open(started: std::time::Instant) {
+    let elapsed = started.elapsed();
+    OPEN_NS.fetch_add(elapsed.as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+    let ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+    let bucket = OPEN_BUCKET_MS.iter().position(|limit| ms <= *limit).unwrap_or(15);
+    OPEN_HISTOGRAM[bucket].fetch_add(1, Ordering::Relaxed);
+}
+fn open_percentile(percent: u64) -> u64 {
+    let counts = OPEN_HISTOGRAM.iter().map(|v| v.load(Ordering::Relaxed)).collect::<Vec<_>>();
+    let target = (counts.iter().sum::<u64>() * percent).div_ceil(100).max(1);
+    let mut sum = 0;
+    for (limit, count) in OPEN_BUCKET_MS.iter().zip(counts) {
+        sum += count;
+        if sum >= target { return *limit; }
+    }
+    0
+}
 pub fn profile() -> String {
-    format!("storage read_bytes={} opens={} stats={} lists={} read_ms={} write_bytes={} open_ms={} write_ms={} read_ranges={} read_cache_hits={}",
+    format!("storage read_bytes={} opens={} stats={} lists={} read_ms={} write_bytes={} open_ms={} write_ms={} read_ranges={} read_cache_hits={} read_handles_peak={} open_p50_ms_le={} open_p95_ms_le={}",
         READ_BYTES.load(Ordering::Relaxed), OPEN_FILES.load(Ordering::Relaxed),
         STAT_CALLS.load(Ordering::Relaxed), LIST_CALLS.load(Ordering::Relaxed),
         READ_NS.load(Ordering::Relaxed)/1_000_000, WRITE_BYTES.load(Ordering::Relaxed),
         OPEN_NS.load(Ordering::Relaxed)/1_000_000, WRITE_NS.load(Ordering::Relaxed)/1_000_000,
-        READ_RANGES.load(Ordering::Relaxed), READ_CACHE_HITS.load(Ordering::Relaxed))
+        READ_RANGES.load(Ordering::Relaxed), READ_CACHE_HITS.load(Ordering::Relaxed),
+        PEAK_READ_HANDLES.load(Ordering::Relaxed), open_percentile(50), open_percentile(95))
 }
 pub fn register(backend: Arc<dyn ArtifactBackend>) -> Result<()> {
     BACKEND.set(backend).map_err(|_| err("storage backend already registered"))
@@ -150,13 +184,19 @@ impl ReadAt for LocalRead {
 pub struct StorageReader(Arc<BufferedRead>);
 const READ_BLOCK_BYTES: usize = 64 * 1024;
 const READ_CACHE_BLOCKS: usize = 16;
+pub(crate) const READER_CACHE_BYTES: usize = READ_BLOCK_BYTES * READ_CACHE_BLOCKS;
 struct BufferedRead {
     source: Arc<dyn ReadAt>,
     blocks: Mutex<VecDeque<(u64, Bytes)>>,
 }
+impl Drop for BufferedRead {
+    fn drop(&mut self) { READ_HANDLES.fetch_sub(1, Ordering::Relaxed); }
+}
 impl Length for StorageReader { fn len(&self) -> u64 { self.0.source.len() } }
 impl StorageReader {
     fn new(source: Arc<dyn ReadAt>) -> Self {
+        let active = READ_HANDLES.fetch_add(1, Ordering::Relaxed) + 1;
+        PEAK_READ_HANDLES.fetch_max(active, Ordering::Relaxed);
         Self(Arc::new(BufferedRead { source, blocks: Mutex::new(VecDeque::new()) }))
     }
 
@@ -234,12 +274,12 @@ pub fn open_reader(path: &Path) -> Result<StorageReader> {
     let started = std::time::Instant::now();
     if let Some(b) = backend(path) {
         let reader = StorageReader::new(b.open_read(path)?);
-        OPEN_NS.fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64,Ordering::Relaxed);
+        record_open(started);
         return Ok(reader);
     }
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
-    OPEN_NS.fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64,Ordering::Relaxed);
+    record_open(started);
     Ok(StorageReader::new(Arc::new(LocalRead { file:Mutex::new(file), len })))
 }
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>> {

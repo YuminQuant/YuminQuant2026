@@ -3,6 +3,7 @@ pub mod factor_files;
 pub mod fund_portfolio;
 pub mod loader;
 pub mod parquet_io;
+pub(crate) mod read_ahead;
 pub mod pool;
 pub mod source_rows;
 pub mod table;

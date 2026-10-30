@@ -15,7 +15,7 @@ use crate::backtest::cross_section::{
     update_cross_section_backtest_states,
 };
 use crate::backtest::data::{
-    load_backtest_input_batch, prepare_backtest_data_plan, FactorFillState,
+    load_backtest_input_batch_cached, prepare_backtest_data_plan, BacktestReadCache, FactorFillState,
 };
 use crate::backtest::request::BacktestRunRequest;
 use crate::backtest::request::DEFAULT_BACKTEST_THREADS;
@@ -52,7 +52,10 @@ impl BacktestEngine {
 
     pub fn run(&self, request: &BacktestRunRequest) -> Result<BacktestRunReport> {
         ensure_backtest_inputs(request)?;
+        let prepare_started = std::time::Instant::now();
         let plan = prepare_backtest_data_plan(&self.config, request)?;
+        let prepare_ms = prepare_started.elapsed().as_millis();
+        let (mut input_ms, mut compute_ms, mut output_ms) = (0u128, 0u128, 0u128);
         let selected_factor_ids = plan
             .factor_metadata
             .iter()
@@ -69,6 +72,8 @@ impl BacktestEngine {
             .clone()
             .unwrap_or_else(|| default_output_dir(&self.config, request));
         let mut output_files = Vec::new();
+        let mut input_cache = BacktestReadCache::new(
+            crate::artifact_io::backend(&self.config.barra_root).is_some(), factor_batches.len() > 1);
         for (batch_idx, range) in factor_batches.iter().enumerate() {
             let batch_factors = plan.factor_metadata[range.clone()].to_vec();
             let factor_columns = batch_factors
@@ -80,14 +85,18 @@ impl BacktestEngine {
             let mut states = init_cross_section_states(&batch_factors);
             for date_range in &date_batches {
                 let target_dates = &plan.target_dates[date_range.clone()];
-                let input = load_backtest_input_batch(
+                let started = std::time::Instant::now();
+                let input = load_backtest_input_batch_cached(
                     &self.config,
                     request,
                     &plan,
                     &batch_factors,
                     target_dates,
                     &mut factor_fill_state,
+                    &mut input_cache,
                 )?;
+                input_ms += started.elapsed().as_millis();
+                let started = std::time::Instant::now();
                 update_cross_section_backtest_states(
                     request,
                     &input,
@@ -95,7 +104,9 @@ impl BacktestEngine {
                     &mut states,
                     thread_pool.as_ref(),
                 )?;
+                compute_ms += started.elapsed().as_millis();
             }
+            let started = std::time::Instant::now();
             let output = finalize_cross_section_backtest(
                 states,
                 &batch_factors,
@@ -106,6 +117,8 @@ impl BacktestEngine {
                 rebalance_dates.len(),
                 request.groups,
             )?;
+            compute_ms += started.elapsed().as_millis();
+            let started = std::time::Instant::now();
             output_files.extend(write_backtest_outputs(
                 &output_dir,
                 &output.returns,
@@ -116,8 +129,12 @@ impl BacktestEngine {
                 &output.industry_weights,
                 &output.barra_exposure,
             )?);
+            output_ms += started.elapsed().as_millis();
         }
         progress.finish();
+        if std::env::args().any(|arg| arg == "--profile") {
+            eprintln!("backtest_io prepare_ms={prepare_ms} input_ms={input_ms} compute_ms={compute_ms} output_ms={output_ms} {}", input_cache.profile());
+        }
         Ok(BacktestRunReport {
             factor_count: selected_factor_ids.len(),
             selected_factor_ids,

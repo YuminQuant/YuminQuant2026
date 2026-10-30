@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::artifact_io::{self, StoragePathExt};
-use crate::data::parquet_io::{parquet_column_names, read_parquet, write_parquet};
+use crate::data::parquet_io::{parquet_column_names, read_parquet, read_projected_reader, read_projected_reader_excluding, write_parquet};
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
 
@@ -18,10 +18,12 @@ pub fn ml_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{}_ml.parquet", path.file_stem().unwrap_or_default().to_string_lossy()))
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct FactorFiles {
     owners: BTreeMap<String, String>,
 }
+
+struct ReadPlan { path: PathBuf, manual: bool, ml: bool, requested_manual: bool, primary_ml: bool }
 
 impl FactorFiles {
     pub fn new(root: &Path) -> Result<Self> {
@@ -67,16 +69,66 @@ impl FactorFiles {
     }
 
     pub fn read(&self, path: &Path, columns: Option<&[String]>) -> Result<Table> {
+        let plan = self.read_plan(path, columns);
+        if !plan.manual && !plan.ml { return Ok(Table::empty()); }
+        let projection = source_columns(columns);
+        let primary_path = plan.primary();
+        let primary = self.read_primary(&plan, artifact_io::open_reader(&primary_path)?, projection.as_deref())?;
+        self.finish_read(plan, columns, primary)
+    }
+
+    /// Share the file open with schema discovery, and preserve caller date order.
+    pub(crate) fn read_many(
+        &self, paths: &[PathBuf], columns: &[String],
+        mut consume: impl FnMut(&Path, Table) -> Result<()>,
+    ) -> Result<()> {
+        let plans = paths.iter().map(|path| self.read_plan(path, Some(columns)))
+            .filter(|plan| plan.manual || plan.ml).collect::<Vec<_>>();
+        let primary = plans.iter().map(ReadPlan::primary).collect::<Vec<_>>();
+        let mut plans = plans.into_iter();
+        let projection = source_columns(Some(columns)).expect("explicit projection");
+        crate::data::read_ahead::visit_files(&primary, |_, reader| {
+            let plan = plans.next().expect("one plan per primary reader");
+            let output_path = plan.path.clone();
+            let table = self.read_primary(&plan, reader, Some(&projection))?;
+            consume(&output_path, self.finish_read(plan, Some(columns), table)?)
+        })
+    }
+
+    fn read_primary(&self, plan: &ReadPlan, reader: artifact_io::StorageReader, columns: Option<&[String]>) -> Result<Table> {
+        let path = plan.primary();
+        if plan.primary_ml {
+            if plan.requested_manual {
+                return read_projected_reader(reader, &path, Some(&["trade_date".into(), "ts_code".into()]));
+            }
+            let excluded = self.owners.iter().filter(|(_, owner)| owner.as_str() == "manual")
+                .map(|(name, _)| name.as_str()).collect();
+            read_projected_reader_excluding(reader, &path, columns, &excluded)
+        } else {
+            read_projected_reader(reader, &path, columns)
+        }
+    }
+
+    fn read_plan(&self, path: &Path, columns: Option<&[String]>) -> ReadPlan {
         let manual = path.storage_exists();
         let requested_manual = columns.is_some_and(|names| names.iter().any(|n| !is_key(n)) &&
             names.iter().filter(|n| !is_key(n)).all(|n| self.owners.get(n).is_some_and(|p| p == "manual")));
-        let ml = ml_path(path);
-        let ml_exists = ml.storage_exists();
-        if !manual && !ml_exists { return Ok(Table::empty()); }
-        let ml_schema = if ml_exists && !requested_manual { parquet_column_names(&ml)? } else { BTreeSet::new() };
+        let ml = ml_path(path).storage_exists();
+        ReadPlan { path: path.to_owned(), manual, ml, requested_manual, primary_ml: ml && (!requested_manual || !manual) }
+    }
+
+    fn finish_read(&self, plan: ReadPlan, columns: Option<&[String]>, primary: Table) -> Result<Table> {
+        let ml_schema = if plan.primary_ml && !plan.requested_manual { primary.column_names() } else { Vec::new() };
         let manual_needed = columns.is_none_or(|names| names.iter().all(|n| is_key(n)) || names.iter().filter(|n| !is_key(n))
             .any(|n| self.owners.get(n).is_some_and(|p| p == "manual") || !ml_schema.contains(n)));
-        let manual_schema = if manual && manual_needed { parquet_column_names(path)? } else { BTreeSet::new() };
+        let (mut manual, mut ml) = if plan.primary_ml { (None, Some(primary)) } else { (Some(primary), None) };
+        if plan.manual && manual_needed && manual.is_none() {
+            let projection = source_columns(columns).map(|names| names.into_iter().filter(|n| is_key(n)
+                || self.owners.get(n).is_some_and(|p| p == "manual") || !ml_schema.contains(n))
+                .collect::<Vec<_>>());
+            manual = Some(read_parquet(&plan.path, projection.as_deref())?);
+        }
+        let manual_schema = manual.as_ref().map(Table::column_names).unwrap_or_default();
         let names = match columns {
             Some(names) => names.iter().filter(|n| !is_key(n)).cloned().collect::<BTreeSet<_>>(),
             None => manual_schema.iter().chain(&ml_schema).filter(|n| !is_key(n)).cloned().collect(),
@@ -91,15 +143,18 @@ impl FactorFiles {
             }
         }
         let mut tables = Vec::new();
-        for (source, selected) in [(path, left), (ml.as_path(), right)] {
+        for (source, selected) in [(&mut manual, left), (&mut ml, right)] {
             if selected.is_empty() { continue; }
-            let projection = [vec!["trade_date".into(), "ts_code".into()], selected].concat();
-            tables.push(read_parquet(source, Some(&projection))?);
+            let mut table = source.take().ok_or_else(|| err("missing factor source reader"))?;
+            table.columns.retain(|name, _| is_key(name) || selected.contains(name));
+            tables.push(table);
         }
         if tables.is_empty() {
-            tables.push(read_parquet(if manual { path } else { &ml }, Some(&["trade_date".into(), "ts_code".into()]))?);
+            let mut table = manual.or(ml).ok_or_else(|| err("missing factor key source"))?;
+            table.columns.retain(|name, _| is_key(name));
+            tables.push(table);
         }
-        merge_tables(tables, factor_file_date(path))
+        merge_tables(tables, factor_file_date(&plan.path))
     }
 
     /// Explicit, restartable migration. Publish ML first, then remove old ML columns.
@@ -130,7 +185,19 @@ impl FactorFiles {
     }
 }
 
+impl ReadPlan {
+    fn primary(&self) -> PathBuf { if self.primary_ml { ml_path(&self.path) } else { self.path.clone() } }
+}
+
 fn is_key(name: &str) -> bool { matches!(name, "trade_date" | "ts_code") }
+
+fn source_columns(columns: Option<&[String]>) -> Option<Vec<String>> {
+    columns.map(|names| {
+        let mut columns = vec!["trade_date".into(), "ts_code".into()];
+        columns.extend(names.iter().filter(|name| !is_key(name)).cloned());
+        columns
+    })
+}
 
 fn merge_tables(tables: Vec<Table>, date: Option<i32>) -> Result<Table> {
     let mut indexed = Vec::new();

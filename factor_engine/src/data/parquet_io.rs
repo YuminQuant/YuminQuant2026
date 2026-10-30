@@ -48,15 +48,60 @@ fn read_parquet_impl(
     predicate: Option<SymbolPredicate>,
     null_types: &BTreeMap<String, DataType>,
 ) -> Result<Table> {
+    let file = crate::artifact_io::open_reader(path)
+        .map_err(|e| err(format!("failed to read parquet {}: {e}", path.display())))?;
+    read_parquet_from_reader(file, path, columns, predicate, null_types)
+}
+
+pub(crate) fn read_projected_reader(
+    file: crate::artifact_io::StorageReader,
+    path: &Path,
+    columns: Option<&[String]>,
+) -> Result<Table> {
+    read_parquet_from_reader(file, path, columns, None, &BTreeMap::new())
+}
+
+pub(crate) fn read_projected_reader_excluding(
+    file: crate::artifact_io::StorageReader,
+    path: &Path,
+    columns: Option<&[String]>,
+    excluded: &BTreeSet<&str>,
+) -> Result<Table> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| err(format!("failed to read parquet {}: {e}", path.display())))?;
+    let projection = match columns {
+        Some(names) => names.iter().filter(|name| !excluded.contains(name.as_str())).cloned().collect(),
+        None => builder.schema().fields().iter().map(|field| field.name())
+            .filter(|name| !excluded.contains(name.as_str())).cloned().collect::<Vec<_>>(),
+    };
+    read_parquet_builder(builder, path, Some(&projection), None, &BTreeMap::new())
+}
+
+fn read_parquet_from_reader(
+    file: crate::artifact_io::StorageReader,
+    path: &Path,
+    columns: Option<&[String]>,
+    predicate: Option<SymbolPredicate>,
+    null_types: &BTreeMap<String, DataType>,
+) -> Result<Table> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| err(format!("failed to read parquet {}: {e}", path.display())))?;
+    read_parquet_builder(builder, path, columns, predicate, null_types)
+}
+
+fn read_parquet_builder(
+    builder: ParquetRecordBatchReaderBuilder<crate::artifact_io::StorageReader>,
+    path: &Path,
+    columns: Option<&[String]>,
+    predicate: Option<SymbolPredicate>,
+    null_types: &BTreeMap<String, DataType>,
+) -> Result<Table> {
     let context = |error| {
         err(format!(
             "failed to read parquet {}: {error}",
             path.display()
         ))
     };
-    let file = crate::artifact_io::open_reader(path).map_err(|error| context(error.to_string()))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|error| context(error.to_string()))?;
     let mut builder = builder.with_batch_size(65_536);
 
     if let Some(requested_columns) = columns {

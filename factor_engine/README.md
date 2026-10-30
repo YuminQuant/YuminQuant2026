@@ -50,6 +50,20 @@ Parquet 随机读使用文件生命周期内的有界内存块缓冲，复用页
 
 Parquet random reads use a bounded, per-file in-memory block buffer shared by page-header and page-body reads. Small files remain unchanged; no node disk data cache is introduced. Target-date columns are accumulated and flushed at an approximate 256 MiB threshold; batches below that threshold merge each day's outputs once. Locking, Snappy, atomic publication and preservation of unrelated columns remain unchanged. `YQ_OUTPUT_BUFFER_BYTES` changes this flush threshold, not the total process memory limit. Profile bytes, opens, range reads and cache hits are client-side counters, not global DataNode RPC counts.
 
+## 回测输入读取 / Backtest input reads
+
+回测在本地默认串行读文件；远程存储可通过通用 `ArtifactBackend::read_options()` 配置独立的 IO worker、打开速率和预读预算。通用默认值为 4 个 worker、每秒启动 10 次打开、128 MiB，实际值由适配器配置决定。引擎不要求独立的句柄配额；预读数量由 worker 和预算控制，读取对象结束生命周期后关闭文件。该配置不是 `--threads`：后者仍只控制计算线程。远程预读只提前打开一小组文件并缓冲最多 64 KiB 的尾部，按原日期顺序逐个投影解码；不并发物化多天整表，不创建节点磁盘数据缓存。每个文件的区间缓冲最多 1 MiB；预算不包括回测必需的最终 panel。
+
+打开速率可配置为 `0`，表示不额外限制每秒打开次数；文件并发和内存上限仍然生效。固定速率过低会使暖缓存的小文件读取变慢，不能仅凭打开次数推断提速比例。
+
+Backtests read local files serially by default. A remote adapter configures IO workers, open rate and prefetch budget through `ArtifactBackend::read_options()`. Generic defaults are four workers, ten open starts per second and 128 MiB; the adapter selects the effective settings. The engine does not require a separate handle quota: workers and the budget bound read-ahead, and reader lifetimes close files. This is independent of compute `--threads`. Remote reads pre-open a small wave and warm at most 64 KiB of each tail, then decode projected columns one file at a time in date order. They neither materialize multiple daily tables concurrently nor cache datasets on node disk. Each file has at most 1 MiB of range buffering; the budget excludes the final panel required by the backtest.
+
+An open rate of `0` disables the additional per-second cap, not the file-concurrency or memory limits. An overly low rate can slow warm-cache small-file reads; fewer opens alone do not establish a wall-time speedup.
+
+manual/ML 因子表在同一次打开中完成 schema 获取和数据读取，列归属、按股票和日期键合并、空值及 forward-fill 规则不变。同一远程回测的多个 factor batch 可共享最多约 128 MiB 的 Barra 投影表；按文件长度和修改时间失效，预算不足则正常重读，不积累全历史缓存。`--profile` 新增同时打开句柄峰值及打开延迟 P50/P95 的直方图区间上界，仍是客户端指标，不代表 NameNode/DataNode 的全局请求数。
+
+Manual/ML factor schema and projected data share one open, retaining ownership, keyed merges, nulls and forward-fill semantics. Multiple factor batches in one remote backtest can share approximately 128 MiB of projected Barra tables. Entries are invalidated by file size/mtime; inputs outside the budget are reread normally rather than retained for the full history. Profile output includes peak live read handles and histogram upper bounds for open-latency P50/P95. These remain client-side measurements, not global NameNode/DataNode request counts.
+
 ## 派生数据 / Derived datasets
 
 统一入口生产前自动刷新一次 metadata；底层生产直接查代码 registry，不依赖 metadata 文件。分片、远程 IO、Snappy 和 `--single-task` 规则见[计算与存储](docs/ARTIFACT_STORAGE.md)。原 Cargo 命令仍可使用。

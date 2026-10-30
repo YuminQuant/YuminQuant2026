@@ -253,6 +253,21 @@ impl Table {
         self.columns.keys().cloned().collect()
     }
 
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.columns.iter().map(|(name, column)| {
+            let bytes = match column {
+                ColumnData::Utf8(v) => v.capacity() * std::mem::size_of::<Option<String>>()
+                    + v.iter().flatten().map(String::capacity).sum::<usize>(),
+                ColumnData::I32(v) => v.capacity() * std::mem::size_of::<Option<i32>>(),
+                ColumnData::I64(v) => v.capacity() * std::mem::size_of::<Option<i64>>(),
+                ColumnData::F32(v) => v.capacity() * std::mem::size_of::<Option<f32>>(),
+                ColumnData::F64(v) => v.capacity() * std::mem::size_of::<Option<f64>>(),
+                ColumnData::Bool(v) => v.capacity() * std::mem::size_of::<Option<bool>>(),
+            };
+            name.capacity() + bytes + std::mem::size_of::<(String, ColumnData)>() + 64
+        }).sum()
+    }
+
     pub fn insert(&mut self, name: impl Into<String>, column: ColumnData) -> Result<()> {
         if self.columns.is_empty() {
             self.len = column.len();

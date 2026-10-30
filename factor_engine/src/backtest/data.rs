@@ -1,13 +1,14 @@
 use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::backtest::request::{BacktestDetailSector, BacktestRunRequest};
 use crate::barra::engine::DEFAULT_BARRA_MODEL;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{AssetClass, Frequency};
-use crate::data::parquet_io::{parquet_column_names, read_parquet};
+use crate::data::parquet_io::{parquet_column_names, read_parquet, read_projected_reader};
 use crate::data::factor_files::{FactorFiles, factor_file_date, ml_path};
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
@@ -53,6 +54,7 @@ pub struct BacktestInput {
 #[derive(Clone, Debug)]
 pub struct BacktestDataPlan {
     pub factor_metadata: Vec<FactorMetadata>,
+    factor_files: Arc<FactorFiles>,
     pub label_metadata: LabelMetadataInfo,
     pub target_dates: Vec<i32>,
     pub all_dates: Vec<i32>,
@@ -93,6 +95,65 @@ impl FactorFillState {
 struct FactorLoadResult {
     table: Table,
     present_dates: BTreeMap<String, BTreeSet<i32>>,
+}
+
+/// Run-local, bounded admission cache; never retains whole historical panels.
+pub(crate) struct BacktestReadCache {
+    entries: HashMap<PathBuf, (crate::artifact_io::FileInfo, Arc<Table>, usize)>,
+    bytes: usize,
+    budget: usize,
+    pub hits: usize,
+}
+
+impl BacktestReadCache {
+    pub(crate) fn profile(&self) -> String {
+        format!("shared_input_hits={} shared_input_bytes={}", self.hits, self.bytes)
+    }
+    pub(crate) fn new(remote: bool, reuse: bool) -> Self {
+        Self { entries: HashMap::new(), bytes: 0,
+            budget: if remote && reuse { 128 * 1024 * 1024 } else { 0 }, hits: 0 }
+    }
+
+    fn load_barra(&mut self, paths: &[PathBuf], columns: &[String]) -> Result<Vec<Arc<Table>>> {
+        let mut tables = HashMap::new();
+        let mut missing = Vec::new();
+        let mut versions = HashMap::new();
+        let mut present = Vec::new();
+        for path in paths {
+            let version = match crate::artifact_io::metadata(path) {
+                Ok(version) => version,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            present.push(path);
+            if let Some((old, table, _)) = self.entries.get(path) {
+                if old.size == version.size && old.modified_ns == version.modified_ns
+                    && columns.iter().all(|name| table.columns.contains_key(name))
+                {
+                    tables.insert(path.clone(), Arc::clone(table)); self.hits += 1; continue;
+                }
+            }
+            if let Some((_, _, bytes)) = self.entries.remove(path) { self.bytes -= bytes; }
+            versions.insert(path.clone(), version);
+            missing.push(path.clone());
+        }
+        crate::data::read_ahead::visit_files(&missing, |path, reader| {
+            let mut table = read_projected_reader(reader, path, Some(columns))?;
+            ensure_table_columns(&mut table, &columns.iter().filter(|c| !matches!(c.as_str(), "trade_date" | "ts_code")).cloned().collect::<Vec<_>>())?;
+            let bytes = table.allocated_bytes();
+            let table = Arc::new(table);
+            if bytes <= self.budget.saturating_sub(self.bytes) {
+                let version = crate::artifact_io::metadata(path)?;
+                let before = &versions[path];
+                if version.size == before.size && version.modified_ns == before.modified_ns {
+                    self.entries.insert(path.to_owned(), (version, Arc::clone(&table), bytes)); self.bytes += bytes;
+                }
+            }
+            tables.insert(path.to_owned(), table);
+            Ok(())
+        })?;
+        present.into_iter().map(|path| tables.remove(path).ok_or_else(|| err("missing ordered Barra input"))).collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -335,6 +396,7 @@ pub fn prepare_backtest_data_plan(
         .then(|| request.detail_sector.label().to_string());
 
     Ok(BacktestDataPlan {
+        factor_files: Arc::new(FactorFiles::new(request.factor_root.as_deref().unwrap_or(&config.factor_root))?),
         factor_metadata,
         label_metadata,
         target_dates,
@@ -407,6 +469,19 @@ pub fn load_backtest_input_batch(
     target_dates: &[i32],
     factor_fill_state: &mut FactorFillState,
 ) -> Result<BacktestInput> {
+    load_backtest_input_batch_cached(config, request, plan, factor_metadata, target_dates,
+        factor_fill_state, &mut BacktestReadCache::new(false, false))
+}
+
+pub(crate) fn load_backtest_input_batch_cached(
+    config: &EngineConfig,
+    request: &BacktestRunRequest,
+    plan: &BacktestDataPlan,
+    factor_metadata: &[FactorMetadata],
+    target_dates: &[i32],
+    factor_fill_state: &mut FactorFillState,
+    cache: &mut BacktestReadCache,
+) -> Result<BacktestInput> {
     if target_dates.is_empty() {
         return Err(err("cannot load empty backtest date batch"));
     }
@@ -423,6 +498,7 @@ pub fn load_backtest_input_batch(
         .unwrap_or(&config.factor_root);
     let factor_layout = factor_root_layout(factor_root, request.asset_class, request.frequency);
     let factor_load = load_factor_output_table_with_presence(
+        &plan.factor_files,
         factor_root,
         factor_layout,
         request.asset_class,
@@ -432,6 +508,7 @@ pub fn load_backtest_input_batch(
     )?;
     if request.factor_fill.is_forward_fill() {
         initialize_factor_fill_state(
+            &plan.factor_files,
             factor_root,
             factor_layout,
             request.asset_class,
@@ -448,17 +525,13 @@ pub fn load_backtest_input_batch(
         *all_dates.first().expect("date batch has dates"),
         *all_dates.last().expect("date batch has dates"),
     )?;
-    let mut tables = vec![factor_load.table, label_table];
+    let mut tables = vec![Arc::new(factor_load.table), Arc::new(label_table)];
     if !plan.barra_columns.is_empty() {
-        tables.push(load_output_table(
-            &config.barra_root,
-            request.asset_class,
-            request.frequency,
-            DEFAULT_BARRA_MODEL,
-            true,
-            target_dates,
-            &plan.barra_columns,
-        )?);
+        let paths = target_dates.iter().map(|date| output_path(&config.barra_root,
+            request.asset_class, request.frequency, DEFAULT_BARRA_MODEL, true, *date))
+            .collect::<Vec<_>>();
+        let columns = [vec!["trade_date".into(), "ts_code".into()], plan.barra_columns.clone()].concat();
+        tables.extend(cache.load_barra(&paths, &columns)?);
     }
     let mut panel = BacktestPanel::from_tables_with_instruments(
         all_dates.clone(),
@@ -576,7 +649,7 @@ impl BacktestPanel {
     fn from_tables_with_instruments(
         dates: Vec<i32>,
         instruments: Vec<String>,
-        tables: Vec<Table>,
+        tables: Vec<Arc<Table>>,
     ) -> Result<Self> {
         let date_lookup = dates
             .iter()
@@ -730,6 +803,7 @@ fn load_trade_filter_masks(
         .join("daily")
         .join("trade_filter");
     let mut masks = HashMap::new();
+    let mut paths = Vec::new();
     for date in target_dates {
         let required = request.exclude_limit || (request.exclude_st && *date >= 20160101);
         let path = daily_trade_filter_path(&root, *date);
@@ -743,8 +817,12 @@ fn load_trade_filter_masks(
             masks.insert(*date, vec![true; instruments.len()]);
             continue;
         }
-        let table = read_parquet(
-            &path,
+        paths.push(path);
+    }
+    crate::data::read_ahead::visit_files(&paths, |path, reader| {
+        let date = factor_file_date(path).ok_or_else(|| err("invalid trade-filter date path"))?;
+        let table = read_projected_reader(
+            reader, path,
             Some(&[
                 "trade_date".to_string(),
                 "ts_code".to_string(),
@@ -762,7 +840,7 @@ fn load_trade_filter_masks(
         let is_st = bool_column_cast(&table, "is_st")?;
         let mut mask = vec![true; instruments.len()];
         for row_idx in 0..table.len {
-            if trade_dates[row_idx] != Some(*date) {
+            if trade_dates[row_idx] != Some(date) {
                 continue;
             }
             let Some(ts_code) = ts_codes[row_idx].as_deref() else {
@@ -778,11 +856,12 @@ fn load_trade_filter_masks(
                     is_limit[row_idx].unwrap_or(false),
                 );
             let st_allowed =
-                !request.exclude_st || *date < 20160101 || !is_st[row_idx].unwrap_or(false);
+                !request.exclude_st || date < 20160101 || !is_st[row_idx].unwrap_or(false);
             mask[instrument_idx] = limit_allowed && st_allowed;
         }
-        masks.insert(*date, mask);
-    }
+        masks.insert(date, mask);
+        Ok(())
+    })?;
     Ok(masks)
 }
 
@@ -938,12 +1017,11 @@ fn load_index_weight_records(
         )));
     }
     let mut records = Vec::new();
-    for path in collect_parquet_files_recursive(&code_dir)? {
-        if !index_weight_path_may_overlap(&path, first, last) {
-            continue;
-        };
-        let table = read_parquet(
-            &path,
+    let paths = collect_parquet_files_recursive(&code_dir)?.into_iter()
+        .filter(|path| index_weight_path_may_overlap(path, first, last)).collect::<Vec<_>>();
+    crate::data::read_ahead::visit_files(&paths, |path, reader| {
+        let table = read_projected_reader(
+            reader, path,
             Some(&[
                 "trade_date".to_string(),
                 "con_code".to_string(),
@@ -963,7 +1041,8 @@ fn load_index_weight_records(
                 weight: weights[row_idx].map(index_weight_to_decimal),
             });
         }
-    }
+        Ok(())
+    })?;
     if records.is_empty() {
         return Err(err(format!(
             "index weight directory for {index_code} contains no usable rows: {}",
@@ -1393,19 +1472,18 @@ fn load_output_table(
         }
     }
     let mut table = Table::empty();
-    for date in dates {
-        let path = output_path(root, asset_class, frequency, model, barra_layout, *date);
-        if !path.storage_exists() {
-            continue;
-        }
-        let mut daily = read_parquet(&path, Some(&columns))?;
+    let paths = dates.iter().map(|date| output_path(root, asset_class, frequency, model, barra_layout, *date))
+        .filter(|path| path.storage_exists()).collect::<Vec<_>>();
+    crate::data::read_ahead::visit_files(&paths, |path, reader| {
+        let mut daily = read_projected_reader(reader, path, Some(&columns))?;
         ensure_table_columns(&mut daily, requested_columns)?;
         if table.columns.is_empty() {
             table = daily;
         } else {
             table.append(&daily)?;
         }
-    }
+        Ok(())
+    })?;
     if table.columns.is_empty() {
         empty_output_table(&columns)
     } else {
@@ -1414,6 +1492,7 @@ fn load_output_table(
 }
 
 fn load_factor_output_table_with_presence(
+    files: &FactorFiles,
     root: &Path,
     layout: FactorRootLayout,
     asset_class: AssetClass,
@@ -1432,19 +1511,14 @@ fn load_factor_output_table_with_presence(
         .iter()
         .map(|column| (column.clone(), BTreeSet::<i32>::new()))
         .collect::<BTreeMap<_, _>>();
-    let files = FactorFiles::new(root)?;
-    for date in dates {
-        let path = factor_output_path(root, layout, asset_class, frequency, *date);
-        if !files.exists(&path) {
-            continue;
-        }
-        let mut daily = if frequency == Frequency::Daily { files.read(&path, Some(&columns))? }
-            else { read_parquet(&path, Some(&columns))? };
+    let paths = dates.iter().map(|date| factor_output_path(root, layout, asset_class, frequency, *date)).collect::<Vec<_>>();
+    let mut consume = |path: &Path, mut daily: Table| -> Result<()> {
+        let date = factor_file_date(path).ok_or_else(|| err("invalid factor date path"))?;
         let schema_columns = daily.column_names();
         for column in requested_columns {
             if schema_columns.contains(column) {
                 if let Some(dates) = present_dates.get_mut(column) {
-                    dates.insert(*date);
+                    dates.insert(date);
                 }
             }
         }
@@ -1453,6 +1527,14 @@ fn load_factor_output_table_with_presence(
             table = daily;
         } else {
             table.append(&daily)?;
+        }
+        Ok(())
+    };
+    if frequency == Frequency::Daily {
+        files.read_many(&paths, &columns, &mut consume)?;
+    } else {
+        for path in &paths {
+            if path.storage_exists() { consume(path, read_parquet(path, Some(&columns))?)?; }
         }
     }
     let table = if table.columns.is_empty() {
@@ -1467,6 +1549,7 @@ fn load_factor_output_table_with_presence(
 }
 
 fn initialize_factor_fill_state(
+    files: &FactorFiles,
     root: &Path,
     layout: FactorRootLayout,
     asset_class: AssetClass,
@@ -1486,7 +1569,6 @@ fn initialize_factor_fill_state(
     }
     let mut dates =
         available_factor_dates_before(root, layout, asset_class, frequency, first_target_date)?;
-    let files = FactorFiles::new(root)?;
     dates.sort_by(|left, right| right.cmp(left));
     for date in dates {
         if remaining.is_empty() {

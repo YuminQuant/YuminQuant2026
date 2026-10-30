@@ -307,7 +307,7 @@ preprocess = "rank_gauss"
 train_scheme = "rolling_60m_yearly_57m_train_3m_valid_5d_sample"
 features = "factor_frame: data/factors/stock/daily, columns=__all__"
 components = ["all formal stock daily factors", "daily sequence length 5", "LSTM"]
-tags = ["lstm", "factor_frame", "rank_gauss", "daily_sequence", "5d_label"]
+tags = ["lstm", "factor_frame", "rank_gauss", "daily_sequence", "10d_label"]
 
 [[models]]
 model_id = "mdl_000020"
@@ -323,7 +323,7 @@ label = "future_vwap_return_5d"
 preprocess = "rank_gauss"
 train_scheme = "rolling_60m_yearly_57m_train_3m_valid_5d_sample"
 features = "factor_frame: data/factors/stock/daily, columns=__all__"
-tags = ["optuna", "gpu", "static", "factor_frame"]
+tags = ["optuna", "gpu", "rolling", "factor_frame"]
 
 [[models]]
 model_id = "mdl_000021"

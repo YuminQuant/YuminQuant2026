@@ -508,11 +508,14 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return DerivedLogsigProvider(config.features.root)
     if config.features.type in {"factor_frame", "factor_sequence", "graph_factor_frame", "hist_factor_frame", "concept_factor_sequence", "analyst_factor_sequence"}:
         excluded = {config.output.id}
+        include_model_generated = config.features.params.get("include_model_generated", False)
+        if not isinstance(include_model_generated, bool):
+            raise ValueError("features.params.include_model_generated must be boolean")
         metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
         if data_io.exists(metadata):
             for row in data_io.read_parquet(metadata, columns=["output_column", "tags_json"]).itertuples(index=False):
                 tags = json.loads(row.tags_json or "[]")
-                if "model_generated" in tags or "deprecated" in tags:
+                if "deprecated" in tags or ("model_generated" in tags and not include_model_generated):
                     excluded.add(row.output_column)
         provider = FactorFrameProvider(config.features.root, config.features.columns, config.dates.train[1], excluded)
         if config.features.type == "factor_sequence":

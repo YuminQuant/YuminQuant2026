@@ -4,22 +4,23 @@ data_root = "data"
 output_root = "data/models"
 
 [dates]
-train = [20110101, 20260424]
-valid = []
-predict = [20110101, 20260424]
+train = [20160101, 20251231]
+predict = [20210101, 20260424]
 
 [sample]
-train_frequency = "20"
+train_frequency = "5"
 predict_frequency = "daily"
 
 [train_scheme]
 type = "rolling"
-refit_frequency = "semiannual_end"
-train_lookback = "3y"
-validation_ratio = 0.2
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
 
 [label]
-id = "future_vwap_return_5d"
+id = "future_vwap_return_10d"
+lookahead_days = 11
 
 [universe]
 id = "mkt_all"
@@ -38,6 +39,9 @@ type = "factor_frame"
 root = "data/factors/stock/daily"
 columns = "__all__"
 
+[features.params]
+include_model_generated = true
+
 [materialize]
 cache_samples = false
 cache_dir = "data/model_workspace/mdl_000019/cache"
@@ -46,7 +50,7 @@ predict_batch_size = 20
 [model]
 name = "lstm"
 class = "yq_ml_alpha.models.sequence_model.LSTMAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000019/artifacts"
+artifact_dir = "data/model_workspace/mdl_000019/rolling60m_5d_vwap10d/artifacts"
 
 [model.params]
 sequence_length = 5
@@ -55,7 +59,7 @@ hidden_size = 64
 num_layers = 1
 dropout = 0.0
 epochs = 100
-batch_size = 3000
+batch_size = 5000
 lr = 0.0001
 weight_decay = 0.0
 seed = 42

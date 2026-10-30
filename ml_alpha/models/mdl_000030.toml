@@ -7,7 +7,7 @@ data_version = "timesnet_local_factors_v1"
 
 [dates]
 train = [20160101, 20251231]
-predict = [20190101, 20260424]
+predict = [20210101, 20260424]
 
 [sample]
 train_frequency = "5"
@@ -16,7 +16,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "36m"
+train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500
 
@@ -43,6 +43,7 @@ root = "data/factors/stock/daily"
 columns = "__all__"
 
 [features.params]
+include_model_generated = true
 sequence_length = 60
 history_transform = "zscore_clip3"
 memory_budget_mb = 512
@@ -61,7 +62,7 @@ write_window_summary = true
 [model]
 name = "dfq_timesnet"
 class = "yq_ml_alpha.models.timesnet_model.TimesNetAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000030/artifacts"
+artifact_dir = "data/model_workspace/mdl_000030/rolling60m_5d_vwap10d/artifacts"
 
 [model.params]
 sequence_length = 60
@@ -75,7 +76,7 @@ patience = 20
 average_epochs = 5
 dates_per_epoch = 100
 # Stock chunks; one optimizer update per complete date.
-batch_size = 3000
+batch_size = 5000
 lr = 0.00009
 weight_decay = 0.0
 min_delta = 0.00000001

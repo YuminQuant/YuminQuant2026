@@ -4,25 +4,23 @@ data_root = "data"
 output_root = "data/models"
 
 [dates]
-train = [20160101, 20260424]
-valid = []
-predict = [20180101, 20260424]
+train = [20160101, 20251231]
+predict = [20210101, 20260424]
 
 [sample]
-train_frequency = "10"
+train_frequency = "5"
 predict_frequency = "daily"
 
 [train_scheme]
 type = "rolling"
-refit_frequency = "monthly_end"
-train_lookback = "24m"
-validation_ratio = 0.2
-validation_unit = "rows"
-prediction_activation = "after_label_maturity"
-start_from_features = true
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
 
 [label]
 id = "future_vwap_return_10d"
+lookahead_days = 11
 
 [universe]
 id = "mkt_all"
@@ -41,6 +39,9 @@ type = "factor_frame"
 root = "data/factors/stock/daily"
 columns = "__all__"
 
+[features.params]
+include_model_generated = true
+
 [materialize]
 cache_samples = false
 cache_dir = "data/model_workspace/mdl_000022/cache"
@@ -49,13 +50,12 @@ predict_batch_size = 20
 [model]
 name = "xgboost_fixed"
 class = "yq_ml_alpha.models.xgb_model.XGBoostAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000022/artifacts"
+artifact_dir = "data/model_workspace/mdl_000022/rolling60m_5d_vwap10d/artifacts"
 
 [model.params]
 objective = "reg:squarederror"
-tree_method = "gpu_hist"
-gpu_id = 0
-predictor = "gpu_predictor"
+tree_method = "hist"
+device = "cuda"
 n_estimators = 600
 # Retain the user's earlier preference for a low fixed learning rate.
 learning_rate = 0.001

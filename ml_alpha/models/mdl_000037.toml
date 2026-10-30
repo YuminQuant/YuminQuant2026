@@ -7,7 +7,7 @@ data_version = "htzq61_events_v1"
 
 [dates]
 train = [20160101, 20251231]
-predict = [20190101, 20260424]
+predict = [20210101, 20260424]
 
 [sample]
 train_frequency = "5"
@@ -16,7 +16,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "36m"
+train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500
 
@@ -63,7 +63,7 @@ write_window_summary = true
 [model]
 name = "event_xgboost"
 class = "yq_ml_alpha.models.event_xgb_model.EventXGBoostAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000037/artifacts"
+artifact_dir = "data/model_workspace/mdl_000037/rolling60m_5d_vwap10d/artifacts"
 
 [model.params]
 # Multiclass XGBoost: 600 boosting rounds, three individual trees per round.

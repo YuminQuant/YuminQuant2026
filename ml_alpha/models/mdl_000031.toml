@@ -7,7 +7,7 @@ data_version = "factorgcl_local_factors_v1"
 
 [dates]
 train = [20160101, 20251231]
-predict = [20190101, 20260424]
+predict = [20210101, 20260424]
 
 [sample]
 train_frequency = "5"
@@ -16,7 +16,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "36m"
+train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500
 
@@ -42,6 +42,7 @@ root = "data/factors/stock/daily"
 columns = "__all__"
 
 [features.params]
+include_model_generated = true
 sequence_length = 30
 history_transform = "zscore_clip3"
 # Auxiliary future features are supervision; shared windows enforce max(11, 10).
@@ -63,7 +64,7 @@ write_window_summary = true
 [model]
 name = "dfq_factor_gcl"
 class = "yq_ml_alpha.models.factor_gcl_model.FactorGCLAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000031/artifacts"
+artifact_dir = "data/model_workspace/mdl_000031/rolling60m_5d_vwap10d/artifacts"
 
 [model.params]
 concept_root = "data/derived/stock/hist_concepts"
@@ -80,7 +81,7 @@ patience = 20
 average_epochs = 5
 dates_per_epoch = 100
 # GRU stock chunks; hypergraphs and contrastive negative pools remain whole-date.
-batch_size = 3000
+batch_size = 5000
 contrastive_chunk_size = 512
 gradient_checkpointing = true
 lr = 0.00009

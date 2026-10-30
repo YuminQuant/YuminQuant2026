@@ -7,7 +7,7 @@ output_root = "data/models"
 
 [dates]
 train = [20160101, 20251231]
-predict = [20190101, 20260424]
+predict = [20210101, 20260424]
 
 [sample]
 train_frequency = "5"
@@ -16,7 +16,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "36m"
+train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500
 
@@ -41,6 +41,9 @@ type = "factor_frame"
 root = "data/factors/stock/daily"
 columns = "__all__"
 
+[features.params]
+include_model_generated = true
+
 [materialize]
 cache_samples = false
 cache_dir = "data/model_workspace/mdl_000017/cache"
@@ -56,7 +59,7 @@ write_window_summary = true
 [model]
 name = "rnn"
 class = "yq_ml_alpha.models.sequence_model.RNNAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000017/artifacts"
+artifact_dir = "data/model_workspace/mdl_000017/rolling60m_5d_vwap10d/artifacts"
 
 [model.params]
 sequence_length = 5
@@ -67,7 +70,7 @@ dropout = 0.2
 output_dropout = 0.2
 optimizer = "rmsprop"
 epochs = 100
-batch_size = 1000
+batch_size = 5000
 lr = 0.001
 weight_decay = 0.0
 seed = 42

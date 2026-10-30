@@ -7,7 +7,7 @@ data_version = "huatai_stock_transformer_local_factors_v1"
 
 [dates]
 train = [20160101, 20251231]
-predict = [20190101, 20260424]
+predict = [20210101, 20260424]
 
 [sample]
 train_frequency = "5"
@@ -16,7 +16,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "36m"
+train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500
 
@@ -47,6 +47,7 @@ root = "data/factors/stock/daily"
 columns = "__all__"
 
 [features.params]
+include_model_generated = true
 sequence_length = 1
 history_transform = "mad5_zscore_rank_label"
 memory_budget_mb = 512
@@ -65,7 +66,7 @@ write_window_summary = true
 [model]
 name = "stock_transformer"
 class = "yq_ml_alpha.models.stock_transformer_model.StockTransformerAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000038/artifacts"
+artifact_dir = "data/model_workspace/mdl_000038/rolling60m_5d_vwap10d/artifacts"
 
 [model.params]
 sequence_length = 1
@@ -84,7 +85,7 @@ weight_decay = 0.0
 epochs = 200
 patience = 20
 # Query blocks see ALL current-date stocks as keys and values.
-batch_size = 3000
+batch_size = 5000
 attention_chunk_size = 512
 gradient_checkpointing = true
 min_delta = 0.000000000001

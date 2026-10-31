@@ -41,6 +41,7 @@ root = "data/factors/stock/daily"
 columns = "__all__"
 
 [features.params]
+history_read_workers = 30
 include_model_generated = true
 sequence_length = 30
 memory_budget_mb = 512
@@ -67,8 +68,8 @@ hidden_size = 32
 num_layers = 1
 num_portfolio = 100
 num_factor = 48
-epochs = 200
-patience = 20
+epochs = 100
+patience = 10
 average_epochs = 5
 dates_per_epoch = 100
 # Encoder stock chunks only; portfolio/attention always use the full date.

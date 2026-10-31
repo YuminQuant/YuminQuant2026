@@ -1,6 +1,7 @@
 """Daily normalized factor snapshots shared by graph and temporal encoders."""
 from yq_ml_alpha.output import artifact_io as data_io
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
@@ -21,6 +22,12 @@ class FactorHistory(DailyTensorSequence):
         super().__init__(config.features.root, provider.feature_columns, (len(provider.feature_columns),),
                          int(params.get("sequence_length", 40) if sequence_length is None else sequence_length),
                          int(params.get("memory_budget_mb", 512) if memory_budget_mb is None else memory_budget_mb))
+        read_workers = int(params.get("history_read_workers", 1))
+        if read_workers < 1:
+            raise ValueError("history_read_workers must be positive")
+        # Parallel history IO is for remote storage; local reads stay serial.
+        self.read_workers = read_workers if data_io.remote_enabled() else 1
+        self._read_pool = None
         self.config = config
         self.provider = provider
         self.universe = Universe(config.universe.id, config.data_root)
@@ -38,6 +45,9 @@ class FactorHistory(DailyTensorSequence):
         cached = self._cached(date)
         if cached is not None:
             return cached
+        return self._remember(date, self._load_day(date))
+
+    def _load_day(self, date):
         files = getattr(self.provider, "files", None)
         if not (files.exists(date) if files is not None else data_io.exists(daily_path(self.root, date))):
             raise FileNotFoundError(f"missing factor history for {date}")
@@ -51,7 +61,33 @@ class FactorHistory(DailyTensorSequence):
         frame = apply_cross_section_transform(
             frame, self.history_transform, self.columns, [], self.fill_value,
         ).set_index("ts_code")[self.columns].astype("float32")
-        return self._remember(date, frame)
+        return frame
+
+    def _days(self, dates):
+        if self.read_workers == 1:
+            yield from super()._days(dates)
+            return
+        if self._read_pool is None:
+            self._read_pool = ThreadPoolExecutor(max_workers=self.read_workers,
+                                                 thread_name_prefix="factor-history")
+        # Bound in-flight frames as well as active reads. Cache mutation and
+        # sequence assembly stay on the caller thread, in calendar order.
+        for start in range(0, len(dates), self.read_workers):
+            batch = dates[start:start + self.read_workers]
+            resident = {day: self._cached(day) for day in batch}
+            pending = {day: self._read_pool.submit(self._load_day, day)
+                       for day in batch if resident[day] is None}
+            for day in batch:
+                frame = resident[day]
+                if frame is None:
+                    frame = self._remember(day, pending.pop(day).result())
+                yield day, frame
+
+    def close(self):
+        if self._read_pool is not None:
+            self._read_pool.shutdown(wait=True, cancel_futures=True)
+            self._read_pool = None
+        super().close()
 
     def _filter_frame(self, frame, date):
         """Optional universe refinement before any cross-sectional normalization."""

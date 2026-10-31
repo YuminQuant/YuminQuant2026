@@ -99,6 +99,10 @@ class DailyTensorSequence:
         frame = frame.loc[np.isfinite(frame.to_numpy()).all(axis=1)]
         return self._remember(date, frame)
 
+    def _days(self, dates):
+        for date in dates:
+            yield date, self.day(date)
+
     def symbols(self, date):
         self._activate(date)
         if self._symbols is not None:
@@ -109,8 +113,7 @@ class DailyTensorSequence:
         symbols = None
         indexes = {}
         working_bytes = 0
-        for day in dates:
-            frame = self.day(day)
+        for day, frame in self._days(dates):
             index = frame.index
             indexes[day] = index
             working_bytes += self._day_sizes[day]
@@ -133,9 +136,9 @@ class DailyTensorSequence:
         selected = self._symbols.get_indexer(symbols)
         if (selected < 0).any():
             raise ValueError(f"requested stocks lack complete sequence history: {date}")
-        for i, day in enumerate(dates):
+        for i, (day, frame) in enumerate(self._days(dates)):
             positions = self._positions_by_day[day][selected]
-            result[:, i] = self.day(day).to_numpy(copy=False)[positions].reshape(len(symbols), *self.shape)
+            result[:, i] = frame.to_numpy(copy=False)[positions].reshape(len(symbols), *self.shape)
         return result
 
     def close(self):

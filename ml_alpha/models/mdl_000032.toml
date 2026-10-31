@@ -43,6 +43,7 @@ root = "data/factors/stock/daily"
 columns = "__all__"
 
 [features.params]
+history_read_workers = 30
 include_model_generated = true
 sequence_length = 30
 history_transform = "zscore_clip3"
@@ -75,8 +76,8 @@ ode_substeps = 1
 checkpoint_ode = true
 reconstruction_weight = 1.0
 kl_weight = 0.001
-epochs = 200
-patience = 20
+epochs = 100
+patience = 10
 average_epochs = 5
 dates_per_epoch = 100
 # Stock chunks; one optimizer update per complete date.

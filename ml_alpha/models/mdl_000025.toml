@@ -72,7 +72,6 @@ dropout = 0.1
 epochs = 100
 patience = 20
 average_epochs = 5
-dates_per_epoch = 100
 batch_size = 5000
 graph_chunk_size = 512
 gradient_checkpointing = true

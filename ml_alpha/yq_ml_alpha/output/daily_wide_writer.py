@@ -51,8 +51,17 @@ class DailyWideWriter:
             self._owners = FactorFiles(root).owners
             self._check_owner(output_id)
         self.write_workers = max(1, int(write_workers))
+        if data_io.backend(self.output_root) is not None:
+            self.write_workers = data_io.io_options(self.output_root)["workers"]
         self._schema_dates_seen: set[int] = set()
         self._known_columns = set(KEY_COLUMNS) | {output_id}
+
+    def _map_writes(self, function, items):
+        if data_io.backend(self.output_root) is not None:
+            return list(data_io.ordered_io_map(function, items, root=self.output_root,
+                path_for=lambda item: self._path(item[0]), workers=self.write_workers))
+        with ThreadPoolExecutor(max_workers=min(self.write_workers, len(items))) as pool:
+            return list(pool.map(function, items))
 
     def write(
         self,
@@ -75,9 +84,7 @@ class DailyWideWriter:
         tasks = [(date, grouped.get(date), schema_columns) for date in dates]
         if self.write_workers == 1 or len(tasks) <= 1:
             return [self._write_one(date, daily, columns) for date, daily, columns in tasks]
-        workers = min(self.write_workers, len(tasks))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(lambda item: self._write_one(item[0], item[1], item[2]), tasks))
+        return self._map_writes(lambda item: self._write_one(item[0], item[1], item[2]), tasks)
 
     def dates_missing_output_column(self, coverage_dates: Iterable[int]) -> list[int]:
         dates = sorted({int(date) for date in coverage_dates})
@@ -118,8 +125,7 @@ class DailyWideWriter:
         def write(item):
             date, values = item
             return self._write_columns_one(date, values, columns)
-        with ThreadPoolExecutor(max_workers=min(self.write_workers, len(items))) as pool:
-            return list(pool.map(write, items))
+        return self._map_writes(write, items)
 
     def ensure_output_column(self, coverage_dates: Iterable[int]) -> list[Path]:
         dates = sorted({int(date) for date in coverage_dates})
@@ -138,9 +144,7 @@ class DailyWideWriter:
         if self.write_workers == 1 or len(tasks) <= 1:
             paths = [self._ensure_output_column_one(date, columns) for date, columns in tasks]
         else:
-            workers = min(self.write_workers, len(tasks))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                paths = list(pool.map(lambda item: self._ensure_output_column_one(item[0], item[1]), tasks))
+            paths = self._map_writes(lambda item: self._ensure_output_column_one(item[0], item[1]), tasks)
         return [path for path in paths if path is not None]
 
     def _write_one(self, trade_date: int, daily: pd.DataFrame | None, columns: list[str]) -> Path:

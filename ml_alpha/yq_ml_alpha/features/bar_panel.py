@@ -4,6 +4,7 @@ from yq_ml_alpha.output import artifact_io as data_io
 import inspect
 import warnings
 import weakref
+from contextlib import closing
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
@@ -167,29 +168,15 @@ class BarPanelProvider(FeatureProvider):
         progress: ProgressCallback | None,
     ) -> pd.DataFrame:
         frames = []
-        for day_idx, date in enumerate(history):
-            daily = self._load_minute_session(
-                date,
-                exclude_bj,
-                st_symbols_by_date.get(date, set()),
-                progress=(
-                    (lambda message, idx=day_idx: progress(f"source {idx + 1}/{len(history)} {message}"))
-                    if progress is not None
-                    else None
-                ),
-            )
-            if daily.empty and self.strict:
-                return self.empty_frame(trade_date)
-            renamed = daily.rename(
-                columns={
-                    _session_column(feature, bar_idx): _feature_column(
-                        feature, day_idx * self.steps_per_session + bar_idx
-                    )
-                    for bar_idx in range(self.steps_per_session)
-                    for feature in self.output_features
-                }
-            )
-            frames.append(renamed[["ts_code", *[_feature_column(feature, day_idx * self.steps_per_session + bar_idx) for bar_idx in range(self.steps_per_session) for feature in self.output_features]]])
+        with closing(self._minute_sessions(history, exclude_bj, st_symbols_by_date, progress)) as sessions:
+            for day_idx, daily in enumerate(sessions):
+                if daily.empty and self.strict:
+                    return self.empty_frame(trade_date)
+                renamed = daily.rename(
+                    columns={_session_column(feature, bar_idx): _feature_column(
+                        feature, day_idx * self.steps_per_session + bar_idx)
+                        for bar_idx in range(self.steps_per_session) for feature in self.output_features})
+                frames.append(renamed[["ts_code", *[_feature_column(feature, day_idx * self.steps_per_session + bar_idx) for bar_idx in range(self.steps_per_session) for feature in self.output_features]]])
         return self._merge_window_frames(trade_date, frames)
 
     def _load_minute_tensor_window(
@@ -202,20 +189,11 @@ class BarPanelProvider(FeatureProvider):
         progress: ProgressCallback | None,
     ) -> BarTensorWindow:
         sessions: list[pd.DataFrame] = []
-        for day_idx, date in enumerate(history):
-            session = self._load_minute_session(
-                date,
-                exclude_bj,
-                st_symbols_by_date.get(date, set()),
-                progress=(
-                    (lambda message, idx=day_idx: progress(f"source {idx + 1}/{len(history)} {message}"))
-                    if progress is not None
-                    else None
-                ),
-            )
-            if session.empty and self.strict:
-                return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
-            sessions.append(session)
+        with closing(self._minute_sessions(history, exclude_bj, st_symbols_by_date, progress)) as source:
+            for session in source:
+                if session.empty and self.strict:
+                    return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
+                sessions.append(session)
         return self._sessions_to_tensor_window(trade_date, sessions, tensor_key)
 
     def _load_daily_window(
@@ -227,16 +205,16 @@ class BarPanelProvider(FeatureProvider):
         frames = []
         if progress is not None:
             progress(f"daily source_days={len(history)} step=read")
-        for day_idx, date in enumerate(history):
-            daily = self._read_daily_session(date)
-            if daily.empty and self.strict:
-                if progress is not None:
-                    progress(f"daily date={date} step=empty")
-                return self.empty_frame(trade_date)
-            daily = daily.copy()
-            daily["__day_idx"] = day_idx
-            daily["__bar_idx"] = day_idx // self.bar_size
-            frames.append(daily)
+        with closing(self._daily_sessions(history)) as source:
+            for day_idx, daily in enumerate(source):
+                if daily.empty and self.strict:
+                    if progress is not None:
+                        progress(f"daily date={history[day_idx]} step=empty")
+                    return self.empty_frame(trade_date)
+                daily = daily.copy()
+                daily["__day_idx"] = day_idx
+                daily["__bar_idx"] = day_idx // self.bar_size
+                frames.append(daily)
         if not frames:
             if progress is not None:
                 progress("daily step=empty")
@@ -412,12 +390,47 @@ class BarPanelProvider(FeatureProvider):
             skipped_nonfinite=skipped_nonfinite,
         )
 
+    def _minute_sessions(self, history, exclude_bj, st_symbols_by_date, progress):
+        def read(date):
+            if self.source_frequency in {"minute_bar", "derived_minute"}:
+                return _read_derived_minute_session(self.root, date, self.bar_size)
+            return _read_minute_session(self.root, date)
+        keys = {d: (d, bool(exclude_bj), frozenset(st_symbols_by_date.get(d, set()))) for d in history}
+        resident = {d: self._session_cache.get(keys[d]) for d in history}
+        def fetch(date):
+            return None if resident[date] is not None else read(date)
+        with closing(data_io.ordered_io_map(fetch, history, root=self.root,
+                path_for=lambda date: self.root / str(date // 10000) / f"{date}.parquet")) as frames:
+            for index, (date, frame) in enumerate(zip(history, frames)):
+                if resident[date] is not None:
+                    self._cache_get(keys[date])
+                    yield resident[date]
+                else:
+                    callback = ((lambda msg, i=index: progress(f"source {i + 1}/{len(history)} {msg}"))
+                                if progress is not None else None)
+                    yield self._load_minute_session(date, exclude_bj, st_symbols_by_date.get(date, set()),
+                                                    progress=callback, source_frame=frame)
+
+    def _daily_sessions(self, history):
+        resident = {d: self._session_cache.get(d) for d in history}
+        def read(date):
+            return None if resident[date] is not None else read_daily(self.root, date, DAILY_REQUIRED_COLUMNS)
+        with closing(data_io.ordered_io_map(read, history, root=self.root,
+                path_for=lambda date: self.root / str(date // 10000) / f"{date}.parquet")) as frames:
+            for date, frame in zip(history, frames):
+                if resident[date] is not None:
+                    self._cache_get(date)
+                    yield resident[date]
+                else:
+                    yield self._read_daily_session(date, source_frame=frame)
+
     def _load_minute_session(
         self,
         trade_date: int,
         exclude_bj: bool = False,
         st_symbols: set[str] | None = None,
         progress: ProgressCallback | None = None,
+        source_frame: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         cache_key = (trade_date, bool(exclude_bj), frozenset(st_symbols or set()))
         cached = self._cache_get(cache_key)
@@ -428,7 +441,7 @@ class BarPanelProvider(FeatureProvider):
         if progress is not None:
             progress(f"date={trade_date} cache=miss step=read")
         if self.source_frequency in {"minute_bar", "derived_minute"}:
-            frame = _read_derived_minute_session(self.root, trade_date, self.bar_size)
+            frame = source_frame if source_frame is not None else _read_derived_minute_session(self.root, trade_date, self.bar_size)
             if progress is not None:
                 progress(f"date={trade_date} step=pivot derived_rows={len(frame)}")
             session = _derived_minute_session_to_wide(
@@ -439,7 +452,7 @@ class BarPanelProvider(FeatureProvider):
                 st_symbols=st_symbols or set(),
             )
         else:
-            frame = _read_minute_session(self.root, trade_date)
+            frame = source_frame if source_frame is not None else _read_minute_session(self.root, trade_date)
             if progress is not None:
                 progress(f"date={trade_date} step=resample raw_rows={len(frame)}")
             session = _aggregate_minute_session(
@@ -456,11 +469,11 @@ class BarPanelProvider(FeatureProvider):
             progress(f"date={trade_date} step=done stocks={len(session)}")
         return session
 
-    def _read_daily_session(self, trade_date: int) -> pd.DataFrame:
+    def _read_daily_session(self, trade_date: int, source_frame: pd.DataFrame | None = None) -> pd.DataFrame:
         cached = self._cache_get(trade_date)
         if cached is not None:
             return cached
-        frame = read_daily(self.root, trade_date, DAILY_REQUIRED_COLUMNS)
+        frame = source_frame if source_frame is not None else read_daily(self.root, trade_date, DAILY_REQUIRED_COLUMNS)
         if frame.empty:
             session = pd.DataFrame(columns=["trade_date", "ts_code", *DAILY_REQUIRED_COLUMNS])
         else:

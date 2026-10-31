@@ -1,7 +1,6 @@
 """Daily normalized factor snapshots shared by graph and temporal encoders."""
 from yq_ml_alpha.output import artifact_io as data_io
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
@@ -22,12 +21,11 @@ class FactorHistory(DailyTensorSequence):
         super().__init__(config.features.root, provider.feature_columns, (len(provider.feature_columns),),
                          int(params.get("sequence_length", 40) if sequence_length is None else sequence_length),
                          int(params.get("memory_budget_mb", 512) if memory_budget_mb is None else memory_budget_mb))
-        read_workers = int(params.get("history_read_workers", 1))
+        read_workers = int(params.get("history_read_workers", data_io.io_options(self.root)["workers"]))
         if read_workers < 1:
             raise ValueError("history_read_workers must be positive")
         # Parallel history IO is for remote storage; local reads stay serial.
         self.read_workers = read_workers if data_io.remote_enabled() else 1
-        self._read_pool = None
         self.config = config
         self.provider = provider
         self.universe = Universe(config.universe.id, config.data_root)
@@ -65,28 +63,23 @@ class FactorHistory(DailyTensorSequence):
 
     def _days(self, dates):
         if self.read_workers == 1:
-            yield from super()._days(dates)
+            for day in dates:
+                yield day, self.day(day)
             return
-        if self._read_pool is None:
-            self._read_pool = ThreadPoolExecutor(max_workers=self.read_workers,
-                                                 thread_name_prefix="factor-history")
         # Bound in-flight frames as well as active reads. Cache mutation and
         # sequence assembly stay on the caller thread, in calendar order.
-        for start in range(0, len(dates), self.read_workers):
-            batch = dates[start:start + self.read_workers]
-            resident = {day: self._cached(day) for day in batch}
-            pending = {day: self._read_pool.submit(self._load_day, day)
-                       for day in batch if resident[day] is None}
-            for day in batch:
-                frame = resident[day]
-                if frame is None:
-                    frame = self._remember(day, pending.pop(day).result())
-                yield day, frame
+        resident = {day: self._cached(day) for day in dates}
+        def read(day):
+            return resident[day] if resident[day] is not None else self._load_day(day)
+        frames = data_io.ordered_io_map(read, dates, root=self.root, workers=self.read_workers,
+            path_for=lambda day: daily_path(self.root, day))
+        try:
+            for day, frame in zip(dates, frames):
+                yield day, frame if resident[day] is not None else self._remember(day, frame)
+        finally:
+            frames.close()
 
     def close(self):
-        if self._read_pool is not None:
-            self._read_pool.shutdown(wait=True, cancel_futures=True)
-            self._read_pool = None
         super().close()
 
     def _filter_frame(self, frame, date):

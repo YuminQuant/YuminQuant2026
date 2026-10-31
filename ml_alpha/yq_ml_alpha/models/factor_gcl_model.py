@@ -21,7 +21,7 @@ from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _cpu_state_dict, _device
 
 def _params(raw):
     params = dict(sequence_length=30, future_look=10, hidden_size=128, num_layers=2,
-                  num_factor=48, epochs=200, patience=20, average_epochs=5, dates_per_epoch=100,
+                  num_factor=48, epochs=200, patience=20, average_epochs=5,
                   batch_size=3000, contrastive_chunk_size=512, lr=0.00009, weight_decay=0.0,
                   gamma=1.0, tau=0.25, min_delta=1e-8, negative_slope=0.01,
                   seed=42, device="auto", gradient_checkpointing=True,
@@ -31,7 +31,7 @@ def _params(raw):
         raise ValueError(f"unknown FactorGCL parameters: {sorted(unknown)}")
     params.update(raw)
     for key in ("sequence_length", "future_look", "hidden_size", "num_layers", "num_factor",
-                "epochs", "patience", "average_epochs", "dates_per_epoch", "batch_size", "contrastive_chunk_size"):
+                "epochs", "patience", "average_epochs", "batch_size", "contrastive_chunk_size"):
         value = params[key]
         params[key] = int(value)
         if params[key] <= 0 or params[key] != value:
@@ -204,14 +204,13 @@ class FactorGCLAlphaModel(MLPAlphaModel):
         self.model = build_factor_gcl(nn, self.input_dim, self.params).to(device)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.params["lr"], weight_decay=self.params["weight_decay"])
         recent = deque(maxlen=self.params["average_epochs"])
-        rng = np.random.RandomState(self.params["seed"])
         best, best_state, best_epoch, stale = -np.inf, None, 0, 0
         self.loss_history = []
         started = perf_counter()
         try:
             for epoch in range(1, self.params["epochs"] + 1):
                 self.model.train()
-                selected = np.sort(rng.choice(days, min(len(days), self.params["dates_per_epoch"]), replace=False))
+                selected = days
                 totals = np.zeros(4)
                 used, paired, missing, unpaired_dates = 0, 0, 0, 0
                 for date in selected:
@@ -280,7 +279,7 @@ class FactorGCLAlphaModel(MLPAlphaModel):
                 self.loss_history.append(dict(
                     window_id=context.artifact_dir.name, epoch=epoch, train_loss=losses[0], mse=losses[1],
                     temporal_nce=losses[2], cross_section_nce=losses[3], valid_ic=metric, best_ic=best,
-                    is_best=improved, stale_epochs=stale, sampled_dates=used, averaged_epochs=len(recent),
+                    is_best=improved, stale_epochs=stale, train_date_count=used, averaged_epochs=len(recent),
                     temporal_pairs=paired, missing_future_stocks=missing, dates_without_temporal_pairs=unpaired_dates,
                     elapsed_seconds=perf_counter() - started,
                 ))

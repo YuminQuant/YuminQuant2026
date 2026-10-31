@@ -40,6 +40,7 @@ class ParquetReadCache:
         self.table_bytes = self.metadata_bytes = 0
         self.hits = self.misses = self.evictions = self.opens = self.footer_reads = 0
         self.lock = RLock()
+        self.read_locks = [RLock() for _ in range(256)]
 
     def identity(self, path):
         from . import artifact_io as io
@@ -103,15 +104,23 @@ class ParquetReadCache:
                 yield reader
 
     def schema(self, path):
-        version = self.identity(path)
-        metadata = self.get(self.metadata, version)
-        if metadata is not None:
-            return metadata.schema.to_arrow_schema()
-        with self.open(path, version) as reader:
-            return reader.schema_arrow
+        with self.read_locks[hash(str(path)) % len(self.read_locks)]:
+            version = self.identity(path)
+            metadata = self.get(self.metadata, version)
+            if metadata is not None:
+                return metadata.schema.to_arrow_schema()
+            with self.open(path, version) as reader:
+                return reader.schema_arrow
 
     def read(self, path, columns=None, *, allow_missing=False, required=(),
              use_threads=True, pandas_metadata=False):
+        # Shared-input workers must not all miss and reopen the same file.
+        with self.read_locks[hash(str(path)) % len(self.read_locks)]:
+            return self._read(path, columns, allow_missing=allow_missing, required=required,
+                              use_threads=use_threads, pandas_metadata=pandas_metadata)
+
+    def _read(self, path, columns=None, *, allow_missing=False, required=(),
+              use_threads=True, pandas_metadata=False):
         from . import artifact_io as io
         hint = _projection_hints.get().get(str(io.read_path(path).absolute()))
         if hint and columns is not None and allow_missing and not set(hint) <= set(columns):

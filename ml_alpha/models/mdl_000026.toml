@@ -71,7 +71,6 @@ num_factor = 48
 epochs = 100
 patience = 10
 average_epochs = 5
-dates_per_epoch = 100
 # Encoder stock chunks only; portfolio/attention always use the full date.
 batch_size = 5000
 gradient_checkpointing = true

@@ -20,7 +20,7 @@ def _params(raw):
     params = dict(
         sequence_length=30, hidden_size=32, num_layers=1,
         num_portfolio=100, num_factor=48, epochs=200, patience=20,
-        average_epochs=5, dates_per_epoch=100, batch_size=3000,
+        average_epochs=5, batch_size=3000,
         lr=0.0003, weight_decay=0.0, kl_weight=1.0, min_delta=1e-8,
         min_std=1e-6, seed=42, device="auto", gradient_checkpointing=True,
     )
@@ -29,7 +29,7 @@ def _params(raw):
         raise ValueError(f"unknown FactorVAE parameters: {sorted(unknown)}")
     params.update(raw)
     for key in ("sequence_length", "hidden_size", "num_layers", "num_portfolio",
-                "num_factor", "epochs", "patience", "average_epochs", "dates_per_epoch", "batch_size"):
+                "num_factor", "epochs", "patience", "average_epochs", "batch_size"):
         value = params[key]
         params[key] = int(value)
         if params[key] <= 0 or params[key] != value:
@@ -222,14 +222,13 @@ class FactorVAEAlphaModel(MLPAlphaModel):
                                      weight_decay=self.params["weight_decay"])
         grouped = train.frame.groupby("trade_date", sort=True)
         days = np.asarray(sorted(grouped.groups))
-        rng = np.random.RandomState(self.params["seed"])
         recent = deque(maxlen=self.params["average_epochs"])
         best, best_state, stale, best_epoch = -np.inf, None, 0, 0
         self.loss_history = []
         started = perf_counter()
         for epoch in range(1, self.params["epochs"] + 1):
             self.model.train()
-            selected = np.sort(rng.choice(days, min(len(days), self.params["dates_per_epoch"]), replace=False))
+            selected = days
             totals = np.zeros(3, dtype=np.float64)
             used = 0
             for date in selected:
@@ -273,7 +272,7 @@ class FactorVAEAlphaModel(MLPAlphaModel):
                 window_id=context.artifact_dir.name, epoch=epoch, train_loss=train_loss,
                 reconstruction_mse=reconstruction_mse, kl_loss=kl_loss,
                 valid_ic=metric, best_ic=best, is_best=improved, stale_epochs=stale,
-                sampled_dates=used, averaged_epochs=len(recent),
+                train_date_count=used, averaged_epochs=len(recent),
                 elapsed_seconds=perf_counter() - started,
             ))
             if context.diagnostics.get("print_epoch", False):
@@ -288,7 +287,7 @@ class FactorVAEAlphaModel(MLPAlphaModel):
             best_epoch=best_epoch, best_valid_ic=best, feature_count=self.input_dim,
             feature_columns=self.feature_columns, params=self.params, device=str(device),
             train_rows=len(train.frame), valid_rows=len(valid.frame), epochs_run=len(self.loss_history),
-            loss="sampled_reconstruction_mse_plus_kl_posterior_prior_sum",
+            loss="reconstruction_mse_plus_kl_posterior_prior_sum",
             label_transform="date_mad5_zscore_observed_labels_only",
             prediction="prior_return_mean_no_labels_no_sampling",
             attention="positive_cosine_normalized_over_complete_date",

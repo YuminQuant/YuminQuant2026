@@ -19,14 +19,14 @@ def _params(raw):
     params = dict(sequence_length=30, hidden_size=128, num_layers=2, latent_size=64,
                   dynamics_size=128, ode_substeps=1, checkpoint_ode=True,
                   reconstruction_weight=1.0, kl_weight=0.001, epochs=200,
-                  patience=20, average_epochs=5, dates_per_epoch=100, batch_size=3000,
+                  patience=20, average_epochs=5, batch_size=3000,
                   lr=0.0001, weight_decay=0.0, min_delta=1e-8, seed=42, device="auto")
     unknown = set(raw).difference(params)
     if unknown:
         raise ValueError(f"unknown NeuralODE parameters: {sorted(unknown)}")
     params.update(raw)
     for key in ("sequence_length", "hidden_size", "num_layers", "latent_size", "dynamics_size",
-                "ode_substeps", "epochs", "patience", "average_epochs", "dates_per_epoch", "batch_size"):
+                "ode_substeps", "epochs", "patience", "average_epochs", "batch_size"):
         value = params[key]
         params[key] = int(value)
         if isinstance(value, bool) or params[key] <= 0 or params[key] != value:
@@ -213,7 +213,6 @@ class NeuralODEAlphaModel(MLPAlphaModel):
         self.model = build_neural_ode(nn, self.input_dim, self.params).to(device)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.params["lr"],
                                      weight_decay=self.params["weight_decay"])
-        rng = np.random.RandomState(self.params["seed"])
         recent = deque(maxlen=self.params["average_epochs"])
         best, best_state, stale, best_epoch = -np.inf, None, 0, 0
         self.loss_history = []
@@ -221,7 +220,7 @@ class NeuralODEAlphaModel(MLPAlphaModel):
         try:
             for epoch in range(1, self.params["epochs"] + 1):
                 self.model.train()
-                selected = np.sort(rng.choice(len(groups), min(len(groups), self.params["dates_per_epoch"]), replace=False))
+                selected = range(len(groups))
                 total = np.zeros(3, dtype=np.float64)
                 for index in selected:
                     date, symbols, target = groups[index]
@@ -268,7 +267,7 @@ class NeuralODEAlphaModel(MLPAlphaModel):
                     window_id=context.artifact_dir.name, epoch=epoch, train_loss=objective,
                     train_mse=mse, train_reconstruction_nll=reconstruction, train_kl=kl,
                     valid_ic=metric, best_ic=best, is_best=improved, stale_epochs=stale,
-                    sampled_dates=len(selected), averaged_epochs=len(recent),
+                    train_date_count=len(selected), averaged_epochs=len(recent),
                     elapsed_seconds=perf_counter() - started,
                 ))
                 if context.diagnostics.get("print_epoch", False):

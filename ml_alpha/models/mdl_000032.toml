@@ -79,7 +79,6 @@ kl_weight = 0.001
 epochs = 100
 patience = 10
 average_epochs = 5
-dates_per_epoch = 100
 # Stock chunks; one optimizer update per complete date.
 batch_size = 5000
 lr = 0.0001

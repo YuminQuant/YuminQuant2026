@@ -13,7 +13,7 @@ import pandas as pd
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.data.filters import TradeFilters
-from yq_ml_alpha.data.stores import read_daily
+from yq_ml_alpha.data.stores import read_daily, daily_path
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
@@ -93,8 +93,22 @@ class DatasetBuilder:
         total_dates = len(dates)
         split_name = split_name or ("labeled" if include_label else "predict")
         started = perf_counter()
-        total_rows = 0
+        if isinstance(self.feature_provider, LogsigSignatureProvider):
+            self.feature_provider.set_cache_days_for_target_dates(dates)
+        preloaded = None
+        if type(self.feature_provider) in (FactorFrameProvider, RawPanelProvider):
+            preloaded = data_io.ordered_io_map(self.feature_provider.load, dates,
+                root=self.feature_provider.root,
+                path_for=lambda day: daily_path(self.feature_provider.root, day))
+        try:
+            return self._load_dates(dates, include_label, split_name, graph_tensor, lazy_tensor,
+                                    frames, total_dates, started, preloaded)
+        finally:
+            if preloaded is not None: preloaded.close()
 
+    def _load_dates(self, dates, include_label, split_name, graph_tensor, lazy_tensor,
+                    frames, total_dates, started, preloaded):
+        total_rows = 0
         def log_date(status, current, date, rows, date_started):
             if include_label:
                 now = perf_counter()
@@ -104,8 +118,6 @@ class DatasetBuilder:
                     f"date_elapsed_s={now - date_started:.2f} elapsed_s={now - started:.2f}",
                     flush=True,
                 )
-        if isinstance(self.feature_provider, LogsigSignatureProvider):
-            self.feature_provider.set_cache_days_for_target_dates(dates)
         for date_idx, trade_date in enumerate(dates, start=1):
             date_started = perf_counter()
             log_date("start", date_idx, trade_date, 0, date_started)
@@ -113,6 +125,8 @@ class DatasetBuilder:
                 progress = _logsig_signature_progress(split_name, date_idx, total_dates, trade_date)
                 features = self.feature_provider.load(trade_date, progress=progress)
                 progress(f"target_done feature_rows={len(features)}")
+            elif preloaded is not None:
+                features = next(preloaded)
             else:
                 features = self.feature_provider.load(trade_date)
             if features.empty:

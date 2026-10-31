@@ -21,7 +21,7 @@ def _params(raw):
     params = dict(
         sequence_length=60, hidden_size=128, num_layers=2, top_k=20,
         dropout=0.1, epochs=100, patience=20, average_epochs=5,
-        dates_per_epoch=100, batch_size=3000, graph_chunk_size=512,
+        batch_size=3000, graph_chunk_size=512,
         lr=0.001, weight_decay=0.00001, min_delta=1e-8,
         seed=42, device="auto", gradient_checkpointing=True,
         concept_root="data/derived/stock/hist_concepts",
@@ -32,7 +32,7 @@ def _params(raw):
         raise ValueError(f"unknown HIST parameters: {sorted(unknown)}")
     params.update(raw)
     for key in ("sequence_length", "hidden_size", "num_layers", "top_k", "epochs",
-                "patience", "average_epochs", "dates_per_epoch", "batch_size", "graph_chunk_size"):
+                "patience", "average_epochs", "batch_size", "graph_chunk_size"):
         params[key] = int(params[key])
         if params[key] <= 0:
             raise ValueError(f"{key} must be positive")
@@ -243,15 +243,14 @@ class HISTAlphaModel(MLPAlphaModel):
                                      weight_decay=self.params["weight_decay"])
         grouped = train.frame.groupby("trade_date", sort=True)
         days = np.asarray(sorted(grouped.groups))
-        rng = np.random.RandomState(self.params["seed"])
         recent = deque(maxlen=self.params["average_epochs"])
         best, best_state, stale, best_epoch = -np.inf, None, 0, 0
         self.loss_history = []
         started = perf_counter()
         for epoch in range(1, self.params["epochs"] + 1):
             self.model.train()
-            # Sampling is across dates, never arbitrary stocks in a graph.
-            selected = np.sort(rng.choice(days, min(len(days), self.params["dates_per_epoch"]), replace=False))
+            # Every epoch traverses all eligible training dates in calendar order.
+            selected = days
             loss_sum, used = 0.0, 0
             for date in selected:
                 rows = grouped.get_group(date)
@@ -291,7 +290,7 @@ class HISTAlphaModel(MLPAlphaModel):
             self.loss_history.append(dict(
                 window_id=context.artifact_dir.name, epoch=epoch, train_loss=loss_sum / used,
                 valid_ic=metric, best_ic=best, is_best=improved, stale_epochs=stale,
-                sampled_dates=used, averaged_epochs=len(recent),
+                train_date_count=used, averaged_epochs=len(recent),
                 elapsed_seconds=perf_counter() - started,
             ))
             if context.diagnostics.get("print_epoch", False):

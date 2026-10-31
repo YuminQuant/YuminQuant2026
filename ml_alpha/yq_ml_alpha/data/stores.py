@@ -32,7 +32,9 @@ def read_daily(root: str | Path, trade_date: int, columns: Iterable[str], *, req
 
 
 def read_daily_range(root: str | Path, dates: Iterable[int], columns: Iterable[str]) -> pd.DataFrame:
-    frames = [read_daily(root, int(date), columns) for date in dates]
+    columns = list(columns)
+    frames = list(data_io.ordered_io_map(lambda date: read_daily(root, int(date), columns), dates,
+        root=Path(root), path_for=lambda date: daily_path(root, int(date))))
     frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return pd.DataFrame(columns=_dedupe([*KEY_COLUMNS, *columns]))
@@ -56,12 +58,15 @@ def parquet_columns(path: str | Path) -> list[str]:
 def discover_value_columns(root: str | Path, end_date: int | None = None, excluded=()) -> list[str]:
     output = []
     seen = set(NON_FEATURE_COLUMNS) | set(excluded)
+    paths = []
     for path in sorted(data_io.glob(Path(root), "*/*.parquet")):
         from yq_ml_alpha.data.factor_files import factor_file_date
         date = factor_file_date(path)
         if date is None or (end_date is not None and date > end_date):
             continue
-        for column in parquet_columns(path):
+        paths.append(path)
+    for columns in data_io.ordered_io_map(parquet_columns, paths, root=Path(root)):
+        for column in columns:
             if column not in seen:
                 output.append(column)
                 seen.add(column)

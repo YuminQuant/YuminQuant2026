@@ -18,14 +18,14 @@ from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _cpu_state_dict, _device
 def _params(raw):
     params = dict(sequence_length=60, hidden_size=128, feedforward_size=128,
                   num_blocks=1, periods=[5, 60], num_kernels=3, epochs=200,
-                  patience=20, average_epochs=5, dates_per_epoch=100, batch_size=3000,
+                  patience=20, average_epochs=5, batch_size=3000,
                   lr=0.00009, weight_decay=0.0, min_delta=1e-8, seed=42, device="auto")
     unknown = set(raw).difference(params)
     if unknown:
         raise ValueError(f"unknown TimesNet parameters: {sorted(unknown)}")
     params.update(raw)
     for key in ("sequence_length", "hidden_size", "feedforward_size", "num_blocks", "num_kernels",
-                "epochs", "patience", "average_epochs", "dates_per_epoch", "batch_size"):
+                "epochs", "patience", "average_epochs", "batch_size"):
         value = params[key]
         params[key] = int(value)
         if params[key] <= 0 or params[key] != value:
@@ -191,7 +191,6 @@ class TimesNetAlphaModel(MLPAlphaModel):
         self.model = build_timesnet(nn, self.input_dim, self.params).to(device)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.params["lr"],
                                      weight_decay=self.params["weight_decay"])
-        rng = np.random.RandomState(self.params["seed"])
         recent = deque(maxlen=self.params["average_epochs"])
         best, best_state, stale, best_epoch = -np.inf, None, 0, 0
         self.loss_history = []
@@ -199,7 +198,7 @@ class TimesNetAlphaModel(MLPAlphaModel):
         try:
             for epoch in range(1, self.params["epochs"] + 1):
                 self.model.train()
-                selected = np.sort(rng.choice(len(groups), min(len(groups), self.params["dates_per_epoch"]), replace=False))
+                selected = range(len(groups))
                 total = 0.0
                 for index in selected:
                     date, symbols, target = groups[index]
@@ -238,7 +237,7 @@ class TimesNetAlphaModel(MLPAlphaModel):
                 self.loss_history.append(dict(
                     window_id=context.artifact_dir.name, epoch=epoch, train_loss=total / len(selected),
                     valid_ic=metric, best_ic=best, is_best=improved, stale_epochs=stale,
-                    sampled_dates=len(selected), averaged_epochs=len(recent),
+                    train_date_count=len(selected), averaged_epochs=len(recent),
                     elapsed_seconds=perf_counter() - started,
                 ))
                 if context.diagnostics.get("print_epoch", False):

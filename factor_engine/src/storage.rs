@@ -393,8 +393,9 @@ impl FactorStorage {
         {
             return Err(err("Rust and ml_alpha factor metadata IDs collide"));
         }
-        let columns = rows.iter().map(|row| row.output_column.as_str())
-            .chain(external.iter().map(|row| row.output_column.as_str())).collect::<BTreeSet<_>>();
+        let columns = rows.iter().map(|row| (row.asset_class.as_str(), row.frequency.as_str(), row.output_column.as_str()))
+            .chain(external.iter().map(|row| (row.asset_class.as_str(), row.frequency.as_str(), row.output_column.as_str())))
+            .collect::<BTreeSet<_>>();
         if columns.len() != rows.len() + external.len() {
             return Err(err("Rust and ml_alpha metadata output columns must have one owner"));
         }

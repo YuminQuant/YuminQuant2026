@@ -6,6 +6,10 @@
 
 ## 配置层次 / Configuration layers
 
+远程存储的文件并发和预读内存由部署适配器的 `io_options()` 决定，本地读取始终默认在调用线程串行执行。日频区间、普通因子/行情样本、历史张量、图因子历史及 bar 窗口通过共享有界队列读取：线程只读取独立文件，按日期顺序更新缓存和组装样本。嵌套读取退回当前 worker，避免线程池互相等待。预读预算按文件大小保守估算，不是进程 RSS 硬上限；超预算单文件独占推进，最终训练窗口不计入预读预算。缓存按文件分段锁避免同一路径并发重复打开。远程日频写出使用同一队列；本地原有写出配置不变。
+
+Remote file concurrency and prefetch memory come from the deployment adapter's `io_options()`. Local reads stay serial on the caller thread. Daily ranges, ordinary factor/price samples, historical tensors, graph history and bar windows use a shared bounded queue. Workers read independent files; cache updates and sample assembly retain date order. Nested reads run inline to avoid pool deadlocks. Reservations conservatively estimate file expansion, not a hard process RSS limit; oversized files run exclusively, and final training windows are outside the prefetch budget. Striped file locks avoid concurrent duplicate payload opens. Remote daily output uses the same queue; local output settings are unchanged.
+
 | 目录 / Directory | 用途 / Purpose |
 |---|---|
 | `models/*.toml` | 模型实验与组合信号 / Model experiments and combined signals |

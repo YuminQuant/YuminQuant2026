@@ -10,6 +10,16 @@ from types import SimpleNamespace
 
 _backend = None
 
+
+def io_options(root):
+    from .read_ahead import options
+    return options(root)
+
+
+def ordered_io_map(function, items, *, root, path_for=None, workers=None):
+    from .read_ahead import ordered_map
+    return ordered_map(function, items, root=root, path_for=path_for, workers=workers)
+
 def read_path(path):
     for line in os.environ.get('YQ_METADATA_SNAPSHOTS','').splitlines():
         source, target = line.split('\t',1)

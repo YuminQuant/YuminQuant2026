@@ -89,6 +89,9 @@ class DailyTensorSequence:
         cached = self._cached(date)
         if cached is not None:
             return cached
+        return self._remember(date, self._load_day(date))
+
+    def _load_day(self, date):
         path = daily_path(self.root, date)
         if not data_io.exists(path):
             raise FileNotFoundError(f"Missing derived daily tensor: {path}; materialize derived data first")
@@ -97,11 +100,20 @@ class DailyTensorSequence:
             raise ValueError(f"invalid/duplicate daily tensor keys: {path}")
         frame = frame.set_index("ts_code")[self.columns].astype("float32")
         frame = frame.loc[np.isfinite(frame.to_numpy()).all(axis=1)]
-        return self._remember(date, frame)
+        return frame
 
     def _days(self, dates):
-        for date in dates:
-            yield date, self.day(date)
+        resident = {date: self.cache[date][0] for date in dates if date in self.cache}
+        def read(date):
+            return resident[date] if date in resident else self._load_day(date)
+        frames = data_io.ordered_io_map(read, dates, root=self.root,
+            path_for=lambda date: daily_path(self.root, date))
+        try:
+            for date, frame in zip(dates, frames):
+                cached = self._cached(date)
+                yield date, cached if cached is not None else self._remember(date, frame)
+        finally:
+            frames.close()
 
     def symbols(self, date):
         self._activate(date)

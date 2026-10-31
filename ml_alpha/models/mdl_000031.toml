@@ -79,7 +79,6 @@ negative_slope = 0.01
 epochs = 200
 patience = 20
 average_epochs = 5
-dates_per_epoch = 100
 # GRU stock chunks; hypergraphs and contrastive negative pools remain whole-date.
 batch_size = 5000
 contrastive_chunk_size = 512

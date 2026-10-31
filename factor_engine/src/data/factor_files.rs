@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::artifact_io::{self, StoragePathExt};
-use crate::data::parquet_io::{parquet_column_names, read_parquet, read_projected_reader, read_projected_reader_excluding, write_parquet};
+use crate::data::parquet_io::{parquet_column_names, read_parquet, read_projected_reader, read_projected_reader_excluding, write_parquet, PreparedProjection};
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
 
@@ -23,6 +23,7 @@ pub struct FactorFiles {
     owners: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
 struct ReadPlan { path: PathBuf, manual: bool, ml: bool, requested_manual: bool, primary_ml: bool }
 
 impl FactorFiles {
@@ -82,17 +83,23 @@ impl FactorFiles {
         &self, paths: &[PathBuf], columns: &[String],
         mut consume: impl FnMut(&Path, Table) -> Result<()>,
     ) -> Result<()> {
-        let plans = paths.iter().map(|path| self.read_plan(path, Some(columns)))
+        let plans = crate::data::read_ahead::plan_files(paths, |path| Ok(self.read_plan(path, Some(columns))))?.into_iter()
             .filter(|plan| plan.manual || plan.ml).collect::<Vec<_>>();
         let primary = plans.iter().map(ReadPlan::primary).collect::<Vec<_>>();
-        let mut plans = plans.into_iter();
         let projection = source_columns(Some(columns)).expect("explicit projection");
-        crate::data::read_ahead::visit_files(&primary, |_, reader| {
-            let plan = plans.next().expect("one plan per primary reader");
-            let output_path = plan.path.clone();
-            let table = self.read_primary(&plan, reader, Some(&projection))?;
-            consume(&output_path, self.finish_read(plan, Some(columns), table)?)
-        })
+        let excluded = self.owners.iter().filter(|(_, owner)| owner.as_str() == "manual")
+            .map(|(name, _)| name.as_str()).collect::<BTreeSet<_>>();
+        crate::data::read_ahead::visit_tables(&primary,
+            |i, reader| {
+                let plan = &plans[i];
+                let keys = vec!["trade_date".into(), "ts_code".into()];
+                let columns = if plan.primary_ml && plan.requested_manual { &keys } else { &projection };
+                let empty = BTreeSet::new();
+                PreparedProjection::new(reader, &primary[i], columns,
+                    if plan.primary_ml && !plan.requested_manual { &excluded } else { &empty })
+            },
+            |i, table| self.finish_read(plans[i].clone(), Some(columns), table),
+            |i, table| consume(&plans[i].path, table))
     }
 
     fn read_primary(&self, plan: &ReadPlan, reader: artifact_io::StorageReader, columns: Option<&[String]>) -> Result<Table> {

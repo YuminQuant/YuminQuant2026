@@ -52,6 +52,8 @@ impl BacktestEngine {
 
     pub fn run(&self, request: &BacktestRunRequest) -> Result<BacktestRunReport> {
         ensure_backtest_inputs(request)?;
+        let thread_pool = build_thread_pool(request.threads)?;
+        crate::data::read_ahead::configure_threads(thread_pool.as_ref().expect("backtest compute pool").current_num_threads());
         let prepare_started = std::time::Instant::now();
         let plan = prepare_backtest_data_plan(&self.config, request)?;
         let prepare_ms = prepare_started.elapsed().as_millis();
@@ -66,7 +68,6 @@ impl BacktestEngine {
             factor_batch_ranges(plan.factor_metadata.len(), request.factor_batch_size);
         let date_batches = date_batch_ranges(plan.target_dates.len(), request.date_batch_size);
         let progress = ProgressBar::new("backtest", plan.factor_metadata.len(), true);
-        let thread_pool = build_thread_pool(request.threads)?;
         let output_dir = request
             .output_dir
             .clone()
@@ -133,7 +134,7 @@ impl BacktestEngine {
         }
         progress.finish();
         if std::env::args().any(|arg| arg == "--profile") {
-            eprintln!("backtest_io prepare_ms={prepare_ms} input_ms={input_ms} compute_ms={compute_ms} output_ms={output_ms} {}", input_cache.profile());
+            eprintln!("backtest_io prepare_ms={prepare_ms} input_ms={input_ms} compute_ms={compute_ms} output_ms={output_ms} {} {}", input_cache.profile(), crate::data::read_ahead::profile());
         }
         Ok(BacktestRunReport {
             factor_count: selected_factor_ids.len(),

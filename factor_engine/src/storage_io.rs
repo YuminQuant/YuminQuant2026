@@ -39,6 +39,7 @@ impl Default for ReadOptions {
 }
 pub trait ArtifactBackend: Send + Sync {
     fn read_options(&self) -> ReadOptions { ReadOptions::default() }
+    fn paces_read_opens(&self) -> bool { false }
     fn handles(&self, path: &Path) -> bool;
     fn stat(&self, path: &Path) -> Result<Option<FileInfo>>;
     fn list(&self, path: &Path) -> Result<Vec<PathBuf>>;
@@ -188,6 +189,7 @@ pub(crate) const READER_CACHE_BYTES: usize = READ_BLOCK_BYTES * READ_CACHE_BLOCK
 struct BufferedRead {
     source: Arc<dyn ReadAt>,
     blocks: Mutex<VecDeque<(u64, Bytes)>>,
+    projected: Mutex<Vec<(u64, Bytes)>>,
 }
 impl Drop for BufferedRead {
     fn drop(&mut self) { READ_HANDLES.fetch_sub(1, Ordering::Relaxed); }
@@ -197,7 +199,25 @@ impl StorageReader {
     fn new(source: Arc<dyn ReadAt>) -> Self {
         let active = READ_HANDLES.fetch_add(1, Ordering::Relaxed) + 1;
         PEAK_READ_HANDLES.fetch_max(active, Ordering::Relaxed);
-        Self(Arc::new(BufferedRead { source, blocks: Mutex::new(VecDeque::new()) }))
+        Self(Arc::new(BufferedRead { source, blocks: Mutex::new(VecDeque::new()), projected: Mutex::new(Vec::new()) }))
+    }
+
+    /// Retain only selected compressed column chunks until their reader is dropped.
+    pub(crate) fn prefetch_projected(&self, ranges: &[(u64, usize)]) -> io::Result<()> {
+        let mut projected = self.0.projected.lock().map_err(io_error)?;
+        for &(offset, length) in ranges {
+            if offset > self.len() || length as u64 > self.len() - offset {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "projected range exceeds file length"));
+            }
+            let started = std::time::Instant::now();
+            let bytes = self.0.source.read_at(offset, length)?;
+            if bytes.len() != length { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short projected read")); }
+            READ_RANGES.fetch_add(1, Ordering::Relaxed);
+            READ_BYTES.fetch_add(length as u64, Ordering::Relaxed);
+            READ_NS.fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+            projected.push((offset, bytes));
+        }
+        Ok(())
     }
 
     fn range(&self, offset: u64, length: usize) -> io::Result<Bytes> {
@@ -205,6 +225,17 @@ impl StorageReader {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "read range exceeds file length"));
         }
         if length == 0 { return Ok(Bytes::new()); }
+        {
+            let projected = self.0.projected.lock().map_err(io_error)?;
+            if let Some((start, bytes)) = projected.iter().find(|(start, bytes)|
+                offset >= *start && offset - *start <= bytes.len() as u64
+                && length as u64 <= bytes.len() as u64 - (offset - *start))
+            {
+                READ_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+                let from = (offset - *start) as usize;
+                return Ok(bytes.slice(from..from + length));
+            }
+        }
         let mut blocks = self.0.blocks.lock().map_err(io_error)?;
         let mut cursor = offset;
         let end = offset + length as u64;
@@ -252,7 +283,15 @@ impl Read for ReadCursor {
         if out.is_empty() || self.offset >= self.reader.len() { return Ok(0); }
         if self.position == self.buffer.len() {
             let remaining = READ_BLOCK_BYTES - self.offset as usize % READ_BLOCK_BYTES;
-            let length = (self.reader.len()-self.offset).min(remaining as u64) as usize;
+            let mut length = (self.reader.len()-self.offset).min(remaining as u64) as usize;
+            {
+                let projected = self.reader.0.projected.lock().map_err(io_error)?;
+                if let Some((start, bytes)) = projected.iter().find(|(start, bytes)|
+                    self.offset >= *start && self.offset - *start < bytes.len() as u64)
+                {
+                    length = length.min((bytes.len() as u64 - (self.offset - *start)) as usize);
+                }
+            }
             self.buffer = self.reader.range(self.offset,length)?; self.position = 0;
         }
         let count = out.len().min(self.buffer.len()-self.position);

@@ -8,7 +8,7 @@ use crate::barra::engine::DEFAULT_BARRA_MODEL;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{AssetClass, Frequency};
-use crate::data::parquet_io::{parquet_column_names, read_parquet, read_projected_reader};
+use crate::data::parquet_io::{parquet_column_names, read_parquet};
 use crate::data::factor_files::{FactorFiles, factor_file_date, ml_path};
 use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
@@ -119,12 +119,13 @@ impl BacktestReadCache {
         let mut missing = Vec::new();
         let mut versions = HashMap::new();
         let mut present = Vec::new();
-        for path in paths {
-            let version = match crate::artifact_io::metadata(path) {
-                Ok(version) => version,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
+        let statuses = crate::data::read_ahead::plan_files(paths, |path| match crate::artifact_io::metadata(path) {
+            Ok(version) => Ok(Some(version)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        })?;
+        for (path, version) in paths.iter().zip(statuses) {
+            let Some(version) = version else { continue; };
             present.push(path);
             if let Some((old, table, _)) = self.entries.get(path) {
                 if old.size == version.size && old.modified_ns == version.modified_ns
@@ -137,8 +138,7 @@ impl BacktestReadCache {
             versions.insert(path.clone(), version);
             missing.push(path.clone());
         }
-        crate::data::read_ahead::visit_files(&missing, |path, reader| {
-            let mut table = read_projected_reader(reader, path, Some(columns))?;
+        crate::data::read_ahead::visit_projected_files(&missing, columns, |path, mut table| {
             ensure_table_columns(&mut table, &columns.iter().filter(|c| !matches!(c.as_str(), "trade_date" | "ts_code")).cloned().collect::<Vec<_>>())?;
             let bytes = table.allocated_bytes();
             let table = Arc::new(table);
@@ -804,10 +804,11 @@ fn load_trade_filter_masks(
         .join("trade_filter");
     let mut masks = HashMap::new();
     let mut paths = Vec::new();
-    for date in target_dates {
+    let candidates = target_dates.iter().map(|date| daily_trade_filter_path(&root, *date)).collect::<Vec<_>>();
+    let exists = crate::data::read_ahead::plan_files(&candidates, |path| Ok(path.storage_exists()))?;
+    for ((date, path), exists) in target_dates.iter().zip(candidates).zip(exists) {
         let required = request.exclude_limit || (request.exclude_st && *date >= 20160101);
-        let path = daily_trade_filter_path(&root, *date);
-        if !path.storage_exists() {
+        if !exists {
             if required {
                 return Err(err(format!(
                     "missing stock trade filter for {date}: expected {}. Run: python scripts\\update_incremental.py --groups stock_trade_filter --start-date {date} --end-date {date}",
@@ -819,19 +820,16 @@ fn load_trade_filter_masks(
         }
         paths.push(path);
     }
-    crate::data::read_ahead::visit_files(&paths, |path, reader| {
-        let date = factor_file_date(path).ok_or_else(|| err("invalid trade-filter date path"))?;
-        let table = read_projected_reader(
-            reader, path,
-            Some(&[
+    crate::data::read_ahead::visit_projected_files(&paths,
+            &[
                 "trade_date".to_string(),
                 "ts_code".to_string(),
                 "is_limit_up".to_string(),
                 "is_limit_down".to_string(),
                 "is_limit".to_string(),
                 "is_st".to_string(),
-            ]),
-        )?;
+            ], |path, table| {
+        let date = factor_file_date(path).ok_or_else(|| err("invalid trade-filter date path"))?;
         let trade_dates = table.required_i32_date_cast("trade_date")?;
         let ts_codes = table.required_utf8("ts_code")?;
         let is_limit_up = bool_column_cast(&table, "is_limit_up")?;
@@ -1019,15 +1017,12 @@ fn load_index_weight_records(
     let mut records = Vec::new();
     let paths = collect_parquet_files_recursive(&code_dir)?.into_iter()
         .filter(|path| index_weight_path_may_overlap(path, first, last)).collect::<Vec<_>>();
-    crate::data::read_ahead::visit_files(&paths, |path, reader| {
-        let table = read_projected_reader(
-            reader, path,
-            Some(&[
+    crate::data::read_ahead::visit_projected_files(&paths,
+            &[
                 "trade_date".to_string(),
                 "con_code".to_string(),
                 "weight".to_string(),
-            ]),
-        )?;
+            ], |_, table| {
         let dates = table.required_i32_date_cast("trade_date")?;
         let codes = table.required_utf8("con_code")?;
         let weights = table.required_f64_cast("weight")?;
@@ -1472,10 +1467,10 @@ fn load_output_table(
         }
     }
     let mut table = Table::empty();
-    let paths = dates.iter().map(|date| output_path(root, asset_class, frequency, model, barra_layout, *date))
-        .filter(|path| path.storage_exists()).collect::<Vec<_>>();
-    crate::data::read_ahead::visit_files(&paths, |path, reader| {
-        let mut daily = read_projected_reader(reader, path, Some(&columns))?;
+    let candidates = dates.iter().map(|date| output_path(root, asset_class, frequency, model, barra_layout, *date)).collect::<Vec<_>>();
+    let exists = crate::data::read_ahead::plan_files(&candidates, |path| Ok(path.storage_exists()))?;
+    let paths = candidates.into_iter().zip(exists).filter_map(|(path, exists)| exists.then_some(path)).collect::<Vec<_>>();
+    crate::data::read_ahead::visit_projected_files(&paths, &columns, |_, mut daily| {
         ensure_table_columns(&mut daily, requested_columns)?;
         if table.columns.is_empty() {
             table = daily;

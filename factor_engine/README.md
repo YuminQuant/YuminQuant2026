@@ -52,11 +52,15 @@ Parquet random reads use a bounded, per-file in-memory block buffer shared by pa
 
 ## 回测输入读取 / Backtest input reads
 
-回测在本地默认串行读文件；远程存储可通过通用 `ArtifactBackend::read_options()` 配置独立的 IO worker、打开速率和预读预算。通用默认值为 4 个 worker、每秒启动 10 次打开、128 MiB，实际值由适配器配置决定。引擎不要求独立的句柄配额；预读数量由 worker 和预算控制，读取对象结束生命周期后关闭文件。该配置不是 `--threads`：后者仍只控制计算线程。远程预读只提前打开一小组文件并缓冲最多 64 KiB 的尾部，按原日期顺序逐个投影解码；不并发物化多天整表，不创建节点磁盘数据缓存。每个文件的区间缓冲最多 1 MiB；预算不包括回测必需的最终 panel。
+回测在本地默认串行读文件；远程存储可通过通用 `ArtifactBackend::read_options()` 配置 IO worker、打开速率和预读预算。通用默认值为 4 个 worker、每秒启动 10 次打开、128 MiB，实际值由适配器配置决定。远程 worker 并发读取所需列的压缩数据，复用同一次打开取得的 footer/schema；解压和 Table 转换受 `--threads` 约束，结果按原日期顺序消费。完成后立即补充新文件，不再等待整波文件。文件状态和来源规划也复用 IO 并发预算；适配器若已限速，通过 `paces_read_opens()` 避免引擎重复限速。本地不启用该流水线，不创建节点磁盘数据缓存。
+
+预读按投影列的压缩大小、未压缩大小和行数估算内存，并在读取数据列之前预留预算；预算覆盖读取中、解压中和等待消费的结果。单个超预算文件独占推进，避免死锁；估算不是进程 RSS 的硬上限。另有最多 `worker × 1 MiB` 的准备期区间缓冲及 footer/元信息开销；回测必需的最终 panel、公共标签和已有共享缓存不计入预读预算。`--profile` 输出预留峰值、超预算文件数和结果超过估算的次数。读取失败、消费失败或可捕获 panic 会停止派发并释放待处理数据。
 
 打开速率可配置为 `0`，表示不额外限制每秒打开次数；文件并发和内存上限仍然生效。固定速率过低会使暖缓存的小文件读取变慢，不能仅凭打开次数推断提速比例。
 
-Backtests read local files serially by default. A remote adapter configures IO workers, open rate and prefetch budget through `ArtifactBackend::read_options()`. Generic defaults are four workers, ten open starts per second and 128 MiB; the adapter selects the effective settings. The engine does not require a separate handle quota: workers and the budget bound read-ahead, and reader lifetimes close files. This is independent of compute `--threads`. Remote reads pre-open a small wave and warm at most 64 KiB of each tail, then decode projected columns one file at a time in date order. They neither materialize multiple daily tables concurrently nor cache datasets on node disk. Each file has at most 1 MiB of range buffering; the budget excludes the final panel required by the backtest.
+Backtests read local files serially by default. A remote adapter configures IO workers, open rate and prefetch budget through `ArtifactBackend::read_options()`. Generic defaults are four workers, ten open starts per second and 128 MiB; the adapter selects the effective settings. Remote workers fetch only projected compressed column chunks, reusing the open reader and footer/schema. Decompression and Table conversion respect `--threads`; results are consumed in original date order, with replacement work dispatched as files complete rather than at wave barriers. File status/source planning uses the IO budget too. An adapter that already paces opens declares `paces_read_opens()` to avoid double pacing. No dataset cache is written to node disk.
+
+Memory is reserved before payload reads using projected compressed/uncompressed sizes and row counts, covering fetching, decoding and queued results. A single oversized file runs exclusively to avoid deadlock; estimates are not hard process RSS limits. Preparation also uses up to `workers × 1 MiB` of range buffers plus footer/metadata overhead. Required final panels, common labels and existing shared caches are outside this budget. Profile counters report peak reservations, oversized files and results exceeding estimates. Read/consumer failures and caught panics stop dispatch and release pending data.
 
 An open rate of `0` disables the additional per-second cap, not the file-concurrency or memory limits. An overly low rate can slow warm-cache small-file reads; fewer opens alone do not establish a wall-time speedup.
 

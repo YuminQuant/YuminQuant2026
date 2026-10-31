@@ -42,6 +42,66 @@ pub fn read_parquet_with_null_types(
 
 type SymbolPredicate = Box<dyn Fn(&str) -> bool + Send>;
 
+pub(crate) struct PreparedProjection {
+    file: crate::artifact_io::StorageReader,
+    builder: ParquetRecordBatchReaderBuilder<crate::artifact_io::StorageReader>,
+    columns: Vec<String>,
+    ranges: Vec<(u64, usize)>,
+    pub(crate) reserved_bytes: usize,
+}
+
+impl PreparedProjection {
+    pub(crate) fn new(
+        file: crate::artifact_io::StorageReader, path: &Path, columns: &[String],
+        excluded: &BTreeSet<&str>,
+    ) -> Result<Self> {
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file.clone())
+            .map_err(|e| err(format!("failed to read parquet {}: {e}", path.display())))?;
+        let columns = columns.iter().filter(|name| !excluded.contains(name.as_str())).cloned().collect::<Vec<_>>();
+        let mut ranges = Vec::<(u64, usize)>::new();
+        let mut decoded = 0usize;
+        for group in builder.metadata().row_groups() {
+            for column in group.columns() {
+                if !columns.iter().any(|name| name == &column.column_path().parts()[0]) { continue; }
+                let (offset, length) = column.byte_range();
+                let length = usize::try_from(length)?;
+                ranges.push((offset, length));
+                decoded = decoded.saturating_add(usize::try_from(column.uncompressed_size().max(0))?);
+            }
+        }
+        ranges.sort_unstable_by_key(|range| range.0);
+        let mut merged = Vec::<(u64, usize)>::new();
+        for (offset, length) in ranges {
+            if let Some((start, size)) = merged.last_mut() {
+                let end = start.checked_add(*size as u64).ok_or_else(|| err("projected offset overflow"))?;
+                if offset <= end {
+                    *size = usize::try_from(end.max(offset.checked_add(length as u64).ok_or_else(|| err("projected length overflow"))?) - *start)?;
+                    continue;
+                }
+            }
+            merged.push((offset, length));
+        }
+        // Table stores Option values and owned strings, not Arrow's compact buffers.
+        // Include compressed chunks, conversion temporaries and conservative row overhead.
+        let rows = usize::try_from(builder.metadata().file_metadata().num_rows().max(0))?;
+        let cells = rows.saturating_mul(columns.len());
+        let compressed = merged.iter().fold(0usize, |sum, (_, n)| sum.saturating_add(*n));
+        let reserved_bytes = compressed.saturating_add(decoded.saturating_mul(4))
+            .saturating_add(cells.saturating_mul(128))
+            .saturating_add(crate::storage_io::READER_CACHE_BYTES);
+        Ok(Self { file, builder, columns, ranges: merged, reserved_bytes })
+    }
+
+    pub(crate) fn prefetch(&self) -> Result<()> {
+        self.file.prefetch_projected(&self.ranges)?;
+        Ok(())
+    }
+
+    pub(crate) fn read(self, path: &Path) -> Result<Table> {
+        read_parquet_builder(self.builder, path, Some(&self.columns), None, &BTreeMap::new())
+    }
+}
+
 fn read_parquet_impl(
     path: &Path,
     columns: Option<&[String]>,

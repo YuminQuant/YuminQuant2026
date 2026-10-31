@@ -6,7 +6,7 @@ output_root = "data/models"
 data_version = "timesnet_local_factors_v1"
 
 [dates]
-train = [20160101, 20251231]
+train = [20160101, 20260331]
 predict = [20210101, 20260424]
 
 [sample]
@@ -15,7 +15,7 @@ predict_frequency = "daily"
 
 [train_scheme]
 type = "rolling"
-refit_frequency = "yearly_end"
+refit_frequency = "quarterly_end"
 train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500

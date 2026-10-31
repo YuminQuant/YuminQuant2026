@@ -331,11 +331,11 @@ def _validate_train_scheme(section: TrainSchemeConfig) -> None:
         value = section.validation_lookback
         if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*m", value):
             raise ValueError("validation_lookback must be positive calendar months, e.g. '3m'")
-        if (scheme != "rolling" or section.refit_frequency not in {"yearly", "yearly_end", "annual"}
+        if (scheme != "rolling" or section.refit_frequency not in {"yearly", "yearly_end", "annual", "quarterly", "quarterly_end"}
                 or section.train_lookback is None or ratio is not None
                 or section.train_sample_count or section.validation_sample_count
                 or section.prediction_activation != "purge"):
-            raise ValueError("calendar validation requires annual rolling lookback with purge and no sample-count/ratio split")
+            raise ValueError("calendar validation requires annual or quarterly rolling lookback with purge and no sample-count/ratio split")
     if section.validation_unit not in {"dates", "rows"}:
         raise ValueError("validation_unit must be dates or rows")
     if section.validation_unit == "rows" and ratio is None:

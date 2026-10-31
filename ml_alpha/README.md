@@ -45,7 +45,7 @@ Formal factor filenames, IDs and output columns use matching semantic names. Mod
 及命令见 [研报对齐说明 / Report alignment](docs/BAR_GRU_REPORT_ALIGNMENT.md)。
 
 
-编号模型 mdl_000001–mdl_000038 统一采用近60个月滚动窗口（前57个月训练、后3个月验证）、年度重训、5日截面采样和10日VWAP主标签。2016年起训练，2021年起预测；神经网络股票编码块为5000。mdl_000033/034/038保留20日辅助任务。因子输入默认包含有效手工和ML因子，排除deprecated及自身输出；公共读取按股票键outer合并，既有股票池筛选和完整历史要求继续生效。权重存入各模型的 rolling60m_5d_vwap10d/artifacts，避免混用旧方案。
+编号模型 mdl_000001–mdl_000038 统一采用近60个月滚动窗口（前57个月训练、后3个月验证）、每季度重训、5日截面采样和10日VWAP主标签。2016年起训练，2021年起预测；神经网络股票编码块为5000。mdl_000033/034/038保留20日辅助任务。因子输入默认包含有效手工和ML因子，排除deprecated及自身输出；公共读取按股票键outer合并，既有股票池筛选和完整历史要求继续生效。权重存入各模型的 rolling60m_5d_vwap10d/artifacts，避免混用旧方案。
 
 ## 安装 / Installation
 

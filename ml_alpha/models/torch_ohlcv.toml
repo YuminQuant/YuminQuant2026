@@ -15,7 +15,7 @@ predict_frequency = "daily"
 
 [train_scheme]
 type = "rolling"
-refit_frequency = "monthly"
+refit_frequency = "quarterly_end"
 train_lookback = "756d"
 valid_days = 252
 

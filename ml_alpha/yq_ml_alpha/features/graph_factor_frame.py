@@ -11,7 +11,7 @@ from yq_ml_alpha.data.factor_files import factor_dates
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.stock_relations import StockRelations
-from yq_ml_alpha.features.base import FeatureProvider
+from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
 
@@ -86,23 +86,15 @@ class FactorHistory(DailyTensorSequence):
         return view
 
 
-class FactorSequenceProvider(FeatureProvider):
+class FactorSequenceProvider(DailySequenceProvider):
     """Complete eligible cross-sections with lazy, RAM-bounded factor histories."""
 
     def __init__(self, config, provider):
-        self.feature_columns = list(provider.feature_columns)
-        self.sequence = FactorHistory(config, provider)
-
-    def set_calendar_dates(self, dates):
-        self.sequence.set_calendar_dates(dates)
+        super().__init__(FactorHistory(config, provider))
 
     def dataset_identity(self):
         transform = "mad5_zscore_v1" if self.sequence.history_transform == "mad5_zscore_rank_label" else "zscore_clip3_v1"
         return {"factor_history": transform, "membership": "complete_history_before_label_join"}
-
-    def load(self, trade_date):
-        symbols = self.sequence.symbols(trade_date)
-        return pd.DataFrame({"trade_date": [trade_date] * len(symbols), "ts_code": symbols})
 
 
 class GraphFactorFrameProvider(FactorSequenceProvider):

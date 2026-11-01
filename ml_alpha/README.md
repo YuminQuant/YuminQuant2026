@@ -71,6 +71,8 @@ The second command installs several optional dependencies; select only what you 
 量价系列17份正式因子配置现采用年度重训、近60个月57/3划分、5日采样与5000股票编码块；
 标签成熟、筹码年度分片和独立产物目录见[量价滚动训练](docs/PRICE_FACTOR_ROLLING.md)。
 
+`lsg_alpha` 为西南证券LSG完整双分支因子，输入本地9项CNE6一级暴露和7项量价，不含EMA/MACD技术指标；沿用年度60个月57/3训练口径，无需派生数据。结构、归一化和CLI见 [LSG](docs/LSG.md)。
+
 ```bash
 python -m yq_ml_alpha --help
 python scripts/yq.py model-train --config ml_alpha/models/mdl_000001.toml

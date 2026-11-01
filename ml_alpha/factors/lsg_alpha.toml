@@ -1,0 +1,114 @@
+factor_id = "lsg_alpha"
+tags = ["XNZQ", "lsg", "market_style", "barra", "fundamental", "fractional_difference", "phase_space", "transformer", "ic_loss"]
+
+data_root = "data"
+data_version = "lsg_cne6_market16_v1"
+
+[output]
+kind = "factor"
+id = "lsg_alpha"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "market_style_sequence"
+root = "data/chn_stock_data/daily/pv"
+columns = ["open", "high", "low", "close", "vwap", "volume", "turnover_rate_f", "DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
+
+[features.params]
+barra_model = "CNE6"
+barra_columns = ["DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
+turnover_column = "turnover_rate_f"
+sequence_length = 52
+normalization = "window_mean"
+memory_budget_mb = 1024
+history_read_workers = 30
+history_prefetch_mb = 128
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "lsg"
+class = "yq_ml_alpha.models.lsg_model.LSGAlphaModel"
+artifact_dir = "data/model_workspace/lsg_alpha/artifacts"
+
+[model.params]
+input_size = 16
+sequence_length = 52
+temporal_steps = 40
+delay = 3
+embedding_dim = 5
+spectrum_orders = [0.0, 0.25, 0.5, 0.75, 1.0]
+mu_init = 0.5
+sigma_init = 0.25
+# Follow the report body: a separate 52-day spectrum for delay geometry.
+geometry_input = "spectrum"
+conv_channels = 32
+kernel_size = 3
+gru_hidden = 32
+gru_layers = 1
+d_model = 32
+attention_heads = 4
+transformer_layers = 2
+ffn_size = 128
+head_hidden = 32
+dropout = 0.1
+distance_normalization = "mean"
+lambda_init = 0.1
+nearest_k = 5
+# The report's softplus equation, initialized close to unit amplification.
+gate_init = -5.0
+eps = 0.00000001
+epochs = 100
+patience = 10
+batch_size = 5000
+gradient_checkpointing = true
+grad_clip = 5.0
+lr = 0.00005
+weight_decay = 0.0
+min_delta = 0.00000001
+seed = 42
+device = "auto"

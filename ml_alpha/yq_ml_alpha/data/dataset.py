@@ -16,6 +16,8 @@ from yq_ml_alpha.data.filters import TradeFilters
 from yq_ml_alpha.data.stores import read_daily, daily_path
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
+from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
+from yq_ml_alpha.features.market_style_sequence import MarketStyleSequenceProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.graph_factor_frame import FactorSequenceProvider, GraphFactorFrameProvider
@@ -85,8 +87,8 @@ class DatasetBuilder:
             data_io.invalidate_parquet()
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
-        graph_tensor = isinstance(self.feature_provider, FactorSequenceProvider)
-        lazy_tensor = isinstance(self.feature_provider, (DerivedChipAgeProvider, FactorSequenceProvider))
+        graph_tensor = isinstance(self.feature_provider, DailySequenceProvider)
+        lazy_tensor = isinstance(self.feature_provider, (DerivedChipAgeProvider, DailySequenceProvider))
         if lazy_tensor and (self.config.preprocess.cross_section_transform != "none" or self.config.materialize.cache_samples):
             raise ValueError("lazy tensors require transform=none and cache_samples=false")
         frames = []
@@ -507,6 +509,8 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    if config.features.type == "market_style_sequence":
+        return MarketStyleSequenceProvider(config)
     if config.features.type == "stock_events":
         return StockEventsProvider(config)
     if config.features.type == "analyst_raw40_sequence":

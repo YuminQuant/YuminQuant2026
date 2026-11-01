@@ -65,6 +65,17 @@ impl Output {
             _ => Metric::Return,
         }
     }
+
+    fn is_deprecated(self) -> bool {
+        matches!(
+            self.0,
+            Kind::IndirectReturn
+                | Kind::MultilayerReturn
+                | Kind::DirectReversal
+                | Kind::IndirectReversal
+                | Kind::RawReversal
+        )
+    }
 }
 
 pub const OUTPUTS: [Output; 9] = [
@@ -114,10 +125,14 @@ impl Factor for CoverageNetwork {
             Kind::IndirectReversal => "CF2_REV=Z(CF2_RET)-Z(own return); uses unadjusted indirect return",
             Kind::MultilayerReversal => "CF_REV=[Z(CF1_RET)-Z(own return)]+[Z(CF2_RET)-Z(own return)]",
         };
+        let mut tags: Vec<String> = ["HTZQ", "analyst", "price_volume", "cs_network", "daily", "quarterly_network", "neutralize", "size", "sector"].into_iter().map(str::to_string).collect();
+        if output.is_deprecated() {
+            tags.push("deprecated".into());
+        }
         FactorSpec {
             id: output.id(), aliases: vec![output.id().to_ascii_uppercase()], name: output.id(),
             asset_class: AssetClass::Stock, frequency: Frequency::Daily, version: "0.1.0".into(),
-            tags: ["HTZQ", "analyst", "price_volume", "cs_network", "daily", "quarterly_network", "neutralize", "size", "sector"].into_iter().map(str::to_string).collect(),
+            tags,
             description: format!("{formula}. Window={} trading sessions, min_periods=1. Adjusted close=close*adj_factor; simple returns between adjacent calendar sessions only; cumulative return compounds finite daily returns, missing days skipped, no valid returns is null. Turnover uses mean turnover_rate_f (percent), volatility uses population std. Latest completed trading quarter end (inclusive) builds coverage from reports in (snapshot minus six calendar months,snapshot]. Analyst identity institution plus individual split author; deduplicate analyst-stock membership across reports and forecast years. Direct A_ij=ln(1+n_ij), zero diagonal; indirect M=A*A with diagonal and every direct edge masked to zero. Current missing peer values excluded with weight renormalization. No dense NxN graph, no indirect matrix; sparse two-hop products subtract direct/self contributions. Cache one quarterly graph keyed by stock code, no disk intermediate. Main grid=stock-basic universe, excludes BJ and stocks not listed at the graph snapshot. Graph frozen within quarter; signals and SW L1/Barra SIZE residual recomputed daily. Internal zscores only where formula requires; no final zscore, winsorization or missing fill. Base return/turnover/volatility and adjusted-indirect are not outputs. Only requested outputs, metrics and windows calculated.", output.1),
             dependencies, intraday_raw_dependencies: vec![],
             // Covers every possible prior quarter boundary; market inputs are projected to the required window.

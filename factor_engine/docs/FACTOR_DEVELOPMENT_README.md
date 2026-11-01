@@ -507,6 +507,37 @@ python scripts\remove_factor_columns.py --factor-root data\models --start-date 2
 python scripts\remove_factor_columns.py --factor-root data\models --start-date 20110101 --end-date 20260424 --columns ml_alpha_lstm
 ```
 
+HDFS 清理是独立模式，不会同时修改本地因子库。先由部署环境准备认证、
+`YQ_HDFS_CONFIG` 与 artifact mounts，并提供注册现有 artifact backend 的
+`module:function`。必须显式指定 HDFS 挂载后的绝对 root 和 columns；未挂载时报错，
+不回退到本地。先 dry-run，再移除该开关执行：
+
+HDFS removal is separate from local cleanup. The deployment supplies authentication,
+`YQ_HDFS_CONFIG`, artifact mounts and an artifact-backend registration callable.
+An explicit mounted absolute root and columns are required; there is no local fallback.
+
+```bash
+python -B scripts/remove_factor_columns.py \
+  --backend hdfs --hdfs-bootstrap deployment.module:register_backend \
+  --factor-root /mounted/project/data/factors/stock/daily \
+  --start-date 20110101 --end-date 20260424 --columns factor_a,factor_b \
+  --workers 50 --io-requests-per-second 1000 --batch-rows 1024 --dry-run
+```
+
+部署适配器必须实现分布式文件锁及同文件系统的原子覆盖。脚本在锁内只读保留列，
+分批流式写出 Snappy 临时文件，校验行数、schema 和源文件版本后原子替换；
+从不先删除旧文件。失败保留旧文件并清理本次临时文件。普通与 `_ml.parquet`
+分区都会检查。并发文件数最多 50，文件系统操作速率最多 1000 次/秒；该限制不是吞吐承诺，
+也不等于对底层每个 HDFS 数据包限速。未命中列的文件不重写，重复执行安全；
+多个日期不是一次整体事务，中途失败可修复后重跑。
+
+The backend must provide distributed locks and same-filesystem atomic overwrite.
+Only retained columns are read, in bounded batches. Closed Snappy temp files are
+validated before replacement; old files are never deleted first. Both manual and ML
+partitions are inspected. Limits are 50 concurrent files and 1000 filesystem calls/s,
+not guaranteed throughput or a network-packet limit. Unaffected files are not rewritten.
+Each file commits independently, so an interrupted run can be resumed safely.
+
 ## 8. 常用验证 / Validation Checklist
 
 `factor_engine` 不再保留内嵌 Rust 测试。开发期间按需临时核验公式与对齐，完成后清理验证代码和产物；保留编译检查及小范围人工检查流程。

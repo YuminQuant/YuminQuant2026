@@ -170,6 +170,7 @@ impl GaussianFinancialExtOutput {
                 | Self::NOthIncomeMv
                 | Self::PayrollPayableOthPayYoy
                 | Self::CapexCipYoy
+                | Self::NetprofitComprParent
                 | Self::TotalCogsCurLiabYoy
                 | Self::BizTaxSurchgAssets
                 | Self::SurplusReseIntExpYoy

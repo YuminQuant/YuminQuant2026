@@ -24,7 +24,7 @@ impl Factor for StockDailyMktHoldingRet {
             asset_class: AssetClass::Stock,
             frequency: Frequency::Daily,
             version: VERSION.to_string(),
-            tags: ["price_volume", "chip", "market", "daily", "KYZQ"]
+            tags: ["price_volume", "chip", "market", "daily", "KYZQ", "deprecated"]
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),

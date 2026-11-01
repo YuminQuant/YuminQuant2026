@@ -5,6 +5,7 @@ pub mod bar;
 pub mod chip_age;
 pub mod engine;
 pub mod logsig;
+pub mod logsigrnn;
 pub mod request;
 pub mod storage;
 pub mod stock_relations;

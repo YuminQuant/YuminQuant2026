@@ -1,0 +1,182 @@
+factor_id = "logsigrnn_week"
+tags = ["DBZQ", "logsignature", "lstm", "price_volume", "ic_loss"]
+data_root = "data"
+data_version = "logsigrnn_seven_channel_order4_v1"
+
+[output]
+kind = "factor"
+id = "logsigrnn_week"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "derived_logsigrnn"
+root = "data/derived/stock/logsigrnn_week"
+columns = [
+    "logsig_0001", "logsig_0002", "logsig_0003", "logsig_0004", "logsig_0005", "logsig_0006", "logsig_0007", "logsig_0008",
+    "logsig_0009", "logsig_0010", "logsig_0011", "logsig_0012", "logsig_0013", "logsig_0014", "logsig_0015", "logsig_0016",
+    "logsig_0017", "logsig_0018", "logsig_0019", "logsig_0020", "logsig_0021", "logsig_0022", "logsig_0023", "logsig_0024",
+    "logsig_0025", "logsig_0026", "logsig_0027", "logsig_0028", "logsig_0029", "logsig_0030", "logsig_0031", "logsig_0032",
+    "logsig_0033", "logsig_0034", "logsig_0035", "logsig_0036", "logsig_0037", "logsig_0038", "logsig_0039", "logsig_0040",
+    "logsig_0041", "logsig_0042", "logsig_0043", "logsig_0044", "logsig_0045", "logsig_0046", "logsig_0047", "logsig_0048",
+    "logsig_0049", "logsig_0050", "logsig_0051", "logsig_0052", "logsig_0053", "logsig_0054", "logsig_0055", "logsig_0056",
+    "logsig_0057", "logsig_0058", "logsig_0059", "logsig_0060", "logsig_0061", "logsig_0062", "logsig_0063", "logsig_0064",
+    "logsig_0065", "logsig_0066", "logsig_0067", "logsig_0068", "logsig_0069", "logsig_0070", "logsig_0071", "logsig_0072",
+    "logsig_0073", "logsig_0074", "logsig_0075", "logsig_0076", "logsig_0077", "logsig_0078", "logsig_0079", "logsig_0080",
+    "logsig_0081", "logsig_0082", "logsig_0083", "logsig_0084", "logsig_0085", "logsig_0086", "logsig_0087", "logsig_0088",
+    "logsig_0089", "logsig_0090", "logsig_0091", "logsig_0092", "logsig_0093", "logsig_0094", "logsig_0095", "logsig_0096",
+    "logsig_0097", "logsig_0098", "logsig_0099", "logsig_0100", "logsig_0101", "logsig_0102", "logsig_0103", "logsig_0104",
+    "logsig_0105", "logsig_0106", "logsig_0107", "logsig_0108", "logsig_0109", "logsig_0110", "logsig_0111", "logsig_0112",
+    "logsig_0113", "logsig_0114", "logsig_0115", "logsig_0116", "logsig_0117", "logsig_0118", "logsig_0119", "logsig_0120",
+    "logsig_0121", "logsig_0122", "logsig_0123", "logsig_0124", "logsig_0125", "logsig_0126", "logsig_0127", "logsig_0128",
+    "logsig_0129", "logsig_0130", "logsig_0131", "logsig_0132", "logsig_0133", "logsig_0134", "logsig_0135", "logsig_0136",
+    "logsig_0137", "logsig_0138", "logsig_0139", "logsig_0140", "logsig_0141", "logsig_0142", "logsig_0143", "logsig_0144",
+    "logsig_0145", "logsig_0146", "logsig_0147", "logsig_0148", "logsig_0149", "logsig_0150", "logsig_0151", "logsig_0152",
+    "logsig_0153", "logsig_0154", "logsig_0155", "logsig_0156", "logsig_0157", "logsig_0158", "logsig_0159", "logsig_0160",
+    "logsig_0161", "logsig_0162", "logsig_0163", "logsig_0164", "logsig_0165", "logsig_0166", "logsig_0167", "logsig_0168",
+    "logsig_0169", "logsig_0170", "logsig_0171", "logsig_0172", "logsig_0173", "logsig_0174", "logsig_0175", "logsig_0176",
+    "logsig_0177", "logsig_0178", "logsig_0179", "logsig_0180", "logsig_0181", "logsig_0182", "logsig_0183", "logsig_0184",
+    "logsig_0185", "logsig_0186", "logsig_0187", "logsig_0188", "logsig_0189", "logsig_0190", "logsig_0191", "logsig_0192",
+    "logsig_0193", "logsig_0194", "logsig_0195", "logsig_0196", "logsig_0197", "logsig_0198", "logsig_0199", "logsig_0200",
+    "logsig_0201", "logsig_0202", "logsig_0203", "logsig_0204", "logsig_0205", "logsig_0206", "logsig_0207", "logsig_0208",
+    "logsig_0209", "logsig_0210", "logsig_0211", "logsig_0212", "logsig_0213", "logsig_0214", "logsig_0215", "logsig_0216",
+    "logsig_0217", "logsig_0218", "logsig_0219", "logsig_0220", "logsig_0221", "logsig_0222", "logsig_0223", "logsig_0224",
+    "logsig_0225", "logsig_0226", "logsig_0227", "logsig_0228", "logsig_0229", "logsig_0230", "logsig_0231", "logsig_0232",
+    "logsig_0233", "logsig_0234", "logsig_0235", "logsig_0236", "logsig_0237", "logsig_0238", "logsig_0239", "logsig_0240",
+    "logsig_0241", "logsig_0242", "logsig_0243", "logsig_0244", "logsig_0245", "logsig_0246", "logsig_0247", "logsig_0248",
+    "logsig_0249", "logsig_0250", "logsig_0251", "logsig_0252", "logsig_0253", "logsig_0254", "logsig_0255", "logsig_0256",
+    "logsig_0257", "logsig_0258", "logsig_0259", "logsig_0260", "logsig_0261", "logsig_0262", "logsig_0263", "logsig_0264",
+    "logsig_0265", "logsig_0266", "logsig_0267", "logsig_0268", "logsig_0269", "logsig_0270", "logsig_0271", "logsig_0272",
+    "logsig_0273", "logsig_0274", "logsig_0275", "logsig_0276", "logsig_0277", "logsig_0278", "logsig_0279", "logsig_0280",
+    "logsig_0281", "logsig_0282", "logsig_0283", "logsig_0284", "logsig_0285", "logsig_0286", "logsig_0287", "logsig_0288",
+    "logsig_0289", "logsig_0290", "logsig_0291", "logsig_0292", "logsig_0293", "logsig_0294", "logsig_0295", "logsig_0296",
+    "logsig_0297", "logsig_0298", "logsig_0299", "logsig_0300", "logsig_0301", "logsig_0302", "logsig_0303", "logsig_0304",
+    "logsig_0305", "logsig_0306", "logsig_0307", "logsig_0308", "logsig_0309", "logsig_0310", "logsig_0311", "logsig_0312",
+    "logsig_0313", "logsig_0314", "logsig_0315", "logsig_0316", "logsig_0317", "logsig_0318", "logsig_0319", "logsig_0320",
+    "logsig_0321", "logsig_0322", "logsig_0323", "logsig_0324", "logsig_0325", "logsig_0326", "logsig_0327", "logsig_0328",
+    "logsig_0329", "logsig_0330", "logsig_0331", "logsig_0332", "logsig_0333", "logsig_0334", "logsig_0335", "logsig_0336",
+    "logsig_0337", "logsig_0338", "logsig_0339", "logsig_0340", "logsig_0341", "logsig_0342", "logsig_0343", "logsig_0344",
+    "logsig_0345", "logsig_0346", "logsig_0347", "logsig_0348", "logsig_0349", "logsig_0350", "logsig_0351", "logsig_0352",
+    "logsig_0353", "logsig_0354", "logsig_0355", "logsig_0356", "logsig_0357", "logsig_0358", "logsig_0359", "logsig_0360",
+    "logsig_0361", "logsig_0362", "logsig_0363", "logsig_0364", "logsig_0365", "logsig_0366", "logsig_0367", "logsig_0368",
+    "logsig_0369", "logsig_0370", "logsig_0371", "logsig_0372", "logsig_0373", "logsig_0374", "logsig_0375", "logsig_0376",
+    "logsig_0377", "logsig_0378", "logsig_0379", "logsig_0380", "logsig_0381", "logsig_0382", "logsig_0383", "logsig_0384",
+    "logsig_0385", "logsig_0386", "logsig_0387", "logsig_0388", "logsig_0389", "logsig_0390", "logsig_0391", "logsig_0392",
+    "logsig_0393", "logsig_0394", "logsig_0395", "logsig_0396", "logsig_0397", "logsig_0398", "logsig_0399", "logsig_0400",
+    "logsig_0401", "logsig_0402", "logsig_0403", "logsig_0404", "logsig_0405", "logsig_0406", "logsig_0407", "logsig_0408",
+    "logsig_0409", "logsig_0410", "logsig_0411", "logsig_0412", "logsig_0413", "logsig_0414", "logsig_0415", "logsig_0416",
+    "logsig_0417", "logsig_0418", "logsig_0419", "logsig_0420", "logsig_0421", "logsig_0422", "logsig_0423", "logsig_0424",
+    "logsig_0425", "logsig_0426", "logsig_0427", "logsig_0428", "logsig_0429", "logsig_0430", "logsig_0431", "logsig_0432",
+    "logsig_0433", "logsig_0434", "logsig_0435", "logsig_0436", "logsig_0437", "logsig_0438", "logsig_0439", "logsig_0440",
+    "logsig_0441", "logsig_0442", "logsig_0443", "logsig_0444", "logsig_0445", "logsig_0446", "logsig_0447", "logsig_0448",
+    "logsig_0449", "logsig_0450", "logsig_0451", "logsig_0452", "logsig_0453", "logsig_0454", "logsig_0455", "logsig_0456",
+    "logsig_0457", "logsig_0458", "logsig_0459", "logsig_0460", "logsig_0461", "logsig_0462", "logsig_0463", "logsig_0464",
+    "logsig_0465", "logsig_0466", "logsig_0467", "logsig_0468", "logsig_0469", "logsig_0470", "logsig_0471", "logsig_0472",
+    "logsig_0473", "logsig_0474", "logsig_0475", "logsig_0476", "logsig_0477", "logsig_0478", "logsig_0479", "logsig_0480",
+    "logsig_0481", "logsig_0482", "logsig_0483", "logsig_0484", "logsig_0485", "logsig_0486", "logsig_0487", "logsig_0488",
+    "logsig_0489", "logsig_0490", "logsig_0491", "logsig_0492", "logsig_0493", "logsig_0494", "logsig_0495", "logsig_0496",
+    "logsig_0497", "logsig_0498", "logsig_0499", "logsig_0500", "logsig_0501", "logsig_0502", "logsig_0503", "logsig_0504",
+    "logsig_0505", "logsig_0506", "logsig_0507", "logsig_0508", "logsig_0509", "logsig_0510", "logsig_0511", "logsig_0512",
+    "logsig_0513", "logsig_0514", "logsig_0515", "logsig_0516", "logsig_0517", "logsig_0518", "logsig_0519", "logsig_0520",
+    "logsig_0521", "logsig_0522", "logsig_0523", "logsig_0524", "logsig_0525", "logsig_0526", "logsig_0527", "logsig_0528",
+    "logsig_0529", "logsig_0530", "logsig_0531", "logsig_0532", "logsig_0533", "logsig_0534", "logsig_0535", "logsig_0536",
+    "logsig_0537", "logsig_0538", "logsig_0539", "logsig_0540", "logsig_0541", "logsig_0542", "logsig_0543", "logsig_0544",
+    "logsig_0545", "logsig_0546", "logsig_0547", "logsig_0548", "logsig_0549", "logsig_0550", "logsig_0551", "logsig_0552",
+    "logsig_0553", "logsig_0554", "logsig_0555", "logsig_0556", "logsig_0557", "logsig_0558", "logsig_0559", "logsig_0560",
+    "logsig_0561", "logsig_0562", "logsig_0563", "logsig_0564", "logsig_0565", "logsig_0566", "logsig_0567", "logsig_0568",
+    "logsig_0569", "logsig_0570", "logsig_0571", "logsig_0572", "logsig_0573", "logsig_0574", "logsig_0575", "logsig_0576",
+    "logsig_0577", "logsig_0578", "logsig_0579", "logsig_0580", "logsig_0581", "logsig_0582", "logsig_0583", "logsig_0584",
+    "logsig_0585", "logsig_0586", "logsig_0587", "logsig_0588", "logsig_0589", "logsig_0590", "logsig_0591", "logsig_0592",
+    "logsig_0593", "logsig_0594", "logsig_0595", "logsig_0596", "logsig_0597", "logsig_0598", "logsig_0599", "logsig_0600",
+    "logsig_0601", "logsig_0602", "logsig_0603", "logsig_0604", "logsig_0605", "logsig_0606", "logsig_0607", "logsig_0608",
+    "logsig_0609", "logsig_0610", "logsig_0611", "logsig_0612", "logsig_0613", "logsig_0614", "logsig_0615", "logsig_0616",
+    "logsig_0617", "logsig_0618", "logsig_0619", "logsig_0620", "logsig_0621", "logsig_0622", "logsig_0623", "logsig_0624",
+    "logsig_0625", "logsig_0626", "logsig_0627", "logsig_0628", "logsig_0629", "logsig_0630", "logsig_0631", "logsig_0632",
+    "logsig_0633", "logsig_0634", "logsig_0635", "logsig_0636", "logsig_0637", "logsig_0638", "logsig_0639", "logsig_0640",
+    "logsig_0641", "logsig_0642", "logsig_0643", "logsig_0644", "logsig_0645", "logsig_0646", "logsig_0647", "logsig_0648",
+    "logsig_0649", "logsig_0650", "logsig_0651", "logsig_0652", "logsig_0653", "logsig_0654", "logsig_0655", "logsig_0656",
+    "logsig_0657", "logsig_0658", "logsig_0659", "logsig_0660", "logsig_0661", "logsig_0662", "logsig_0663", "logsig_0664",
+    "logsig_0665", "logsig_0666", "logsig_0667", "logsig_0668", "logsig_0669", "logsig_0670", "logsig_0671", "logsig_0672",
+    "logsig_0673", "logsig_0674", "logsig_0675", "logsig_0676", "logsig_0677", "logsig_0678", "logsig_0679", "logsig_0680",
+    "logsig_0681", "logsig_0682", "logsig_0683", "logsig_0684", "logsig_0685", "logsig_0686", "logsig_0687", "logsig_0688",
+    "logsig_0689", "logsig_0690", "logsig_0691", "logsig_0692", "logsig_0693", "logsig_0694", "logsig_0695", "logsig_0696",
+    "logsig_0697", "logsig_0698", "logsig_0699", "logsig_0700", "logsig_0701", "logsig_0702", "logsig_0703", "logsig_0704",
+    "logsig_0705", "logsig_0706", "logsig_0707", "logsig_0708", "logsig_0709", "logsig_0710", "logsig_0711", "logsig_0712",
+    "logsig_0713", "logsig_0714", "logsig_0715", "logsig_0716", "logsig_0717", "logsig_0718", "logsig_0719", "logsig_0720",
+    "logsig_0721", "logsig_0722", "logsig_0723", "logsig_0724", "logsig_0725", "logsig_0726", "logsig_0727", "logsig_0728",
+]
+
+[features.params]
+sequence_length = 21
+memory_budget_mb = 4096
+history_read_workers = 30
+history_prefetch_mb = 512
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "logsigrnn_week"
+class = "yq_ml_alpha.models.logsigrnn_model.LogsigRNNAlphaModel"
+artifact_dir = "data/model_workspace/logsigrnn_week/artifacts"
+
+[model.params]
+sequence_length = 21
+input_size = 728
+hidden_size = 32
+num_layers = 2
+dropout = 0.5
+norm_eps = 0.00001
+bn_momentum = 0.1
+eps = 0.00000001
+lr = 0.001
+weight_decay = 0.0
+min_delta = 0.00000001
+epochs = 100
+patience = 10
+batch_size = 5000
+gradient_checkpointing = true
+seed = 42
+device = "auto"

@@ -17,6 +17,8 @@ def run(config_path: str | Path) -> list[Path]:
 
 
 def run_config(config: MlAlphaConfig) -> list[Path]:
+    if config.features.type == "derived_logsigrnn":
+        raise ValueError("Logsig-RNN inputs are derived data; use Rust derive-logsigrnn before factor-run")
     if config.features.type in {"market_style_sequence", "rawbar_sequence"}:
         raise ValueError("daily market sequences use RAM only; factor-materialize is not supported")
     if config.features.type == "analyst_raw40_sequence":

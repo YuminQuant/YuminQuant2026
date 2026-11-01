@@ -12,6 +12,7 @@ pub mod error;
 pub mod factor;
 pub mod label;
 pub mod logsig_signature;
+pub mod path_logsignature;
 pub mod neutralize;
 pub mod operators;
 pub mod progress;

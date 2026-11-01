@@ -445,6 +445,27 @@ fn run_cli() -> Result<()> {
             let batch_size = flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(20);
             yq_factor_engine::derive::chip_age::derive_chip_age(&config, date("start-date")?, date("end-date")?, batch_size)?;
         }
+        "derive-logsigrnn" => {
+            let flags = parse_flags(&args[1..])?;
+            for key in flags.keys() {
+                if !["asset", "start-date", "end-date", "date-batch-size", "threads", "overwrite", "config", "project-config"].contains(&key.as_str()) {
+                    return Err(yq_factor_engine::error::err(format!("unsupported derive-logsigrnn flag --{key}")));
+                }
+            }
+            if flags.get("asset").map(String::as_str) != Some("stock") {
+                return Err(yq_factor_engine::error::err("derive-logsigrnn requires --asset stock"));
+            }
+            let date = |key: &str| -> Result<i32> {
+                parse_yyyymmdd(flags.get(key).ok_or_else(|| yq_factor_engine::error::err(format!("missing --{key}")))?, key)
+            };
+            let config = EngineConfig::discover(flags.get("project-config").or_else(|| flags.get("config")).map(PathBuf::from))?;
+            yq_factor_engine::derive::logsigrnn::derive(&config, &yq_factor_engine::derive::logsigrnn::LogsigRnnRequest {
+                start_date: date("start-date")?, end_date: date("end-date")?,
+                date_batch_size: flags.get("date-batch-size").map(|v| v.parse()).transpose()?.unwrap_or(DEFAULT_DERIVE_DATE_BATCH_SIZE),
+                threads: flags.get("threads").map(|v| v.parse()).transpose()?.unwrap_or(2),
+                overwrite: flag_bool(&flags, "overwrite", false),
+            })?;
+        }
         "derive-logsig" => {
             let request = parse_derive_logsig_request(&args[1..])?;
             let engine = DeriveEngine::from_logsig_request(&request)?;
@@ -1502,6 +1523,8 @@ fn print_help() {
     println!("  derive-analyst-gat-inputs --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--threads N] [--config path]");
     println!("  derive-stock-events --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--threads N] [--config path]");
     println!("  derive-hist-concepts --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
+    println!("  derive-logsigrnn --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 120] [--threads 2] [--overwrite true|false]");
+    println!("    5m seven-channel/order4 daily Lyndon features and moments -> derived/stock/logsigrnn_week; 21-session assembly in Python");
     println!("  derive-logsig --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--threads 2] [--overwrite true|false]");
     println!("    raw minute volume -> 5m/20d/order10 (226 columns), daily Snappy derived/stock/logsig_v; sequential dates with rolling state");
     println!("YuminQuant factor engine MVP");

@@ -7,6 +7,14 @@ import pandas as pd
 from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _device, _torch_modules
 
 
+def full_date_ic_loss(prediction, target, eps):
+    if prediction.ndim != 1 or target.shape != prediction.shape or prediction.numel() < 2:
+        raise ValueError("full-date IC requires equally sized one-dimensional vectors with at least two stocks")
+    prediction, target = prediction - prediction.mean(), target - target.mean()
+    denominator = prediction.norm() * target.norm()
+    return 1 - (prediction * target).sum() / denominator.clamp_min(eps)
+
+
 class DailySequenceAlphaModel(MLPAlphaModel):
     prediction_replay_safe = True
     prediction_inputs_readonly = True

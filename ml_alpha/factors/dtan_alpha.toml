@@ -1,0 +1,116 @@
+factor_id = "dtan_alpha"
+tags = ["XNZQ", "dtan", "market_style", "barra", "fundamental", "transformer", "adversarial", "wgan_gp", "ic_loss"]
+
+data_root = "data"
+data_version = "dtan_cne6_market16_v1"
+
+[output]
+kind = "factor"
+id = "dtan_alpha"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "market_style_sequence"
+root = "data/chn_stock_data/daily/pv"
+columns = ["open", "high", "low", "close", "vwap", "volume", "turnover_rate_f", "DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
+
+[features.params]
+barra_model = "CNE6"
+barra_columns = ["DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
+turnover_column = "turnover_rate_f"
+sequence_length = 40
+normalization = "window_mean"
+memory_budget_mb = 1024
+history_read_workers = 30
+history_prefetch_mb = 128
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "dtan"
+class = "yq_ml_alpha.models.dtan_model.DTANAlphaModel"
+artifact_dir = "data/model_workspace/dtan_alpha/artifacts"
+
+[model.params]
+input_size = 16
+sequence_length = 40
+d_model = 64
+attention_heads = 4
+transformer_layers = 2
+ffn_size = 128
+head_hidden = 32
+latent_size = 32
+dropout = 0.1
+norm_eps = 0.00001
+critic_hidden_layers = [128, 128]
+leaky_slope = 0.2
+critic_steps = 1
+# Training-only references: true-label Top10%, uniformly sampled by stock/date.
+memory_capacity = 2048
+memory_warmup_epochs = 5
+memory_refill_epochs = 5
+top_fraction = 0.1
+output_weight = 0.1
+latent_weight = 0.1
+ic_weight = 1.0
+gp_weight = 10.0
+output_noise_std = 0.01
+latent_noise_std = 0.01
+lr = 0.0001
+critic_lr = 0.0001
+generator_betas = [0.9, 0.999]
+critic_betas = [0.0, 0.9]
+weight_decay = 0.0
+grad_clip = 5.0
+eps = 0.00000001
+min_delta = 0.00000001
+epochs = 100
+patience = 10
+batch_size = 5000
+gradient_checkpointing = true
+seed = 42
+device = "auto"

@@ -73,6 +73,8 @@ The second command installs several optional dependencies; select only what you 
 
 `lsg_alpha` 为西南证券LSG完整双分支因子，输入本地9项CNE6一级暴露和7项量价，不含EMA/MACD技术指标；沿用年度60个月57/3训练口径，无需派生数据。结构、归一化和CLI见 [LSG](docs/LSG.md)。
 
+`dtan_alpha` 复用同一16维输入协议，使用40日Transformer和输出/潜空间两个WGAN-GP Critic；潜特征库仅在训练集构造，预测只用生成器。口径、记忆库版本规则和CLI见 [DTAN](docs/DTAN.md)。
+
 ```bash
 python -m yq_ml_alpha --help
 python scripts/yq.py model-train --config ml_alpha/models/mdl_000001.toml

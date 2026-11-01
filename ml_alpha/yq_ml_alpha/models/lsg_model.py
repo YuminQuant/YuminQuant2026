@@ -7,9 +7,9 @@ from time import perf_counter
 import numpy as np
 import pandas as pd
 
-from yq_ml_alpha.features.market_style_sequence import normalize_market_style
 from yq_ml_alpha.models.lsg_network import build_lsg
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _cpu_state_dict, _device, _set_seed, _torch_modules
+from yq_ml_alpha.models.market_style_model import MarketStyleAlphaModel, full_date_ic_loss
+from yq_ml_alpha.models.mlp_model import _cpu_state_dict, _device, _set_seed, _torch_modules
 from yq_ml_alpha.output import artifact_io
 
 
@@ -59,35 +59,10 @@ def _params(raw):
     return params
 
 
-class LSGAlphaModel(MLPAlphaModel):
-    prediction_replay_safe = True
-    prediction_inputs_readonly = True
-
-    def __init__(self):
-        super().__init__()
-        self.feature_columns = []
-
-    def fit(self, train_data, valid_data, context):
-        raise ValueError("LSG requires market_style_sequence and the lazy bundle interface")
-
-    def predict(self, data, context):
-        raise ValueError("LSG requires market_style_sequence and the lazy bundle interface")
-
-    def _source(self, bundle):
-        source = bundle.tensor_source
-        if (source is None or source.length != self.params["sequence_length"]
-                or source.columns != self.feature_columns or bundle.feature_columns != self.feature_columns
-                or not hasattr(source, "normalization")):
-            raise ValueError("LSG requires matching observed market/style histories")
-        return source
-
+class LSGAlphaModel(MarketStyleAlphaModel):
     def _scores(self, torch, bundle, date, frame, device, *, training):
         from torch.utils.checkpoint import checkpoint
-        source = self._source(bundle)
-        symbols = frame.ts_code.tolist()
-        if sorted(symbols) != source.symbols(int(date)):
-            raise ValueError("LSG normalization requires the complete eligible date cross-section")
-        values = normalize_market_style(source.get(int(date), symbols), mode=source.normalization, eps=self.params["eps"])
+        values = self._inputs(bundle, date, frame)
         scores = []
         for start in range(0, len(values), self.params["batch_size"]):
             inputs = torch.from_numpy(values[start:start + self.params["batch_size"]]).to(device)
@@ -114,9 +89,7 @@ class LSGAlphaModel(MLPAlphaModel):
                     raise ValueError(f"nonfinite LSG scores on {date}")
                 observed = scores[torch.as_tensor(keep, device=device)]
                 labels = torch.as_tensor(target[keep], device=device)
-                centered_scores, centered_labels = observed - observed.mean(), labels - labels.mean()
-                denominator = centered_scores.norm() * centered_labels.norm()
-                loss = 1 - (centered_scores * centered_labels).sum() / denominator.clamp_min(self.params["eps"])
+                loss = full_date_ic_loss(observed, labels, self.params["eps"])
                 if not torch.isfinite(loss):
                     raise ValueError(f"nonfinite LSG IC loss on {date}")
                 if training:
@@ -183,25 +156,6 @@ class LSGAlphaModel(MLPAlphaModel):
             loss="one_minus_full_date_pearson_ic", date_selection="all_fixed_sampled_dates_every_epoch",
             normalization=source.normalization, geometry_input=self.params["geometry_input"],
             distance_scope="within_each_stock_observed_history", gate="one_plus_softplus_weight_times_softplus_knn_distance")
-
-    def predict_bundle(self, bundle, context):
-        if self.model is None:
-            raise RuntimeError("LSG has not been fitted")
-        torch, _ = _torch_modules()
-        device = _device(torch, self.params["device"])
-        self.model.to(device).eval()
-        output = np.empty(len(bundle.frame), dtype="float32")
-        try:
-            with torch.no_grad():
-                for date, indices in bundle.frame.groupby("trade_date", sort=True).indices.items():
-                    scores = self._scores(torch, bundle, date, bundle.frame.iloc[indices], device, training=False)
-                    if not torch.isfinite(scores).all():
-                        raise ValueError(f"nonfinite LSG prediction on {date}")
-                    output[indices] = scores.cpu().numpy()
-            return pd.Series(output, index=bundle.frame.index, dtype="float32")
-        finally:
-            if not getattr(self, "_prediction_active", False):
-                self.model.to("cpu")
 
     def save(self, path):
         if self.model is None:

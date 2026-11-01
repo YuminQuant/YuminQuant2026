@@ -226,7 +226,10 @@ class FactorVAEAlphaModel(MLPAlphaModel):
         best, best_state, stale, best_epoch = -np.inf, None, 0, 0
         self.loss_history = []
         started = perf_counter()
+        source.log_cache("fit_start")
         for epoch in range(1, self.params["epochs"] + 1):
+            epoch_started = perf_counter()
+            cache_before = source.cache_info()
             self.model.train()
             selected = days
             totals = np.zeros(3, dtype=np.float64)
@@ -278,7 +281,9 @@ class FactorVAEAlphaModel(MLPAlphaModel):
             if context.diagnostics.get("print_epoch", False):
                 print(f"factorvae epoch={epoch} dates={used} loss={train_loss:.6f} "
                       f"mse={reconstruction_mse:.6f} kl={kl_loss:.6f} valid_ic={metric:.6f} "
-                      f"average={len(recent)} stale={stale}", flush=True)
+                      f"average={len(recent)} stale={stale} "
+                      f"epoch_elapsed_s={perf_counter() - epoch_started:.2f}", flush=True)
+                source.log_cache(f"epoch_{epoch}", before=cache_before)
             if stale >= self.params["patience"]:
                 break
         self.model.load_state_dict(best_state)

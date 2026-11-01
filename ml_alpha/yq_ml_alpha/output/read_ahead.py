@@ -23,9 +23,14 @@ def options(root):
     return {"workers": workers, "prefetch_bytes": budget}
 
 
-def ordered_map(function, items, *, root, path_for=None, workers=None):
+def ordered_map(function, items, *, root, path_for=None, workers=None,
+                prefetch_bytes=None, estimate_bytes=None):
     from . import artifact_io as io
     settings = options(root)
+    if prefetch_bytes is not None:
+        if type(prefetch_bytes) is not int or prefetch_bytes < 1:
+            raise ValueError("prefetch_bytes must be a positive integer")
+        settings["prefetch_bytes"] = prefetch_bytes
     width = settings["workers"]
     if workers is not None:
         if int(workers) < 1: raise ValueError("IO workers must be positive")
@@ -46,6 +51,12 @@ def ordered_map(function, items, *, root, path_for=None, workers=None):
         finally:
             _worker.active = False
     def reserve(item):
+        if estimate_bytes is not None:
+            size = estimate_bytes(item)
+            if size is not None:
+                if type(size) is not int or size < 1:
+                    raise ValueError("estimated item bytes must be a positive integer")
+                return size
         if path_for is None: return 8 * 1024**2
         try:
             # Conservative compressed-to-pandas estimate, not a hard RSS bound.

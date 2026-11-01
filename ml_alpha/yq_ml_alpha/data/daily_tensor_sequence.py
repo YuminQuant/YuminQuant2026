@@ -29,6 +29,8 @@ class DailyTensorSequence:
         self.cache_hits = 0
         self.cache_misses = 0
         self.uncached_reads = 0
+        self.loaded_days = 0
+        self.cache_evictions = 0
         self._day_sizes = {}
 
     def _activate(self, date):
@@ -38,12 +40,8 @@ class DailyTensorSequence:
         self._protected = set(self.window_dates(date))
         self._symbols = None
         self._positions_by_day = {}
-        # Keep overlapping days. A scan larger than the budget must not evict
-        # its own resident days and turn every subsequent stock chunk cold.
-        for day in list(self.cache):
-            if day not in self._protected:
-                _, size = self.cache.pop(day)
-                self.cache_bytes -= size
+        # Retain older normalized days across validation and epoch boundaries.
+        # Only memory pressure evicts them; the current window remains pinned.
 
     def _cached(self, date):
         if date in self.cache:
@@ -60,12 +58,17 @@ class DailyTensorSequence:
                 raise ValueError(f"source stock order changed while reading sequence date {date}")
         size = int(frame.memory_usage(index=True, deep=True).sum())
         self._day_sizes[date] = size
+        self.loaded_days += 1
+        previous = self.cache.pop(date, None)
+        if previous is not None:
+            self.cache_bytes -= previous[1]
         for old in list(self.cache):
             if self.cache_bytes + size <= self.budget:
                 break
             if old not in self._protected:
                 _, removed = self.cache.pop(old)
                 self.cache_bytes -= removed
+                self.cache_evictions += 1
         if self.cache_bytes + size <= self.budget:
             self.cache[date] = (frame, size)
             self.cache_bytes += size
@@ -103,17 +106,54 @@ class DailyTensorSequence:
         return frame
 
     def _days(self, dates):
-        resident = {date: self.cache[date][0] for date in dates if date in self.cache}
-        def read(date):
-            return resident[date] if date in resident else self._load_day(date)
-        frames = data_io.ordered_io_map(read, dates, root=self.root,
-            path_for=lambda date: daily_path(self.root, date))
+        resident = {date: self._cached(date) for date in dates}
+        missing = [date for date in dates if resident[date] is None]
+        if not missing:
+            for date in dates:
+                yield date, resident[date]
+            return
+        # Resident days never enter the IO queue or trigger remote stat calls.
+        frames = data_io.ordered_io_map(
+            self._load_day, missing, root=self.root,
+            path_for=lambda date: daily_path(self.root, date),
+            workers=getattr(self, "read_workers", None),
+            prefetch_bytes=getattr(self, "prefetch_bytes", None),
+            estimate_bytes=self._estimate_day_bytes,
+        )
         try:
-            for date, frame in zip(dates, frames):
-                cached = self._cached(date)
-                yield date, cached if cached is not None else self._remember(date, frame)
+            for date in dates:
+                frame = resident[date]
+                yield date, frame if frame is not None else self._remember(date, next(frames))
         finally:
             frames.close()
+
+    def _estimate_day_bytes(self, date):
+        # Observed normalized sizes avoid repeatedly estimating compressed
+        # Parquet as eight times its file size. Leave room for transient copies.
+        size = self._day_sizes.get(date)
+        if size is None and self._day_sizes:
+            size = max(self._day_sizes.values())
+        return None if size is None else max(1024**2, size * 3)
+
+    def cache_info(self):
+        return dict(hits=self.cache_hits, misses=self.cache_misses,
+                    loaded_days=self.loaded_days, evictions=self.cache_evictions,
+                    uncached_reads=self.uncached_reads, resident_days=len(self.cache),
+                    resident_bytes=self.cache_bytes, budget_bytes=self.budget,
+                    parquet_opens=data_io.parquet_cache_info()["opens"])
+
+    def log_cache(self, stage, *, before=None):
+        info = self.cache_info()
+        delta = "" if before is None else " ".join(
+            f"{key}_delta={info[key] - before[key]}"
+            for key in ("hits", "misses", "loaded_days", "evictions", "parquet_opens")
+        )
+        print(f"sequence-cache stage={stage} resident_days={info['resident_days']} "
+              f"resident_mib={self.cache_bytes / 2**20:.1f} "
+              f"budget_mib={self.budget / 2**20:.1f} "
+              f"loaded_days={info['loaded_days']} evictions={info['evictions']} "
+              f"parquet_opens={info['parquet_opens']} {delta}", flush=True)
+        return info
 
     def symbols(self, date):
         self._activate(date)

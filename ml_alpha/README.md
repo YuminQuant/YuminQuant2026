@@ -46,6 +46,9 @@ Formal factor filenames, IDs and output columns use matching semantic names. Mod
 `multi_bar_gru_daily_15m` 和 `residual_multi_bar_gru`；输入、网络、统一训练口径
 及命令见 [研报对齐说明 / Report alignment](docs/BAR_GRU_REPORT_ALIGNMENT.md)。
 
+`rawbar_elstm` 为东北证券指数门控eLSTM量价端到端因子：60日六维OHLCV按股票做时序z-score，
+单层64维eLSTM、LayerNorm及MSE回归，详见 [eLSTM](docs/RAWBAR_ELSTM.md)。
+
 
 编号模型 mdl_000001–mdl_000038 统一采用近60个月滚动窗口（前57个月训练、后3个月验证）、每季度重训、5日截面采样和10日VWAP主标签。2016年起训练，2021年起预测；神经网络股票编码块为5000。mdl_000033/034/038保留20日辅助任务。因子输入默认包含有效手工和ML因子，排除deprecated及自身输出；公共读取按股票键outer合并，既有股票池筛选和完整历史要求继续生效。权重存入各模型的 rolling60m_5d_vwap10d/artifacts，避免混用旧方案。
 mdl_000039 是量价专用 XGBoost＋Optuna：手工量价及量价端到端因子，5日采样、5日VWAP标签；mdl_000040 是基本面专用版本：排除分析师、事件及模型生成输入，20日采样、20日VWAP标签。两者均采用季度更新和近60个月57/3划分，其他搜索参数沿用 mdl_000021。

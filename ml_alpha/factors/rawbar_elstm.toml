@@ -1,0 +1,88 @@
+factor_id = "rawbar_elstm"
+tags = ["DBZQ", "rawbar", "elstm", "exponential_gate", "mse_loss"]
+data_root = "data"
+data_version = "rawbar_elstm_temporal_zscore60_v1"
+
+[output]
+kind = "factor"
+id = "rawbar_elstm"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "rawbar_sequence"
+root = "data/chn_stock_data/daily/pv"
+columns = ["open", "high", "low", "close", "vwap", "volume"]
+
+[features.params]
+sequence_length = 60
+memory_budget_mb = 512
+history_read_workers = 30
+history_prefetch_mb = 128
+
+[materialize]
+cache_samples = false
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "rawbar_elstm"
+class = "yq_ml_alpha.models.rawbar_elstm_model.RawBarELSTMAlphaModel"
+artifact_dir = "data/model_workspace/rawbar_elstm/artifacts"
+
+[model.params]
+sequence_length = 60
+input_size = 6
+hidden_size = 64
+num_layers = 1
+dropout = 0.3
+norm_eps = 0.00001
+eps = 0.00000001
+lr = 0.0001
+weight_decay = 0.0
+min_delta = 0.00000001
+epochs = 100
+patience = 10
+batch_size = 5000
+seed = 42
+device = "auto"

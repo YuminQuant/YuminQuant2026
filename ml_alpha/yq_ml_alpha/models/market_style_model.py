@@ -1,11 +1,8 @@
 """Shared lazy market/style inputs and label-free date-wise prediction."""
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
-
 from yq_ml_alpha.features.market_style_sequence import normalize_market_style
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _device, _torch_modules
+from yq_ml_alpha.models.daily_sequence_model import DailySequenceAlphaModel
 
 
 def full_date_ic_loss(prediction, target, eps):
@@ -16,25 +13,10 @@ def full_date_ic_loss(prediction, target, eps):
     return 1 - (prediction * target).sum() / denominator.clamp_min(eps)
 
 
-class MarketStyleAlphaModel(MLPAlphaModel):
-    prediction_replay_safe = True
-    prediction_inputs_readonly = True
-
-    def __init__(self):
-        super().__init__()
-        self.feature_columns = []
-
-    def fit(self, train_data, valid_data, context):
-        raise ValueError(f"{type(self).__name__} requires market_style_sequence and the lazy bundle interface")
-
-    def predict(self, data, context):
-        raise ValueError(f"{type(self).__name__} requires market_style_sequence and the lazy bundle interface")
-
+class MarketStyleAlphaModel(DailySequenceAlphaModel):
     def _source(self, bundle):
-        source = bundle.tensor_source
-        if (source is None or source.length != self.params["sequence_length"]
-                or source.columns != self.feature_columns or bundle.feature_columns != self.feature_columns
-                or not hasattr(source, "normalization")):
+        source = super()._source(bundle)
+        if not hasattr(source, "normalization"):
             raise ValueError(f"{type(self).__name__} requires matching observed market/style histories")
         return source
 
@@ -44,22 +26,3 @@ class MarketStyleAlphaModel(MLPAlphaModel):
         if sorted(symbols) != source.symbols(int(date)):
             raise ValueError("market/style normalization requires the complete eligible date cross-section")
         return normalize_market_style(source.get(int(date), symbols), mode=source.normalization, eps=self.params["eps"])
-
-    def predict_bundle(self, bundle, context):
-        if self.model is None:
-            raise RuntimeError(f"{type(self).__name__} has not been fitted")
-        torch, _ = _torch_modules()
-        device = _device(torch, self.params["device"])
-        self.model.to(device).eval()
-        output = np.empty(len(bundle.frame), dtype="float32")
-        try:
-            with torch.no_grad():
-                for date, indices in bundle.frame.groupby("trade_date", sort=True).indices.items():
-                    scores = self._scores(torch, bundle, date, bundle.frame.iloc[indices], device, training=False)
-                    if not torch.isfinite(scores).all():
-                        raise ValueError(f"nonfinite market/style prediction on {date}")
-                    output[indices] = scores.cpu().numpy()
-            return pd.Series(output, index=bundle.frame.index, dtype="float32")
-        finally:
-            if not getattr(self, "_prediction_active", False):
-                self.model.to("cpu")

@@ -18,6 +18,7 @@ from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
 from yq_ml_alpha.features.market_style_sequence import MarketStyleSequenceProvider
+from yq_ml_alpha.features.rawbar_sequence import RawBarSequenceProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider
 from yq_ml_alpha.features.graph_factor_frame import FactorSequenceProvider, GraphFactorFrameProvider
@@ -509,6 +510,8 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    if config.features.type == "rawbar_sequence":
+        return RawBarSequenceProvider(config)
     if config.features.type == "market_style_sequence":
         return MarketStyleSequenceProvider(config)
     if config.features.type == "stock_events":

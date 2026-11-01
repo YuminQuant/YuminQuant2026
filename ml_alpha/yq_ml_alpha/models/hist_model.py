@@ -21,7 +21,7 @@ def _params(raw):
     params = dict(
         sequence_length=60, hidden_size=128, num_layers=2, top_k=20,
         dropout=0.1, epochs=100, patience=20, average_epochs=5,
-        batch_size=3000, graph_chunk_size=512,
+        batch_size=3000, graph_chunk_size=512, grad_clip=5.0,
         lr=0.001, weight_decay=0.00001, min_delta=1e-8,
         seed=42, device="auto", gradient_checkpointing=True,
         concept_root="data/derived/stock/hist_concepts",
@@ -39,6 +39,9 @@ def _params(raw):
     if (not 0 <= params["dropout"] < 1 or params["lr"] <= 0
             or params["weight_decay"] < 0 or params["min_delta"] < 0):
         raise ValueError("invalid HIST optimization parameters")
+    params["grad_clip"] = float(params["grad_clip"])
+    if not np.isfinite(params["grad_clip"]) or params["grad_clip"] <= 0:
+        raise ValueError("grad_clip must be finite and positive")
     return params
 
 
@@ -266,7 +269,7 @@ class HISTAlphaModel(MLPAlphaModel):
                 if not torch.isfinite(loss):
                     raise ValueError(f"nonfinite HIST loss on {date}")
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.params["grad_clip"])
                 optimizer.step()
                 loss_sum += float(loss.detach())
                 used += 1

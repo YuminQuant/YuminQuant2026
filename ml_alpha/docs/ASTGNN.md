@@ -81,7 +81,7 @@ BN 推理使用模型保存的统计量，不重新拟合样本外统计量。
 ## 资源与路径
 
 公共 `CrossSectionBarAlphaModel` 管理完整日期优化、验证、预测；ASTGNN 自己管理网络
-和损失。独立股票编码仍沿用 `batch_size=3000`，不提高原有上限；图 query 块为 512。
+和损失。独立股票编码和图 query 块分别由 TOML 的 batch_size、graph_chunk_size 控制；代码不设固定股票数上限。
 训练默认使用 activation checkpointing，反向时重新计算编码和注意力，降低激活显存占用，
 代价是增加计算。编码阶段没有 BN，重算不重复更新 BN 运行统计。
 

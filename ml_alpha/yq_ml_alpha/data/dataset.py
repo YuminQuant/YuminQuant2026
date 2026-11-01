@@ -525,13 +525,39 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         include_model_generated = config.features.params.get("include_model_generated", False)
         if not isinstance(include_model_generated, bool):
             raise ValueError("features.params.include_model_generated must be boolean")
+        tag_filters = {}
+        for name in ("include_tags_any", "exclude_tags_any"):
+            values = config.features.params.get(name, [])
+            if not isinstance(values, list) or any(not isinstance(value, str) or not value for value in values):
+                raise ValueError(f"features.params.{name} must be a list of nonempty tags")
+            tag_filters[name] = set(values)
+        allowed = set() if tag_filters["include_tags_any"] else None
         metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
         if data_io.exists(metadata):
-            for row in data_io.read_parquet(metadata, columns=["output_column", "tags_json"]).itertuples(index=False):
-                tags = json.loads(row.tags_json or "[]")
-                if "deprecated" in tags or ("model_generated" in tags and not include_model_generated):
+            metadata_frame = data_io.read_parquet(metadata)
+            for field, value in (("asset_class", config.output.asset), ("frequency", config.output.frequency)):
+                if field in metadata_frame.columns:
+                    metadata_frame = metadata_frame.loc[metadata_frame[field].eq(value)]
+            for row in metadata_frame[["output_column", "tags_json"]].itertuples(index=False):
+                tags = set(json.loads(row.tags_json or "[]"))
+                if ("deprecated" in tags or ("model_generated" in tags and not include_model_generated)
+                        or tags & tag_filters["exclude_tags_any"]):
                     excluded.add(row.output_column)
-        provider = FactorFrameProvider(config.features.root, config.features.columns, config.dates.train[1], excluded)
+                elif allowed is not None and tags & tag_filters["include_tags_any"]:
+                    allowed.add(row.output_column)
+        elif allowed is not None or tag_filters["exclude_tags_any"]:
+            raise FileNotFoundError(f"factor tag selection requires metadata: {metadata}")
+        columns = config.features.columns
+        if allowed is not None:
+            from yq_ml_alpha.data.stores import is_all_column_request
+            columns = sorted(allowed - excluded) if is_all_column_request(columns) else [
+                column for column in columns if column in allowed and column not in excluded]
+            if not columns:
+                raise ValueError("factor tag selection has no eligible feature columns")
+        provider = FactorFrameProvider(config.features.root, columns, config.dates.train[1], excluded)
+        provider.feature_columns = [column for column in provider.feature_columns if column not in excluded]
+        if not provider.feature_columns:
+            raise ValueError("no eligible feature columns after metadata exclusions")
         if config.features.type == "factor_sequence":
             return FactorSequenceProvider(config, provider)
         if config.features.type == "graph_factor_frame":

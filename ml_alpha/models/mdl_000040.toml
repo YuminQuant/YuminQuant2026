@@ -1,0 +1,124 @@
+run_id = "mdl_000040"
+alpha_id = "mdl_000040"
+data_root = "data"
+output_root = "data/models"
+
+[dates]
+train = [20160101, 20260331]
+predict = [20210101, 20260424]
+
+[sample]
+train_frequency = "20"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "quarterly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_20d"
+lookahead_days = 21
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "rank_gauss"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_frame"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[features.params]
+include_model_generated = false
+include_tags_any = ["fundamental"]
+exclude_tags_any = ["price_volume", "analyst", "analyst_coverage", "events"]
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/mdl_000040/cache"
+predict_batch_size = 20
+
+[model]
+name = "xgboost_optuna"
+class = "yq_ml_alpha.models.xgb_optuna_model.XGBoostOptunaAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000040/rolling60m_20d_vwap20d/artifacts"
+
+[model.params]
+objective = "reg:squarederror"
+tree_method = "hist"
+device = "cuda"
+random_state = 42
+n_jobs = -1
+
+[model.search]
+# Tune on the calendar validation split, then refit on train plus validation.
+refit_on_validation = true
+n_trials = 20
+early_stopping_patience = 5
+# Relative MSE reduction of at least 0.01% resets patience.
+min_relative_improvement = 0.0001
+valid_fraction = 0.2
+random_state = 42
+show_progress_bar = false
+
+[model.search.space.n_estimators]
+type = "int"
+low = 300
+high = 800
+step = 100
+
+[model.search.space.max_depth]
+type = "int"
+low = 2
+high = 8
+
+[model.search.space.learning_rate]
+type = "float"
+low = 0.005
+high = 0.2
+log = true
+
+[model.search.space.subsample]
+type = "float"
+low = 0.5
+high = 1.0
+
+[model.search.space.colsample_bytree]
+type = "float"
+low = 0.5
+high = 1.0
+
+[model.search.space.min_child_weight]
+type = "float"
+low = 0.01
+high = 100.0
+log = true
+
+[model.search.space.gamma]
+type = "float"
+low = 0.00000001
+high = 10.0
+log = true
+
+[model.search.space.reg_alpha]
+type = "float"
+low = 0.00000001
+high = 10.0
+log = true
+
+[model.search.space.reg_lambda]
+type = "float"
+low = 0.0001
+high = 100.0
+log = true

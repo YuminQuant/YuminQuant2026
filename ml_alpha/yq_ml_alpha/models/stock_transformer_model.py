@@ -31,8 +31,8 @@ def _params(raw):
             raise ValueError(f"stock Transformer {key} must be a positive integer")
     if params["sequence_length"] != 1:
         raise ValueError("stock Transformer uses a single current-date snapshot")
-    if params["batch_size"] > 3000 or params["attention_chunk_size"] > params["batch_size"]:
-        raise ValueError("stock Transformer query chunks must not exceed stock chunks, capped at 3000")
+    if params["attention_chunk_size"] > params["batch_size"]:
+        raise ValueError("stock Transformer query chunks must not exceed configured stock chunks")
     if not isinstance(params["gradient_checkpointing"], bool):
         raise ValueError("gradient_checkpointing must be boolean")
     dropout = params["dropout"]

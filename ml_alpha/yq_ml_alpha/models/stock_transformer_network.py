@@ -23,21 +23,21 @@ def build_stock_transformer(nn, input_size, task_count, params):
 
     input_size = positive_integer(input_size, "input_size")
     task_count = positive_integer(task_count, "task_count")
-    heads = positive_integer(params.get("attention_heads", 2), "attention_heads")
-    layers = positive_integer(params.get("num_layers", 2), "num_layers")
-    feedforward = positive_integer(params.get("feedforward_size", 64), "feedforward_size")
-    head_width = positive_integer(params.get("hidden_size", 256), "hidden_size")
-    stock_chunk = positive_integer(params.get("batch_size", 3000), "batch_size")
-    query_chunk = positive_integer(params.get("attention_chunk_size", 512), "attention_chunk_size")
-    if stock_chunk > 3000 or query_chunk > stock_chunk:
-        raise ValueError("stock Transformer attention chunks must not exceed stock chunks, capped at 3000")
-    dropout = float(params.get("dropout", 0.1))
-    slope = float(params.get("negative_slope", 0.01))
+    heads = positive_integer(params["attention_heads"], "attention_heads")
+    layers = positive_integer(params["num_layers"], "num_layers")
+    feedforward = positive_integer(params["feedforward_size"], "feedforward_size")
+    head_width = positive_integer(params["hidden_size"], "hidden_size")
+    stock_chunk = positive_integer(params["batch_size"], "batch_size")
+    query_chunk = positive_integer(params["attention_chunk_size"], "attention_chunk_size")
+    if query_chunk > stock_chunk:
+        raise ValueError("stock Transformer attention chunks must not exceed configured stock chunks")
+    dropout = float(params["dropout"])
+    slope = float(params["negative_slope"])
     if not math.isfinite(dropout) or not 0 <= dropout < 1:
         raise ValueError("stock Transformer dropout must be finite and in [0, 1)")
     if not math.isfinite(slope) or slope < 0:
         raise ValueError("stock Transformer negative_slope must be finite and nonnegative")
-    checkpointing = params.get("gradient_checkpointing", True)
+    checkpointing = params["gradient_checkpointing"]
     if not isinstance(checkpointing, bool):
         raise ValueError("stock Transformer gradient_checkpointing must be boolean")
     width = ((input_size + heads - 1) // heads) * heads

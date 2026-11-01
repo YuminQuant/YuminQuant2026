@@ -29,8 +29,8 @@ def _params(raw):
             raise ValueError(f"invalid integer GAT parameter {key}")
     if params["sequence_length"] != 1:
         raise ValueError("analyst coverage GAT uses only the current factor snapshot")
-    if params["batch_size"] > 3000 or params["graph_chunk_size"] > params["batch_size"]:
-        raise ValueError("GAT query chunks must not exceed stock chunks, capped at 3000")
+    if params["graph_chunk_size"] > params["batch_size"]:
+        raise ValueError("GAT query chunks must not exceed configured stock chunks")
     if not isinstance(params["gradient_checkpointing"], bool):
         raise ValueError("gradient_checkpointing must be boolean")
     for key in ("negative_slope", "lr", "weight_decay", "min_delta"):

@@ -73,6 +73,7 @@ epochs = 100
 patience = 20
 average_epochs = 5
 batch_size = 5000
+grad_clip = 5.0
 graph_chunk_size = 512
 gradient_checkpointing = true
 lr = 0.001

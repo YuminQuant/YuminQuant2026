@@ -35,7 +35,7 @@ def _params(raw):
     params = dict(hidden_size=32, base_factors=32, gnn_layers=3, gru_layers=2,
                   sequence_length=40, dropout=0.5, orthogonal_lambda=0.05,
                   epochs=100, patience=20, lr=0.001, weight_decay=0.0,
-                  batch_size=3000, seed=42, device="auto",
+                  batch_size=3000, seed=42, device="auto", grad_clip=5.0,
                   relation_root="data/derived/stock/relations",
                   ranker_trials=20, ranker_early_stopping=20, ranker_n_jobs=4,
                   ranker_device="auto")
@@ -49,6 +49,9 @@ def _params(raw):
         raise ValueError("base_factors must be >= 2 and batch_size must be >= 3")
     if not 0 <= params["dropout"] < 1 or params["lr"] <= 0 or params["orthogonal_lambda"] < 0:
         raise ValueError("invalid graph/temporal optimizer parameters")
+    params["grad_clip"] = float(params["grad_clip"])
+    if not np.isfinite(params["grad_clip"]) or params["grad_clip"] <= 0:
+        raise ValueError("grad_clip must be finite and positive")
     return params
 
 
@@ -208,7 +211,7 @@ class GraphTemporalAlphaModel(MLPAlphaModel):
                     if not torch.isfinite(loss):
                         raise ValueError(f"nonfinite {branch} loss on {date}")
                     loss.backward()
-                    nn.utils.clip_grad_norm_(encoder.parameters(), 5.0)
+                    nn.utils.clip_grad_norm_(encoder.parameters(), self.params["grad_clip"])
                     optimizer.step()
                     n = int(keep.sum())
                     loss_sum += float(loss.detach()) * n

@@ -20,7 +20,7 @@ def _params(raw):
     params = dict(
         sequence_length=30, hidden_size=32, num_layers=1,
         num_portfolio=100, num_factor=48, epochs=200, patience=20,
-        average_epochs=5, batch_size=3000,
+        average_epochs=5, batch_size=3000, grad_clip=5.0,
         lr=0.0003, weight_decay=0.0, kl_weight=1.0, min_delta=1e-8,
         min_std=1e-6, seed=42, device="auto", gradient_checkpointing=True,
     )
@@ -34,12 +34,12 @@ def _params(raw):
         params[key] = int(value)
         if params[key] <= 0 or params[key] != value:
             raise ValueError(f"{key} must be a positive integer")
-    for key in ("lr", "weight_decay", "kl_weight", "min_delta", "min_std"):
+    for key in ("lr", "weight_decay", "kl_weight", "min_delta", "min_std", "grad_clip"):
         params[key] = float(params[key])
         if not np.isfinite(params[key]) or params[key] < 0:
             raise ValueError(f"{key} must be finite and nonnegative")
-    if params["lr"] == 0 or params["min_std"] == 0:
-        raise ValueError("lr and min_std must be positive")
+    if params["lr"] == 0 or params["min_std"] == 0 or params["grad_clip"] == 0:
+        raise ValueError("lr, min_std and grad_clip must be positive")
     if not isinstance(params["gradient_checkpointing"], bool):
         raise ValueError("gradient_checkpointing must be boolean")
     params["seed"] = int(params["seed"])
@@ -245,7 +245,7 @@ class FactorVAEAlphaModel(MLPAlphaModel):
                 if not torch.isfinite(loss):
                     raise ValueError(f"nonfinite FactorVAE loss on {date}")
                 loss.backward()
-                norm = nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+                norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.params["grad_clip"])
                 if not torch.isfinite(norm):
                     raise ValueError(f"nonfinite FactorVAE gradients on {date}")
                 optimizer.step()

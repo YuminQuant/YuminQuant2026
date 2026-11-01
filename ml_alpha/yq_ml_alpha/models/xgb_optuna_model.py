@@ -11,6 +11,9 @@ from yq_ml_alpha.models.xgb_training import make_matrix, fit_matrix
 
 
 class XGBoostOptunaAlphaModel(AlphaModel):
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
+
     def __init__(self) -> None:
         self.model = None
         self.best_params_: dict[str, Any] | None = None

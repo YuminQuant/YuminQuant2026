@@ -273,7 +273,7 @@ impl HazqComparableValueOutput {
             Dp => matches!(self.component, Avg | Weighted | Max | Min | Med | Wgt2),
             Ebit2Ev => matches!(
                 self.component,
-                Avg | Weighted | Max | Med | Wgt | Wgt2 | Prm | PrmZscore | GapAvg
+                Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | Prm | PrmZscore | GapAvg
             ),
             Ep => matches!(
                 self.component,
@@ -286,7 +286,7 @@ impl HazqComparableValueOutput {
             ),
             Sales2Ev => matches!(
                 self.component,
-                Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore | GapAvg | GapMmm
+                Min | Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore | GapAvg | GapMmm
             ),
             EpPercentile => matches!(
                 self.component,

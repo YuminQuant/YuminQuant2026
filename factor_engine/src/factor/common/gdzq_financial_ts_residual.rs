@@ -152,11 +152,15 @@ fn spec(output: Output) -> FactorSpec {
         DatasetId::StockSwClassification,
         &["l1_code"],
     ));
+    let mut tags: Vec<String> = ["GDZQ", "fundamental", "financial", "pit", "ts_regression", "neutralize", "size", "sector", "daily"].into_iter().map(str::to_string).collect();
+    if output == Output::AdvanceInventoryDays {
+        tags.push("deprecated".into());
+    }
     FactorSpec {
         id: output.id().into(), aliases: vec![output.id().to_ascii_uppercase()],
         name: output.id().replace('_', " "), asset_class: AssetClass::Stock, frequency: Frequency::Daily,
         version: "0.1.0".into(),
-        tags: ["GDZQ", "fundamental", "financial", "pit", "ts_regression", "neutralize", "size", "sector", "daily"].into_iter().map(str::to_string).collect(),
+        tags,
         description: format!("Eight consecutive PIT single quarters, within-stock population zscore of Y and X, OLS with intercept including the latest quarter; latest residual times {}. Partial missing additive operands use zero, all missing stays null. SW L1 and Barra SIZE neutralized daily, excludes BJ. See financial development README for field definitions.", output.sign()),
         dependencies, intraday_raw_dependencies: vec![], lookback: Lookback { trading_days: 0 },
     }

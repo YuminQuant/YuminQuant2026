@@ -279,10 +279,10 @@ impl HazqComparableValueOutput {
                 self.component,
                 Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | GapAvg | GapMmm
             ),
-            EpQ => matches!(self.component, Avg | Weighted | Max | Min | Med | GapMmm),
+            EpQ => matches!(self.component, Avg | Weighted | Max | Min | Med | Wgt | GapMmm),
             Ocfp => matches!(
                 self.component,
-                Avg | Weighted | Max | Min | Med | Wgt2 | GapAvg | GapMmm
+                Avg | Weighted | Max | Min | Med | Wgt | Wgt2 | GapAvg | GapMmm
             ),
             Sales2Ev => matches!(
                 self.component,

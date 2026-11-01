@@ -8,7 +8,7 @@ use crate::factor::common::vector::clean;
 use crate::factor::Factor;
 use crate::operators::{ts_mean, ts_std_dev};
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 const WINDOW: usize = 20;
 const MIN_PERIODS: usize = 1;
 
@@ -41,7 +41,7 @@ impl Factor for StockDailyUtr2_0 {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-            description: "New U-Turnover Rate factor using softsign(STR) as a dynamic weight on SIZE-neutralized Turn20.".to_string(),
+            description: "New U-Turnover Rate factor using softsign(STR) as a dynamic weight on SIZE-neutralized Turn20. Uses raw turnover_rate_f percentage-point values without division by 100.".to_string(),
             dependencies: vec![
                 DataRequest::new(DatasetId::StockDailyBasic, &["turnover_rate_f"]),
                 DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),
@@ -57,7 +57,7 @@ impl Factor for StockDailyUtr2_0 {
         let panel = data.daily_panel(DatasetId::StockDailyBasic)?;
         let turnover = panel
             .column("turnover_rate_f")?
-            .map_values(percent_to_decimal);
+            .map_values(clean);
         let size = panel.column_from_table(data.daily(DatasetId::StockBarraDaily)?, "SIZE")?;
 
         let turn20 = turnover
@@ -69,10 +69,6 @@ impl Factor for StockDailyUtr2_0 {
         let factor = str.zip_binary(&turn20, utr2_score)?;
         Ok(factor.to_factor_series(self.spec()))
     }
-}
-
-fn percent_to_decimal(value: Option<f64>) -> Option<f64> {
-    clean(value).map(|value| value / 100.0)
 }
 
 fn softsign(value: f64) -> f64 {

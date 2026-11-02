@@ -12,6 +12,10 @@ Remote file concurrency and prefetch memory come from the deployment adapter's `
 
 公共日截面缓存仅驻留 RAM，按 `features.params.memory_budget_mb` 限制大小；在预算内跨训练/验证和 epoch 保留预处理结果，超预算才按 LRU 淘汰，并保护当前历史窗口。缓存命中的日期不进入远程 IO 队列。因子历史可用 `features.params.history_prefetch_mb` 单独设置在途预读预算，优先根据已观测的日截面大小估算暂存占用；首次读取仍使用保守文件大小估计。本地历史读取继续串行，不写磁盘缓存。
 
+公共联合预测按配置复用已声明 `prediction_inputs_readonly` 的 DatasetBuilder，历史截面RAM缓存因此能跨预测批次保留，结束或异常退出时统一释放。未声明输入只读的模型继续按原来的每批生命周期执行。各模型已有缓存预算及执行层总内存检查仍然生效。
+
+一次联合预测调用内，`__all__` 的物理因子列仅按输入根路径、日期上限扫描一次；缓存的是有序列名，各模型独立应用排除规则，下次调用重新扫描。此缓存不会保存矩阵或写磁盘。日志分别报告数据集初始化、输入加载、推理和合并写出耗时，写出进度使用已完成交易日数；历史缓存日志可核对跨批次加载/淘汰量。
+
 | 目录 / Directory | 用途 / Purpose |
 |---|---|
 | `models/*.toml` | 模型实验与组合信号 / Model experiments and combined signals |

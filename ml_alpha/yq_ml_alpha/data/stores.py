@@ -2,6 +2,7 @@ from __future__ import annotations
 from yq_ml_alpha.output import artifact_io as data_io
 
 from pathlib import Path
+from time import perf_counter
 from typing import Iterable
 
 import pandas as pd
@@ -56,8 +57,20 @@ def parquet_columns(path: str | Path) -> list[str]:
 
 
 def discover_value_columns(root: str | Path, end_date: int | None = None, excluded=()) -> list[str]:
+    from yq_ml_alpha.data.column_catalog import discovered_columns
+    columns = discovered_columns(root, end_date, lambda: _scan_value_columns(root, end_date))
+    excluded = set(excluded)
+    output = [column for column in columns if column not in excluded]
+    if not output:
+        raise ValueError(f"no feature columns discovered under {root}")
+    return output
+
+
+def _scan_value_columns(root, end_date):
+    started = perf_counter()
+    print(f"ml-alpha columns step=scan root={root} end_date={end_date}", flush=True)
     output = []
-    seen = set(NON_FEATURE_COLUMNS) | set(excluded)
+    seen = set(NON_FEATURE_COLUMNS)
     paths = []
     for path in sorted(data_io.glob(Path(root), "*/*.parquet")):
         from yq_ml_alpha.data.factor_files import factor_file_date
@@ -72,6 +85,8 @@ def discover_value_columns(root: str | Path, end_date: int | None = None, exclud
                 seen.add(column)
     if not output:
         raise ValueError(f"no feature columns discovered under {root}")
+    print(f"ml-alpha columns step=complete files={len(paths)} columns={len(output)} "
+          f"elapsed_s={perf_counter() - started:.2f}", flush=True)
     return output
 
 

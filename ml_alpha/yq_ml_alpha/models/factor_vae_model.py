@@ -149,6 +149,11 @@ def _target(rows, label):
 
 
 class FactorVAEAlphaModel(MLPAlphaModel):
+    # Inference uses the prior mean, with no label access, sampling or state
+    # carried between dates. Lazy source tensors are read without modification.
+    prediction_replay_safe = True
+    prediction_inputs_readonly = True
+
     def __init__(self):
         super().__init__()
         self.feature_columns = []

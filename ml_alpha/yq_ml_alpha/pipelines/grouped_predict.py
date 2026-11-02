@@ -7,12 +7,14 @@ import gc
 import json
 import os
 from pathlib import Path
+from time import perf_counter
 import sys
 
 import pandas as pd
 
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.data.dataset import DatasetBuilder
+from yq_ml_alpha.data.column_catalog import column_discovery_scope
 from yq_ml_alpha.output import artifact_io
 from yq_ml_alpha.output.artifacts import validate_manifest, window_artifact_path
 from yq_ml_alpha.output.factor_metadata import write_factor_metadata_many
@@ -112,6 +114,37 @@ class _Models:
             self.remove(key)
 
 
+class _Datasets:
+    """Keep reviewed read-only providers alive across prediction batches."""
+    def __init__(self, configs):
+        self.configs = configs
+        self.entries = {}
+
+    def get(self, index):
+        if index not in self.entries:
+            config = self.configs[index]
+            started = perf_counter()
+            print(f"grouped-predict dataset=start model={config.output.id}", flush=True)
+            self.entries[index] = DatasetBuilder(config)
+            print(f"grouped-predict dataset=ready model={config.output.id} "
+                  f"columns={len(self.entries[index].feature_provider.feature_columns)} "
+                  f"elapsed_s={perf_counter() - started:.2f}", flush=True)
+        return self.entries[index]
+
+    def release(self, index):
+        # Retain old per-batch lifetimes for unreviewed/stateful input users.
+        cls = _model_class(self.configs[index].model.class_path)
+        if not getattr(cls, 'prediction_inputs_readonly', False):
+            self.entries.pop(index).close(clear_read_cache=False)
+
+    def close(self):
+        try:
+            for dataset in self.entries.values():
+                dataset.close(clear_read_cache=False)
+        finally:
+            self.entries.clear()
+
+
 def _projection_requests(configs, units):
     requests = defaultdict(list)
     for index, _, dates in units:
@@ -135,7 +168,7 @@ def predict_many_configs(configs, *, options=None, target_dates=None):
     for config in configs:
         groups[output_group(config)].append(config)
     written = []
-    with execution_scope(options):
+    with execution_scope(options), column_discovery_scope() as catalog:
         before = artifact_io.parquet_cache_info()
         if artifact_io.remote_enabled() and any(c.materialize.cache_samples for c in configs):
             raise ValueError('Grouped remote prediction must not materialize samples on node disk')
@@ -146,6 +179,7 @@ def predict_many_configs(configs, *, options=None, target_dates=None):
         after = artifact_io.parquet_cache_info()
         print('grouped-predict-io ' + json.dumps({name: after[name] - before[name]
               for name in ('opens', 'footer_reads', 'hits', 'misses', 'evictions')}), flush=True)
+        print(f'grouped-predict columns scans={catalog.scans} hits={catalog.hits}', flush=True)
     return written
 
 
@@ -193,12 +227,15 @@ def _predict_group(configs, options, target_dates):
     writer.write_workers = options.write_workers
     writer._known_columns.update(c.output.id for c in configs)
     models = _Models(configs, options)
+    datasets = _Datasets(configs)
     written = []
     peak = 0
     shared = 0
+    completed_dates = 0
     requests = _projection_requests(configs, units)
 
     def flush_ready():
+        nonlocal completed_dates
         ready = sorted(d for d in pending if expected[d] <= set(pending[d]))
         if not ready:
             return
@@ -212,7 +249,12 @@ def _predict_group(configs, options, target_dates):
         if sum(_bytes(v) for v in frames.values()) > options.score_buffer_mib * 1024**2:
             raise MemoryError('Ready scores exceed score_buffer_mib; reduce configured prediction batch sizes')
         check_memory(options, 'before daily merge')
+        started = perf_counter()
         written.extend(writer.write_many(frames, coverage_dates=covered, schema_dates=sorted(owned)))
+        completed_dates += len(ready)
+        print(f'grouped-predict write dates={completed_dates}/{len(owned)} '
+              f'first={ready[0]} last={ready[-1]} columns={len(frames)} '
+              f'elapsed_s={perf_counter() - started:.2f}', flush=True)
         for date in ready:
             del pending[date]
 
@@ -229,16 +271,24 @@ def _predict_group(configs, options, target_dates):
             with projected_inputs(requests):
                 for compatible in by_input.values():
                     index, _, dates = compatible[0]
-                    dataset = DatasetBuilder(configs[index])
+                    dataset = datasets.get(index)
                     bundle = None
                     try:
+                        started = perf_counter()
+                        source = getattr(dataset.feature_provider, 'sequence', None)
+                        cache_before = source.cache_info() if source is not None else None
                         bundle = _load_bundle(configs[index], dataset, calendar, dates, include_label=False)
+                        print(f'grouped-predict input model={configs[index].output.id} dates={len(dates)} '
+                              f'first={dates[0]} last={dates[-1]} rows={len(bundle.frame)} '
+                              f'elapsed_s={perf_counter() - started:.2f}', flush=True)
+                        if source is not None:
+                            source.log_cache(f'predict_input_{configs[index].output.id}', before=cache_before)
                         check_memory(options, 'prediction input')
                         shared += max(0, len(compatible) - 1)
                         for start in range(0, len(compatible), options.model_predict_workers):
                             jobs = []
                             for mi, mw, md in compatible[start:start+options.model_predict_workers]:
-                                other = dataset if mi == index else DatasetBuilder(configs[mi])
+                                other = datasets.get(mi)
                                 try:
                                     if bundle.frame.empty:
                                         path = window_artifact_path(configs[mi].model.artifact_dir, mw.window_id)
@@ -246,12 +296,13 @@ def _predict_group(configs, options, target_dates):
                                     model = None if bundle.frame.empty else models.get(mi, mw, other)
                                 finally:
                                     if other is not dataset:
-                                        other.close(clear_read_cache=False)
+                                        datasets.release(mi)
                                 jobs.append((mi, mw, md, model))
                             def infer(job):
                                 mi, mw, md, model = job
                                 if model is None:
                                     return mi, _empty_prediction_frame()
+                                started = perf_counter()
                                 context = _context(configs[mi], mw.window_id, bundle.feature_columns)
                                 score = _predict_model(model, bundle, context)
                                 if len(score) != len(bundle.frame) or not score.index.equals(bundle.frame.index):
@@ -259,6 +310,9 @@ def _predict_group(configs, options, target_dates):
                                 result = _prediction_frame(bundle.frame, score)
                                 if getattr(model, 'prediction_replay_safe', False):
                                     model.suspend_prediction_device()
+                                print(f'grouped-predict infer model={configs[mi].output.id} '
+                                      f'window={mw.window_id} dates={len(md)} rows={len(result)} '
+                                      f'elapsed_s={perf_counter() - started:.2f}', flush=True)
                                 return mi, result
                             if options.model_predict_workers == 1:
                                 results = [infer(job) for job in jobs]
@@ -286,7 +340,7 @@ def _predict_group(configs, options, target_dates):
                     finally:
                         if bundle is not None:
                             bundle.close()
-                        dataset.close(clear_read_cache=False)
+                        datasets.release(index)
                     peak = max(peak, check_memory(options, 'prediction scores'))
             flush_ready()
             if sum(_bytes(frame) for columns in pending.values() for frame in columns.values()) > options.score_buffer_mib * 1024**2:
@@ -298,6 +352,9 @@ def _predict_group(configs, options, target_dates):
         if pending:
             raise ValueError('Incomplete prediction coverage; no silent forward-fill across model windows')
     finally:
-        models.close()
-        gc.collect()
+        try:
+            models.close()
+        finally:
+            datasets.close()
+            gc.collect()
     return written

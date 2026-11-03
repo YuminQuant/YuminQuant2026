@@ -47,35 +47,56 @@ pub(crate) struct PreparedProjection {
     builder: ParquetRecordBatchReaderBuilder<crate::artifact_io::StorageReader>,
     columns: Vec<String>,
     ranges: Vec<(u64, usize)>,
+    symbols: Option<BTreeSet<String>>,
     pub(crate) reserved_bytes: usize,
 }
 
 impl PreparedProjection {
     pub(crate) fn new(
-        file: crate::artifact_io::StorageReader, path: &Path, columns: &[String],
+        file: crate::artifact_io::StorageReader,
+        path: &Path,
+        columns: &[String],
         excluded: &BTreeSet<&str>,
     ) -> Result<Self> {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file.clone())
             .map_err(|e| err(format!("failed to read parquet {}: {e}", path.display())))?;
-        let columns = columns.iter().filter(|name| !excluded.contains(name.as_str())).cloned().collect::<Vec<_>>();
+        let columns = columns
+            .iter()
+            .filter(|name| !excluded.contains(name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut ranges = Vec::<(u64, usize)>::new();
         let mut decoded = 0usize;
         for group in builder.metadata().row_groups() {
             for column in group.columns() {
-                if !columns.iter().any(|name| name == &column.column_path().parts()[0]) { continue; }
+                if !columns
+                    .iter()
+                    .any(|name| name == &column.column_path().parts()[0])
+                {
+                    continue;
+                }
                 let (offset, length) = column.byte_range();
                 let length = usize::try_from(length)?;
                 ranges.push((offset, length));
-                decoded = decoded.saturating_add(usize::try_from(column.uncompressed_size().max(0))?);
+                decoded =
+                    decoded.saturating_add(usize::try_from(column.uncompressed_size().max(0))?);
             }
         }
         ranges.sort_unstable_by_key(|range| range.0);
         let mut merged = Vec::<(u64, usize)>::new();
         for (offset, length) in ranges {
             if let Some((start, size)) = merged.last_mut() {
-                let end = start.checked_add(*size as u64).ok_or_else(|| err("projected offset overflow"))?;
+                let end = start
+                    .checked_add(*size as u64)
+                    .ok_or_else(|| err("projected offset overflow"))?;
                 if offset <= end {
-                    *size = usize::try_from(end.max(offset.checked_add(length as u64).ok_or_else(|| err("projected length overflow"))?) - *start)?;
+                    *size = usize::try_from(
+                        end.max(
+                            offset
+                                .checked_add(length as u64)
+                                .ok_or_else(|| err("projected length overflow"))?,
+                        ) - *start,
+                    )?;
                     continue;
                 }
             }
@@ -85,11 +106,52 @@ impl PreparedProjection {
         // Include compressed chunks, conversion temporaries and conservative row overhead.
         let rows = usize::try_from(builder.metadata().file_metadata().num_rows().max(0))?;
         let cells = rows.saturating_mul(columns.len());
-        let compressed = merged.iter().fold(0usize, |sum, (_, n)| sum.saturating_add(*n));
-        let reserved_bytes = compressed.saturating_add(decoded.saturating_mul(4))
+        let compressed = merged
+            .iter()
+            .fold(0usize, |sum, (_, n)| sum.saturating_add(*n));
+        let reserved_bytes = compressed
+            .saturating_add(decoded.saturating_mul(4))
             .saturating_add(cells.saturating_mul(128))
             .saturating_add(crate::storage_io::READER_CACHE_BYTES);
-        Ok(Self { file, builder, columns, ranges: merged, reserved_bytes })
+        Ok(Self {
+            file,
+            builder,
+            columns,
+            ranges: merged,
+            reserved_bytes,
+            symbols: None,
+        })
+    }
+
+    /// Preserve row predicates through projected prefetch. The optional row estimate
+    /// is a reservation estimate, never a truncation or a hard RSS guarantee.
+    pub(crate) fn with_symbols(
+        mut self,
+        symbols: BTreeSet<String>,
+        estimated_rows: Option<usize>,
+    ) -> Self {
+        if let Some(rows) = estimated_rows {
+            let compressed = self.ranges.iter().map(|(_, n)| *n).sum::<usize>();
+            let code_bytes = self
+                .builder
+                .metadata()
+                .row_groups()
+                .iter()
+                .flat_map(|g| g.columns())
+                .filter(|c| c.column_path().parts()[0] == "ts_code")
+                .map(|c| c.uncompressed_size().max(0) as usize)
+                .sum::<usize>();
+            self.reserved_bytes = compressed
+                .saturating_add(code_bytes.saturating_mul(4))
+                .saturating_add(
+                    (rows + 65_536)
+                        .saturating_mul(self.columns.len())
+                        .saturating_mul(128),
+                )
+                .saturating_add(crate::storage_io::READER_CACHE_BYTES);
+        }
+        self.symbols = Some(symbols);
+        self
     }
 
     pub(crate) fn prefetch(&self) -> Result<()> {
@@ -98,7 +160,16 @@ impl PreparedProjection {
     }
 
     pub(crate) fn read(self, path: &Path) -> Result<Table> {
-        read_parquet_builder(self.builder, path, Some(&self.columns), None, &BTreeMap::new())
+        let predicate = self.symbols.map(|symbols| {
+            Box::new(move |symbol: &str| symbols.contains(symbol)) as SymbolPredicate
+        });
+        read_parquet_builder(
+            self.builder,
+            path,
+            Some(&self.columns),
+            predicate,
+            &BTreeMap::new(),
+        )
     }
 }
 
@@ -130,9 +201,19 @@ pub(crate) fn read_projected_reader_excluding(
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| err(format!("failed to read parquet {}: {e}", path.display())))?;
     let projection = match columns {
-        Some(names) => names.iter().filter(|name| !excluded.contains(name.as_str())).cloned().collect(),
-        None => builder.schema().fields().iter().map(|field| field.name())
-            .filter(|name| !excluded.contains(name.as_str())).cloned().collect::<Vec<_>>(),
+        Some(names) => names
+            .iter()
+            .filter(|name| !excluded.contains(name.as_str()))
+            .cloned()
+            .collect(),
+        None => builder
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .filter(|name| !excluded.contains(name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>(),
     };
     read_parquet_builder(builder, path, Some(&projection), None, &BTreeMap::new())
 }
@@ -342,7 +423,8 @@ impl ParquetStreamWriter {
         self.writer
             .take()
             .expect("writer already finished")
-            .into_inner()?.commit()?;
+            .into_inner()?
+            .commit()?;
         Ok(self.path.clone())
     }
 }

@@ -33,7 +33,13 @@ pub struct Strategy002 {
     buys: BTreeMap<String, Leg>,
     sells: BTreeMap<String, Leg>,
     reserve: f64,
+    net_rebalance: bool,
+    strict_signal: bool,
+    signal_max_age: usize,
+    input_days: usize,
+    prepared: BTreeMap<i32, Vec<String>>,
     audit: Option<BufWriter<crate::artifact_io::AtomicWriter>>,
+    plans: Option<BufWriter<crate::artifact_io::AtomicWriter>>,
 }
 
 impl Strategy002 {
@@ -68,7 +74,38 @@ impl Strategy002 {
         if !buffer.is_finite() || !(0.0..1.0).contains(&buffer) {
             return Err(err("cash_buffer must be in [0,1)"));
         }
+        let mode = params
+            .get("rebalance_mode")
+            .map(String::as_str)
+            .unwrap_or("round_trip");
+        if !matches!(mode, "round_trip" | "net") {
+            return Err(err("rebalance_mode must be round_trip or net"));
+        }
+        let hold_days = integer("rebalance_days", 5)?;
+        let input_days = integer("input_batch_days", 1)?;
+        if hold_days % input_days != 0 {
+            return Err(err("input_batch_days must divide rebalance_days"));
+        }
+        let strict_signal = match params
+            .get("missing_signal")
+            .map(String::as_str)
+            .unwrap_or("exit_only")
+        {
+            "error" => true,
+            "exit_only" => false,
+            _ => return Err(err("missing_signal must be error or exit_only")),
+        };
+        let signal_max_age = params
+            .get("signal_max_age_sessions")
+            .map(|v| v.parse::<usize>())
+            .transpose()?
+            .unwrap_or(0);
         Ok(Self {
+            net_rebalance: mode == "net",
+            strict_signal,
+            signal_max_age,
+            input_days,
+            prepared: BTreeMap::new(),
             calendar: TradingCalendar::load(&config.data_root, "SSE")?,
             signal_root: params
                 .get("signal_root")
@@ -89,6 +126,7 @@ impl Strategy002 {
             sells: BTreeMap::new(),
             reserve: 0.0,
             audit: None,
+            plans: None,
         })
     }
 }
@@ -108,6 +146,99 @@ impl Strategy for Strategy002 {
         "stock::strategy_002"
     }
 
+    fn input_batch_days(&self) -> usize {
+        self.input_days
+    }
+
+    fn prepare_run(&mut self, _config: &StrategyRunConfig, dates: &[i32]) -> Result<()> {
+        let mut needed = BTreeSet::new();
+        let mut candidates = BTreeMap::new();
+        for &date in dates.iter().step_by(self.hold_days) {
+            let mut end = date;
+            let mut preceding = Vec::new();
+            for _ in 0..=self.signal_max_age {
+                let Some(previous) = self.calendar.last_open_on_or_before(end - 1) else {
+                    break;
+                };
+                needed.insert(previous);
+                preceding.push(previous);
+                end = previous;
+            }
+            candidates.insert(date, preceding);
+        }
+        let available = needed
+            .into_iter()
+            .filter_map(|date| {
+                let path = self
+                    .signal_root
+                    .join((date / 10000).to_string())
+                    .join(format!("{date}.parquet"));
+                crate::artifact_io::exists(&path)
+                    .map(|yes| yes.then_some((date, path)))
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let paths = available.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>();
+        let columns = vec![
+            "trade_date".into(),
+            "ts_code".into(),
+            self.signal_id.clone(),
+        ];
+        let mut signals = BTreeMap::new();
+        crate::data::read_ahead::visit_projected_files(&paths, &columns, |path, table| {
+            let date = path.file_stem().unwrap().to_string_lossy().parse::<i32>()?;
+            let dates = table.required_i32_date_cast("trade_date")?;
+            let codes = table.required_utf8("ts_code")?;
+            let values = table.required_f64_cast(&self.signal_id)?;
+            let mut ranked = (0..table.len)
+                .filter_map(|i| {
+                    let code = codes[i].clone()?;
+                    let value = values[i]?;
+                    (dates[i] == Some(date) && value.is_finite() && !code.ends_with(".BJ"))
+                        .then_some((code, value))
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            signals.insert(
+                date,
+                ranked
+                    .into_iter()
+                    .take(self.top_n)
+                    .map(|(s, _)| s)
+                    .collect::<Vec<_>>(),
+            );
+            Ok(())
+        })?;
+        for (date, previous) in candidates {
+            let selected = previous.iter().find_map(|d| {
+                signals
+                    .get(d)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| (*d, s.clone()))
+            });
+            match selected {
+                Some((source, names)) => {
+                    if Some(&source) != previous.first() {
+                        eprintln!(
+                            "[strategy warning] date={date}: using bounded as-of signal {source}"
+                        );
+                    }
+                    self.prepared.insert(date, names);
+                }
+                None if self.strict_signal => {
+                    return Err(err(format!(
+                        "{} has no valid preceding signal for {date} within {} sessions",
+                        self.signal_id, self.signal_max_age
+                    )))
+                }
+                None => {
+                    self.prepared.insert(date, Vec::new());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn prepare_session(
         &mut self,
         config: &StrategyRunConfig,
@@ -121,16 +252,26 @@ impl Strategy for Strategy002 {
                 .calendar
                 .last_open_on_or_before(date - 1)
                 .ok_or_else(|| err("missing previous signal date"))?;
-            let mut ranked = load_signal(&self.signal_root, previous, &self.signal_id)?
-                .into_iter()
-                .filter(|(s, v)| v.is_finite() && !s.ends_with(".BJ"))
-                .collect::<Vec<_>>();
-            ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            self.selected = ranked
-                .into_iter()
-                .take(self.top_n)
-                .map(|(s, _)| s)
-                .collect();
+            if let Some(names) = self.prepared.get(&date) {
+                self.selected = names.clone();
+            } else {
+                let mut ranked = load_signal(&self.signal_root, previous, &self.signal_id)?
+                    .into_iter()
+                    .filter(|(s, v)| v.is_finite() && !s.ends_with(".BJ"))
+                    .collect::<Vec<_>>();
+                ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                self.selected = ranked
+                    .into_iter()
+                    .take(self.top_n)
+                    .map(|(s, _)| s)
+                    .collect();
+            }
+            if self.selected.is_empty() && self.strict_signal {
+                return Err(err(format!(
+                    "missing {} signal before {date}",
+                    self.signal_id
+                )));
+            }
             if self.selected.is_empty() {
                 eprintln!("[strategy warning] strategy_002 missing signal on {previous}; exit only on {date}");
             }
@@ -156,6 +297,16 @@ impl Strategy for Strategy002 {
             "trade_date,trade_time,symbol,side,quantity,price,notional,fee,tax,slippage,cash_after,realized_pnl,net_realized_pnl"
         )?;
         self.audit = Some(audit);
+        if self.net_rebalance {
+            let mut plans = BufWriter::new(crate::artifact_io::open_writer(
+                &ctx.config().output_dir().join("rebalance.csv"),
+            )?);
+            writeln!(
+                plans,
+                "trade_date,symbol,current_quantity,target_quantity,requested_delta,equity,reserve"
+            )?;
+            self.plans = Some(plans);
+        }
         Ok(())
     }
 
@@ -179,6 +330,73 @@ impl Strategy for Strategy002 {
                 .map(|(s, p)| p.quantity * ctx.market().open_price(s).unwrap_or(p.mark_price()))
                 .sum::<f64>();
         self.reserve = equity.max(0.0) * self.buffer;
+        if self.net_rebalance {
+            let lot = ctx.config().lot_size;
+            let target_value = (equity - self.reserve).max(0.0) / self.selected.len().max(1) as f64;
+            // Reserve a conservative one-way buy fee allowance without resetting retained lots.
+            let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
+            let universe = ctx
+                .account()
+                .positions()
+                .keys()
+                .cloned()
+                .chain(self.selected.iter().cloned())
+                .collect::<BTreeSet<_>>();
+            let count = universe.len().max(1);
+            for (i, symbol) in universe.iter().enumerate() {
+                let current = ctx.account().position_quantity(symbol);
+                let selected = self.selected.contains(symbol);
+                let target = if selected {
+                    let Some(price) = ctx.market().open_price(symbol) else {
+                        continue;
+                    };
+                    (target_value / (price * (1.0 + rate)) / lot).floor() * lot
+                } else {
+                    0.0
+                };
+                let delta = target - current;
+                if let Some(plans) = &mut self.plans {
+                    writeln!(
+                        plans,
+                        "{},{},{},{},{},{},{}",
+                        _event.trade_date, symbol, current, target, delta, equity, self.reserve
+                    )?;
+                }
+                let phase = (i as f64 + 0.5) / count as f64;
+                if delta > 1e-9 {
+                    let quantity = (delta / lot).floor() * lot;
+                    if quantity > 0.0 {
+                        self.buys.insert(
+                            symbol.clone(),
+                            Leg {
+                                target: quantity,
+                                filled: 0.0,
+                                phase,
+                            },
+                        );
+                    }
+                } else if delta < -1e-9 {
+                    let excess = (-delta).min(ctx.account().sellable_quantity(symbol));
+                    // Odd lots are sold only on full exit; retained positions adjust in whole lots.
+                    let quantity = if !selected {
+                        excess
+                    } else {
+                        (excess / lot).floor() * lot
+                    };
+                    if quantity > 0.0 {
+                        self.sells.insert(
+                            symbol.clone(),
+                            Leg {
+                                target: quantity,
+                                filled: 0.0,
+                                phase,
+                            },
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
         let count = ctx.account().positions().len().max(1);
         for (i, (symbol, _)) in ctx.account().positions().iter().enumerate() {
             self.sells.insert(
@@ -300,9 +518,17 @@ impl Strategy for Strategy002 {
         Ok(())
     }
     fn on_end(&mut self, _ctx: &mut StrategyContext) -> Result<()> {
+        if let Some(mut file) = self.plans.take() {
+            file.flush()?;
+            file.into_inner()
+                .map_err(|e| crate::error::err(e.to_string()))?
+                .commit()?;
+        }
         if let Some(mut file) = self.audit.take() {
             file.flush()?;
-            file.into_inner().map_err(|e| crate::error::err(e.to_string()))?.commit()?;
+            file.into_inner()
+                .map_err(|e| crate::error::err(e.to_string()))?
+                .commit()?;
         }
         Ok(())
     }

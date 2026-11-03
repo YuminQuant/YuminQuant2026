@@ -83,74 +83,43 @@ impl StrategyEngine {
         };
 
         let mut started = false;
-        for trade_date in dates {
-            corporate_actions.begin_session(&mut account, trade_date);
-            let universe = strategy.prepare_session(&run_config, &account, trade_date)?;
-            let frames = if run_config.asset_class == StrategyAssetClass::Stock
-                && run_config.bar_frequency == BarFrequency::Minute
-            {
-                super::market::load_stock_minute_frames_for_run(
-                    &run_config.data_root,
-                    &[trade_date],
-                    universe.as_ref(),
-                    run_config.minute_open_limits,
-                )?
-            } else {
-                load_frames(&run_config, trade_date, &future_meta, &mut daily_cache)?
-            };
-            if frames.is_empty() {
-                corporate_actions.end_session(&account, trade_date);
-                eprintln!("[strategy warning] date={trade_date}: no market frames; skipping date");
-                progress.tick(format!("date={trade_date} frames=0 trades={}", trade_count));
-                continue;
-            }
-            let mut daily_side_counts = SideCounts::default();
-            let frame_count = frames.len();
-            for (frame_index, frame) in frames.into_iter().enumerate() {
-                let market = MarketSnapshot::new(frame.event.clone(), frame.bars);
-                let mut bar_fills = Vec::<FillEvent>::new();
-                if !started {
-                    call_start(
-                        &mut *strategy,
-                        &run_config,
-                        &account,
-                        &market,
-                        &mut next_order_id,
-                    )?;
-                    started = true;
-                }
-                if !pending_orders.is_empty() {
-                    let fills = execution.fill_orders(
-                        &run_config,
-                        &mut account,
-                        &market,
-                        std::mem::take(&mut pending_orders),
+        strategy.prepare_run(&run_config, &dates)?;
+        let batch_days = strategy.input_batch_days().max(1);
+        for batch in dates.chunks(batch_days) {
+            let universe = strategy.prepare_session(&run_config, &account, batch[0])?;
+            let mut consume = |trade_date: i32, frames: Vec<MarketFrame>| -> Result<()> {
+                corporate_actions.begin_session(&mut account, trade_date);
+                strategy.prepare_session(&run_config, &account, trade_date)?;
+                if frames.is_empty() {
+                    corporate_actions.end_session(&account, trade_date);
+                    eprintln!(
+                        "[strategy warning] date={trade_date}: no market frames; skipping date"
                     );
-                    call_fills(
-                        &mut *strategy,
-                        &run_config,
-                        &account,
-                        &market,
-                        &mut next_order_id,
-                        &fills,
-                    )?;
-                    trade_count += fills.len();
-                    daily_side_counts.add_fills(&fills);
-                    bar_fills.extend(fills);
+                    progress.tick(format!("date={trade_date} frames=0 trades={}", trade_count));
+                    return Ok(());
                 }
-                if market.event.is_session_first {
-                    let event = SessionOpenEvent {
-                        trade_date: market.event.trade_date,
-                        trade_time: market.event.trade_time.clone(),
-                        bar_frequency: market.event.bar_frequency,
-                    };
-                    let mut ctx =
-                        StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
-                    strategy.on_session_open(&mut ctx, &event)?;
-                    let open_orders = ctx.take_orders();
-                    if !open_orders.is_empty() {
-                        let fills =
-                            execution.fill_orders(&run_config, &mut account, &market, open_orders);
+                let mut daily_side_counts = SideCounts::default();
+                let frame_count = frames.len();
+                for (frame_index, frame) in frames.into_iter().enumerate() {
+                    let market = MarketSnapshot::new(frame.event.clone(), frame.bars);
+                    let mut bar_fills = Vec::<FillEvent>::new();
+                    if !started {
+                        call_start(
+                            &mut *strategy,
+                            &run_config,
+                            &account,
+                            &market,
+                            &mut next_order_id,
+                        )?;
+                        started = true;
+                    }
+                    if !pending_orders.is_empty() {
+                        let fills = execution.fill_orders(
+                            &run_config,
+                            &mut account,
+                            &market,
+                            std::mem::take(&mut pending_orders),
+                        );
                         call_fills(
                             &mut *strategy,
                             &run_config,
@@ -163,50 +132,115 @@ impl StrategyEngine {
                         daily_side_counts.add_fills(&fills);
                         bar_fills.extend(fills);
                     }
-                }
-
-                let mut ctx =
-                    StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
-                strategy.on_bar_open(&mut ctx, &market.event)?;
-                let orders = ctx.take_orders();
-                if !orders.is_empty() {
-                    let fills = execution.fill_orders(&run_config, &mut account, &market, orders);
-                    call_fills(
-                        &mut *strategy,
-                        &run_config,
-                        &account,
-                        &market,
-                        &mut next_order_id,
-                        &fills,
-                    )?;
-                    trade_count += fills.len();
-                    daily_side_counts.add_fills(&fills);
-                    bar_fills.extend(fills);
-                }
-                mark_account_positions(&run_config, &mut account, &market);
-                let mut ctx =
-                    StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
-                strategy.on_bar(&mut ctx, &market.event)?;
-                pending_orders.extend(ctx.take_orders());
-                let daily_only =
-                    run_config.bar_frequency == BarFrequency::Minute && !run_config.detail;
-                if !daily_only || frame_index + 1 == frame_count {
-                    // Daily mode never serializes the discarded intraday snapshots/trades.
-                    let mut snapshot = holding_snapshot(
-                        &run_config,
-                        &account,
-                        &market,
-                        if daily_only { &[] } else { &bar_fills },
-                    );
-                    if daily_only {
-                        daily_side_counts.apply_to_snapshot(&mut snapshot);
+                    if market.event.is_session_first {
+                        let event = SessionOpenEvent {
+                            trade_date: market.event.trade_date,
+                            trade_time: market.event.trade_time.clone(),
+                            bar_frequency: market.event.bar_frequency,
+                        };
+                        let mut ctx = StrategyContext::new(
+                            &run_config,
+                            &account,
+                            &market,
+                            &mut next_order_id,
+                        );
+                        strategy.on_session_open(&mut ctx, &event)?;
+                        let open_orders = ctx.take_orders();
+                        if !open_orders.is_empty() {
+                            let fills = execution.fill_orders(
+                                &run_config,
+                                &mut account,
+                                &market,
+                                open_orders,
+                            );
+                            call_fills(
+                                &mut *strategy,
+                                &run_config,
+                                &account,
+                                &market,
+                                &mut next_order_id,
+                                &fills,
+                            )?;
+                            trade_count += fills.len();
+                            daily_side_counts.add_fills(&fills);
+                            bar_fills.extend(fills);
+                        }
                     }
-                    holdings.push(snapshot)?;
+
+                    let mut ctx =
+                        StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
+                    strategy.on_bar_open(&mut ctx, &market.event)?;
+                    let orders = ctx.take_orders();
+                    if !orders.is_empty() {
+                        let fills =
+                            execution.fill_orders(&run_config, &mut account, &market, orders);
+                        call_fills(
+                            &mut *strategy,
+                            &run_config,
+                            &account,
+                            &market,
+                            &mut next_order_id,
+                            &fills,
+                        )?;
+                        trade_count += fills.len();
+                        daily_side_counts.add_fills(&fills);
+                        bar_fills.extend(fills);
+                    }
+                    mark_account_positions(&run_config, &mut account, &market);
+                    let mut ctx =
+                        StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
+                    strategy.on_bar(&mut ctx, &market.event)?;
+                    pending_orders.extend(ctx.take_orders());
+                    let daily_only =
+                        run_config.bar_frequency == BarFrequency::Minute && !run_config.detail;
+                    if !daily_only || frame_index + 1 == frame_count {
+                        // Daily mode never serializes the discarded intraday snapshots/trades.
+                        let mut snapshot = holding_snapshot(
+                            &run_config,
+                            &account,
+                            &market,
+                            if daily_only { &[] } else { &bar_fills },
+                        );
+                        if daily_only {
+                            daily_side_counts.apply_to_snapshot(&mut snapshot);
+                        }
+                        holdings.push(snapshot)?;
+                    }
                 }
+                corporate_actions.end_session(&account, trade_date);
+                progress.tick(format!("date={trade_date} trades={trade_count}"));
+                Ok(())
+            };
+            if batch_days > 1
+                && run_config.asset_class == StrategyAssetClass::Stock
+                && run_config.bar_frequency == BarFrequency::Minute
+                && run_config.minute_open_limits
+            {
+                super::market::visit_stock_minute_sessions(
+                    &run_config.data_root,
+                    batch,
+                    universe.as_ref(),
+                    true,
+                    &mut consume,
+                )?;
+            } else {
+                // Compatibility mode retains per-session exact-universe loading.
+                let frames = if run_config.asset_class == StrategyAssetClass::Stock
+                    && run_config.bar_frequency == BarFrequency::Minute
+                {
+                    super::market::load_stock_minute_frames_for_run(
+                        &run_config.data_root,
+                        batch,
+                        universe.as_ref(),
+                        run_config.minute_open_limits,
+                    )?
+                } else {
+                    load_frames(&run_config, batch[0], &future_meta, &mut daily_cache)?
+                };
+                consume(batch[0], frames)?;
             }
-            corporate_actions.end_session(&account, trade_date);
-            progress.tick(format!("date={trade_date} trades={trade_count}"));
         }
+
         if started {
             let end_frame = terminal_frame(&run_config);
             let mut ctx =
@@ -215,6 +249,10 @@ impl StrategyEngine {
         }
         progress.finish();
         let output = holdings.finish()?;
+        crate::artifact_io::write(
+            run_config.output_dir().join("run_config.toml"),
+            std::fs::read(&request.config_path)?,
+        )?;
         Ok(StrategyRunReport {
             strategy_id: run_config.strategy_id,
             asset_class: run_config.asset_class.as_str().to_string(),

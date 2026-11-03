@@ -45,10 +45,12 @@ def refresh_notebook():
     path = ROOT / "strategy.ipynb"
     existing = nbformat.read(path, as_version=4) if path.exists() else nbformat.v4.new_notebook()
     kept = []
+    skipping = False
     for cell in existing.cells:
-        if cell.cell_type == "markdown" and cell.source.strip() == "# strategy002":
-            break
-        kept.append(cell)
+        if cell.cell_type == "markdown" and cell.source.strip().startswith("# "):
+            skipping = cell.source.strip() == "# strategy002"
+        if not skipping:
+            kept.append(cell)
     code = """from pathlib import Path
 import sys
 import pandas as pd

@@ -38,12 +38,13 @@ def require_frame(result: dict[str, Any], key: str) -> pd.DataFrame:
     return frame
 
 
-def load_strategy_result(root: str | Path, strategy_id: str) -> pd.DataFrame:
+def load_strategy_result(root: str | Path, strategy_id: str, *, storage=None) -> pd.DataFrame:
     """Read one strategy's account/holding snapshots; missing output is an error."""
     path = Path(root) / strategy_id / "holdings.parquet"
-    if not path.exists():
+    exists = storage.exists if storage is not None else lambda p: p.exists()
+    if not exists(path):
         raise FileNotFoundError(f"Strategy output not found: {path}")
-    return pd.read_parquet(path)
+    return storage.read_parquet(path) if storage is not None else pd.read_parquet(path)
 
 
 def load_index_returns(

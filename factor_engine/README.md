@@ -164,3 +164,45 @@ cargo test --manifest-path factor_engine/Cargo.toml
 公共读取层按列归属选择文件，回测和历史填充兼容两类文件及旧混合文件。
 旧列物理迁移使用 `migrate-factor-files --start-date YYYYMMDD --end-date YYYYMMDD [--dry-run]`；
 `remove-factor-columns` 会处理两类日文件。详见 [双文件存储协议](../ml_alpha/docs/FACTOR_FILE_PARTITIONS.md)。
+
+
+### Net-weight minute strategy research
+
+`strategy_config/stock/strategy_002_mdl_000040_net.toml` uses mdl_000040,
+100000 initial cash, Top50, a five-session rebalance interval, 09:30–09:59 TWAP,
+and a 2% opening-equity cash reserve. Net mode schedules target minus actual
+quantity; unchanged target lots generate no trades. Continuing names may be
+held longer than five sessions. Account state and dividends persist across years.
+
+```toml
+[strategy]
+rebalance_mode = "net"          # compatibility default: round_trip
+missing_signal = "error"        # compatibility default: exit_only
+signal_max_age_sessions = 0      # bounded older-signal lookup, never future dates
+input_batch_days = 5             # must divide rebalance_days; default 1
+```
+
+Projected signal reads retain only ranked codes in RAM. Minute bars and price
+bands share the remote bounded read-ahead queue, preserving stock predicates.
+Each input batch uses current holdings plus new selections and cannot cross a
+rebalance decision. Data workers run concurrently; all account updates consume
+calendar order. Reservations include compressed chunks, predicate buffers,
+conversion batches and estimated selected rows; they are not hard RSS limits.
+Local IO remains serial. Independent annual accounts cannot be concatenated:
+cash, costs, dividends and rebalance phase depend on the previous year. Compute
+annual performance from a single continuous account instead.
+
+Runs save `run_config.toml`; net runs also save `rebalance.csv` with opening
+equity, reserve and current/target quantities. Actual fills remain in `fills.csv`.
+After downloading a completed run, generate tables and refresh its section in
+ignored `strategy.ipynb` with:
+
+```bash
+python analysis_tools/scripts/report_strategy.py --strategy-id strategy_002_mdl_000040_net
+```
+
+`yq_analysis.strategy_io.load_strategy_run` accepts a registered deployment
+storage module through `storage=` for remote reads of the same result files.
+
+Notebook routing: `test.ipynb` is reserved for factor research; `strategy.ipynb`
+is the dedicated strategy settlement notebook. Both remain ignored by Git.

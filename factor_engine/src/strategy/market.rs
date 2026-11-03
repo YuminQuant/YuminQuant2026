@@ -206,108 +206,203 @@ pub fn load_stock_minute_frames_for_run(
         } else {
             read_parquet(&path, Some(&columns))?
         };
-        let codes = table.required_utf8("ts_code")?;
-        let times = table.required_utf8("trade_time")?;
-        let open = numeric_column(&table, "open")?;
-        let high = numeric_column(&table, "high")?;
-        let low = numeric_column(&table, "low")?;
-        let close = numeric_column(&table, "close")?;
-        let volume = numeric_column(&table, "vol")?;
-        let amount = numeric_column(&table, "amount")?;
-        let limits = if minute_limits {
-            BTreeMap::new()
-        } else {
-            load_trade_filter_or_warn(data_root, *trade_date)
-        };
         let price_bands = if minute_limits {
             load_price_bands(data_root, *trade_date)?
         } else {
             BTreeMap::new()
         };
-        let mut grouped = BTreeMap::<String, Vec<Bar>>::new();
-        if minute_limits {
-            // Keep the exchange clock even if all selected/held stocks are suspended.
-            for minute in (570..=690).chain(781..=900) {
-                let date = *trade_date;
-                grouped.insert(
-                    format!(
-                        "{:04}-{:02}-{:02} {:02}:{:02}:00",
-                        date / 10000,
-                        date / 100 % 100,
-                        date % 100,
-                        minute / 60,
-                        minute % 60
-                    ),
-                    Vec::new(),
-                );
-            }
-        }
-        for idx in 0..table.len {
-            let Some(symbol) = codes[idx].clone() else {
-                continue;
-            };
-            let Some(trade_time) = times[idx].clone() else {
-                continue;
-            };
-            let Some(open) = clean_positive_opt(open[idx]) else {
-                continue;
-            };
-            let Some(high) = clean_positive_opt(high[idx]) else {
-                continue;
-            };
-            let Some(low) = clean_positive_opt(low[idx]) else {
-                continue;
-            };
-            let Some(close) = clean_positive_opt(close[idx]) else {
-                continue;
-            };
-            let (mut is_limit_up, mut is_limit_down) = if minute_limits {
-                match price_bands.get(&symbol) {
-                    Some((up, down)) => (
-                        up.is_some_and(|p| open >= p - 0.0001),
-                        down.is_some_and(|p| open <= p + 0.0001),
-                    ),
-                    // Missing price bands are unknown, not permission to trade.
-                    None => (true, true),
-                }
-            } else {
-                limits.get(&symbol).copied().unwrap_or_default()
-            };
-            if minute_limits && !volume[idx].is_some_and(|v| v.is_finite() && v > 0.0) {
-                is_limit_up = true;
-                is_limit_down = true;
-            }
-            grouped.entry(trade_time.clone()).or_default().push(Bar {
-                symbol,
-                trade_date: *trade_date,
-                trade_time,
-                open,
-                high,
-                low,
-                close,
-                settle: None,
-                multiplier: 1.0,
-                volume: finite(volume[idx]),
-                amount: finite(amount[idx]),
-                is_limit_up,
-                is_limit_down,
-            });
-        }
-        let total = grouped.len();
-        for (idx, (trade_time, bars)) in grouped.into_iter().enumerate() {
-            frames.push(MarketFrame {
-                event: BarEvent {
-                    trade_date: *trade_date,
-                    trade_time,
-                    bar_frequency: BarFrequency::Minute,
-                    is_session_first: idx == 0,
-                    is_session_end: idx + 1 == total,
-                },
-                bars,
-            });
-        }
+        frames.extend(stock_minute_frames(
+            data_root,
+            *trade_date,
+            table,
+            minute_limits,
+            price_bands,
+        )?);
     }
     Ok(frames)
+}
+
+fn stock_minute_frames(
+    data_root: &Path,
+    date: i32,
+    table: Table,
+    minute_limits: bool,
+    price_bands: BTreeMap<String, (Option<f64>, Option<f64>)>,
+) -> Result<Vec<MarketFrame>> {
+    let mut frames = Vec::new();
+    let trade_date = &date;
+    let codes = table.required_utf8("ts_code")?;
+    let times = table.required_utf8("trade_time")?;
+    let open = numeric_column(&table, "open")?;
+    let high = numeric_column(&table, "high")?;
+    let low = numeric_column(&table, "low")?;
+    let close = numeric_column(&table, "close")?;
+    let volume = numeric_column(&table, "vol")?;
+    let amount = numeric_column(&table, "amount")?;
+    let limits = if minute_limits {
+        BTreeMap::new()
+    } else {
+        load_trade_filter_or_warn(data_root, *trade_date)
+    };
+
+    let mut grouped = BTreeMap::<String, Vec<Bar>>::new();
+    if minute_limits {
+        // Keep the exchange clock even if all selected/held stocks are suspended.
+        for minute in (570..=690).chain(781..=900) {
+            let date = *trade_date;
+            grouped.insert(
+                format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}:00",
+                    date / 10000,
+                    date / 100 % 100,
+                    date % 100,
+                    minute / 60,
+                    minute % 60
+                ),
+                Vec::new(),
+            );
+        }
+    }
+    for idx in 0..table.len {
+        let Some(symbol) = codes[idx].clone() else {
+            continue;
+        };
+        let Some(trade_time) = times[idx].clone() else {
+            continue;
+        };
+        let Some(open) = clean_positive_opt(open[idx]) else {
+            continue;
+        };
+        let Some(high) = clean_positive_opt(high[idx]) else {
+            continue;
+        };
+        let Some(low) = clean_positive_opt(low[idx]) else {
+            continue;
+        };
+        let Some(close) = clean_positive_opt(close[idx]) else {
+            continue;
+        };
+        let (mut is_limit_up, mut is_limit_down) = if minute_limits {
+            match price_bands.get(&symbol) {
+                Some((up, down)) => (
+                    up.is_some_and(|p| open >= p - 0.0001),
+                    down.is_some_and(|p| open <= p + 0.0001),
+                ),
+                // Missing price bands are unknown, not permission to trade.
+                None => (true, true),
+            }
+        } else {
+            limits.get(&symbol).copied().unwrap_or_default()
+        };
+        if minute_limits && !volume[idx].is_some_and(|v| v.is_finite() && v > 0.0) {
+            is_limit_up = true;
+            is_limit_down = true;
+        }
+        grouped.entry(trade_time.clone()).or_default().push(Bar {
+            symbol,
+            trade_date: *trade_date,
+            trade_time,
+            open,
+            high,
+            low,
+            close,
+            settle: None,
+            multiplier: 1.0,
+            volume: finite(volume[idx]),
+            amount: finite(amount[idx]),
+            is_limit_up,
+            is_limit_down,
+        });
+    }
+    let total = grouped.len();
+    for (idx, (trade_time, bars)) in grouped.into_iter().enumerate() {
+        frames.push(MarketFrame {
+            event: BarEvent {
+                trade_date: *trade_date,
+                trade_time,
+                bar_frequency: BarFrequency::Minute,
+                is_session_first: idx == 0,
+                is_session_end: idx + 1 == total,
+            },
+            bars,
+        });
+    }
+    Ok(frames)
+}
+
+/// Prefetch an immutable universe superset, consume sessions in date order.
+/// Only input tables run concurrently; no account or strategy state enters workers.
+pub(crate) fn visit_stock_minute_sessions(
+    data_root: &Path,
+    dates: &[i32],
+    symbols: Option<&BTreeSet<String>>,
+    minute_limits: bool,
+    mut consume: impl FnMut(i32, Vec<MarketFrame>) -> Result<()>,
+) -> Result<()> {
+    let mut paths = Vec::new();
+    for &date in dates {
+        paths.push(minute_path(data_root, date));
+        paths.push(
+            data_root
+                .join("chn_stock_data/daily/limit")
+                .join((date / 10000).to_string())
+                .join(format!("{date}.parquet")),
+        );
+    }
+    let minute_columns = [
+        "ts_code",
+        "trade_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "vol",
+        "amount",
+    ]
+    .map(str::to_string);
+    let band_columns = ["ts_code", "up_limit", "down_limit"].map(str::to_string);
+    let mut pending = None;
+    crate::data::read_ahead::visit_tables(
+        &paths,
+        |i, reader| {
+            let columns = if i % 2 == 0 {
+                &minute_columns[..]
+            } else {
+                &band_columns[..]
+            };
+            let prepared = crate::data::parquet_io::PreparedProjection::new(
+                reader,
+                &paths[i],
+                columns,
+                &BTreeSet::new(),
+            )?;
+            Ok(if let Some(symbols) = symbols {
+                let rows = symbols
+                    .len()
+                    .saturating_mul(if i % 2 == 0 { 241 } else { 1 });
+                prepared.with_symbols(symbols.clone(), Some(rows))
+            } else {
+                prepared
+            })
+        },
+        |_, table| Ok(table),
+        |i, table| {
+            if i % 2 == 0 {
+                pending = Some(table);
+                return Ok(());
+            }
+            let bands = price_bands_from_table(&table)?;
+            let date = dates[i / 2];
+            let frames = stock_minute_frames(
+                data_root,
+                date,
+                pending.take().expect("preceding minute table"),
+                minute_limits,
+                bands,
+            )?;
+            consume(date, frames)
+        },
+    )
 }
 
 /// At most one annual file is retained per run, indexed once by date.
@@ -749,6 +844,10 @@ fn load_price_bands(
         .join(format!("{date}.parquet"));
     let cols = ["ts_code", "up_limit", "down_limit"].map(str::to_string);
     let table = read_parquet(&path, Some(&cols))?;
+    price_bands_from_table(&table)
+}
+
+fn price_bands_from_table(table: &Table) -> Result<BTreeMap<String, (Option<f64>, Option<f64>)>> {
     let codes = table.required_utf8("ts_code")?;
     let up = table.required_f64_cast("up_limit")?;
     let down = table.required_f64_cast("down_limit")?;

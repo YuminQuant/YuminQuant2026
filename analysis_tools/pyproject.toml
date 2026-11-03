@@ -12,6 +12,7 @@ dependencies = [
   "numpy",
   "pandas",
   "pyarrow",
+  "tomli; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

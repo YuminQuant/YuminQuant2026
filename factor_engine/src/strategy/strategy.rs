@@ -6,6 +6,19 @@ use crate::strategy::order::FillEvent;
 pub trait Strategy {
     fn name(&self) -> &'static str;
 
+    fn prepare_run(
+        &mut self,
+        _config: &crate::strategy::config::StrategyRunConfig,
+        _dates: &[i32],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Input batches must not cross a strategy decision boundary.
+    fn input_batch_days(&self) -> usize {
+        1
+    }
+
     /// Prepare today's universe before market data is loaded. Never uses today's signal.
     fn prepare_session(
         &mut self,

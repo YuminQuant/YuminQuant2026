@@ -1,4 +1,4 @@
-"""Refresh the Top50 result in test.ipynb and the dedicated strategy.ipynb."""
+"""Refresh Top50 comparisons in the dedicated strategy settlement notebook."""
 from pathlib import Path
 import json
 
@@ -90,17 +90,17 @@ def execute(cells_to_run, metadata):
 
 
 def main():
-    test_path = ROOT / 'test.ipynb'
-    old = json.loads(test_path.read_text(encoding='utf-8'))
-    start = next(i for i, c in enumerate(old['cells']) if c['cell_type'] == 'markdown'
-                 and ''.join(c['source']).strip().startswith('# 策略检验'))
-    prefix = old['cells'][:start]
-    baseline = execute(cells({'Top50': CASES['Top50']}, 'top50_5d', False), old['metadata'])
-    old['cells'] = prefix + json.loads(nbformat.writes(baseline))['cells']
-    test_path.write_text(json.dumps(old, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
+    path = ROOT / 'strategy.ipynb'
+    old = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'cells': [], 'metadata': {}}
+    other_start = next((i for i,c in enumerate(old['cells']) if i > 0 and c['cell_type'] == 'markdown'
+                        and ''.join(c['source']).strip().startswith('# ')), len(old['cells']))
     research = execute(cells(CASES, 'top50_variants_5d', True), old['metadata'])
-    nbformat.write(research, ROOT / 'strategy.ipynb')
-    print(f'Preserved {len(prefix)} factor cells; test.ipynb: Top50 only; strategy.ipynb: four Top50 cases')
+    research.cells[0].source = '# \u7b56\u7565\u7ed3\u7b97'
+    updated = json.loads(nbformat.writes(research))
+    updated['cells'] += old['cells'][other_start:]
+    path.write_text(json.dumps(updated, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
+    print('strategy.ipynb refreshed; preserved other strategy sections')
+
 
 
 if __name__ == '__main__':

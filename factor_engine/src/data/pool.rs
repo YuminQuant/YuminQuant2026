@@ -471,17 +471,17 @@ impl DataPool {
                     }
                 }
                 Frequency::Minute1 => {
-                    let target_dates = if context.frequency == Frequency::Daily {
+                    let minute_dates = if context.frequency == Frequency::Daily {
                         &context.load_dates
                     } else {
-                        &context.target_dates
+                        &load_dates
                     };
                     let tables = if dataset == DatasetId::StockDerivedBar {
                         let bar_size = bar_size
                             .ok_or_else(|| err("stock.derived.bar request requires bar_size"))?;
-                        loader.load_stock_derived_bar_by_date(bar_size, &columns, target_dates)?
+                        loader.load_stock_derived_bar_by_date(bar_size, &columns, minute_dates)?
                     } else {
-                        loader.load_minute_by_date(dataset, &columns, target_dates)?
+                        loader.load_minute_by_date(dataset, &columns, minute_dates)?
                     };
                     for (date, table) in tables {
                         pool.minute

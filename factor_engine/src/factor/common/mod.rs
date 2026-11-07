@@ -88,6 +88,7 @@ pub use intraday_raw::{
     RequestedRawIds,
 };
 pub use minute::{compute_minute_by_instrument, MinuteSeries};
+pub(crate) use minute::compute_rolling_minute_by_instrument;
 pub use panel::{DailyPanel, PanelColumn};
 pub use price_volume::{daily_vwap_from_amount_vol, minute_vwap_from_amount_vol};
 

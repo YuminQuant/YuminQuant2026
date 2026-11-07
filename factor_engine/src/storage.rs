@@ -130,7 +130,7 @@ impl OutputBatch {
                 updates.insert(name, values);
             }
             let refs = updates.iter().map(|(name, values)| (name.clone(), values.iter().collect())).collect();
-            let table = merge_factor_columns(&destination, frequency, date, &refs)?;
+            let table = merge_factor_columns(&destination, asset, frequency, date, &refs)?;
             write_parquet(&destination, &table)?;
             written.push(destination);
         }
@@ -340,7 +340,7 @@ impl FactorStorage {
             let path = self.output_path(asset_class, frequency, trade_date);
             let _guard = crate::artifact_io::lock(&path)?;
             progress(written.len(), total, trade_date, "merge");
-            let table = merge_factor_columns(&path, frequency, trade_date, &columns)?;
+            let table = merge_factor_columns(&path, asset_class, frequency, trade_date, &columns)?;
             progress(written.len(), total, trade_date, "write");
             write_parquet(&path, &table)?;
             written.push(path);
@@ -463,6 +463,7 @@ impl FactorStorage {
 // Build only one day's column buffers; explicit null updates overwrite old values.
 fn merge_factor_columns(
     path: &Path,
+    asset_class: AssetClass,
     frequency: Frequency,
     trade_date: i32,
     updates: &BTreeMap<String, Vec<&crate::core::FactorValue>>,
@@ -505,7 +506,14 @@ fn merge_factor_columns(
     for values in updates.values() {
         keys.extend(values.iter().map(|value| key_of(value)));
     }
-    let keys = keys.into_iter().collect::<Vec<_>>();
+    let mut keys = keys.into_iter().collect::<Vec<_>>();
+    if asset_class == AssetClass::Future && frequency == Frequency::Minute1 {
+        keys.sort_unstable_by(|left, right| {
+            left.trade_time
+                .cmp(&right.trade_time)
+                .then_with(|| left.ts_code.cmp(&right.ts_code))
+        });
+    }
     let positions = keys
         .iter()
         .enumerate()

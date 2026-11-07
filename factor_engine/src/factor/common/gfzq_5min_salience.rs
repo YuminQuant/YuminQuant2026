@@ -97,6 +97,10 @@ pub fn raw_specs() -> Vec<IntradayDailyRawSpec> {
 }
 
 pub fn factor_spec(def: Gfzq5minSalienceFactorDef) -> FactorSpec {
+    let mut tags = tags();
+    if def.id == "str_5min_ma_active" {
+        tags.push("deprecated".to_string());
+    }
     FactorSpec {
         id: def.id.to_string(),
         aliases: vec![def.alias.to_string()],
@@ -104,7 +108,7 @@ pub fn factor_spec(def: Gfzq5minSalienceFactorDef) -> FactorSpec {
         asset_class: AssetClass::Stock,
         frequency: Frequency::Daily,
         version: VERSION.to_string(),
-        tags: tags(),
+        tags,
         description: format!(
             "{} GFZQ cross-day 5-minute salience factor, z-scored and neutralized by Barra SIZE and SW sector.",
             def.name

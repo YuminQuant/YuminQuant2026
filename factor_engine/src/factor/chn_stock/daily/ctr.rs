@@ -37,6 +37,7 @@ impl Factor for StockDailyCtr {
                 "size",
                 "daily",
                 "DWZQ",
+                "deprecated",
             ]
             .iter()
             .map(|value| value.to_string())

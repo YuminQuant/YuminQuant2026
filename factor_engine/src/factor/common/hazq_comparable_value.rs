@@ -286,7 +286,7 @@ impl HazqComparableValueOutput {
             ),
             Sales2Ev => matches!(
                 self.component,
-                Min | Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore | GapAvg | GapMmm
+                Weighted | Min | Wgt | Wgt2 | Dst | DstZscore | Prm | PrmZscore | GapAvg | GapMmm
             ),
             EpPercentile => matches!(
                 self.component,

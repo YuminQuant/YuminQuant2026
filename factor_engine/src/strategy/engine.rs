@@ -20,7 +20,6 @@ use crate::strategy::storage::HoldingsWriter;
 use crate::strategy::strategies::future::cta_001::Cta001;
 use crate::strategy::strategies::future::sma::SmaStrategy;
 use crate::strategy::strategies::stock::strategy_001::Strategy001;
-use crate::strategy::strategies::stock::strategy_002::Strategy002;
 use crate::strategy::strategy::Strategy;
 
 #[derive(Debug)]
@@ -304,10 +303,7 @@ fn load_frames(
 
 fn create_strategy(config: &StrategyRunConfig) -> Result<Box<dyn Strategy>> {
     match config.strategy_class.as_str() {
-        "stock::strategy_001" | "stock::top_signal_equal_weight" => {
-            Ok(Box::new(Strategy001::from_context_config(config)))
-        }
-        "stock::strategy_002" => Ok(Box::new(Strategy002::from_config(config)?)),
+        "stock::strategy_001" => Ok(Box::new(Strategy001::from_config(config)?)),
         "future::cta_001" => Ok(Box::new(Cta001::from_context_config(config))),
         "future::sma" => Ok(Box::new(SmaStrategy::from_context_config(config))),
         other => Err(err(format!("unknown strategy_class: {other}"))),

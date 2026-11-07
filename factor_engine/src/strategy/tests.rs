@@ -91,7 +91,7 @@ fn market_table(
         ("vol".into(), ColumnData::F64(vec![Some(1000.0); n])),
         ("amount".into(), ColumnData::F64(vec![Some(100000.0); n])),
     ]);
-    for name in ["open", "high", "low", "close", "settle"] {
+    for name in ["open", "high", "low", "close", "settle", "pre_close"] {
         columns.insert(
             name.into(),
             ColumnData::F64(prices.iter().copied().map(Some).collect()),
@@ -129,6 +129,7 @@ fn bar(symbol: &str, close: f64) -> Bar {
         amount: None,
         is_limit_up: false,
         is_limit_down: false,
+        near_price_limit: 0,
     }
 }
 fn market(bars: Vec<Bar>) -> MarketSnapshot {
@@ -378,7 +379,7 @@ fn streaming_abort_preserves_previous_output_and_empty_output_has_schema() {
     assert!(empty.columns.contains_key("account_pnl"));
 }
 
-fn stock_open_fixture(block_sale_on_rebalance: bool) -> (Fixture, StrategyRunRequest) {
+fn stock_open_fixture() -> (Fixture, StrategyRunRequest) {
     let fixture = Fixture::new();
     let dates = [
         20191231, 20200102, 20200103, 20200106, 20200107, 20200108, 20200109, 20200110,
@@ -476,7 +477,7 @@ cash_buffer = 0
                 (
                     "is_limit_down".into(),
                     ColumnData::Bool(vec![
-                        Some(block_sale_on_rebalance && date == 20200109),
+                        Some(false),
                         Some(false),
                     ]),
                 ),
@@ -493,185 +494,11 @@ cash_buffer = 0
     (fixture, request)
 }
 
-#[test]
-fn stock_first_open_uses_previous_signal_and_rebalances_after_five_sessions() {
-    let (fixture, request) = stock_open_fixture(false);
-    let report = fixture.engine().run(&request).unwrap();
-    let output = read_parquet(&report.output_files[0], None).unwrap();
-    assert_eq!(
-        output.required_i64_cast("buy_count").unwrap(),
-        vec![
-            Some(1),
-            Some(0),
-            Some(0),
-            Some(0),
-            Some(0),
-            Some(1),
-            Some(0)
-        ]
-    );
-    assert_eq!(
-        output.required_i64_cast("sell_count").unwrap(),
-        vec![
-            Some(0),
-            Some(0),
-            Some(0),
-            Some(0),
-            Some(0),
-            Some(1),
-            Some(0)
-        ]
-    );
-    assert_eq!(
-        output.required_utf8("symbols_json").unwrap()[0].as_deref(),
-        Some("[\"A.SZ\"]")
-    );
-    assert_eq!(
-        output.required_utf8("symbols_json").unwrap()[5].as_deref(),
-        Some("[\"B.SZ\"]")
-    );
-    // 9,900 shares sized at open=10, rather than today's close=11.
-    assert_eq!(
-        output.required_utf8("quantities_json").unwrap()[0].as_deref(),
-        Some("[9900]")
-    );
-    let cash = output.required_f64_cast("cash").unwrap();
-    assert!(cash[0].unwrap() >= 0.0 && cash[0].unwrap() < 1000.7);
-    assert!(cash[5].unwrap() >= 0.0 && cash[5].unwrap() < 2001.4);
-}
-
-#[test]
-fn stock_frozen_sale_does_not_fund_new_buys_or_create_leverage() {
-    let (fixture, request) = stock_open_fixture(true);
-    let report = fixture.engine().run(&request).unwrap();
-    let output = read_parquet(&report.output_files[0], None).unwrap();
-    assert_eq!(output.required_i64_cast("sell_count").unwrap()[5], Some(0));
-    assert_eq!(output.required_i64_cast("buy_count").unwrap()[5], Some(0));
-    assert_eq!(
-        output.required_utf8("symbols_json").unwrap()[5].as_deref(),
-        Some("[\"A.SZ\"]")
-    );
-    assert!(output
-        .required_f64_cast("cash")
-        .unwrap()
-        .iter()
-        .all(|cash| cash.unwrap() >= 0.0));
-}
-
-#[test]
-fn stock_top_n_blocked_slot_stays_cash_and_repeated_selection_is_round_tripped() {
-    let (fixture, request) = stock_open_fixture(false);
-    let path = fixture.0.join("strategy.toml");
-    let cfg = std::fs::read_to_string(&path)
-        .unwrap()
-        .replace("top_n = 1", "top_n = 2");
-    std::fs::write(&path, cfg).unwrap();
-    let filter = fixture
-        .0
-        .join("chn_stock_data/daily/trade_filter/2020/20200102.parquet");
-    let mut table = read_parquet(&filter, None).unwrap();
-    table.columns.insert(
-        "is_limit_up".into(),
-        ColumnData::Bool(vec![Some(false), Some(true)]),
-    );
-    write_parquet(&filter, &table).unwrap();
-    let report = fixture.engine().run(&request).unwrap();
-    let output = read_parquet(&report.output_files[0], None).unwrap();
-    // Half of the capital remains assigned to the unfilled B slot.
-    assert_eq!(
-        output.required_utf8("quantities_json").unwrap()[0].as_deref(),
-        Some("[4900]")
-    );
-    assert!(output.required_f64_cast("cash").unwrap()[0].unwrap() > 50000.0);
-    // A remains selected, but its prior batch must still close before a new purchase.
-    assert_eq!(output.required_i64_cast("sell_count").unwrap()[5], Some(1));
-    assert_eq!(output.required_i64_cast("buy_count").unwrap()[5], Some(2));
-    assert_eq!(
-        output.required_utf8("trade_symbols_json").unwrap()[5].as_deref(),
-        Some("[\"A.SZ\",\"B.SZ\",\"A.SZ\"]")
-    );
-}
-
-#[test]
-fn stock_missing_signal_does_not_prevent_mature_batch_exit() {
-    let (fixture, request) = stock_open_fixture(false);
-    std::fs::remove_file(fixture.0.join("models/2020/20200108.parquet")).unwrap();
-    let report = fixture.engine().run(&request).unwrap();
-    let output = read_parquet(&report.output_files[0], None).unwrap();
-    assert_eq!(output.required_i64_cast("sell_count").unwrap()[5], Some(1));
-    assert_eq!(output.required_i64_cast("buy_count").unwrap()[5], Some(0));
-    assert_eq!(
-        output.required_i64_cast("position_count").unwrap()[5],
-        Some(0)
-    );
-}
-
-#[test]
-fn stock_rank_exclusion_removes_head_and_reweights_remaining_names() {
-    let (fixture, request) = stock_open_fixture(false);
-    let path = fixture.0.join("strategy.toml");
-    let cfg = std::fs::read_to_string(&path)
-        .unwrap()
-        .replace("top_n = 1", "top_n = 2\nexclude_top_n = 1");
-    std::fs::write(&path, cfg).unwrap();
-    let report = fixture.engine().run(&request).unwrap();
-    let output = read_parquet(&report.output_files[0], None).unwrap();
-    assert_eq!(
-        output.required_utf8("symbols_json").unwrap()[0].as_deref(),
-        Some("[\"B.SZ\"]")
-    );
-    assert_eq!(
-        output.required_utf8("quantities_json").unwrap()[0].as_deref(),
-        Some("[4900]")
-    );
-    assert_eq!(
-        output.required_utf8("symbols_json").unwrap()[5].as_deref(),
-        Some("[\"A.SZ\"]")
-    );
-}
-
-#[test]
-fn stock_no_limits_experiment_executes_limit_up_buys_and_limit_down_sells() {
-    let (fixture, request) = stock_open_fixture(true);
-    let path = fixture.0.join("strategy.toml");
-    let cfg = std::fs::read_to_string(&path)
-        .unwrap()
-        .replace("[execution]", "[execution]\nrespect_price_limits = false");
-    std::fs::write(&path, cfg).unwrap();
-    let filter = fixture
-        .0
-        .join("chn_stock_data/daily/trade_filter/2020/20200102.parquet");
-    let mut table = read_parquet(&filter, None).unwrap();
-    table.columns.insert(
-        "is_limit_up".into(),
-        ColumnData::Bool(vec![Some(true), Some(false)]),
-    );
-    write_parquet(&filter, &table).unwrap();
-    let report = fixture.engine().run(&request).unwrap();
-    let output = read_parquet(&report.output_files[0], None).unwrap();
-    assert_eq!(output.required_i64_cast("buy_count").unwrap()[0], Some(1));
-    assert_eq!(output.required_i64_cast("sell_count").unwrap()[5], Some(1));
-    assert_eq!(output.required_i64_cast("buy_count").unwrap()[5], Some(1));
-}
-
-#[test]
-fn stock_excluding_entire_universe_is_rejected() {
-    let (fixture, request) = stock_open_fixture(false);
-    let path = fixture.0.join("strategy.toml");
-    let cfg = std::fs::read_to_string(&path)
-        .unwrap()
-        .replace("top_n = 1", "top_n = 1\nexclude_top_n = 1");
-    std::fs::write(&path, cfg).unwrap();
-    let error = fixture.engine().run(&request).unwrap_err();
-    assert!(error.to_string().contains("exclude_top_n must be smaller"));
-}
-
 fn minute_twap_fixture() -> (Fixture, StrategyRunRequest) {
-    let (fixture, request) = stock_open_fixture(false);
+    let (fixture, request) = stock_open_fixture();
     let config_path = fixture.0.join("strategy.toml");
     let config = std::fs::read_to_string(&config_path)
         .unwrap()
-        .replace("stock::strategy_001", "stock::strategy_002")
         .replace("bar_frequency = \"daily\"", "bar_frequency = \"minute\"")
         .replace(
             "[execution]",

@@ -166,46 +166,34 @@ cargo test --manifest-path factor_engine/Cargo.toml
 `remove-factor-columns` 会处理两类日文件。详见 [双文件存储协议](../ml_alpha/docs/FACTOR_FILE_PARTITIONS.md)。
 
 
-### Net-weight minute strategy research
+### Minute stock strategy
 
-`strategy_config/stock/strategy_002_mdl_000040_net.toml` uses mdl_000040,
-100000 initial cash, Top50, a five-session rebalance interval, 09:30–09:59 TWAP,
-and a 2% opening-equity cash reserve. Net mode schedules target minus actual
-quantity; unchanged target lots generate no trades. Continuing names may be
-held longer than five sessions. Account state and dividends persist across years.
+`stock::strategy_001` reads the preceding session's signal and rebalances at
+the configured interval (default five sessions). The sample configuration is
+`strategy_config/stock/strategy_001.toml`. Net mode orders target minus actual
+shares. Round-trip mode exits and reopens each batch. Whole lots, fees and the
+opening equity cash reserve constrain buys. `allocation_mode = "rank_carry"`
+optionally passes unused budget to lower ranks in net mode.
 
-```toml
-[strategy]
-rebalance_mode = "net"          # compatibility default: round_trip
-missing_signal = "error"        # compatibility default: exit_only
-signal_max_age_sessions = 0      # bounded older-signal lookup, never future dates
-input_batch_days = 5             # must divide rebalance_days; default 1
-```
+The default TWAP window is 09:30–09:59. At each minute open, the dated price
+bands and daily `pre_close` identify the 10% or 20% limit regime. When the open
+reaches either ±9% or ±18% respectively, a pending buy requests its full
+remaining quantity. A pending sell accelerates only on the positive side.
+Other limit regimes and unavailable reference prices use normal scheduling.
+Acceleration still respects limits, volume, sellable shares, fees, lots and
+available cash. All remaining quantities are due on every eligible bar after
+the window. With `retry_next_day = true`, any remainder carries to the next
+session; new targets replace pending orders at the next rebalance.
 
-Projected signal reads retain only ranked codes in RAM. Minute bars and price
-bands share the remote bounded read-ahead queue, preserving stock predicates.
-Each input batch uses current holdings plus new selections and cannot cross a
-rebalance decision. Data workers run concurrently; all account updates consume
-calendar order. Reservations include compressed chunks, predicate buffers,
-conversion batches and estimated selected rows; they are not hard RSS limits.
-Local IO remains serial. Independent annual accounts cannot be concatenated:
-cash, costs, dividends and rebalance phase depend on the previous year. Compute
-annual performance from a single continuous account instead.
+Minute replay runs through the close with either output detail setting.
+Signals, projected minute bars, bands and previous closes use bounded
+read-ahead and account events consume them in calendar order. A single account
+should cover the full date range so cash and rebalance phase persist across years.
 
-Runs save `run_config.toml`; net runs also save `rebalance.csv` with opening
-equity, reserve and current/target quantities. Actual fills remain in `fills.csv`.
-After downloading a completed run, generate tables and refresh its section in
-ignored `strategy.ipynb` with:
-
-```bash
-python analysis_tools/scripts/report_strategy.py --strategy-id strategy_002_mdl_000040_net
-```
-
-`yq_analysis.strategy_io.load_strategy_run` accepts a registered deployment
-storage module through `storage=` for remote reads of the same result files.
-
-Notebook routing: `test.ipynb` is reserved for factor research; `strategy.ipynb`
-is the dedicated strategy settlement notebook. Both remain ignored by Git.
+Runs save `run_config.toml`, `fills.csv`, and in net mode `rebalance.csv`.
+The generic report entry point is `analysis_tools/scripts/report_strategy.py`.
+Research configurations and outputs belong in the ignored
+`research/strategy001/` directory.
 
 Stock runs enable `[execution] force_delisting_exit = true` by default. The event
 uses `delist_date` from `chn_stock_data/info/stock_basic.parquet` (the first
@@ -219,53 +207,3 @@ history. These simulated sales use normal selling costs, credit cash, and
 appear in the regular fill accounting and `lifecycle.csv`. Set
 `force_delisting_exit = false` to disable the rule. An absent stock metadata file
 emits a warning. A missing quote alone does not trigger an exit.
-
-Minute replay continues through the full session with either output detail
-setting. After the strategy002 TWAP window, the full remaining quantity is
-eligible on each later minute open under the regular price-limit, lot, cash
-reserve and sellable-share checks. Optional next-day retry applies to the
-remainder after the session. Strategy001 still trades regular orders at the
-rebalance session's opening price.
-
-
-`strategy002` optionally accepts `retry_next_day = true` in net mode. Remaining
-unfilled quantities are spread over the next session's 09:30–09:59 window with
-the 2% reserve recomputed at that session's open. Missing opening quotes defer
-initialization until a subsequent session with a valid opening quote. Locked
-sales remain pending until sellable. New five-session targets supersede pending
-old orders. The compatibility default is false. This is best-effort retry,
-without assuming execution while price limits, missing quotes or cash prevent it.
-
-The four `strategy_002_mdl_*_net_retry.toml` configurations compare mdl_000021,
-mdl_000026, mdl_000039 and mdl_000040 on the same interval and execution rules.
-After retrieving results and `head_overlap_daily.csv`, run
-`python research/strategy002/compare_strategy_signals.py` from a checkout with
-the local research scripts to rebuild the four-signal strategy settlement
-notebook. Head overlap is a count of shared
-Top50 names, summarized over all signal dates and separately over rebalance
-dates. PnL correlation uses daily equity changes, not cumulative PnL levels;
-daily return correlations are also shown to control for account size differences.
-
-The eight `strategy_002_mdl_*_top10_net_retry.toml` / `*_top20_net_retry.toml`
-configs keep identical dates, capital, costs, reserve and retry rules. When all
-size runs are present, the comparison script adds a 12-run performance table and
-separate Top10/Top20 four-signal plots to the same settlement notebook.
-
-
-Top10 capital/allocation comparisons add four `_top10_1m.toml` runs (1000000
-initial cash, unchanged equal targets) and four `_top10_rankcarry.toml` runs
-(100000 cash, 2% reserve, `allocation_mode = "rank_carry"`). Equal remains the
-default. Rank-carry assigns each name its base equal-weight budget plus the unused
-budget of preceding higher-ranked names, using opening prices, whole lots and
-opening tradeability. Existing holdings count toward target value; missing quotes
-retain existing shares, without generating duplicate purchases. A budget passed
-to lower ranks is not kept as a pending higher-rank buy. Resulting weights may
-be unequal. Actual pending orders still retry until the next target update.
-
-Rank-carry buy execution releases a cumulative total notional budget over the
-30-minute window, filling higher ranks before lower ranks. Sells retain their
-TWAP schedule, cash availability and the opening reserve constrain all buys.
-The last slot attempts the remaining targets subject to available cash. Thus
-whole lots or unavailable stocks can still leave residual cash; full deployment
-is not guaranteed. The notebook includes maximum single-stock weight and actual
-position counts so the concentration introduced by carry is visible.

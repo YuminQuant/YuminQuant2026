@@ -23,6 +23,8 @@ pub struct Bar {
     pub amount: Option<f64>,
     pub is_limit_up: bool,
     pub is_limit_down: bool,
+    /// -1 or +1 when this open reaches the acceleration threshold on a 10%/20% day.
+    pub near_price_limit: i8,
 }
 
 #[derive(Clone, Debug)]
@@ -152,6 +154,7 @@ pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<Ma
                 amount: finite(amount[idx]),
                 is_limit_up,
                 is_limit_down,
+                near_price_limit: 0,
             });
         }
         frames.push(MarketFrame {
@@ -227,7 +230,7 @@ fn stock_minute_frames(
     date: i32,
     table: Table,
     minute_limits: bool,
-    price_bands: BTreeMap<String, (Option<f64>, Option<f64>)>,
+    price_bands: BTreeMap<String, PriceBand>,
 ) -> Result<Vec<MarketFrame>> {
     let mut frames = Vec::new();
     let trade_date = &date;
@@ -282,11 +285,12 @@ fn stock_minute_frames(
         let Some(close) = clean_positive_opt(close[idx]) else {
             continue;
         };
+        let band = price_bands.get(&symbol);
         let (mut is_limit_up, mut is_limit_down) = if minute_limits {
-            match price_bands.get(&symbol) {
-                Some((up, down)) => (
-                    up.is_some_and(|p| open >= p - 0.0001),
-                    down.is_some_and(|p| open <= p + 0.0001),
+            match band {
+                Some(band) => (
+                    band.up.is_some_and(|p| open >= p - 0.0001),
+                    band.down.is_some_and(|p| open <= p + 0.0001),
                 ),
                 // Missing price bands are unknown, not permission to trade.
                 None => (true, true),
@@ -312,6 +316,7 @@ fn stock_minute_frames(
             amount: finite(amount[idx]),
             is_limit_up,
             is_limit_down,
+            near_price_limit: band.map_or(0, |band| band.direction(open)),
         });
     }
     let total = grouped.len();
@@ -348,6 +353,7 @@ pub(crate) fn visit_stock_minute_sessions(
                 .join((date / 10000).to_string())
                 .join(format!("{date}.parquet")),
         );
+        paths.push(daily_pv_path(data_root, date));
     }
     let minute_columns = [
         "ts_code",
@@ -361,14 +367,16 @@ pub(crate) fn visit_stock_minute_sessions(
     ]
     .map(str::to_string);
     let band_columns = ["ts_code", "up_limit", "down_limit"].map(str::to_string);
-    let mut pending = None;
+    let previous_close_columns = ["ts_code", "pre_close"].map(str::to_string);
+    let mut pending_minute = None;
+    let mut pending_bands = None;
     crate::data::read_ahead::visit_tables(
         &paths,
         |i, reader| {
-            let columns = if i % 2 == 0 {
-                &minute_columns[..]
-            } else {
-                &band_columns[..]
+            let columns = match i % 3 {
+                0 => &minute_columns[..],
+                1 => &band_columns[..],
+                _ => &previous_close_columns[..],
             };
             let prepared = crate::data::parquet_io::PreparedProjection::new(
                 reader,
@@ -379,7 +387,7 @@ pub(crate) fn visit_stock_minute_sessions(
             Ok(if let Some(symbols) = symbols {
                 let rows = symbols
                     .len()
-                    .saturating_mul(if i % 2 == 0 { 241 } else { 1 });
+                    .saturating_mul(if i % 3 == 0 { 241 } else { 1 });
                 prepared.with_symbols(symbols.clone(), Some(rows))
             } else {
                 prepared
@@ -387,16 +395,23 @@ pub(crate) fn visit_stock_minute_sessions(
         },
         |_, table| Ok(table),
         |i, table| {
-            if i % 2 == 0 {
-                pending = Some(table);
-                return Ok(());
+            match i % 3 {
+                0 => {
+                    pending_minute = Some(table);
+                    return Ok(());
+                }
+                1 => {
+                    pending_bands = Some(table);
+                    return Ok(());
+                }
+                _ => {}
             }
-            let bands = price_bands_from_table(&table)?;
-            let date = dates[i / 2];
+            let bands = price_bands_from_tables(&pending_bands.take().expect("preceding band table"), &table)?;
+            let date = dates[i / 3];
             let frames = stock_minute_frames(
                 data_root,
                 date,
-                pending.take().expect("preceding minute table"),
+                pending_minute.take().expect("preceding minute table"),
                 minute_limits,
                 bands,
             )?;
@@ -496,6 +511,7 @@ impl FutureDailyCache {
                     amount: finite(amount[idx]),
                     is_limit_up: false,
                     is_limit_down: false,
+                    near_price_limit: 0,
                 });
             }
             warn_missing_multipliers(&missing_meta, *trade_date);
@@ -603,6 +619,7 @@ pub fn load_future_minute_frames(
                 amount: finite(amount[idx]),
                 is_limit_up: false,
                 is_limit_down: false,
+                near_price_limit: 0,
             });
         }
         warn_missing_multipliers(&missing_meta, *trade_date);
@@ -837,25 +854,66 @@ fn warn_missing_multipliers(missing: &BTreeSet<String>, date: i32) {
 fn load_price_bands(
     root: &Path,
     date: i32,
-) -> Result<BTreeMap<String, (Option<f64>, Option<f64>)>> {
+) -> Result<BTreeMap<String, PriceBand>> {
     let path = root
         .join("chn_stock_data/daily/limit")
         .join((date / 10000).to_string())
         .join(format!("{date}.parquet"));
     let cols = ["ts_code", "up_limit", "down_limit"].map(str::to_string);
     let table = read_parquet(&path, Some(&cols))?;
-    price_bands_from_table(&table)
+    let previous = read_parquet(&daily_pv_path(root, date), Some(&["ts_code".into(), "pre_close".into()]))?;
+    price_bands_from_tables(&table, &previous)
 }
 
-fn price_bands_from_table(table: &Table) -> Result<BTreeMap<String, (Option<f64>, Option<f64>)>> {
+#[derive(Default)]
+struct PriceBand {
+    up: Option<f64>,
+    down: Option<f64>,
+    acceleration: Option<(f64, f64)>,
+}
+
+impl PriceBand {
+    fn direction(&self, price: f64) -> i8 {
+        match self.acceleration {
+            Some((lower, _)) if price <= lower => -1,
+            Some((_, upper)) if price >= upper => 1,
+            _ => 0,
+        }
+    }
+}
+
+fn acceleration_prices(previous: f64, up: f64, down: f64) -> Option<(f64, f64)> {
+    // Compare the actual dated bands to cent-rounded exchange limits.
+    let matches = |rate: f64| {
+        (up - previous * (1.0 + rate)).abs() <= 0.0051
+            && (down - previous * (1.0 - rate)).abs() <= 0.0051
+    };
+    let trigger = match (matches(0.10), matches(0.20)) {
+        (true, false) => 0.09,
+        (false, true) => 0.18,
+        _ => return None,
+    };
+    let tolerance = previous * 1e-7;
+    Some((previous * (1.0 - trigger) + tolerance, previous * (1.0 + trigger) - tolerance))
+}
+
+fn price_bands_from_tables(table: &Table, previous: &Table) -> Result<BTreeMap<String, PriceBand>> {
+    let previous_codes = previous.required_utf8("ts_code")?;
+    let previous_prices = previous.required_f64_cast("pre_close")?;
+    let previous: BTreeMap<_, _> = previous_codes.iter().zip(previous_prices)
+        .filter_map(|(code, price)| Some((code.as_deref()?, clean_positive_opt(price)?)))
+        .collect();
     let codes = table.required_utf8("ts_code")?;
     let up = table.required_f64_cast("up_limit")?;
     let down = table.required_f64_cast("down_limit")?;
     Ok((0..table.len)
         .filter_map(|i| {
-            codes[i]
-                .clone()
-                .map(|s| (s, (clean_positive_opt(up[i]), clean_positive_opt(down[i]))))
+            let symbol = codes[i].clone()?;
+            let up = clean_positive_opt(up[i]);
+            let down = clean_positive_opt(down[i]);
+            let acceleration = previous.get(symbol.as_str()).zip(up.zip(down))
+                .and_then(|(&price, (up, down))| acceleration_prices(price, up, down));
+            Some((symbol, PriceBand { up, down, acceleration }))
         })
         .collect())
 }

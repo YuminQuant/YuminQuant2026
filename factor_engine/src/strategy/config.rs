@@ -114,6 +114,8 @@ pub struct StrategyRunConfig {
     pub fill_price: FillPrice,
     pub respect_price_limits: bool,
     pub minute_open_limits: bool,
+    pub force_delisting_exit: bool,
+    pub delisting_exit_time: String,
     pub commission_bps: f64,
     pub buy_commission_bps: f64,
     pub sell_commission_bps: f64,
@@ -257,8 +259,28 @@ impl StrategyRunConfig {
         {
             return Err(err("minute_open price limits require stock minute bars"));
         }
+        let force_delisting_exit = match doc.string("execution", "force_delisting_exit") {
+            Some(value) => parse_bool(Some(&value))
+                .ok_or_else(|| err("force_delisting_exit must be true or false"))?,
+            None => true,
+        };
+        let delisting_exit_time = doc
+            .string("execution", "delisting_exit_time")
+            .unwrap_or_else(|| "15:00".into());
+        let valid_exit_time = delisting_exit_time
+            .split_once(':')
+            .filter(|(h, m)| {
+                h.len() == 2 && m.len() == 2 && h.bytes().chain(m.bytes()).all(|b| b.is_ascii_digit())
+            })
+            .and_then(|(h, m)| Some((h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)))
+            .is_some_and(|(h, m)| m < 60 && (570..=900).contains(&(h * 60 + m)));
+        if !valid_exit_time || (bar_frequency == BarFrequency::Daily && delisting_exit_time != "15:00") {
+            return Err(err("delisting_exit_time must be HH:MM from 09:30 to 15:00; daily bars require 15:00"));
+        }
         Ok(Self {
             minute_open_limits: limit_mode == "minute_open",
+            force_delisting_exit,
+            delisting_exit_time,
             asset_class,
             strategy_id,
             strategy_class,

@@ -70,6 +70,7 @@ impl StrategyEngine {
             super::corporate_actions::CorporateActions::default()
         };
         let mut execution = ExecutionEngine::new();
+        let mut lifecycle = super::lifecycle::StockLifecycle::load(&run_config)?;
         let mut pending_orders = Vec::<Order>::new();
         let mut holdings = HoldingsWriter::new(&run_config.output_dir())?;
         let mut daily_cache = FutureDailyCache::default();
@@ -87,8 +88,9 @@ impl StrategyEngine {
         let batch_days = strategy.input_batch_days().max(1);
         for batch in dates.chunks(batch_days) {
             let universe = strategy.prepare_session(&run_config, &account, batch[0])?;
-            let mut consume = |trade_date: i32, frames: Vec<MarketFrame>| -> Result<()> {
+            let mut consume = |trade_date: i32, mut frames: Vec<MarketFrame>| -> Result<()> {
                 corporate_actions.begin_session(&mut account, trade_date);
+                let exit_time = lifecycle.begin_session(&run_config, &mut account, trade_date, &mut frames);
                 strategy.prepare_session(&run_config, &account, trade_date)?;
                 if frames.is_empty() {
                     corporate_actions.end_session(&account, trade_date);
@@ -187,6 +189,13 @@ impl StrategyEngine {
                         bar_fills.extend(fills);
                     }
                     mark_account_positions(&run_config, &mut account, &market);
+                    if exit_time.as_ref() == Some(&market.event.trade_time) {
+                        let fills = lifecycle.fill_exits(&run_config, &mut account, &market, &mut execution, &mut next_order_id)?;
+                        call_fills(&mut *strategy, &run_config, &account, &market, &mut next_order_id, &fills)?;
+                        trade_count += fills.len();
+                        daily_side_counts.add_fills(&fills);
+                        bar_fills.extend(fills);
+                    }
                     let mut ctx =
                         StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
                     strategy.on_bar(&mut ctx, &market.event)?;
@@ -248,6 +257,7 @@ impl StrategyEngine {
             strategy.on_end(&mut ctx)?;
         }
         progress.finish();
+        lifecycle.finish()?;
         let output = holdings.finish()?;
         crate::artifact_io::write(
             run_config.output_dir().join("run_config.toml"),

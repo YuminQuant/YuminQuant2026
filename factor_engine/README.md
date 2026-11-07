@@ -207,6 +207,26 @@ storage module through `storage=` for remote reads of the same result files.
 Notebook routing: `test.ipynb` is reserved for factor research; `strategy.ipynb`
 is the dedicated strategy settlement notebook. Both remain ignored by Git.
 
+Stock runs enable `[execution] force_delisting_exit = true` by default. The event
+uses `delist_date` from `chn_stock_data/info/stock_basic.parquet` (the first
+available exchange session on or after that date if the date is closed). That
+symbol is excluded from regular orders starting that session. At
+`delisting_exit_time = "15:00"` by default, all remaining shares are assumed
+sold at the latest valid account mark, including at limit-down. Minute runs can
+configure the cutoff as `HH:MM`. Daily runs use the close. When the cutoff has no
+quote, the account's last mark supplies the price without retaining a price
+history. These simulated sales use normal selling costs, credit cash, and
+appear in the regular fill accounting and `lifecycle.csv`. Set
+`force_delisting_exit = false` to disable the rule. An absent stock metadata file
+emits a warning. A missing quote alone does not trigger an exit.
+
+Minute replay continues through the full session with either output detail
+setting. After the strategy002 TWAP window, the full remaining quantity is
+eligible on each later minute open under the regular price-limit, lot, cash
+reserve and sellable-share checks. Optional next-day retry applies to the
+remainder after the session. Strategy001 still trades regular orders at the
+rebalance session's opening price.
+
 
 `strategy002` optionally accepts `retry_next_day = true` in net mode. Remaining
 unfilled quantities are spread over the next session's 09:30–09:59 window with

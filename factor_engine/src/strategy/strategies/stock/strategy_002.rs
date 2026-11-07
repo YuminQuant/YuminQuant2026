@@ -363,6 +363,9 @@ impl Strategy for Strategy002 {
     ) -> Result<()> {
         let rebalance = self.sessions % self.hold_days == 0;
         self.sessions += 1;
+        self.buys.retain(|symbol, _| !ctx.account().is_delisted(symbol));
+        self.sells.retain(|symbol, _| !ctx.account().is_delisted(symbol));
+        self.pending_quotes.retain(|symbol, _| !ctx.account().is_delisted(symbol));
         if self.retry_next_day && !rebalance {
             for leg in self.buys.values_mut().chain(self.sells.values_mut()) {
                 leg.target = (leg.target - leg.filled).max(0.0);
@@ -438,6 +441,10 @@ impl Strategy for Strategy002 {
                 let mut carry = 0.0;
                 for symbol in &self.selected {
                     let budget = target_value + carry;
+                    if ctx.account().is_delisted(symbol) {
+                        carry = budget;
+                        continue;
+                    }
                     let current = ctx.account().position_quantity(symbol);
                     let Some(price) = ctx.market().open_price(symbol) else {
                         let retained = ctx
@@ -469,7 +476,9 @@ impl Strategy for Strategy002 {
             for (i, symbol) in universe.iter().enumerate() {
                 let current = ctx.account().position_quantity(symbol);
                 let selected = self.selected.contains(symbol);
-                let target = if selected && self.rank_carry {
+                let target = if ctx.account().is_delisted(symbol) {
+                    0.0
+                } else if selected && self.rank_carry {
                     rank_targets[symbol]
                 } else if selected {
                     let Some(price) = ctx.market().open_price(symbol) else {
@@ -489,6 +498,9 @@ impl Strategy for Strategy002 {
                         "{},{},{},{},{},{},{}",
                         _event.trade_date, symbol, current, target, delta, equity, self.reserve
                     )?;
+                }
+                if ctx.account().is_delisted(symbol) {
+                    continue;
                 }
                 let phase = (i as f64 + 0.5) / count as f64;
                 if delta > 1e-9 {
@@ -545,6 +557,9 @@ impl Strategy for Strategy002 {
         let lot = ctx.config().lot_size;
         let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
         for (i, symbol) in self.selected.iter().enumerate() {
+            if ctx.account().is_delisted(symbol) {
+                continue;
+            }
             // Missing opening quote: retain that slot as cash, never replace it.
             let Some(price) = ctx.market().open_price(symbol) else {
                 continue;
@@ -566,15 +581,20 @@ impl Strategy for Strategy002 {
             return Ok(());
         }
         let clock = event.trade_time.rsplit(' ').next().unwrap_or("");
-        let parts = clock.split(':').collect::<Vec<_>>();
-        if parts.len() != 3 {
-            return Err(err("invalid minute timestamp"));
-        }
-        let minute = parts[0].parse::<usize>()? * 60 + parts[1].parse::<usize>()?;
-        if minute < 570 || minute >= 570 + self.window {
+        let (hour, rest) = clock.split_once(':').ok_or_else(|| err("invalid minute timestamp"))?;
+        let (minute, _) = rest.split_once(':').ok_or_else(|| err("invalid minute timestamp"))?;
+        let minute = hour.parse::<usize>()? * 60 + minute.parse::<usize>()?;
+        if !(570..=900).contains(&minute) {
             return Ok(());
         }
-        let slot = minute - 570;
+        if minute >= 570 + self.window
+            && self.buys.values().chain(self.sells.values()).all(|leg| leg.target - leg.filled <= 1e-9)
+        {
+            self.active = false;
+            return Ok(());
+        }
+        // After the TWAP window, all remaining shares are due on every valid bar.
+        let slot = (minute - 570).min(self.window - 1);
         let lot = ctx.config().lot_size;
         let buy_rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
         let sell_rate = (ctx.config().sell_commission_bps
@@ -606,17 +626,12 @@ impl Strategy for Strategy002 {
                 - self.buy_window_spent)
                 .max(0.0)
         };
-        let buy_symbols = if self.rank_carry {
-            self.selected
-                .iter()
-                .filter(|s| self.buys.contains_key(*s))
-                .cloned()
-                .collect::<Vec<_>>()
-        } else {
-            self.buys.keys().cloned().collect::<Vec<_>>()
-        };
-        for symbol in &buy_symbols {
-            let leg = &self.buys[symbol];
+        let buy_symbols = self.selected.iter().filter(|_| self.rank_carry)
+            .chain(self.buys.keys().filter(|_| !self.rank_carry));
+        for symbol in buy_symbols {
+            let Some(leg) = self.buys.get(symbol) else {
+                continue;
+            };
             let Some(bar) = ctx.market().bar(symbol) else {
                 continue;
             };

@@ -43,6 +43,9 @@ impl ExecutionEngine {
         order: Order,
         fills: &mut Vec<FillEvent>,
     ) {
+        if account.is_delisted(&order.symbol) {
+            return;
+        }
         let Some(bar) = market.bar(&order.symbol) else {
             return;
         };
@@ -68,6 +71,36 @@ impl ExecutionEngine {
             return;
         }
 
+        self.settle_stock_fill(config, account, market, order, side, quantity, price, fills);
+    }
+
+    pub(super) fn force_delisting_sale(
+        &mut self,
+        config: &StrategyRunConfig,
+        account: &mut AccountState,
+        market: &MarketSnapshot,
+        order: Order,
+        price: f64,
+    ) -> Vec<FillEvent> {
+        let quantity = account.position_quantity(&order.symbol);
+        let mut fills = Vec::new();
+        account.clear_share_locks(&order.symbol);
+        self.settle_stock_fill(config, account, market, order, OrderSide::Sell, quantity, price, &mut fills);
+        fills
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn settle_stock_fill(
+        &mut self,
+        config: &StrategyRunConfig,
+        account: &mut AccountState,
+        market: &MarketSnapshot,
+        order: Order,
+        side: OrderSide,
+        quantity: f64,
+        price: f64,
+        fills: &mut Vec<FillEvent>,
+    ) {
         let notional = quantity * price;
         let fee = notional * config.commission_bps_for_side(side) / 10_000.0;
         let tax = if side == OrderSide::Sell {

@@ -124,6 +124,10 @@ fn opening_allocation(
     let mut cash = ctx.account().cash();
     let mut retained = BTreeMap::new();
     for (symbol, position) in ctx.account().positions() {
+        if ctx.account().is_delisted(symbol) {
+            retained.insert(symbol.clone(), position.quantity);
+            continue;
+        }
         let sellable = ctx
             .market()
             .bar(symbol)
@@ -163,6 +167,9 @@ fn opening_allocation(
     let desired = selected
         .iter()
         .filter_map(|symbol| {
+            if ctx.account().is_delisted(symbol) {
+                return None;
+            }
             let bar = ctx.market().bar(symbol)?;
             let price = ctx.market().open_price(symbol)?;
             // A failed liquidation remains the old batch; do not add another batch to it.

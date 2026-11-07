@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default)]
 pub struct Position {
@@ -71,6 +71,7 @@ pub struct AccountState {
     dividend_receivables: Vec<(i32, f64)>,
     locked_shares: Vec<(i32, String, f64)>,
     dividend_income: f64,
+    delisted_symbols: BTreeSet<String>,
 }
 
 impl AccountState {
@@ -84,11 +85,24 @@ impl AccountState {
             dividend_receivables: Vec::new(),
             locked_shares: Vec::new(),
             dividend_income: 0.0,
+            delisted_symbols: BTreeSet::new(),
         }
     }
 
     pub fn cash(&self) -> f64 {
         self.cash
+    }
+
+    pub fn is_delisted(&self, symbol: &str) -> bool {
+        self.delisted_symbols.contains(symbol)
+    }
+
+    pub fn register_delisting(&mut self, symbol: String) {
+        self.delisted_symbols.insert(symbol);
+    }
+
+    pub(super) fn clear_share_locks(&mut self, symbol: &str) {
+        self.locked_shares.retain(|(_, stock, _)| stock != symbol);
     }
 
     pub fn initial_cash(&self) -> f64 {

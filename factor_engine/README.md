@@ -206,3 +206,46 @@ storage module through `storage=` for remote reads of the same result files.
 
 Notebook routing: `test.ipynb` is reserved for factor research; `strategy.ipynb`
 is the dedicated strategy settlement notebook. Both remain ignored by Git.
+
+
+`strategy002` optionally accepts `retry_next_day = true` in net mode. Remaining
+unfilled quantities are spread over the next session's 09:30–09:59 window with
+the 2% reserve recomputed at that session's open. Missing opening quotes defer
+initialization until a subsequent session with a valid opening quote. Locked
+sales remain pending until sellable. New five-session targets supersede pending
+old orders. The compatibility default is false. This is best-effort retry,
+without assuming execution while price limits, missing quotes or cash prevent it.
+
+The four `strategy_002_mdl_*_net_retry.toml` configurations compare mdl_000021,
+mdl_000026, mdl_000039 and mdl_000040 on the same interval and execution rules.
+After retrieving results and `head_overlap_daily.csv`, run
+`python research/strategy002/compare_strategy_signals.py` from a checkout with
+the local research scripts to rebuild the four-signal strategy settlement
+notebook. Head overlap is a count of shared
+Top50 names, summarized over all signal dates and separately over rebalance
+dates. PnL correlation uses daily equity changes, not cumulative PnL levels;
+daily return correlations are also shown to control for account size differences.
+
+The eight `strategy_002_mdl_*_top10_net_retry.toml` / `*_top20_net_retry.toml`
+configs keep identical dates, capital, costs, reserve and retry rules. When all
+size runs are present, the comparison script adds a 12-run performance table and
+separate Top10/Top20 four-signal plots to the same settlement notebook.
+
+
+Top10 capital/allocation comparisons add four `_top10_1m.toml` runs (1000000
+initial cash, unchanged equal targets) and four `_top10_rankcarry.toml` runs
+(100000 cash, 2% reserve, `allocation_mode = "rank_carry"`). Equal remains the
+default. Rank-carry assigns each name its base equal-weight budget plus the unused
+budget of preceding higher-ranked names, using opening prices, whole lots and
+opening tradeability. Existing holdings count toward target value; missing quotes
+retain existing shares, without generating duplicate purchases. A budget passed
+to lower ranks is not kept as a pending higher-rank buy. Resulting weights may
+be unequal. Actual pending orders still retry until the next target update.
+
+Rank-carry buy execution releases a cumulative total notional budget over the
+30-minute window, filling higher ranks before lower ranks. Sells retain their
+TWAP schedule, cash availability and the opening reserve constrain all buys.
+The last slot attempts the remaining targets subject to available cash. Thus
+whole lots or unavailable stocks can still leave residual cash; full deployment
+is not guaranteed. The notebook includes maximum single-stock weight and actual
+position counts so the concentration introduced by carry is visible.

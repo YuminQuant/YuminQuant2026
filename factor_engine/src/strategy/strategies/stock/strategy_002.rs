@@ -34,6 +34,11 @@ pub struct Strategy002 {
     sells: BTreeMap<String, Leg>,
     reserve: f64,
     net_rebalance: bool,
+    rank_carry: bool,
+    buy_window_budget: f64,
+    buy_window_spent: f64,
+    retry_next_day: bool,
+    pending_quotes: BTreeMap<String, f64>,
     strict_signal: bool,
     signal_max_age: usize,
     input_days: usize,
@@ -100,7 +105,31 @@ impl Strategy002 {
             .map(|v| v.parse::<usize>())
             .transpose()?
             .unwrap_or(0);
+        let allocation = params
+            .get("allocation_mode")
+            .map(String::as_str)
+            .unwrap_or("equal");
+        if !matches!(allocation, "equal" | "rank_carry")
+            || (allocation == "rank_carry" && mode != "net")
+        {
+            return Err(err(
+                "allocation_mode must be equal or rank_carry (net mode only)",
+            ));
+        }
         Ok(Self {
+            rank_carry: allocation == "rank_carry",
+            buy_window_budget: 0.0,
+            buy_window_spent: 0.0,
+            retry_next_day: match params
+                .get("retry_next_day")
+                .map(String::as_str)
+                .unwrap_or("false")
+            {
+                "true" => true,
+                "false" => false,
+                _ => return Err(err("retry_next_day must be true or false")),
+            },
+            pending_quotes: BTreeMap::new(),
             net_rebalance: mode == "net",
             strict_signal,
             signal_max_age,
@@ -128,6 +157,15 @@ impl Strategy002 {
             audit: None,
             plans: None,
         })
+    }
+    fn reset_buy_window(&mut self, ctx: &StrategyContext) {
+        let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
+        self.buy_window_budget = self
+            .buys
+            .iter()
+            .map(|(s, l)| l.target * ctx.market().open_price(s).unwrap_or(0.0) * (1.0 + rate))
+            .sum();
+        self.buy_window_spent = 0.0;
     }
 }
 
@@ -245,9 +283,17 @@ impl Strategy for Strategy002 {
         account: &AccountState,
         date: i32,
     ) -> Result<Option<BTreeSet<String>>> {
-        self.active = self.sessions % self.hold_days == 0;
-        self.selected.clear();
-        if self.active {
+        let rebalance = self.sessions % self.hold_days == 0;
+        self.active = rebalance
+            || (self.retry_next_day
+                && (self
+                    .buys
+                    .values()
+                    .chain(self.sells.values())
+                    .any(|l| l.target - l.filled > 1e-9)
+                    || !self.pending_quotes.is_empty()));
+        if rebalance {
+            self.selected.clear();
             let previous = self
                 .calendar
                 .last_open_on_or_before(date - 1)
@@ -315,7 +361,59 @@ impl Strategy for Strategy002 {
         ctx: &mut StrategyContext,
         _event: &SessionOpenEvent,
     ) -> Result<()> {
+        let rebalance = self.sessions % self.hold_days == 0;
         self.sessions += 1;
+        if self.retry_next_day && !rebalance {
+            for leg in self.buys.values_mut().chain(self.sells.values_mut()) {
+                leg.target = (leg.target - leg.filled).max(0.0);
+                leg.filled = 0.0;
+            }
+            self.buys.retain(|_, l| l.target > 1e-9);
+            self.sells.retain(|_, l| l.target > 1e-9);
+            self.reserve = (ctx.account().cash()
+                + ctx.account().dividend_receivable()
+                + ctx
+                    .account()
+                    .positions()
+                    .iter()
+                    .map(|(s, p)| p.quantity * ctx.market().open_price(s).unwrap_or(p.mark_price()))
+                    .sum::<f64>())
+            .max(0.0)
+                * self.buffer;
+            let waiting = std::mem::take(&mut self.pending_quotes);
+            let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
+            let lot = ctx.config().lot_size;
+            for (symbol, budget) in waiting {
+                if let Some(price) = ctx.market().open_price(&symbol) {
+                    let target = (budget / (price * (1.0 + rate)) / lot).floor() * lot;
+                    let delta = target - ctx.account().position_quantity(&symbol);
+                    if delta > 0.0 {
+                        self.buys.insert(
+                            symbol,
+                            Leg {
+                                target: (delta / lot).floor() * lot,
+                                filled: 0.0,
+                                phase: 0.5,
+                            },
+                        );
+                    } else if delta < 0.0 {
+                        self.sells.insert(
+                            symbol,
+                            Leg {
+                                target: ((-delta) / lot).floor() * lot,
+                                filled: 0.0,
+                                phase: 0.5,
+                            },
+                        );
+                    }
+                } else {
+                    self.pending_quotes.insert(symbol, budget);
+                }
+            }
+            self.reset_buy_window(ctx);
+            return Ok(());
+        }
+        self.pending_quotes.clear();
         self.buys.clear();
         self.sells.clear();
         if !self.active {
@@ -335,6 +433,31 @@ impl Strategy for Strategy002 {
             let target_value = (equity - self.reserve).max(0.0) / self.selected.len().max(1) as f64;
             // Reserve a conservative one-way buy fee allowance without resetting retained lots.
             let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
+            let mut rank_targets = BTreeMap::new();
+            if self.rank_carry {
+                let mut carry = 0.0;
+                for symbol in &self.selected {
+                    let budget = target_value + carry;
+                    let current = ctx.account().position_quantity(symbol);
+                    let Some(price) = ctx.market().open_price(symbol) else {
+                        let retained = ctx
+                            .account()
+                            .position(symbol)
+                            .map_or(0.0, |p| p.market_value());
+                        rank_targets.insert(symbol.clone(), current);
+                        carry = (budget - retained).max(0.0);
+                        continue;
+                    };
+                    let desired = (budget / (price * (1.0 + rate)) / lot).floor() * lot;
+                    let target = if ctx.market().bar(symbol).is_some_and(|b| b.is_limit_up) {
+                        desired.min(current)
+                    } else {
+                        desired
+                    };
+                    rank_targets.insert(symbol.clone(), target);
+                    carry = (budget - target * price * (1.0 + rate)).max(0.0);
+                }
+            }
             let universe = ctx
                 .account()
                 .positions()
@@ -346,8 +469,13 @@ impl Strategy for Strategy002 {
             for (i, symbol) in universe.iter().enumerate() {
                 let current = ctx.account().position_quantity(symbol);
                 let selected = self.selected.contains(symbol);
-                let target = if selected {
+                let target = if selected && self.rank_carry {
+                    rank_targets[symbol]
+                } else if selected {
                     let Some(price) = ctx.market().open_price(symbol) else {
+                        if self.retry_next_day {
+                            self.pending_quotes.insert(symbol.clone(), target_value);
+                        }
                         continue;
                     };
                     (target_value / (price * (1.0 + rate)) / lot).floor() * lot
@@ -376,7 +504,11 @@ impl Strategy for Strategy002 {
                         );
                     }
                 } else if delta < -1e-9 {
-                    let excess = (-delta).min(ctx.account().sellable_quantity(symbol));
+                    let excess = if self.retry_next_day {
+                        -delta
+                    } else {
+                        (-delta).min(ctx.account().sellable_quantity(symbol))
+                    };
                     // Odd lots are sold only on full exit; retained positions adjust in whole lots.
                     let quantity = if !selected {
                         excess
@@ -395,6 +527,7 @@ impl Strategy for Strategy002 {
                     }
                 }
             }
+            self.reset_buy_window(ctx);
             return Ok(());
         }
         let count = ctx.account().positions().len().max(1);
@@ -466,7 +599,24 @@ impl Strategy for Strategy002 {
             }
         }
         // Sell proceeds are available to buys at the same minute open. The 2% reserve is protected.
-        for (symbol, leg) in &self.buys {
+        let mut quota = if slot + 1 == self.window {
+            f64::INFINITY
+        } else {
+            (self.buy_window_budget * (slot + 1) as f64 / self.window as f64
+                - self.buy_window_spent)
+                .max(0.0)
+        };
+        let buy_symbols = if self.rank_carry {
+            self.selected
+                .iter()
+                .filter(|s| self.buys.contains_key(*s))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            self.buys.keys().cloned().collect::<Vec<_>>()
+        };
+        for symbol in &buy_symbols {
+            let leg = &self.buys[symbol];
             let Some(bar) = ctx.market().bar(symbol) else {
                 continue;
             };
@@ -476,10 +626,23 @@ impl Strategy for Strategy002 {
             let price = bar.open;
             let affordable =
                 ((cash - self.reserve).max(0.0) / (price * (1.0 + buy_rate)) / lot).floor() * lot;
-            let quantity = due(leg, slot, self.window, lot).min(affordable);
+            let quantity = if self.rank_carry {
+                let time_limit = (quota / (price * (1.0 + buy_rate)) / lot).floor() * lot;
+                (leg.target - leg.filled)
+                    .max(0.0)
+                    .min(affordable)
+                    .min(time_limit)
+            } else {
+                due(leg, slot, self.window, lot).min(affordable)
+            };
             if quantity > 0.0 {
                 cash -= quantity * price * (1.0 + buy_rate);
+                if self.rank_carry {
+                    quota = (quota - quantity * price * (1.0 + buy_rate)).max(0.0);
+                }
                 ctx.order_quantity(symbol.clone(), quantity);
+            } else if self.rank_carry && leg.target - leg.filled > 1e-9 {
+                break;
             }
         }
         Ok(())
@@ -488,6 +651,9 @@ impl Strategy for Strategy002 {
         Ok(())
     }
     fn on_fill(&mut self, _ctx: &mut StrategyContext, fill: &FillEvent) -> Result<()> {
+        if self.rank_carry && fill.side == OrderSide::Buy {
+            self.buy_window_spent += fill.notional + fill.fee + fill.slippage_cost;
+        }
         let leg = match fill.side {
             OrderSide::Buy => self.buys.get_mut(&fill.symbol),
             OrderSide::Sell => self.sells.get_mut(&fill.symbol),

@@ -16,6 +16,8 @@ pub struct MarketDataLoader {
     catalog: DataCatalog,
 }
 
+pub type IndexMembership = BTreeMap<i32, BTreeSet<String>>;
+
 #[derive(Clone, Debug, Default)]
 pub struct DisclosureTableCache {
     yearly_tables: HashMap<DisclosureCacheKey, DisclosureCacheEntry>,
@@ -313,6 +315,45 @@ impl MarketDataLoader {
             table.append(&filtered)?;
         }
         Ok(table)
+    }
+
+    pub(crate) fn load_index_monthly_members(
+        &self, code: &str, start: i32, end: i32, quarters: usize,
+    ) -> Result<IndexMembership> {
+        let root = self.catalog.data_root().join("index_data").join("monthly_weight").join(code.replace('.', "_"));
+        let first_year = financial_file_start_year_for_range(start, end, quarters) - 1;
+        let last_year = end / 10_000;
+        let mut files = Vec::new();
+        let mut dirs = vec![root];
+        while let Some(dir) = dirs.pop() {
+            for entry in crate::artifact_io::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.storage_is_dir() {
+                    if path.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<i32>().ok())
+                        .is_none_or(|y| (first_year..=last_year).contains(&y)) {
+                        dirs.push(path);
+                    }
+                } else if path.extension().and_then(|s| s.to_str()) == Some("parquet") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        let columns = ["trade_date".to_string(), "con_code".to_string()];
+        let mut members = IndexMembership::new();
+        crate::data::read_ahead::visit_projected_files(&files, &columns, |_, table| {
+            let dates = table.required_i32_date_cast("trade_date")?;
+            let codes = table.required_utf8("con_code")?;
+            for (&date, code) in dates.iter().zip(codes) {
+                if let (Some(date), Some(code)) = (date, code) {
+                    if date <= end && date / 10_000 >= first_year && !code.is_empty() {
+                        members.entry(date).or_default().insert(code.clone());
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        Ok(members)
     }
 
     pub fn load_index_daily_by_dates(

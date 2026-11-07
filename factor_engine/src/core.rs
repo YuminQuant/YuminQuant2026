@@ -81,6 +81,7 @@ pub enum DatasetId {
     StockCiClassification,
     StockBarraDaily,
     IndexDaily,
+    IndexMonthlyWeight,
     FutureDaily,
     FutureMinute1m,
 }
@@ -108,7 +109,8 @@ impl DatasetId {
             | Self::StockSwClassification
             | Self::StockCiClassification
             | Self::StockBarraDaily
-            | Self::IndexDaily => AssetClass::Stock,
+            | Self::IndexDaily
+            | Self::IndexMonthlyWeight => AssetClass::Stock,
             Self::FutureDaily | Self::FutureMinute1m => AssetClass::Future,
         }
     }
@@ -134,6 +136,7 @@ impl DatasetId {
             | Self::StockCiClassification
             | Self::StockBarraDaily
             | Self::IndexDaily
+            | Self::IndexMonthlyWeight
             | Self::FutureDaily => Frequency::Daily,
             Self::StockMinute1m | Self::StockDerivedBar | Self::FutureMinute1m => {
                 Frequency::Minute1
@@ -164,6 +167,7 @@ impl DatasetId {
             Self::StockCiClassification => "stock.ci_classification",
             Self::StockBarraDaily => "stock.barra.daily",
             Self::IndexDaily => "index.daily",
+            Self::IndexMonthlyWeight => "index.monthly_weight",
             Self::FutureDaily => "future.daily",
             Self::FutureMinute1m => "future.minute.1m",
         }
@@ -249,6 +253,14 @@ impl DataRequest {
             date_policy: DateLoadPolicy::ContextLoadDates,
             panel_only: false,
         }
+    }
+
+    pub fn index_monthly_members(ts_code: &str, quarters: usize) -> Self {
+        let mut request = Self::financial_quarters(
+            DatasetId::IndexMonthlyWeight, &["trade_date", "con_code"], quarters,
+        );
+        request.entity_id = Some(ts_code.to_string());
+        request
     }
 
     pub fn financial_quarters(dataset: DatasetId, columns: &[&str], quarters: usize) -> Self {

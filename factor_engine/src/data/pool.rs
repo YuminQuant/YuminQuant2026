@@ -221,6 +221,7 @@ pub struct DataPool {
     main_business_index: Option<Arc<MainBusinessIndex>>,
     financial_context: Option<Arc<FinancialBatchContext>>,
     index_daily: HashMap<String, Arc<Table>>,
+    index_membership: HashMap<String, Arc<crate::data::loader::IndexMembership>>,
     index_daily_panels: HashMap<String, DailyPanel>,
     minute: HashMap<(DatasetId, Option<usize>, i32), Arc<Table>>,
     intraday_daily_raw: Option<Arc<Table>>,
@@ -283,6 +284,8 @@ impl DataPool {
         let uncached = requests.iter().filter(|request| !is_financial_context_dataset(request.dataset)
             && if request.dataset == DatasetId::IndexDaily {
                 request.entity_id.as_ref().is_none_or(|id| !self.index_daily_panels.contains_key(id))
+            } else if request.dataset == DatasetId::IndexMonthlyWeight {
+                request.entity_id.as_ref().is_none_or(|id| !pool.index_membership.contains_key(id))
             } else {
                 !self.daily.get(&request.dataset).is_some_and(|table| request.columns.iter().all(|name| table.columns.contains_key(name)))
                     && !self.daily_panels.get(&request.dataset).is_some_and(|panel| request.columns.iter().all(|name| panel.has_column(name)))
@@ -384,7 +387,7 @@ impl DataPool {
                 .entry(DatasetId::StockBasic)
                 .or_insert_with(|| Arc::new(table));
         }
-        for ((dataset, entity_id, bar_size), (columns, _financial_quarters, load_dates)) in grouped
+        for ((dataset, entity_id, bar_size), (columns, financial_quarters, load_dates)) in grouped
         {
             let columns = columns.into_iter().collect::<Vec<_>>();
             let load_dates = load_dates.into_iter().collect::<Vec<_>>();
@@ -399,6 +402,14 @@ impl DataPool {
                 let panel = DailyPanel::from_table(&table, context)?;
                 pool.index_daily_panels.insert(ts_code.clone(), panel);
                 pool.index_daily.insert(ts_code, Arc::new(table));
+                continue;
+            }
+            if dataset == DatasetId::IndexMonthlyWeight {
+                let code = entity_id.ok_or_else(|| err("index.monthly_weight requires an index code"))?;
+                let members = loader.load_index_monthly_members(
+                    &code, context.load_start_date, context.end_date, financial_quarters.unwrap_or(0),
+                )?;
+                pool.index_membership.insert(code, Arc::new(members));
                 continue;
             }
             if dataset == DatasetId::StockSwClassification {
@@ -500,6 +511,7 @@ impl DataPool {
             main_business_index: self.main_business_index.clone(),
             financial_context: self.financial_context.clone(),
             index_daily: self.index_daily.clone(),
+            index_membership: self.index_membership.clone(),
             index_daily_panels: self
                 .index_daily_panels
                 .iter()
@@ -543,6 +555,7 @@ impl DataPool {
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
             financial_context: self.financial_context.clone(),
+            index_membership: self.index_membership.clone(),
             index_daily: self
                 .index_daily
                 .iter()
@@ -653,6 +666,10 @@ impl DataPool {
             dividend_index: self.dividend_index.clone(),
             main_business_index: self.main_business_index.clone(),
             financial_context: self.financial_context.clone(),
+            index_membership: self.index_membership.iter().filter(|(code, _)| {
+                requests.iter().any(|r| r.dataset == DatasetId::IndexMonthlyWeight
+                    && r.entity_id.as_deref() == Some(code.as_str()))
+            }).map(|(code, members)| (code.clone(), Arc::clone(members))).collect(),
             index_daily: self
                 .index_daily
                 .iter()
@@ -830,6 +847,11 @@ impl DataPool {
             .ok_or_else(|| err(format!("index daily panel not loaded: {ts_code}")))
     }
 
+    pub(crate) fn index_monthly_members(&self, code: &str) -> Result<&crate::data::loader::IndexMembership> {
+        self.index_membership.get(code).map(Arc::as_ref)
+            .ok_or_else(|| err(format!("index membership not loaded: {code}")))
+    }
+
     pub fn minute(&self, dataset: DatasetId, trade_date: i32) -> Option<&Table> {
         self.minute
             .get(&(dataset, None, trade_date))
@@ -864,6 +886,7 @@ impl DataPool {
             self.financial_context = other.financial_context;
         }
         self.index_daily.extend(other.index_daily);
+        self.index_membership.extend(other.index_membership);
         self.index_daily_panels.extend(other.index_daily_panels);
         self.minute.extend(other.minute);
         if other.intraday_daily_raw.is_some() {

@@ -47,8 +47,8 @@ sequence_length = 30
 history_transform = "zscore_clip3"
 # Auxiliary future features are supervision; shared windows enforce max(11, 10).
 supervision_lookahead_days = 10
-memory_budget_mb = 384
-future_memory_budget_mb = 128
+memory_budget_mb = 16384
+future_memory_budget_mb = 16384
 
 [materialize]
 cache_samples = false

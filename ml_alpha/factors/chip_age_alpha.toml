@@ -51,7 +51,7 @@ columns = "__all__"
 [features.params]
 dataset_version = "chip_age_rolling250_v2"
 sequence_length = 30
-memory_budget_mb = 128
+memory_budget_mb = 16384
 
 [materialize]
 cache_samples = false

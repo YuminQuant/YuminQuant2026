@@ -47,7 +47,7 @@ history_read_workers = 30
 include_model_generated = true
 sequence_length = 30
 history_transform = "zscore_clip3"
-memory_budget_mb = 512
+memory_budget_mb = 16384
 
 [materialize]
 cache_samples = false

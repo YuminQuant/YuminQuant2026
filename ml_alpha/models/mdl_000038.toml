@@ -50,7 +50,7 @@ columns = "__all__"
 include_model_generated = true
 sequence_length = 1
 history_transform = "mad5_zscore_rank_label"
-memory_budget_mb = 512
+memory_budget_mb = 16384
 
 [materialize]
 cache_samples = false

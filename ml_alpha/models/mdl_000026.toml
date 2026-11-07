@@ -45,7 +45,7 @@ history_read_workers = 30
 include_model_generated = true
 sequence_length = 30
 # Per-window RAM cache; normalized days survive train/valid and epoch changes.
-memory_budget_mb = 14336
+memory_budget_mb = 16384
 history_prefetch_mb = 512
 
 [materialize]

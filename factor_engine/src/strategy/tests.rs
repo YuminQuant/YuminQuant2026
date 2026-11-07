@@ -129,6 +129,7 @@ fn bar(symbol: &str, close: f64) -> Bar {
         amount: None,
         is_limit_up: false,
         is_limit_down: false,
+        open_at_upper_limit: false,
         near_price_limit: 0,
     }
 }
@@ -574,6 +575,12 @@ fn minute_twap_fixture() -> (Fixture, StrategyRunRequest) {
 #[test]
 fn minute_twap_retries_open_boards_respects_window_and_five_sessions() {
     let (fixture, request) = minute_twap_fixture();
+    let config = std::fs::read_to_string(&request.config_path).unwrap();
+    std::fs::write(
+        &request.config_path,
+        format!("{config}\nlimit_replacement_candidates = 0\n"),
+    )
+    .unwrap();
     let report = fixture.engine().run(&request).unwrap();
     let out = read_parquet(&report.output_files[0], None).unwrap();
     assert_eq!(out.len, 7);

@@ -370,7 +370,7 @@ pub fn prepare_backtest_data_plan(
     )?;
     let instruments = instruments_from_table(&label_table)?;
     let universe = load_universe_plan(config, &request.universe, &target_dates, &instruments)?;
-    let trade_filter = load_trade_filter_plan(config, request, &target_dates, &instruments)?;
+    let trade_filter = load_trade_filter_plan(config, request, &calendar, &target_dates, &instruments)?;
     let benchmark = load_benchmark_plan(config, &request.benchmark, &target_dates, &instruments)?;
     let index_groups = load_index_group_plans(config, &target_dates, &instruments)?;
 
@@ -789,6 +789,7 @@ fn load_universe_plan(
 fn load_trade_filter_masks(
     config: &EngineConfig,
     request: &BacktestRunRequest,
+    calendar: &TradingCalendar,
     target_dates: &[i32],
     instruments: &[String],
 ) -> Result<HashMap<i32, Vec<bool>>> {
@@ -802,21 +803,49 @@ fn load_trade_filter_masks(
         .join("chn_stock_data")
         .join("daily")
         .join("trade_filter");
+    #[derive(Default)]
+    struct FilterFileUse {
+        apply_st: bool,
+        limit_for_signal_date: Option<i32>,
+    }
+
+    let mut file_uses = BTreeMap::<i32, FilterFileUse>::new();
     let mut masks = HashMap::new();
-    let mut paths = Vec::new();
-    let candidates = target_dates.iter().map(|date| daily_trade_filter_path(&root, *date)).collect::<Vec<_>>();
-    let exists = crate::data::read_ahead::plan_files(&candidates, |path| Ok(path.storage_exists()))?;
-    for ((date, path), exists) in target_dates.iter().zip(candidates).zip(exists) {
-        let required = request.exclude_limit || (request.exclude_st && *date >= 20160101);
-        if !exists {
-            if required {
-                return Err(err(format!(
-                    "missing stock trade filter for {date}: expected {}. Run: python scripts\\update_incremental.py --groups stock_trade_filter --start-date {date} --end-date {date}",
-                    path.display()
-                )));
+    let last_signal_date = target_dates.last().copied();
+    for &signal_date in target_dates {
+        masks.insert(signal_date, vec![true; instruments.len()]);
+        if request.exclude_st && signal_date >= 20160101 {
+            file_uses.entry(signal_date).or_default().apply_st = true;
+        }
+        if request.exclude_limit {
+            if let Some(next_date) = calendar.open_date_after(signal_date, 1) {
+                file_uses.entry(next_date).or_default().limit_for_signal_date = Some(signal_date);
+            } else if Some(signal_date) != last_signal_date {
+                return Err(err(format!("missing next trading date for T+1 limit check after {signal_date}")));
             }
-            masks.insert(*date, vec![true; instruments.len()]);
-            continue;
+        }
+    }
+
+    // A file can supply ST for its own date and limits for the preceding signal date.
+    let candidates = file_uses
+        .keys()
+        .map(|date| daily_trade_filter_path(&root, *date))
+        .collect::<Vec<_>>();
+    let exists = crate::data::read_ahead::plan_files(&candidates, |path| Ok(path.storage_exists()))?;
+    let mut paths = Vec::new();
+    for ((date, usage), (path, exists)) in file_uses.iter().zip(candidates.into_iter().zip(exists)) {
+        if !exists {
+            if !usage.apply_st && usage.limit_for_signal_date == last_signal_date {
+                continue;
+            }
+            let purpose = match usage.limit_for_signal_date {
+                Some(signal_date) => format!("T+1 limit check for signal date {signal_date}"),
+                None => "signal-date ST check".to_string(),
+            };
+            return Err(err(format!(
+                "missing stock trade filter for {date} ({purpose}): expected {}. Run: python scripts\\update_incremental.py --groups stock_trade_filter --start-date {date} --end-date {date}",
+                path.display()
+            )));
         }
         paths.push(path);
     }
@@ -830,13 +859,13 @@ fn load_trade_filter_masks(
                 "is_st".to_string(),
             ], |path, table| {
         let date = factor_file_date(path).ok_or_else(|| err("invalid trade-filter date path"))?;
+        let usage = &file_uses[&date];
         let trade_dates = table.required_i32_date_cast("trade_date")?;
         let ts_codes = table.required_utf8("ts_code")?;
         let is_limit_up = bool_column_cast(&table, "is_limit_up")?;
         let is_limit_down = bool_column_cast(&table, "is_limit_down")?;
         let is_limit = bool_column_cast(&table, "is_limit")?;
         let is_st = bool_column_cast(&table, "is_st")?;
-        let mut mask = vec![true; instruments.len()];
         for row_idx in 0..table.len {
             if trade_dates[row_idx] != Some(date) {
                 continue;
@@ -847,17 +876,19 @@ fn load_trade_filter_masks(
             let Some(instrument_idx) = instrument_lookup.get(ts_code).copied() else {
                 continue;
             };
-            let limit_allowed = !request.exclude_limit
-                || request.limit_side.allows(
+            if usage.apply_st && is_st[row_idx].unwrap_or(false) {
+                masks.get_mut(&date).unwrap()[instrument_idx] = false;
+            }
+            if let Some(signal_date) = usage.limit_for_signal_date {
+                if !request.limit_side.allows(
                     is_limit_up[row_idx].unwrap_or(false),
                     is_limit_down[row_idx].unwrap_or(false),
                     is_limit[row_idx].unwrap_or(false),
-                );
-            let st_allowed =
-                !request.exclude_st || date < 20160101 || !is_st[row_idx].unwrap_or(false);
-            mask[instrument_idx] = limit_allowed && st_allowed;
+                ) {
+                    masks.get_mut(&signal_date).unwrap()[instrument_idx] = false;
+                }
+            }
         }
-        masks.insert(date, mask);
         Ok(())
     })?;
     Ok(masks)
@@ -866,11 +897,12 @@ fn load_trade_filter_masks(
 fn load_trade_filter_plan(
     config: &EngineConfig,
     request: &BacktestRunRequest,
+    calendar: &TradingCalendar,
     target_dates: &[i32],
     instruments: &[String],
 ) -> Result<BacktestTradeFilterPlan> {
     let masks = if request.exclude_limit || request.exclude_st {
-        load_trade_filter_masks(config, request, target_dates, instruments)?
+        load_trade_filter_masks(config, request, calendar, target_dates, instruments)?
     } else {
         target_dates
             .iter()

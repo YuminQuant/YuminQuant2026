@@ -23,6 +23,8 @@ pub struct Bar {
     pub amount: Option<f64>,
     pub is_limit_up: bool,
     pub is_limit_down: bool,
+    /// True when a minute open reaches a known upper limit, independently of volume.
+    pub open_at_upper_limit: bool,
     /// -1 or +1 when this open reaches the acceleration threshold on a 10%/20% day.
     pub near_price_limit: i8,
 }
@@ -154,6 +156,7 @@ pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<Ma
                 amount: finite(amount[idx]),
                 is_limit_up,
                 is_limit_down,
+                open_at_upper_limit: false,
                 near_price_limit: 0,
             });
         }
@@ -286,10 +289,11 @@ fn stock_minute_frames(
             continue;
         };
         let band = price_bands.get(&symbol);
+        let open_at_upper_limit = band.and_then(|band| band.up).is_some_and(|p| open >= p - 0.0001);
         let (mut is_limit_up, mut is_limit_down) = if minute_limits {
             match band {
                 Some(band) => (
-                    band.up.is_some_and(|p| open >= p - 0.0001),
+                    open_at_upper_limit,
                     band.down.is_some_and(|p| open <= p + 0.0001),
                 ),
                 // Missing price bands are unknown, not permission to trade.
@@ -316,6 +320,7 @@ fn stock_minute_frames(
             amount: finite(amount[idx]),
             is_limit_up,
             is_limit_down,
+            open_at_upper_limit,
             near_price_limit: band.map_or(0, |band| band.direction(open)),
         });
     }
@@ -511,6 +516,7 @@ impl FutureDailyCache {
                     amount: finite(amount[idx]),
                     is_limit_up: false,
                     is_limit_down: false,
+                    open_at_upper_limit: false,
                     near_price_limit: 0,
                 });
             }
@@ -619,6 +625,7 @@ pub fn load_future_minute_frames(
                 amount: finite(amount[idx]),
                 is_limit_up: false,
                 is_limit_down: false,
+                open_at_upper_limit: false,
                 near_price_limit: 0,
             });
         }

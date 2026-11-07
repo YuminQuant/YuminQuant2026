@@ -83,6 +83,8 @@ strategy_config/stock/strategy_001.toml
 - 读取 `data/models/{year}/{date}.parquet` 中的 `signal_id`，例如 `mdl_000019`。
 - 每 `rebalance_days` 个交易日调仓一次。
 - 剔除 `.BJ`，选择因子值最高的 `top_n` 只股票。
+- 未建仓的买入席位遇到分钟开盘涨停时，按信号排名递补可买股票。递补后，本轮调仓取消原股票的买单。
+- `[strategy].limit_replacement_candidates` 指定最多加载多少只候补股票，默认等于 `top_n`，设为 `0` 关闭递补。
 - 按账户权益等权目标市值下单。
 
 It reads a signal column, rebalances every `rebalance_days`, selects top `top_n` non-BJ stocks, and targets equal value weights.

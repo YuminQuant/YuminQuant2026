@@ -25,12 +25,16 @@ pub struct Strategy001 {
     signal_root: std::path::PathBuf,
     signal_id: String,
     top_n: usize,
+    candidate_count: usize,
     hold_days: usize,
     window: usize,
     buffer: f64,
     sessions: usize,
     active: bool,
+    ranked: Vec<String>,
     selected: Vec<String>,
+    replaced: BTreeSet<String>,
+    entry_budget: f64,
     buys: BTreeMap<String, Leg>,
     sells: BTreeMap<String, Leg>,
     reserve: f64,
@@ -117,6 +121,12 @@ impl Strategy001 {
                 "allocation_mode must be equal or rank_carry (net mode only)",
             ));
         }
+        let top_n = integer("top_n", 50)?;
+        let replacements = params
+            .get("limit_replacement_candidates")
+            .map(|v| v.parse::<usize>())
+            .transpose()?
+            .unwrap_or(top_n);
         Ok(Self {
             rank_carry: allocation == "rank_carry",
             buy_window_budget: 0.0,
@@ -145,13 +155,17 @@ impl Strategy001 {
                 .get("signal_id")
                 .cloned()
                 .unwrap_or_else(|| "mdl_000022".into()),
-            top_n: integer("top_n", 50)?,
+            top_n,
+            candidate_count: top_n.saturating_add(replacements),
             hold_days: integer("rebalance_days", 5)?,
             window,
             buffer,
             sessions: 0,
             active: false,
+            ranked: Vec::new(),
             selected: Vec::new(),
+            replaced: BTreeSet::new(),
+            entry_budget: 0.0,
             buys: BTreeMap::new(),
             sells: BTreeMap::new(),
             reserve: 0.0,
@@ -167,6 +181,78 @@ impl Strategy001 {
             .map(|(s, l)| l.target * ctx.market().open_price(s).unwrap_or(0.0) * (1.0 + rate))
             .sum();
         self.buy_window_spent = 0.0;
+    }
+
+    fn replace_buy_slot(
+        &mut self,
+        ctx: &StrategyContext,
+        symbol: &str,
+        buy_rate: f64,
+    ) -> Option<(String, f64)> {
+        let index = self.selected.iter().position(|s| s == symbol)?;
+        let lot = ctx.config().lot_size;
+        let (backup, target) = self.ranked.iter().skip(self.top_n).find_map(|backup| {
+            if self.selected.contains(backup)
+                || self.replaced.contains(backup)
+                || ctx.account().is_delisted(backup)
+            {
+                return None;
+            }
+            let bar = ctx.market().bar(backup)?;
+            let target = (self.entry_budget / (bar.open * (1.0 + buy_rate)) / lot).floor() * lot;
+            (!bar.is_limit_up && target >= lot).then(|| (backup.clone(), target))
+        })?;
+        self.replaced
+            .insert(std::mem::replace(&mut self.selected[index], backup.clone()));
+        let event = &ctx.market().event;
+        eprintln!(
+            "[strategy001 replacement] date={} time={} from={} to={}",
+            event.trade_date,
+            event.trade_time.rsplit(' ').next().unwrap_or(&event.trade_time),
+            symbol,
+            backup
+        );
+        Some((backup, target))
+    }
+
+    fn replace_blocked_orders(&mut self, ctx: &StrategyContext, buy_rate: f64) {
+        if self.ranked.len() <= self.top_n {
+            return;
+        }
+        let blocked = self
+            .selected
+            .iter()
+            .filter_map(|symbol| {
+                let leg = self.buys.get(symbol)?;
+                (leg.target > 0.0
+                    && leg.filled == 0.0
+                    && ctx.account().position_quantity(symbol) == 0.0
+                    && !ctx.account().is_delisted(symbol)
+                    && ctx.market().bar(symbol).is_some_and(|bar| bar.open_at_upper_limit))
+                    .then(|| (symbol.clone(), leg.phase))
+            })
+            .collect::<Vec<_>>();
+        let lot = ctx.config().lot_size;
+        for (symbol, phase) in blocked {
+            let Some((backup, target)) = self.replace_buy_slot(ctx, &symbol, buy_rate) else {
+                continue;
+            };
+            self.buys.remove(&symbol);
+            let current = ctx.account().position_quantity(&backup);
+            let delta = if self.net_rebalance { target - current } else { target };
+            if self.net_rebalance {
+                self.sells.remove(&backup);
+            }
+            let quantity = (delta.abs() / lot).floor() * lot;
+            if quantity > 0.0 {
+                let legs = if delta > 0.0 { &mut self.buys } else { &mut self.sells };
+                legs.insert(backup, Leg {
+                    target: quantity,
+                    filled: 0.0,
+                    phase,
+                });
+            }
+        }
     }
 }
 
@@ -242,7 +328,7 @@ impl Strategy for Strategy001 {
                 date,
                 ranked
                     .into_iter()
-                    .take(self.top_n)
+                    .take(self.candidate_count)
                     .map(|(s, _)| s)
                     .collect::<Vec<_>>(),
             );
@@ -280,7 +366,7 @@ impl Strategy for Strategy001 {
 
     fn prepare_session(
         &mut self,
-        config: &StrategyRunConfig,
+        _config: &StrategyRunConfig,
         account: &AccountState,
         date: i32,
     ) -> Result<Option<BTreeSet<String>>> {
@@ -294,25 +380,26 @@ impl Strategy for Strategy001 {
                     .any(|l| l.target - l.filled > 1e-9)
                     || !self.pending_quotes.is_empty()));
         if rebalance {
-            self.selected.clear();
+            self.replaced.clear();
             let previous = self
                 .calendar
                 .last_open_on_or_before(date - 1)
                 .ok_or_else(|| err("missing previous signal date"))?;
             if let Some(names) = self.prepared.get(&date) {
-                self.selected = names.clone();
+                self.ranked.clone_from(names);
             } else {
                 let mut ranked = load_signal(&self.signal_root, previous, &self.signal_id)?
                     .into_iter()
                     .filter(|(s, v)| v.is_finite() && !s.ends_with(".BJ"))
                     .collect::<Vec<_>>();
                 ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                self.selected = ranked
+                self.ranked = ranked
                     .into_iter()
-                    .take(self.top_n)
+                    .take(self.candidate_count)
                     .map(|(s, _)| s)
                     .collect();
             }
+            self.selected = self.ranked.iter().take(self.top_n).cloned().collect();
             if self.selected.is_empty() && self.strict_signal {
                 return Err(err(format!(
                     "missing {} signal before {date}",
@@ -323,13 +410,17 @@ impl Strategy for Strategy001 {
                 eprintln!("[strategy warning] strategy_001 missing signal on {previous}; exit only on {date}");
             }
         }
-        let _ = config;
         Ok(Some(
             account
                 .positions()
                 .keys()
                 .cloned()
                 .chain(self.selected.iter().cloned())
+                .chain(
+                    self.ranked.iter().skip(self.top_n)
+                        .filter(|symbol| self.active && !self.replaced.contains(*symbol))
+                        .cloned(),
+                )
                 .collect(),
         ))
     }
@@ -432,11 +523,27 @@ impl Strategy for Strategy001 {
                 .map(|(s, p)| p.quantity * ctx.market().open_price(s).unwrap_or(p.mark_price()))
                 .sum::<f64>();
         self.reserve = equity.max(0.0) * self.buffer;
+        self.entry_budget = (equity - self.reserve).max(0.0) / self.selected.len().max(1) as f64;
+        let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
+        if self.ranked.len() > self.top_n {
+            // Resolve opening substitutions before net targets and old-position sales are planned.
+            for symbol in self.selected.clone() {
+                if ctx.account().position_quantity(&symbol) == 0.0
+                    && !ctx.account().is_delisted(&symbol)
+                    && ctx.market().bar(&symbol).is_some_and(|bar| bar.open_at_upper_limit)
+                {
+                    self.replace_buy_slot(ctx, &symbol, rate);
+                }
+            }
+            self.selected = self.ranked.iter()
+                .filter(|symbol| self.selected.contains(symbol))
+                .cloned()
+                .collect();
+        }
         if self.net_rebalance {
             let lot = ctx.config().lot_size;
-            let target_value = (equity - self.reserve).max(0.0) / self.selected.len().max(1) as f64;
+            let target_value = self.entry_budget;
             // Reserve a conservative one-way buy fee allowance without resetting retained lots.
-            let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
             let mut rank_targets = BTreeMap::new();
             if self.rank_carry {
                 let mut carry = 0.0;
@@ -457,7 +564,10 @@ impl Strategy for Strategy001 {
                         continue;
                     };
                     let desired = (budget / (price * (1.0 + rate)) / lot).floor() * lot;
-                    let target = if ctx.market().bar(symbol).is_some_and(|b| b.is_limit_up) {
+                    let target = if ctx.market().bar(symbol).is_some_and(|b| {
+                        b.is_limit_up && !(b.open_at_upper_limit && current == 0.0
+                            && self.ranked.len() > self.top_n)
+                    }) {
                         desired.min(current)
                     } else {
                         desired
@@ -554,9 +664,8 @@ impl Strategy for Strategy001 {
                 },
             );
         }
-        let budget = (equity - self.reserve).max(0.0) / self.selected.len().max(1) as f64;
+        let budget = self.entry_budget;
         let lot = ctx.config().lot_size;
-        let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
         for (i, symbol) in self.selected.iter().enumerate() {
             if ctx.account().is_delisted(symbol) {
                 continue;
@@ -598,6 +707,7 @@ impl Strategy for Strategy001 {
         let slot = (minute - 570).min(self.window - 1);
         let lot = ctx.config().lot_size;
         let buy_rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
+        self.replace_blocked_orders(ctx, buy_rate);
         let sell_rate = (ctx.config().sell_commission_bps
             + ctx.config().stamp_tax_bps
             + ctx.config().slippage_bps)
@@ -632,7 +742,7 @@ impl Strategy for Strategy001 {
                 - self.buy_window_spent)
                 .max(0.0)
         };
-        let buy_symbols = self.selected.iter().filter(|_| self.rank_carry)
+        let buy_symbols = self.ranked.iter().filter(|_| self.rank_carry)
             .chain(self.buys.keys().filter(|_| !self.rank_carry));
         for symbol in buy_symbols {
             let Some(leg) = self.buys.get(symbol) else {

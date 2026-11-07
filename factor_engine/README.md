@@ -113,6 +113,10 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --c
 
 Backtests support configurable factor roots, labels, universes, benchmarks and neutralization. Verify that required labels, constituents, indexes and exposures exist. See [strategy configuration](../strategy_config/README.md) for simulation settings.
 
+默认 `--exclude-limit true --limit-side both`：以信号日 T 的因子值排序，但先剔除下一交易日 T+1 收盘涨跌停的股票，再分组并分配权重。启用 ST 筛选时仍使用 T 日的 ST 标记。末个信号日缺少 T+1 交易过滤表时跳过该日的涨跌停筛选；区间内缺表仍报错。这是使用次日收盘信息的事后筛选，不模拟开盘成交，也不改变策略模拟的执行规则。
+
+With the defaults `--exclude-limit true --limit-side both`, stocks that close at either price limit on the next trading session (T+1) are excluded before ranking the T signal and assigning group weights. ST filtering, when enabled, still uses T. If the final signal date has no T+1 trade-filter file, its limit screen is skipped; missing files within the range remain errors. This is an ex-post screen, not an opening execution simulation; strategy execution is unchanged.
+
 ## 输出 / Outputs
 
 ```text

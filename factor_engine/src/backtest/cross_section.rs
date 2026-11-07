@@ -260,6 +260,7 @@ fn update_factor_cross_section_state(
             .cross_section_presence(&factor.output_column, date_idx)?;
         let universe_mask = input.universe.mask_for(*date);
         let signal_mask = input.trade_filter.signal_mask_for(*date);
+        let entry_mask = input.trade_filter.entry_mask_for(*date);
         let eligible_mask = combined_masks(&[
             Some(factor_presence.as_slice()),
             universe_mask,
@@ -308,8 +309,13 @@ fn update_factor_cross_section_state(
         let label = input
             .panel
             .cross_section(&input.label_metadata.output_column, date_idx)?;
-        let benchmark_return =
-            benchmark_return(&input.benchmark.kind, *date, &label, signal_mask);
+        let benchmark_return = benchmark_return(
+            &input.benchmark.kind,
+            *date,
+            &label,
+            signal_mask,
+            entry_mask,
+        );
         for ic_label in &input.ic_label_metadata {
             let shift = ic_label.horizon.saturating_sub(1);
             let Some(label_date_idx) = date_idx.checked_add(shift) else {
@@ -350,7 +356,6 @@ fn update_factor_cross_section_state(
 
         if rebalance_lookup.contains_key(date) {
             let weights = build_portfolio_weights(&processed, request.groups);
-            let entry_mask = input.trade_filter.entry_mask_for(*date);
             state.latest_turnovers = state.portfolio.update_weights(weights, entry_mask);
             record_barra_group_exposure(
                 &mut state.barra_exposure,
@@ -480,14 +485,18 @@ fn benchmark_return(
     kind: &BenchmarkKind,
     date: i32,
     label: &[Option<f64>],
-    trade_filter: Option<&[bool]>,
+    signal_mask: Option<&[bool]>,
+    entry_mask: Option<&[bool]>,
 ) -> Option<f64> {
+    let allows = |mask: Option<&[bool]>, idx| {
+        mask.is_none_or(|mask| mask.get(idx).copied().unwrap_or(false))
+    };
     match kind {
         BenchmarkKind::MarketMean => {
             let mut sum = 0.0;
             let mut count = 0usize;
             for (idx, value) in label.iter().enumerate() {
-                if trade_filter.is_some_and(|mask| !mask.get(idx).copied().unwrap_or(false)) {
+                if !allows(signal_mask, idx) || !allows(entry_mask, idx) {
                     continue;
                 }
                 let Some(value) = value.filter(|value| value.is_finite()) else {
@@ -505,7 +514,10 @@ fn benchmark_return(
             }
             let mut numerator = 0.0;
             let mut denominator = 0.0;
-            for (weight, value) in weights.iter().zip(label) {
+            for (idx, (weight, value)) in weights.iter().zip(label).enumerate() {
+                if !allows(entry_mask, idx) {
+                    continue;
+                }
                 let (Some(weight), Some(value)) = (
                     weight.filter(|value| value.is_finite() && *value > 0.0),
                     value.filter(|value| value.is_finite()),

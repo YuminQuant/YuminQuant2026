@@ -33,7 +33,7 @@ cv = cumsum(volume) / sum_21d(volume)
 
 无需把每个样本日的21×728张量重复存盘。每日一行的浮点主体约5864字节，5000只股票时约28 MiB/日、250交易日约6.8 GiB（未压缩，不含键和Parquet开销；实际Snappy体积依覆盖/数据变化）。这是数据规模估算，没有执行全量生成或磁盘预算变更。
 
-日截面缓存在 RAM 中按需填充，默认无字节上限。每次抽到交易日时组装一次完整截面，训练三遍后释放该日输入张量。5000 股的 21×728 输入张量约 292 MiB，每个 1000 股 mini-batch 的输入约 58 MiB，另有日缓存、归一化暂存和 GPU 激活占用。
+日截面缓存在 RAM 中按需填充，默认无字节上限。每个训练交易日组装一次完整截面，训练三遍后释放该日输入张量。5000 股的 21×728 输入张量约 292 MiB，每个 1000 股 mini-batch 的输入约 58 MiB，另有日缓存、归一化暂存和 GPU 激活占用。
 
 `--date-batch-size`延续Rust派生语义：把待输出日期划分为批次，每批日期任务由threads线程执行；不是训练采样间隔，也不是预先保留该数量天的原始分钟表。每个日期读取本日和上一交易日；年分片会自动读取年前一天来构建bridge，不依赖上一年度任务先完成。缺失上一日原始分钟文件时可以生成本日intra，bridge为空；只有需要该连接的21日样本会被剔除。
 
@@ -43,12 +43,12 @@ cv = cumsum(volume) / sum_21d(volume)
 
 训练时输入 BN 按 mini-batch 内股票和 21 个时间位置计算统计量，输出 BN 使用该批股票的末步隐藏状态。预测使用保存的 BN 运行统计量。
 
-每个训练窗口用种子 42 从合格日期中等概率有放回抽取 500 次。每次在该日有有效标签的股票上训练 3 遍，每遍打乱股票顺序并按 1000 股分批。每个有效 mini-batch 以 −Pearson IC 为损失，执行一次 Adam 更新，学习率为 0.001。500 次抽样完成后评估独立验证集的日均 IC，保存最终权重。
+每个训练窗口每隔 5 个交易日固定采样一次，按日期顺序遍历合格截面。每个截面在有有效标签的股票上连续训练 3 遍，每遍以种子 42 控制股票打乱顺序并按 1000 股分批。每个有效 mini-batch 以 −Pearson IC 为损失，执行一次 Adam 更新，学习率为 0.001。全部截面训练完成后评估独立验证集的日均 IC，保存最终权重。
 
-- 项目统一年度滚动5年，57个月训练＋3个月验证；训练候选日期为区间内所有合格交易日。
+- 项目统一年度滚动5年，57个月训练＋3个月验证。
 - 2011起训练，2016起逐年预测，预测截至2026-04-24；原论文的周频含义是回测调仓频率，本库仍可每日输出。
 - 项目10日VWAP标签，lookahead_days=11；公共层按标签到期边界及训练/验证分界清洗。输入归一化只使用样本日及以前的行情。
-- 日志按抽样日期记录训练 IC、Adam 更新次数、耗时和缓存统计，结束时记录验证 IC。
+- 日志按训练截面记录进度、训练 IC、Adam 更新次数、耗时和缓存统计，结束时记录验证 IC。
 
 ## CLI和产物
 
@@ -66,6 +66,6 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- derive-logsigrnn
 & $py -B -u -m yq_ml_alpha factor-run --config ml_alpha\factors\logsigrnn_week.toml
 ```
 
-权重在 `data/model_workspace/logsigrnn_week/rolling60m_report500x3/artifacts/annual_YYYY/model.pkl`，含版本、参数、LSTM/BN/线性权重和诊断。同目录保存 manifest、loss_history.parquet 和 model_info.json。预测因子写入 `data/factors/stock/daily/YYYY/YYYYMMDD_ml.parquet` 的 `logsigrnn_week` 列。
+权重在 `data/model_workspace/logsigrnn_week/rolling60m_5d_3passes/artifacts/annual_YYYY/model.pkl`，含版本、参数、LSTM/BN/线性权重和诊断。同目录保存 manifest、loss_history.parquet 和 model_info.json。预测因子写入 `data/factors/stock/daily/YYYY/YYYYMMDD_ml.parquet` 的 `logsigrnn_week` 列。
 
 本轮不启动正式派生、训练、Slurm或正式预测，不改动运行任务。

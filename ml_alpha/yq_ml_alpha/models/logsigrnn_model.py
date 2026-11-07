@@ -15,8 +15,10 @@ from yq_ml_alpha.output import artifact_io
 def _params(raw):
     integers = {"input_size", "sequence_length", "hidden_size", "num_layers", "batch_size"}
     scalars = {"dropout", "lr", "weight_decay", "eps", "norm_eps", "bn_momentum"}
-    if "date_draws" in raw:
-        integers.update(("date_draws", "epochs_per_draw"))
+    if "epochs_per_draw" in raw:
+        integers.add("epochs_per_draw")
+        if "date_draws" in raw:
+            integers.add("date_draws")
     else:
         integers.update(("epochs", "patience"))
         scalars.add("min_delta")
@@ -37,7 +39,7 @@ def _params(raw):
         raise ValueError("Logsig-RNN requires integer seed and boolean gradient_checkpointing")
     if params["input_size"] != 728 or params["sequence_length"] != 21:
         raise ValueError("Logsig-RNN derived protocol is fixed at 21 x 728")
-    if "date_draws" in params and params["batch_size"] < 3:
+    if "epochs_per_draw" in params and params["batch_size"] < 3:
         raise ValueError("Logsig-RNN mini-batches need batch_size of at least three")
     return params
 
@@ -114,7 +116,7 @@ class LogsigRNNAlphaModel(DailySequenceAlphaModel):
             raise ValueError("Logsig-RNN has no usable labeled date cross-sections")
         return float(np.mean(losses)), len(losses)
 
-    def _fit_sampled_dates(self, torch, train, valid, context, device, optimizer, source):
+    def _fit_cross_sections(self, torch, train, valid, context, device, optimizer, source):
         groups = {}
         for date, indices in train.frame.groupby("trade_date", sort=True).indices.items():
             target = pd.to_numeric(train.frame.iloc[indices][context.label_column],
@@ -126,7 +128,11 @@ class LogsigRNNAlphaModel(DailySequenceAlphaModel):
             raise ValueError("Logsig-RNN has no eligible training dates")
 
         rng = np.random.default_rng(self.params["seed"])
-        dates = rng.choice(list(groups), size=self.params["date_draws"], replace=True)
+        dates = list(groups)
+        date_draws = self.params.get("date_draws")
+        progress_key = "draw" if date_draws is not None else "section"
+        if date_draws is not None:
+            dates = rng.choice(dates, size=date_draws, replace=True).tolist()
         batch_size = self.params["batch_size"]
         started = perf_counter()
         self.model.train()
@@ -158,23 +164,25 @@ class LogsigRNNAlphaModel(DailySequenceAlphaModel):
             if not losses:
                 raise ValueError(f"no usable Logsig-RNN mini-batches on {date}")
             train_loss = float(np.mean(losses))
-            self.loss_history.append(dict(window_id=context.artifact_dir.name, draw=draw, trade_date=int(date),
+            self.loss_history.append(dict(window_id=context.artifact_dir.name, trade_date=int(date),
                 train_loss=train_loss, train_ic=-train_loss, optimizer_steps=len(losses),
-                draw_elapsed_seconds=perf_counter() - draw_started, elapsed_seconds=perf_counter() - started))
+                draw_elapsed_seconds=perf_counter() - draw_started, elapsed_seconds=perf_counter() - started,
+                **{progress_key: draw}))
             if context.diagnostics.get("enabled", False) and context.diagnostics.get("print_epoch", False):
-                print(f"logsigrnn window={context.artifact_dir.name} draw={draw}/{len(dates)} date={date} "
+                print(f"logsigrnn window={context.artifact_dir.name} {progress_key}={draw}/{len(dates)} date={date} "
                       f"stocks={len(target)} steps={len(losses)} train_ic={-train_loss:.6f} "
                       f"draw_elapsed_s={perf_counter() - draw_started:.2f}", flush=True)
-                source.log_cache(f"logsigrnn_draw_{draw}", before=before)
+                source.log_cache(f"logsigrnn_{progress_key}_{draw}", before=before)
             del values
 
         valid_loss, valid_dates = self._epoch(torch, valid, context, device)
         self.loss_history[-1].update(valid_loss=valid_loss - 1, valid_ic=1 - valid_loss)
         self.model.to("cpu").eval()
         self.model_info = dict(window_id=context.artifact_dir.name, params=self.params, feature_columns=self.feature_columns,
-            draws_run=len(dates), train_date_count=len(groups), distinct_dates_drawn=len(set(dates.tolist())),
+            sections_run=len(dates), train_date_count=len(groups), distinct_dates_trained=len(set(dates)),
             valid_date_count=valid_dates, final_valid_ic=1 - valid_loss, train_rows=len(train.frame),
-            valid_rows=len(valid.frame), date_selection="uniform_with_replacement", loss="negative_minibatch_pearson_ic",
+            valid_rows=len(valid.frame), date_selection="uniform_with_replacement" if date_draws is not None else "fixed_chronological",
+            loss="negative_minibatch_pearson_ic",
             batch_norm="training_minibatch", prediction="saved_batchnorm_statistics_no_labels")
         print(f"logsigrnn final valid_dates={valid_dates} valid_ic={1 - valid_loss:.6f}", flush=True)
 
@@ -198,8 +206,8 @@ class LogsigRNNAlphaModel(DailySequenceAlphaModel):
         self.model = build_network(nn, self.params).to(device)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.params["lr"], weight_decay=self.params["weight_decay"])
         self.loss_history = []
-        if "date_draws" in self.params:
-            self._fit_sampled_dates(torch, train, valid, context, device, optimizer, source)
+        if "epochs_per_draw" in self.params:
+            self._fit_cross_sections(torch, train, valid, context, device, optimizer, source)
             return
         best, best_state, best_epoch, stale = np.inf, None, 0, 0
         started = perf_counter()

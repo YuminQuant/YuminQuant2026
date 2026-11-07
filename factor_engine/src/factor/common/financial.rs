@@ -1581,7 +1581,7 @@ impl<'a> FinancialPitReader<'a> {
         None
     }
 
-    fn end_dates(&self, ts_code: &str) -> impl DoubleEndedIterator<Item = i32> + '_ {
+    pub(crate) fn end_dates(&self, ts_code: &str) -> impl DoubleEndedIterator<Item = i32> + '_ {
         self.index
             .periods_by_stock
             .get(ts_code)

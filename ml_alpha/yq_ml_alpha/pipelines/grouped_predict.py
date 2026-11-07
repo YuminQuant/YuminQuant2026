@@ -224,7 +224,8 @@ def _predict_group(configs, options, target_dates):
     from yq_ml_alpha.pipelines.factor import _new_writer as factor_writer
     from yq_ml_alpha.pipelines.model import _new_writer as signal_writer
     writer = factor_writer(first) if first.output.kind == 'factor' else signal_writer(first).writer
-    writer.write_workers = options.write_workers
+    if not artifact_io.io_options(writer.output_root).get("fixed", False):
+        writer.write_workers = options.write_workers
     writer._known_columns.update(c.output.id for c in configs)
     models = _Models(configs, options)
     datasets = _Datasets(configs)

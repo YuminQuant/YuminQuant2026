@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from threading import Lock, local
 
+SUPPORTS_FIXED_IO_POLICY = True
+
 _lock = Lock()
 _pools = {}
 _worker = local()
@@ -17,22 +19,26 @@ def options(root):
     configure = getattr(store, "io_options", None)
     values = configure() if configure else {}
     workers = int(values.get("workers", 50))
-    budget = int(values.get("prefetch_bytes", 128 * 1024**2))
-    if workers < 1 or budget < 1:
+    budget = values.get("prefetch_bytes", 128 * 1024**2)
+    if budget is not None:
+        budget = int(budget)
+    if workers < 1 or (budget is not None and budget < 1):
         raise ValueError("remote IO workers and prefetch budget must be positive")
-    return {"workers": workers, "prefetch_bytes": budget}
+    return {"workers": workers, "prefetch_bytes": budget,
+            "fixed": values.get("fixed", False)}
 
 
 def ordered_map(function, items, *, root, path_for=None, workers=None,
                 prefetch_bytes=None, estimate_bytes=None):
     from . import artifact_io as io
     settings = options(root)
-    if prefetch_bytes is not None:
+    fixed = settings.get("fixed", False)
+    if not fixed and prefetch_bytes is not None:
         if type(prefetch_bytes) is not int or prefetch_bytes < 1:
             raise ValueError("prefetch_bytes must be a positive integer")
         settings["prefetch_bytes"] = prefetch_bytes
     width = settings["workers"]
-    if workers is not None:
+    if not fixed and workers is not None:
         if int(workers) < 1: raise ValueError("IO workers must be positive")
         width = min(width, int(workers))
     if width == 1 or getattr(_worker, "active", False):
@@ -51,6 +57,8 @@ def ordered_map(function, items, *, root, path_for=None, workers=None,
         finally:
             _worker.active = False
     def reserve(item):
+        if settings["prefetch_bytes"] is None:
+            return 0
         if estimate_bytes is not None:
             size = estimate_bytes(item)
             if size is not None:
@@ -78,7 +86,8 @@ def ordered_map(function, items, *, root, path_for=None, workers=None,
                         break
                     waiting = (item, reserve(item))
                 item, size = waiting
-                if pending and held + size > settings["prefetch_bytes"]: break
+                budget = settings["prefetch_bytes"]
+                if budget is not None and pending and held + size > budget: break
                 context = copy_context()
                 pending.append((pool.submit(context.run, run, item), size))
                 held += size

@@ -176,17 +176,23 @@ impl BacktestUniverseBatch {
 
 #[derive(Clone, Debug)]
 pub struct BacktestTradeFilterPlan {
-    masks: HashMap<i32, Vec<bool>>,
+    signal_masks: HashMap<i32, Vec<bool>>,
+    entry_masks: HashMap<i32, Vec<bool>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct BacktestTradeFilterBatch {
-    masks: HashMap<i32, Vec<bool>>,
+    signal_masks: HashMap<i32, Vec<bool>>,
+    entry_masks: HashMap<i32, Vec<bool>>,
 }
 
 impl BacktestTradeFilterBatch {
-    pub fn mask_for(&self, date: i32) -> Option<&[bool]> {
-        self.masks.get(&date).map(Vec::as_slice)
+    pub fn signal_mask_for(&self, signal_date: i32) -> Option<&[bool]> {
+        self.signal_masks.get(&signal_date).map(Vec::as_slice)
+    }
+
+    pub fn entry_mask_for(&self, signal_date: i32) -> Option<&[bool]> {
+        self.entry_masks.get(&signal_date).map(Vec::as_slice)
     }
 }
 
@@ -606,11 +612,12 @@ impl BacktestUniversePlan {
 
 impl BacktestTradeFilterPlan {
     fn slice(&self, dates: &[i32]) -> BacktestTradeFilterBatch {
+        let slice = |masks: &HashMap<i32, Vec<bool>>| {
+            dates.iter().filter_map(|date| masks.get(date).map(|mask| (*date, mask.clone()))).collect()
+        };
         BacktestTradeFilterBatch {
-            masks: dates
-                .iter()
-                .filter_map(|date| self.masks.get(date).map(|mask| (*date, mask.clone())))
-                .collect(),
+            signal_masks: slice(&self.signal_masks),
+            entry_masks: slice(&self.entry_masks),
         }
     }
 }
@@ -786,13 +793,13 @@ fn load_universe_plan(
     })
 }
 
-fn load_trade_filter_masks(
+fn load_trade_filter_plan(
     config: &EngineConfig,
     request: &BacktestRunRequest,
     calendar: &TradingCalendar,
     target_dates: &[i32],
     instruments: &[String],
-) -> Result<HashMap<i32, Vec<bool>>> {
+) -> Result<BacktestTradeFilterPlan> {
     let instrument_lookup = instruments
         .iter()
         .enumerate()
@@ -810,15 +817,17 @@ fn load_trade_filter_masks(
     }
 
     let mut file_uses = BTreeMap::<i32, FilterFileUse>::new();
-    let mut masks = HashMap::new();
+    let mut signal_masks = HashMap::new();
+    let mut entry_masks = HashMap::new();
     let last_signal_date = target_dates.last().copied();
     for &signal_date in target_dates {
-        masks.insert(signal_date, vec![true; instruments.len()]);
         if request.exclude_st && signal_date >= 20160101 {
+            signal_masks.insert(signal_date, vec![true; instruments.len()]);
             file_uses.entry(signal_date).or_default().apply_st = true;
         }
         if request.exclude_limit {
             if let Some(next_date) = calendar.open_date_after(signal_date, 1) {
+                entry_masks.insert(signal_date, vec![true; instruments.len()]);
                 file_uses.entry(next_date).or_default().limit_for_signal_date = Some(signal_date);
             } else if Some(signal_date) != last_signal_date {
                 return Err(err(format!("missing next trading date for T+1 limit check after {signal_date}")));
@@ -877,7 +886,7 @@ fn load_trade_filter_masks(
                 continue;
             };
             if usage.apply_st && is_st[row_idx].unwrap_or(false) {
-                masks.get_mut(&date).unwrap()[instrument_idx] = false;
+                signal_masks.get_mut(&date).unwrap()[instrument_idx] = false;
             }
             if let Some(signal_date) = usage.limit_for_signal_date {
                 if !request.limit_side.allows(
@@ -885,31 +894,13 @@ fn load_trade_filter_masks(
                     is_limit_down[row_idx].unwrap_or(false),
                     is_limit[row_idx].unwrap_or(false),
                 ) {
-                    masks.get_mut(&signal_date).unwrap()[instrument_idx] = false;
+                    entry_masks.get_mut(&signal_date).unwrap()[instrument_idx] = false;
                 }
             }
         }
         Ok(())
     })?;
-    Ok(masks)
-}
-
-fn load_trade_filter_plan(
-    config: &EngineConfig,
-    request: &BacktestRunRequest,
-    calendar: &TradingCalendar,
-    target_dates: &[i32],
-    instruments: &[String],
-) -> Result<BacktestTradeFilterPlan> {
-    let masks = if request.exclude_limit || request.exclude_st {
-        load_trade_filter_masks(config, request, calendar, target_dates, instruments)?
-    } else {
-        target_dates
-            .iter()
-            .map(|date| (*date, vec![true; instruments.len()]))
-            .collect()
-    };
-    Ok(BacktestTradeFilterPlan { masks })
+    Ok(BacktestTradeFilterPlan { signal_masks, entry_masks })
 }
 
 fn daily_trade_filter_path(root: &Path, trade_date: i32) -> PathBuf {

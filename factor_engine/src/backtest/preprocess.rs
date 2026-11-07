@@ -163,7 +163,7 @@ pub fn portfolio_return(weights: &[f64], returns: &[Option<f64>]) -> Option<f64>
         return None;
     }
     let mut numerator = 0.0;
-    let mut denominator = 0.0;
+    let mut observed = false;
     for (weight, value) in weights.iter().zip(returns) {
         let Some(value) = value.filter(|value| value.is_finite()) else {
             continue;
@@ -172,9 +172,11 @@ pub fn portfolio_return(weights: &[f64], returns: &[Option<f64>]) -> Option<f64>
             continue;
         }
         numerator += weight * value;
-        denominator += weight.abs();
+        observed = true;
     }
-    (denominator > f64::EPSILON).then_some(numerator / denominator)
+    // Weights are fractions of the original budget. Unfilled or unpriced weight
+    // must not increase the exposure of the remaining names.
+    observed.then_some(numerator)
 }
 
 pub fn zscore(values: &[Option<f64>]) -> Vec<Option<f64>> {

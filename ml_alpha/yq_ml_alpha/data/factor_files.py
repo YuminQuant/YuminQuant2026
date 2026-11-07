@@ -2,8 +2,6 @@
 import json
 from pathlib import Path
 
-import pandas as pd
-
 from yq_ml_alpha.output import artifact_io as io
 
 KEYS = ["trade_date", "ts_code"]
@@ -40,6 +38,8 @@ def metadata_path(root):
 
 def normalize_metadata(frame):
     """Old metadata is readable; every newly published row has explicit ownership."""
+    import pandas as pd
+
     frame = frame.copy()
     inferred = frame.tags_json.map(
         lambda value: "ml" if "model_generated" in json.loads("[]" if pd.isna(value) else value or "[]") else "manual")
@@ -97,6 +97,8 @@ class FactorFiles:
         requested = None if columns is None else list(dict.fromkeys(c for c in columns if c not in KEYS))
         paths = self._paths(date)
         if not paths:
+            import pandas as pd
+
             return pd.DataFrame(columns=[*KEYS, *(requested or [])])
         # Known manual-only projections never open the ML payload or its footer.
         parts = ("manual",) if requested and all(self.owners.get(c) == "manual" for c in requested) else ("manual", "ml")

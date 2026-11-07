@@ -39,6 +39,10 @@ class MarketStyleHistory(DailyTensorSequence):
         self.basic_root = _project_path(params.get("basic_root", self.root.parent / "basic"))
         self.adj_root = _project_path(params.get("adj_root", self.root.parent / "adj_factor"))
         self.barra_root = _project_path(params.get("barra_root", config.data_root / "barra" / "stock" / "daily" / params["barra_model"]))
+        self.history_start_date = int(params.get("history_start_date", 0))
+        self.minimum_history_sessions = int(params.get("minimum_history_sessions", self.length))
+        if self.minimum_history_sessions < self.length:
+            raise ValueError("minimum_history_sessions must cover the input sequence")
         self.filters = TradeFilters(config.filters, config.data_root)
         self.universe = Universe(config.universe.id, config.data_root)
         from yq_ml_alpha.output import artifact_io
@@ -51,6 +55,9 @@ class MarketStyleHistory(DailyTensorSequence):
         self.normalization = str(params["normalization"])
         if self.normalization not in {"window_mean", "last_value"}:
             raise ValueError("unsupported market/style normalization")
+
+    def set_calendar_dates(self, dates):
+        super().set_calendar_dates([date for date in dates if date >= self.history_start_date])
 
     def _load_day(self, date):
         market = _read(self.root, date, ["open", "high", "low", "close", "vol", "amount"])
@@ -76,6 +83,8 @@ class MarketStyleHistory(DailyTensorSequence):
         return frame.set_index("ts_code")[self.columns].replace([np.inf, -np.inf], np.nan).astype("float32")
 
     def symbols(self, date):
+        if self.positions.get(date, -1) + 1 < self.minimum_history_sessions:
+            return []
         symbols = super().symbols(date)
         if not symbols or self.normalization != "last_value":
             return symbols

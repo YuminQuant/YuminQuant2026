@@ -50,6 +50,8 @@ root = "data/chn_stock_data/daily/pv"
 columns = ["open", "high", "low", "close", "vwap", "volume", "turnover_rate_f", "DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
 
 [features.params]
+history_start_date = 20110104
+minimum_history_sessions = 52
 barra_model = "CNE6"
 barra_columns = ["DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
 turnover_column = "turnover_rate_f"

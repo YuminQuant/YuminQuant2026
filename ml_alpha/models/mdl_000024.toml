@@ -44,7 +44,6 @@ columns = "__all__"
 [features.params]
 include_model_generated = true
 sequence_length = 40
-memory_budget_mb = 16384
 
 [materialize]
 cache_samples = false

@@ -46,7 +46,6 @@ columns = "__all__"
 include_model_generated = true
 sequence_length = 1
 history_transform = "mad5_zscore_rank_label"
-memory_budget_mb = 16384
 coverage_root = "data/derived/stock/analyst_coverage"
 coverage_window_months = 6
 

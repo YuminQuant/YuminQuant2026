@@ -16,11 +16,11 @@ from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
 
 class FactorHistory(DailyTensorSequence):
-    def __init__(self, config, provider, sequence_length=None, memory_budget_mb=None):
+    def __init__(self, config, provider, sequence_length=None, *, budget_key="memory_budget_mb"):
         params = config.features.params
         super().__init__(config.features.root, provider.feature_columns, (len(provider.feature_columns),),
                          int(params.get("sequence_length", 40) if sequence_length is None else sequence_length),
-                         int(params.get("memory_budget_mb", 512) if memory_budget_mb is None else memory_budget_mb))
+                         params.get(budget_key))
         read_workers = int(params.get("history_read_workers", data_io.io_options(self.root)["workers"]))
         if read_workers < 1:
             raise ValueError("history_read_workers must be positive")
@@ -79,15 +79,15 @@ class FactorHistory(DailyTensorSequence):
         return super().symbols(date)
 
     def forward_view(self, length):
-        """Independent bounded reader for supervised future slices; caller must close it."""
+        """Independent reader for supervised future slices; caller must close it."""
         view = FactorHistory(self.config, self.provider, sequence_length=length,
-                             memory_budget_mb=self.config.features.params.get("future_memory_budget_mb", 128))
+                             budget_key="future_memory_budget_mb")
         view.set_calendar_dates(self.dates)
         return view
 
 
 class FactorSequenceProvider(DailySequenceProvider):
-    """Complete eligible cross-sections with lazy, RAM-bounded factor histories."""
+    """Complete eligible cross-sections with lazy in-memory factor histories."""
 
     def __init__(self, config, provider):
         super().__init__(FactorHistory(config, provider))

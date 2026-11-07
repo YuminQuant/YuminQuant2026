@@ -32,7 +32,7 @@ class LogsigRnnHistory(DailyTensorSequence):
         if config.features.columns != FEATURES or params["sequence_length"] != 21:
             raise ValueError("derived_logsigrnn requires 21 sessions and 728 ordered Lyndon coordinates")
         super().__init__(config.features.root, FEATURES, (WIDTH,), length=21,
-                         memory_budget_mb=int(params["memory_budget_mb"]))
+                         memory_budget_mb=params.get("memory_budget_mb"))
         self.filters = TradeFilters(config.filters, config.data_root)
         self.universe = Universe(config.universe.id, config.data_root)
         workers, prefetch = int(params["history_read_workers"]), int(params["history_prefetch_mb"])

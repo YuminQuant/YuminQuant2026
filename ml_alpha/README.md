@@ -10,7 +10,7 @@
 
 Remote file concurrency and prefetch memory come from the deployment adapter's `io_options()`. Local reads stay serial on the caller thread. Daily ranges, ordinary factor/price samples, historical tensors, graph history and bar windows use a shared bounded queue. Workers read independent files; cache updates and sample assembly retain date order. Nested reads run inline to avoid pool deadlocks. Reservations conservatively estimate file expansion, not a hard process RSS limit; oversized files run exclusively, and final training windows are outside the prefetch budget. Striped file locks avoid concurrent duplicate payload opens. Remote daily output uses the same queue; local output settings are unchanged.
 
-公共日截面缓存仅驻留 RAM，按 `features.params.memory_budget_mb` 限制大小；在预算内跨训练/验证和 epoch 保留预处理结果，超预算才按 LRU 淘汰，并保护当前历史窗口。缓存命中的日期不进入远程 IO 队列。因子历史可用 `features.params.history_prefetch_mb` 单独设置在途预读预算，优先根据已观测的日截面大小估算暂存占用；首次读取仍使用保守文件大小估计。本地历史读取继续串行，不写磁盘缓存。
+公共日截面缓存按需载入 RAM，默认跨训练、验证和 epoch 保留预处理结果。可通过 `features.params.memory_budget_mb` 显式设置 MiB 上限，超预算时按 LRU 淘汰并保护当前历史窗口。缓存命中的日期直接从内存读取。缓存与当前张量、标签和运行时共同占用任务内存。
 
 公共联合预测按配置复用已声明 `prediction_inputs_readonly` 的 DatasetBuilder，历史截面RAM缓存因此能跨预测批次保留，结束或异常退出时统一释放。未声明输入只读的模型继续按原来的每批生命周期执行。各模型已有缓存预算及执行层总内存检查仍然生效。
 

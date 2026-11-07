@@ -1,4 +1,4 @@
-"""Bounded, read-only daily tensor sequences; no temporary files or disk cache."""
+"""Read-only daily tensor sequences; no temporary files or disk cache."""
 from yq_ml_alpha.output import artifact_io as data_io
 from collections import OrderedDict
 from pathlib import Path
@@ -10,13 +10,13 @@ from yq_ml_alpha.data.stores import daily_path
 
 
 class DailyTensorSequence:
-    def __init__(self, root, columns, shape, length=30, memory_budget_mb=128):
+    def __init__(self, root, columns, shape, length=30, memory_budget_mb=None):
         self.root = Path(root)
         self.columns = list(columns)
         self.shape = tuple(shape)
         self.length = int(length)
-        self.budget = int(memory_budget_mb) * 1024 * 1024
-        if self.length < 1 or self.budget < 1 or np.prod(self.shape) != len(self.columns):
+        self.budget = None if memory_budget_mb is None else int(memory_budget_mb) * 1024 * 1024
+        if self.length < 1 or (self.budget is not None and self.budget < 1) or np.prod(self.shape) != len(self.columns):
             raise ValueError("invalid daily tensor sequence dimensions or memory budget")
         self.dates = []
         self.positions = {}
@@ -62,14 +62,15 @@ class DailyTensorSequence:
         previous = self.cache.pop(date, None)
         if previous is not None:
             self.cache_bytes -= previous[1]
-        for old in list(self.cache):
-            if self.cache_bytes + size <= self.budget:
-                break
-            if old not in self._protected:
-                _, removed = self.cache.pop(old)
-                self.cache_bytes -= removed
-                self.cache_evictions += 1
-        if self.cache_bytes + size <= self.budget:
+        if self.budget is not None and self.cache_bytes + size > self.budget:
+            for old in list(self.cache):
+                if self.cache_bytes + size <= self.budget:
+                    break
+                if old not in self._protected:
+                    _, removed = self.cache.pop(old)
+                    self.cache_bytes -= removed
+                    self.cache_evictions += 1
+        if self.budget is None or self.cache_bytes + size <= self.budget:
             self.cache[date] = (frame, size)
             self.cache_bytes += size
         else:
@@ -148,9 +149,10 @@ class DailyTensorSequence:
             f"{key}_delta={info[key] - before[key]}"
             for key in ("hits", "misses", "loaded_days", "evictions", "parquet_opens")
         )
+        budget_mib = "unlimited" if self.budget is None else f"{self.budget / 2**20:.1f}"
         print(f"sequence-cache stage={stage} resident_days={info['resident_days']} "
               f"resident_mib={self.cache_bytes / 2**20:.1f} "
-              f"budget_mib={self.budget / 2**20:.1f} "
+              f"budget_mib={budget_mib} "
               f"loaded_days={info['loaded_days']} evictions={info['evictions']} "
               f"parquet_opens={info['parquet_opens']} {delta}", flush=True)
         return info
@@ -172,7 +174,7 @@ class DailyTensorSequence:
             symbols = index if symbols is None else symbols.intersection(index, sort=False)
         self._symbols = symbols.sort_values()
         self._positions_by_day = {day: index.get_indexer(self._symbols) for day, index in indexes.items()}
-        if working_bytes > self.budget and not getattr(self, "_budget_reported", False):
+        if self.budget is not None and working_bytes > self.budget and not getattr(self, "_budget_reported", False):
             print(f"sequence working_set_mib={working_bytes / 2**20:.1f} "
                   f"budget_mib={self.budget / 2**20:.1f} mode=bounded_scan_resistant "
                   "nonresident_days=streamed", flush=True)

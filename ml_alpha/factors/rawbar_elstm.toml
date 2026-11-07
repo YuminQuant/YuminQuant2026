@@ -50,7 +50,6 @@ columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [features.params]
 sequence_length = 60
-memory_budget_mb = 16384
 history_read_workers = 30
 history_prefetch_mb = 128
 

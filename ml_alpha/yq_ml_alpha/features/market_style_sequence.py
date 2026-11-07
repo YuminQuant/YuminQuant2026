@@ -35,7 +35,7 @@ class MarketStyleHistory(DailyTensorSequence):
                 or not isinstance(columns, list) or columns != self.market_columns + self.barra_columns):
             raise ValueError("market_style_sequence columns must be market inputs followed by explicit Barra columns")
         super().__init__(config.features.root, columns, (len(columns),),
-                         length=int(params["sequence_length"]), memory_budget_mb=int(params["memory_budget_mb"]))
+                         length=int(params["sequence_length"]), memory_budget_mb=params.get("memory_budget_mb"))
         self.basic_root = _project_path(params.get("basic_root", self.root.parent / "basic"))
         self.adj_root = _project_path(params.get("adj_root", self.root.parent / "adj_factor"))
         self.barra_root = _project_path(params.get("barra_root", config.data_root / "barra" / "stock" / "daily" / params["barra_model"]))

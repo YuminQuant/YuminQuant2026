@@ -21,7 +21,7 @@ class RawBarHistory(DailyTensorSequence):
         if config.features.columns != RAWBAR_COLUMNS:
             raise ValueError("rawbar_sequence requires open, high, low, close, vwap, volume in order")
         super().__init__(config.features.root, RAWBAR_COLUMNS, (6,),
-                         length=int(params["sequence_length"]), memory_budget_mb=int(params["memory_budget_mb"]))
+                         length=int(params["sequence_length"]), memory_budget_mb=params.get("memory_budget_mb"))
         self.adj_root = _project_path(params.get("adj_root", self.root.parent / "adj_factor"))
         self.filters = TradeFilters(config.filters, config.data_root)
         self.universe = Universe(config.universe.id, config.data_root)

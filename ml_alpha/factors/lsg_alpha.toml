@@ -57,7 +57,6 @@ barra_columns = ["DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY",
 turnover_column = "turnover_rate_f"
 sequence_length = 52
 normalization = "window_mean"
-memory_budget_mb = 16384
 history_read_workers = 30
 history_prefetch_mb = 128
 

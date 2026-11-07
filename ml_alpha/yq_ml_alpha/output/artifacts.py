@@ -65,6 +65,13 @@ def _canonical(value) -> str:
     return json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
 
 
+def _without_history_cache_budget(identity: dict) -> dict:
+    features = identity["features"]
+    params = {key: value for key, value in features["params"].items()
+              if key not in {"memory_budget_mb", "future_memory_budget_mb"}}
+    return {**identity, "features": {**features, "params": params}}
+
+
 def save_manifest(path: Path, config, window, dataset) -> None:
     identity = artifact_identity(config, window, dataset)
     payload = {"identity": identity, "fingerprint": hashlib.sha256(_canonical(identity).encode()).hexdigest()}
@@ -85,6 +92,16 @@ def validate_manifest(path: Path, config, window, dataset) -> None:
     if not artifact_io.exists(path) or not artifact_io.exists(manifest):
         raise ValueError(f"missing model/manifest; retrain before resume or predict: {path}")
     payload = json.loads(artifact_io.read_text(manifest, encoding="utf-8"))
-    expected = hashlib.sha256(_canonical(artifact_identity(config, window, dataset)).encode()).hexdigest()
+    identity = artifact_identity(config, window, dataset)
+    expected = hashlib.sha256(_canonical(identity).encode()).hexdigest()
     if payload.get("fingerprint") != expected:
+        saved = payload.get("identity")
+        # Existing weights remain compatible when only RAM retention changes.
+        if (isinstance(saved, dict)
+                and isinstance(saved.get("features"), dict)
+                and isinstance(saved["features"].get("params"), dict)
+                and payload.get("fingerprint") == hashlib.sha256(_canonical(saved).encode()).hexdigest()
+                and _canonical(_without_history_cache_budget(saved)) ==
+                    _canonical(_without_history_cache_budget(identity))):
+            return
         raise ValueError(f"model config/features/data version changed; retrain: {path}")

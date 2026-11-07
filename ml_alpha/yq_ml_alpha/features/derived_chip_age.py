@@ -16,7 +16,7 @@ class DerivedChipAgeProvider(FeatureProvider):
         self.sequence = DailyTensorSequence(
             root, self.feature_columns, (4, 32),
             length=int(params.get("sequence_length", 30)),
-            memory_budget_mb=int(params.get("memory_budget_mb", 128)),
+            memory_budget_mb=params.get("memory_budget_mb"),
         )
         self.expected_version = params.get("dataset_version", "chip_age_rolling250_v2")
         self._manifest = None

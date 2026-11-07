@@ -69,6 +69,16 @@ python scripts/update_incremental.py --groups etf_static option_static index_sta
 基础信息是接口当前快照，不应将历史起止日期理解为历史版本还原。
 Reference tables are current API snapshots; historical date arguments do not reconstruct past versions.
 
+## 期货交易参数 / Futures trade parameters
+
+```bash
+python scripts/update_incremental.py --groups future_trade_param --start-date 20260924 --end-date 20260924
+```
+
+`future_trade_param` 是单独选择的增量组。省略开始日期时只处理结束日期，结束日期默认为北京时间当天。四个接口各用对应交易所的日历，保留接口默认返回的列，按交易所和交易日写入 Parquet。四个接口共享 `api.rate_limits.fut_trade_param`，默认上限为每分钟 500 次。满 3,000 条继续分页，收齐后发布当天文件。
+
+Select `future_trade_param` explicitly. The start date defaults to the end date, which defaults to today in Beijing time. The four endpoints use their exchange calendars and share the `api.rate_limits.fut_trade_param` ceiling of 500 requests per minute by default. Each date is published after pagination completes, with the default response columns.
+
 ## 财报、分红与分析师 / Financial statements, dividends and analysts
 
 三大报表的增量调度从指定区间中选出季度末报告期，按报告期请求，而非逐个公告日请求。未包含季度末的区间会跳过；`stock_financial` 只更新三大报表。

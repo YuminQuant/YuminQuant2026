@@ -1,11 +1,13 @@
 from .fut_static_downloader import FutureBasicDownloader
 from .fut_daily_downloader import FutureDailyDownloader
 from .fut_minute_downloader import FutureMinuteDownloader
-from .fut_limit_downloader import FutureLimitDownloader 
+from .fut_limit_downloader import FutureLimitDownloader
+from .fut_trade_param_downloader import FutureTradeParamDownloader
 
 __all__ = [
     'FutureBasicDownloader',
     'FutureDailyDownloader',
     'FutureMinuteDownloader',
-    'FutureLimitDownloader'
+    'FutureLimitDownloader',
+    'FutureTradeParamDownloader',
 ]

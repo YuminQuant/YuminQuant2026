@@ -1,4 +1,4 @@
-"""Full-date Logsig-RNN factor using fixed, derived multivariate logsignatures."""
+"""Logsig-RNN factor using derived multivariate logsignatures."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,8 +13,13 @@ from yq_ml_alpha.output import artifact_io
 
 
 def _params(raw):
-    integers = {"input_size", "sequence_length", "hidden_size", "num_layers", "batch_size", "epochs", "patience"}
-    scalars = {"dropout", "lr", "weight_decay", "eps", "norm_eps", "bn_momentum", "min_delta"}
+    integers = {"input_size", "sequence_length", "hidden_size", "num_layers", "batch_size"}
+    scalars = {"dropout", "lr", "weight_decay", "eps", "norm_eps", "bn_momentum"}
+    if "date_draws" in raw:
+        integers.update(("date_draws", "epochs_per_draw"))
+    else:
+        integers.update(("epochs", "patience"))
+        scalars.add("min_delta")
     keys = integers | scalars | {"seed", "device", "gradient_checkpointing"}
     if set(raw) != keys:
         raise ValueError(f"Logsig-RNN parameters: missing={sorted(keys - set(raw))}, unknown={sorted(set(raw) - keys)}")
@@ -32,6 +37,8 @@ def _params(raw):
         raise ValueError("Logsig-RNN requires integer seed and boolean gradient_checkpointing")
     if params["input_size"] != 728 or params["sequence_length"] != 21:
         raise ValueError("Logsig-RNN derived protocol is fixed at 21 x 728")
+    if "date_draws" in params and params["batch_size"] < 3:
+        raise ValueError("Logsig-RNN mini-batches need batch_size of at least three")
     return params
 
 
@@ -52,8 +59,7 @@ def build_network(nn, params):
             return self.recurrent(values)[0][:, -1]
 
         def forward(self, values):
-            # Exactly one update of each BN per full date. Stock chunks must
-            # never determine the normalization statistics or the IC universe.
+            # BatchNorm uses the supplied batch. Encoding chunks do not change its statistics.
             normalized = self.input_norm(values.transpose(1, 2)).transpose(1, 2)
             blocks = []
             for start in range(0, len(values), params["batch_size"]):
@@ -87,8 +93,6 @@ class LogsigRNNAlphaModel(DailySequenceAlphaModel):
         training = optimizer is not None
         self.model.train(training)
         losses = []
-        # Dates were sampled once by the public window sampler. No epoch cap,
-        # random date subsampling, or repeated three-epoch single-date fitting.
         with torch.set_grad_enabled(training):
             for date, frame in bundle.frame.groupby("trade_date", sort=True):
                 target = pd.to_numeric(frame[context.label_column], errors="coerce").to_numpy(dtype="float32")
@@ -110,6 +114,70 @@ class LogsigRNNAlphaModel(DailySequenceAlphaModel):
             raise ValueError("Logsig-RNN has no usable labeled date cross-sections")
         return float(np.mean(losses)), len(losses)
 
+    def _fit_sampled_dates(self, torch, train, valid, context, device, optimizer, source):
+        groups = {}
+        for date, indices in train.frame.groupby("trade_date", sort=True).indices.items():
+            target = pd.to_numeric(train.frame.iloc[indices][context.label_column],
+                                   errors="coerce").to_numpy(dtype="float32")
+            keep = np.isfinite(target)
+            if keep.sum() >= 2 and target[keep].std() > self.params["eps"]:
+                groups[date] = indices[keep], target[keep]
+        if not groups:
+            raise ValueError("Logsig-RNN has no eligible training dates")
+
+        rng = np.random.default_rng(self.params["seed"])
+        dates = rng.choice(list(groups), size=self.params["date_draws"], replace=True)
+        batch_size = self.params["batch_size"]
+        started = perf_counter()
+        self.model.train()
+        for draw, date in enumerate(dates, start=1):
+            draw_started, before = perf_counter(), source.cache_info()
+            indices, target = groups[date]
+            values = self._inputs(train, date, train.frame.iloc[indices])
+            boundaries = list(range(0, len(target), batch_size))
+            if len(boundaries) > 1 and len(target) - boundaries[-1] == 1:
+                # Move one stock from the previous batch so both batches support BN and IC.
+                boundaries[-1] -= 1
+            boundaries.append(len(target))
+            losses = []
+            for _ in range(self.params["epochs_per_draw"]):
+                order = rng.permutation(len(target))
+                for start, end in zip(boundaries, boundaries[1:]):
+                    batch = order[start:end]
+                    label = target[batch]
+                    if label.std() <= self.params["eps"]:
+                        continue
+                    optimizer.zero_grad(set_to_none=True)
+                    prediction = self.model(torch.from_numpy(values[batch]).to(device))
+                    loss = full_date_ic_loss(prediction, torch.from_numpy(label).to(device), self.params["eps"]) - 1
+                    if not torch.isfinite(loss):
+                        raise ValueError(f"nonfinite Logsig-RNN mini-batch loss on {date}")
+                    loss.backward()
+                    optimizer.step()
+                    losses.append(float(loss.detach()))
+            if not losses:
+                raise ValueError(f"no usable Logsig-RNN mini-batches on {date}")
+            train_loss = float(np.mean(losses))
+            self.loss_history.append(dict(window_id=context.artifact_dir.name, draw=draw, trade_date=int(date),
+                train_loss=train_loss, train_ic=-train_loss, optimizer_steps=len(losses),
+                draw_elapsed_seconds=perf_counter() - draw_started, elapsed_seconds=perf_counter() - started))
+            if context.diagnostics.get("enabled", False) and context.diagnostics.get("print_epoch", False):
+                print(f"logsigrnn window={context.artifact_dir.name} draw={draw}/{len(dates)} date={date} "
+                      f"stocks={len(target)} steps={len(losses)} train_ic={-train_loss:.6f} "
+                      f"draw_elapsed_s={perf_counter() - draw_started:.2f}", flush=True)
+                source.log_cache(f"logsigrnn_draw_{draw}", before=before)
+            del values
+
+        valid_loss, valid_dates = self._epoch(torch, valid, context, device)
+        self.loss_history[-1].update(valid_loss=valid_loss - 1, valid_ic=1 - valid_loss)
+        self.model.to("cpu").eval()
+        self.model_info = dict(window_id=context.artifact_dir.name, params=self.params, feature_columns=self.feature_columns,
+            draws_run=len(dates), train_date_count=len(groups), distinct_dates_drawn=len(set(dates.tolist())),
+            valid_date_count=valid_dates, final_valid_ic=1 - valid_loss, train_rows=len(train.frame),
+            valid_rows=len(valid.frame), date_selection="uniform_with_replacement", loss="negative_minibatch_pearson_ic",
+            batch_norm="training_minibatch", prediction="saved_batchnorm_statistics_no_labels")
+        print(f"logsigrnn final valid_dates={valid_dates} valid_ic={1 - valid_loss:.6f}", flush=True)
+
     def fit_bundle(self, train, valid, context):
         torch, nn = _torch_modules()
         if train.frame.empty or valid.frame.empty or context.model_search:
@@ -129,8 +197,11 @@ class LogsigRNNAlphaModel(DailySequenceAlphaModel):
         device = _device(torch, self.params["device"])
         self.model = build_network(nn, self.params).to(device)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.params["lr"], weight_decay=self.params["weight_decay"])
-        best, best_state, best_epoch, stale = np.inf, None, 0, 0
         self.loss_history = []
+        if "date_draws" in self.params:
+            self._fit_sampled_dates(torch, train, valid, context, device, optimizer, source)
+            return
+        best, best_state, best_epoch, stale = np.inf, None, 0, 0
         started = perf_counter()
         for epoch in range(1, self.params["epochs"] + 1):
             epoch_started, before = perf_counter(), source.cache_info()

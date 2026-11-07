@@ -33,7 +33,7 @@ cv = cumsum(volume) / sum_21d(volume)
 
 无需把每个样本日的21×728张量重复存盘。每日一行的浮点主体约5864字节，5000只股票时约28 MiB/日、250交易日约6.8 GiB（未压缩，不含键和Parquet开销；实际Snappy体积依覆盖/数据变化）。这是数据规模估算，没有执行全量生成或磁盘预算变更。
 
-训练RAM日缓存预算4096 MiB、HDFS预读512 MiB、最多30读取线程，本地串行；只存派生产品，不写训练磁盘缓存。缓存跨epoch保留，但超预算仍会LRU淘汰，无法承诺五年全部日截面常驻。5000股的21×728输入张量约292 MiB，另有日缓存、归一化暂存及GPU激活占用；batch_size限制LSTM股票编码块，不限制完整截面BN/IC。
+日截面缓存在 RAM 中按需填充，默认无字节上限。每次抽到交易日时组装一次完整截面，训练三遍后释放该日输入张量。5000 股的 21×728 输入张量约 292 MiB，每个 1000 股 mini-batch 的输入约 58 MiB，另有日缓存、归一化暂存和 GPU 激活占用。
 
 `--date-batch-size`延续Rust派生语义：把待输出日期划分为批次，每批日期任务由threads线程执行；不是训练采样间隔，也不是预先保留该数量天的原始分钟表。每个日期读取本日和上一交易日；年分片会自动读取年前一天来构建bridge，不依赖上一年度任务先完成。缺失上一日原始分钟文件时可以生成本日intra，bridge为空；只有需要该连接的21日样本会被剔除。
 
@@ -41,15 +41,14 @@ cv = cumsum(volume) / sum_21d(volume)
 
 `[stocks,21,728] → 输入BatchNorm(728) → 两层LSTM(hidden=32,层间Dropout=0.5) → 末步隐藏状态 → BatchNorm(32) → Linear(32,1)`。
 
-输入BN按完整日期截面的股票×21时间位置计算每个坐标统计量；输出BN按全部股票末步隐藏状态计算。两个BN每日期各更新一次，股票分块不会改变BN的截面范围；预测eval使用checkpoint中保存的running_mean/running_var，不读取标签或更新统计量。LSTM支持梯度检查点，只对不包含BN的编码块重算。
+训练时输入 BN 按 mini-batch 内股票和 21 个时间位置计算统计量，输出 BN 使用该批股票的末步隐藏状态。预测使用保存的 BN 运行统计量。
 
-按用户确认使用完整有效标签截面的1−Pearson IC；无标签但历史完整的股票可参与输入截面，收益监督仅使用有效标签。每日期一次反向传播和Adam更新，lr=0.001、weight_decay=0。验证按日期平均IC挑选最优checkpoint。原研报使用股票mini-batch IC、随机抽500次日期且每次训练3轮，本实现不采用该抽日期流程。
+每个训练窗口用种子 42 从合格日期中等概率有放回抽取 500 次。每次在该日有有效标签的股票上训练 3 遍，每遍打乱股票顺序并按 1000 股分批。每个有效 mini-batch 以 −Pearson IC 为损失，执行一次 Adam 更新，学习率为 0.001。500 次抽样完成后评估独立验证集的日均 IC，保存最终权重。
 
-- 项目统一年度滚动5年，57个月训练＋3个月验证；固定每5个交易日采样，每个epoch遍历全部已选日期。
+- 项目统一年度滚动5年，57个月训练＋3个月验证；训练候选日期为区间内所有合格交易日。
 - 2011起训练，2016起逐年预测，预测截至2026-04-24；原论文的周频含义是回测调仓频率，本库仍可每日输出。
 - 项目10日VWAP标签，lookahead_days=11；公共层按标签到期边界及训练/验证分界清洗。输入归一化只使用样本日及以前的行情。
-- batch_size=5000、单种子42、最多100轮、验证IC连续10轮未改善早停。GPU可用时自动使用GPU。
-- 日志/诊断记录epoch、训练/验证IC、训练/验证日期数、早停计数、耗时、RAM缓存加载/淘汰和Parquet打开增量。
+- 日志按抽样日期记录训练 IC、Adam 更新次数、耗时和缓存统计，结束时记录验证 IC。
 
 ## CLI和产物
 
@@ -67,6 +66,6 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- derive-logsigrnn
 & $py -B -u -m yq_ml_alpha factor-run --config ml_alpha\factors\logsigrnn_week.toml
 ```
 
-权重在 `data/model_workspace/logsigrnn_week/artifacts/annual_YYYY/model.pkl`，含版本、参数、LSTM/BN/线性权重和诊断；同目录由公共流程保存manifest、loss_history.parquet、model_info.json。最终因子写入 `data/factors/stock/daily/YYYY/YYYYMMDD_ml.parquet` 的 `logsigrnn_week` 列，继续使用公共日期锁及原子合并写出，也支持多个配置联合预测。
+权重在 `data/model_workspace/logsigrnn_week/rolling60m_report500x3/artifacts/annual_YYYY/model.pkl`，含版本、参数、LSTM/BN/线性权重和诊断。同目录保存 manifest、loss_history.parquet 和 model_info.json。预测因子写入 `data/factors/stock/daily/YYYY/YYYYMMDD_ml.parquet` 的 `logsigrnn_week` 列。
 
 本轮不启动正式派生、训练、Slurm或正式预测，不改动运行任务。

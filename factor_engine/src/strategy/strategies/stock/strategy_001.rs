@@ -27,6 +27,7 @@ pub struct Strategy001 {
     top_n: usize,
     top_fraction: Option<f64>,
     exclude_st: bool,
+    exclude_limit: bool,
     replacement_count: Option<usize>,
     active_top_n: usize,
     hold_days: usize,
@@ -133,11 +134,13 @@ impl Strategy001 {
         if top_fraction.is_some_and(|v| !(v > 0.0 && v <= 1.0)) {
             return Err(err("top_fraction must be in (0,1]"));
         }
-        let exclude_st = match params.get("exclude_st").map(String::as_str).unwrap_or("false") {
-            "true" => true,
-            "false" => false,
-            _ => return Err(err("exclude_st must be true or false")),
+        let flag = |key| match params.get(key).map(String::as_str).unwrap_or("false") {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(err(format!("{key} must be true or false"))),
         };
+        let exclude_st = flag("exclude_st")?;
+        let exclude_limit = flag("exclude_limit")?;
         Ok(Self {
             rank_carry: allocation == "rank_carry",
             buy_window_budget: 0.0,
@@ -169,6 +172,7 @@ impl Strategy001 {
             top_n,
             top_fraction,
             exclude_st,
+            exclude_limit,
             replacement_count: replacements,
             active_top_n: top_n,
             hold_days: integer("rebalance_days", 5)?,
@@ -200,6 +204,30 @@ impl Strategy001 {
         }).min(eligible.len());
         eligible.truncate(n.saturating_add(self.replacement_count.unwrap_or(n)));
         (n, eligible)
+    }
+
+    fn filter_flags(&self) -> impl Iterator<Item = &'static str> {
+        [(self.exclude_st, "is_st"), (self.exclude_limit, "is_limit")]
+            .into_iter()
+            .filter_map(|(enabled, name)| enabled.then_some(name))
+    }
+
+    fn filter_columns(&self) -> Vec<String> {
+        std::iter::once("ts_code").chain(self.filter_flags()).map(str::to_owned).collect()
+    }
+
+    fn excluded_symbols(&self, table: &crate::data::Table) -> Result<BTreeSet<String>> {
+        let codes = table.required_utf8("ts_code")?;
+        let mut excluded = BTreeSet::new();
+        for name in self.filter_flags() {
+            let Some(crate::data::ColumnData::Bool(flags)) = table.columns.get(name) else {
+                return Err(err(format!("stock trade filter requires boolean {name}")));
+            };
+            excluded.extend(codes.iter().zip(flags).filter_map(|(code, flag)| {
+                if *flag == Some(true) { code.clone() } else { None }
+            }));
+        }
+        Ok(excluded)
     }
 
     fn reset_buy_window(&mut self, ctx: &StrategyContext) {
@@ -320,13 +348,13 @@ impl Strategy for Strategy001 {
             }
             candidates.insert(date, preceding);
         }
-        let mut st_by_date = BTreeMap::new();
-        if self.exclude_st {
-            let paths = candidates.keys().map(|&d| st_path(config, d)).collect::<Vec<_>>();
+        let mut excluded_by_date = BTreeMap::new();
+        if self.exclude_st || self.exclude_limit {
+            let paths = candidates.keys().map(|&d| trade_filter_path(config, d)).collect::<Vec<_>>();
             crate::data::read_ahead::visit_projected_files(
-                &paths, &["ts_code".into(), "is_st".into()], |path, table| {
+                &paths, &self.filter_columns(), |path, table| {
                     let date = path.file_stem().unwrap().to_string_lossy().parse::<i32>()?;
-                    st_by_date.insert(date, st_symbols(&table)?);
+                    excluded_by_date.insert(date, self.excluded_symbols(&table)?);
                     Ok(())
                 },
             )?;
@@ -368,7 +396,7 @@ impl Strategy for Strategy001 {
                 date,
                 ranked
                     .into_iter()
-                    .take(if self.top_fraction.is_some() || self.exclude_st {
+                    .take(if self.top_fraction.is_some() || self.exclude_st || self.exclude_limit {
                         usize::MAX
                     } else {
                         self.top_n.saturating_add(self.replacement_count.unwrap_or(self.top_n))
@@ -392,7 +420,7 @@ impl Strategy for Strategy001 {
                             "[strategy warning] date={date}: using bounded as-of signal {source}"
                         );
                     }
-                    let selection = self.select_ranked(names.iter().cloned(), st_by_date.get(&date));
+                    let selection = self.select_ranked(names.iter().cloned(), excluded_by_date.get(&date));
                     self.prepared.insert(date, selection);
                 }
                 None if self.strict_signal => {
@@ -439,14 +467,16 @@ impl Strategy for Strategy001 {
                     .filter(|(s, v)| v.is_finite() && !s.ends_with(".BJ"))
                     .collect::<Vec<_>>();
                 ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                let st = if self.exclude_st {
-                    let columns = ["ts_code".into(), "is_st".into()];
-                    Some(st_symbols(&read_parquet(&st_path(config, date), Some(&columns))?)?)
+                let excluded = if self.exclude_st || self.exclude_limit {
+                    let columns = self.filter_columns();
+                    Some(self.excluded_symbols(&read_parquet(
+                        &trade_filter_path(config, date), Some(&columns),
+                    )?)?)
                 } else {
                     None
                 };
                 (self.active_top_n, self.ranked) =
-                    self.select_ranked(ranked.into_iter().map(|(s, _)| s), st.as_ref());
+                    self.select_ranked(ranked.into_iter().map(|(s, _)| s), excluded.as_ref());
             }
             self.selected = self.ranked.iter().take(self.active_top_n).cloned().collect();
             if self.selected.is_empty() && self.strict_signal {
@@ -947,17 +977,7 @@ fn load_signal(
     Ok(out)
 }
 
-fn st_path(config: &StrategyRunConfig, date: i32) -> std::path::PathBuf {
+fn trade_filter_path(config: &StrategyRunConfig, date: i32) -> std::path::PathBuf {
     config.data_root.join("chn_stock_data/daily/trade_filter")
         .join((date / 10000).to_string()).join(format!("{date}.parquet"))
-}
-
-fn st_symbols(table: &crate::data::Table) -> Result<BTreeSet<String>> {
-    let codes = table.required_utf8("ts_code")?;
-    let Some(crate::data::ColumnData::Bool(flags)) = table.columns.get("is_st") else {
-        return Err(err("stock trade filter requires boolean is_st"));
-    };
-    Ok(codes.iter().zip(flags).filter_map(|(code, flag)| {
-        (*flag == Some(true)).then_some(code.as_ref()).flatten().cloned()
-    }).collect())
 }

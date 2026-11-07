@@ -25,7 +25,10 @@ pub struct Strategy001 {
     signal_root: std::path::PathBuf,
     signal_id: String,
     top_n: usize,
-    candidate_count: usize,
+    top_fraction: Option<f64>,
+    exclude_st: bool,
+    replacement_count: Option<usize>,
+    active_top_n: usize,
     hold_days: usize,
     window: usize,
     buffer: f64,
@@ -47,7 +50,7 @@ pub struct Strategy001 {
     strict_signal: bool,
     signal_max_age: usize,
     input_days: usize,
-    prepared: BTreeMap<i32, Vec<String>>,
+    prepared: BTreeMap<i32, (usize, Vec<String>)>,
     audit: Option<BufWriter<crate::artifact_io::AtomicWriter>>,
     plans: Option<BufWriter<crate::artifact_io::AtomicWriter>>,
 }
@@ -125,8 +128,16 @@ impl Strategy001 {
         let replacements = params
             .get("limit_replacement_candidates")
             .map(|v| v.parse::<usize>())
-            .transpose()?
-            .unwrap_or(top_n);
+            .transpose()?;
+        let top_fraction = params.get("top_fraction").map(|v| v.parse::<f64>()).transpose()?;
+        if top_fraction.is_some_and(|v| !(v > 0.0 && v <= 1.0)) {
+            return Err(err("top_fraction must be in (0,1]"));
+        }
+        let exclude_st = match params.get("exclude_st").map(String::as_str).unwrap_or("false") {
+            "true" => true,
+            "false" => false,
+            _ => return Err(err("exclude_st must be true or false")),
+        };
         Ok(Self {
             rank_carry: allocation == "rank_carry",
             buy_window_budget: 0.0,
@@ -156,7 +167,10 @@ impl Strategy001 {
                 .cloned()
                 .unwrap_or_else(|| "mdl_000022".into()),
             top_n,
-            candidate_count: top_n.saturating_add(replacements),
+            top_fraction,
+            exclude_st,
+            replacement_count: replacements,
+            active_top_n: top_n,
             hold_days: integer("rebalance_days", 5)?,
             window,
             buffer,
@@ -173,6 +187,21 @@ impl Strategy001 {
             plans: None,
         })
     }
+    fn select_ranked(
+        &self,
+        ranked: impl Iterator<Item = String>,
+        excluded: Option<&BTreeSet<String>>,
+    ) -> (usize, Vec<String>) {
+        let mut eligible: Vec<_> = ranked
+            .filter(|s| !excluded.is_some_and(|st| st.contains(s)))
+            .collect();
+        let n = self.top_fraction.map_or(self.top_n, |fraction| {
+            (eligible.len() as f64 * fraction).ceil() as usize
+        }).min(eligible.len());
+        eligible.truncate(n.saturating_add(self.replacement_count.unwrap_or(n)));
+        (n, eligible)
+    }
+
     fn reset_buy_window(&mut self, ctx: &StrategyContext) {
         let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
         self.buy_window_budget = self
@@ -191,7 +220,7 @@ impl Strategy001 {
     ) -> Option<(String, f64)> {
         let index = self.selected.iter().position(|s| s == symbol)?;
         let lot = ctx.config().lot_size;
-        let (backup, target) = self.ranked.iter().skip(self.top_n).find_map(|backup| {
+        let (backup, target) = self.ranked.iter().skip(self.active_top_n).find_map(|backup| {
             if self.selected.contains(backup)
                 || self.replaced.contains(backup)
                 || ctx.account().is_delisted(backup)
@@ -216,7 +245,7 @@ impl Strategy001 {
     }
 
     fn replace_blocked_orders(&mut self, ctx: &StrategyContext, buy_rate: f64) {
-        if self.ranked.len() <= self.top_n {
+        if self.ranked.len() <= self.active_top_n {
             return;
         }
         let blocked = self
@@ -275,7 +304,7 @@ impl Strategy for Strategy001 {
         self.input_days
     }
 
-    fn prepare_run(&mut self, _config: &StrategyRunConfig, dates: &[i32]) -> Result<()> {
+    fn prepare_run(&mut self, config: &StrategyRunConfig, dates: &[i32]) -> Result<()> {
         let mut needed = BTreeSet::new();
         let mut candidates = BTreeMap::new();
         for &date in dates.iter().step_by(self.hold_days) {
@@ -290,6 +319,17 @@ impl Strategy for Strategy001 {
                 end = previous;
             }
             candidates.insert(date, preceding);
+        }
+        let mut st_by_date = BTreeMap::new();
+        if self.exclude_st {
+            let paths = candidates.keys().map(|&d| st_path(config, d)).collect::<Vec<_>>();
+            crate::data::read_ahead::visit_projected_files(
+                &paths, &["ts_code".into(), "is_st".into()], |path, table| {
+                    let date = path.file_stem().unwrap().to_string_lossy().parse::<i32>()?;
+                    st_by_date.insert(date, st_symbols(&table)?);
+                    Ok(())
+                },
+            )?;
         }
         let available = needed
             .into_iter()
@@ -328,7 +368,11 @@ impl Strategy for Strategy001 {
                 date,
                 ranked
                     .into_iter()
-                    .take(self.candidate_count)
+                    .take(if self.top_fraction.is_some() || self.exclude_st {
+                        usize::MAX
+                    } else {
+                        self.top_n.saturating_add(self.replacement_count.unwrap_or(self.top_n))
+                    })
                     .map(|(s, _)| s)
                     .collect::<Vec<_>>(),
             );
@@ -339,7 +383,7 @@ impl Strategy for Strategy001 {
                 signals
                     .get(d)
                     .filter(|s| !s.is_empty())
-                    .map(|s| (*d, s.clone()))
+                    .map(|s| (*d, s))
             });
             match selected {
                 Some((source, names)) => {
@@ -348,7 +392,8 @@ impl Strategy for Strategy001 {
                             "[strategy warning] date={date}: using bounded as-of signal {source}"
                         );
                     }
-                    self.prepared.insert(date, names);
+                    let selection = self.select_ranked(names.iter().cloned(), st_by_date.get(&date));
+                    self.prepared.insert(date, selection);
                 }
                 None if self.strict_signal => {
                     return Err(err(format!(
@@ -357,7 +402,7 @@ impl Strategy for Strategy001 {
                     )))
                 }
                 None => {
-                    self.prepared.insert(date, Vec::new());
+                    self.prepared.insert(date, (0, Vec::new()));
                 }
             }
         }
@@ -366,7 +411,7 @@ impl Strategy for Strategy001 {
 
     fn prepare_session(
         &mut self,
-        _config: &StrategyRunConfig,
+        config: &StrategyRunConfig,
         account: &AccountState,
         date: i32,
     ) -> Result<Option<BTreeSet<String>>> {
@@ -385,7 +430,8 @@ impl Strategy for Strategy001 {
                 .calendar
                 .last_open_on_or_before(date - 1)
                 .ok_or_else(|| err("missing previous signal date"))?;
-            if let Some(names) = self.prepared.get(&date) {
+            if let Some((n, names)) = self.prepared.get(&date) {
+                self.active_top_n = *n;
                 self.ranked.clone_from(names);
             } else {
                 let mut ranked = load_signal(&self.signal_root, previous, &self.signal_id)?
@@ -393,13 +439,16 @@ impl Strategy for Strategy001 {
                     .filter(|(s, v)| v.is_finite() && !s.ends_with(".BJ"))
                     .collect::<Vec<_>>();
                 ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                self.ranked = ranked
-                    .into_iter()
-                    .take(self.candidate_count)
-                    .map(|(s, _)| s)
-                    .collect();
+                let st = if self.exclude_st {
+                    let columns = ["ts_code".into(), "is_st".into()];
+                    Some(st_symbols(&read_parquet(&st_path(config, date), Some(&columns))?)?)
+                } else {
+                    None
+                };
+                (self.active_top_n, self.ranked) =
+                    self.select_ranked(ranked.into_iter().map(|(s, _)| s), st.as_ref());
             }
-            self.selected = self.ranked.iter().take(self.top_n).cloned().collect();
+            self.selected = self.ranked.iter().take(self.active_top_n).cloned().collect();
             if self.selected.is_empty() && self.strict_signal {
                 return Err(err(format!(
                     "missing {} signal before {date}",
@@ -417,7 +466,7 @@ impl Strategy for Strategy001 {
                 .cloned()
                 .chain(self.selected.iter().cloned())
                 .chain(
-                    self.ranked.iter().skip(self.top_n)
+                    self.ranked.iter().skip(self.active_top_n)
                         .filter(|symbol| self.active && !self.replaced.contains(*symbol))
                         .cloned(),
                 )
@@ -525,7 +574,7 @@ impl Strategy for Strategy001 {
         self.reserve = equity.max(0.0) * self.buffer;
         self.entry_budget = (equity - self.reserve).max(0.0) / self.selected.len().max(1) as f64;
         let rate = (ctx.config().buy_commission_bps + ctx.config().slippage_bps) / 10000.0;
-        if self.ranked.len() > self.top_n {
+        if self.ranked.len() > self.active_top_n {
             // Resolve opening substitutions before net targets and old-position sales are planned.
             for symbol in self.selected.clone() {
                 if ctx.account().position_quantity(&symbol) == 0.0
@@ -566,7 +615,7 @@ impl Strategy for Strategy001 {
                     let desired = (budget / (price * (1.0 + rate)) / lot).floor() * lot;
                     let target = if ctx.market().bar(symbol).is_some_and(|b| {
                         b.is_limit_up && !(b.open_at_upper_limit && current == 0.0
-                            && self.ranked.len() > self.top_n)
+                            && self.ranked.len() > self.active_top_n)
                     }) {
                         desired.min(current)
                     } else {
@@ -896,4 +945,19 @@ fn load_signal(
         }
     }
     Ok(out)
+}
+
+fn st_path(config: &StrategyRunConfig, date: i32) -> std::path::PathBuf {
+    config.data_root.join("chn_stock_data/daily/trade_filter")
+        .join((date / 10000).to_string()).join(format!("{date}.parquet"))
+}
+
+fn st_symbols(table: &crate::data::Table) -> Result<BTreeSet<String>> {
+    let codes = table.required_utf8("ts_code")?;
+    let Some(crate::data::ColumnData::Bool(flags)) = table.columns.get("is_st") else {
+        return Err(err("stock trade filter requires boolean is_st"));
+    };
+    Ok(codes.iter().zip(flags).filter_map(|(code, flag)| {
+        (*flag == Some(true)).then_some(code.as_ref()).flatten().cloned()
+    }).collect())
 }

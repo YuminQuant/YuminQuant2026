@@ -67,12 +67,30 @@ impl Metrics {
         }
     }
 
-    fn add_tails(&mut self, tails: &(Vec<usize>, Vec<usize>), label: &[Option<f64>]) {
-        for &row in &tails.0 {
-            self.upper.push(label[row]);
+    fn add_tails(&mut self, rows: &[usize], factor: &[Option<f64>], label: &[Option<f64>]) {
+        let mut values: Vec<_> = rows.iter().filter_map(|&row| factor[row]).collect();
+        let Some(lower) = quantile_linear(&mut values, 0.1) else {
+            return;
+        };
+        let upper = quantile_linear(&mut values, 0.9).expect("nonempty factors");
+        if lower >= upper {
+            if rows
+                .iter()
+                .any(|&row| factor[row].is_some() && label[row].is_some())
+            {
+                self.upper.push(Some(0.0));
+                self.lower.push(Some(0.0));
+            }
+            return;
         }
-        for &row in &tails.1 {
-            self.lower.push(label[row]);
+        for &row in rows {
+            if let Some(value) = factor[row] {
+                if value >= upper {
+                    self.upper.push(label[row]);
+                } else if value <= lower {
+                    self.lower.push(label[row]);
+                }
+            }
         }
     }
 
@@ -99,32 +117,6 @@ fn cosine_similarity(x: &[f64], y: &[f64]) -> Option<f64> {
         y_squared += y * y;
     }
     Some((dot / (x_squared.sqrt() * y_squared.sqrt())).clamp(-1.0, 1.0))
-}
-
-fn tail_rows(rows: &[usize], factor: &[Option<f64>]) -> (Vec<usize>, Vec<usize>) {
-    let mut values: Vec<_> = rows.iter().filter_map(|&row| factor[row]).collect();
-    let mut upper_rows = Vec::new();
-    let mut lower_rows = Vec::new();
-    if values
-        .first()
-        .is_some_and(|first| values.iter().any(|value| value != first))
-    {
-        let lower = quantile_linear(&mut values, 0.1).expect("nonempty factors");
-        let upper = quantile_linear(&mut values, 0.9).expect("nonempty factors");
-        if lower < upper {
-            upper_rows.extend(
-                rows.iter()
-                    .copied()
-                    .filter(|&row| factor[row].is_some_and(|v| v >= upper)),
-            );
-            lower_rows.extend(
-                rows.iter()
-                    .copied()
-                    .filter(|&row| factor[row].is_some_and(|v| v <= lower)),
-            );
-        }
-    }
-    (upper_rows, lower_rows)
 }
 
 struct Observation {
@@ -231,7 +223,7 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
             for (&code, rows) in &product_rows {
                 let mut local = Metrics::default();
                 local.add_pair_metrics(rows, &values, &returns);
-                local.add_tails(&tail_rows(rows, &values), &returns);
+                local.add_tails(rows, &values, &returns);
                 all.average_tails(&local);
                 summary.push(Observation {
                     date,

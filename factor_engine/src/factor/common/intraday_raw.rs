@@ -153,6 +153,9 @@ pub fn quantile_linear(values: &mut [f64], quantile: f64) -> Option<f64> {
         return Some(lower_value);
     }
     let upper_value = *values.select_nth_unstable_by(upper, cmp).1;
+    if lower_value == upper_value {
+        return Some(lower_value);
+    }
     let weight = position - lower as f64;
     Some(lower_value * (1.0 - weight) + upper_value * weight)
 }

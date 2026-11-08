@@ -783,13 +783,13 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
 }
 
 fn run_future_minute_backtest(flags: &HashMap<String, String>) -> Result<()> {
-    use yq_factor_engine::backtest::future_minute::{run, FutureMinuteBacktestRequest};
+    use yq_factor_engine::backtest::future_minute::{run, FutureMinuteBacktestRequest, QuantileMode};
     use yq_factor_engine::error::err;
 
     for key in flags.keys() {
         if !matches!(key.as_str(), "asset" | "frequency" | "start-date" | "end-date" |
             "factors" | "label" | "labels" | "products" | "factor-root" | "label-root" |
-            "output-dir" | "config")
+            "output-dir" | "config" | "quantile-mode")
         {
             return Err(err(format!("unsupported futures minute backtest flag --{key}")));
         }
@@ -822,6 +822,7 @@ fn run_future_minute_backtest(flags: &HashMap<String, String>) -> Result<()> {
         factor_root: flags.get("factor-root").map(PathBuf::from),
         label_root: flags.get("label-root").map(PathBuf::from),
         output_dir: flags.get("output-dir").map(PathBuf::from),
+        quantile_mode: flags.get("quantile-mode").map(|value| QuantileMode::parse(value)).transpose()?.unwrap_or_default(),
     };
     let config = yq_factor_engine::config::EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
     for path in run(&config, &request)? {
@@ -1681,7 +1682,7 @@ fn print_help() {
     println!(
         "  backtest --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD --factors factor_id[,factor_id...]"
     );
-    println!("  backtest --asset future --frequency minute_1m --start-date YYYYMMDD --end-date YYYYMMDD --factors column[,column...] [--label column] [--products RB.SHF,IF.CFX] [--label-root PATH]");
+    println!("  backtest --asset future --frequency minute_1m --start-date YYYYMMDD --end-date YYYYMMDD --factors column[,column...] [--quantile-mode daily|trailing-5] [--label column] [--products RB.SHF,IF.CFX] [--label-root PATH]");
     println!("  strategy-run --config strategy_config/stock/strategy_001.toml");
     println!(
         "  derive-bar --asset stock --source minute --bar-size N --start-date YYYYMMDD --end-date YYYYMMDD"

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,6 +26,81 @@ pub struct FutureMinuteBacktestRequest {
     pub factor_root: Option<PathBuf>,
     pub label_root: Option<PathBuf>,
     pub output_dir: Option<PathBuf>,
+    pub quantile_mode: QuantileMode,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum QuantileMode {
+    Daily,
+    #[default]
+    Trailing5,
+}
+
+impl QuantileMode {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "daily" => Ok(Self::Daily),
+            "trailing-5" => Ok(Self::Trailing5),
+            _ => Err(err("--quantile-mode must be daily or trailing-5")),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Trailing5 => "trailing-5",
+        }
+    }
+}
+
+const TRAILING_DAYS: usize = 5;
+
+#[derive(Clone, Copy)]
+struct TailThresholds {
+    lower: f64,
+    upper: f64,
+}
+
+impl TailThresholds {
+    fn for_day(rows: &[usize], factor: &[Option<f64>]) -> Option<Self> {
+        let mut values: Vec<_> = rows.iter().filter_map(|&row| factor[row]).collect();
+        Some(Self {
+            lower: quantile_linear(&mut values, 0.1)?,
+            upper: quantile_linear(&mut values, 0.9)?,
+        })
+    }
+}
+
+type DailyThresholds = BTreeMap<String, TailThresholds>;
+
+#[derive(Default)]
+struct ThresholdHistory {
+    days: VecDeque<DailyThresholds>,
+}
+
+impl ThresholdHistory {
+    fn mean(&self, code: &str) -> Option<TailThresholds> {
+        if self.days.len() != TRAILING_DAYS {
+            return None;
+        }
+        let (mut lower, mut upper) = (0.0, 0.0);
+        for day in &self.days {
+            let thresholds = day.get(code)?;
+            lower += thresholds.lower;
+            upper += thresholds.upper;
+        }
+        Some(TailThresholds {
+            lower: lower / TRAILING_DAYS as f64,
+            upper: upper / TRAILING_DAYS as f64,
+        })
+    }
+
+    fn advance(&mut self, today: DailyThresholds) {
+        if self.days.len() == TRAILING_DAYS {
+            self.days.pop_front();
+        }
+        self.days.push_back(today);
+    }
 }
 
 #[derive(Default)]
@@ -67,29 +142,36 @@ impl Metrics {
         }
     }
 
-    fn add_tails(&mut self, rows: &[usize], factor: &[Option<f64>], label: &[Option<f64>]) {
-        let mut values: Vec<_> = rows.iter().filter_map(|&row| factor[row]).collect();
-        let Some(lower) = quantile_linear(&mut values, 0.1) else {
-            return;
-        };
-        let upper = quantile_linear(&mut values, 0.9).expect("nonempty factors");
-        if lower >= upper {
-            if rows
+    fn add_tails(
+        &mut self,
+        rows: &[usize],
+        factor: &[Option<f64>],
+        label: &[Option<f64>],
+        TailThresholds { lower, upper }: TailThresholds,
+        zero_empty_tails: bool,
+    ) {
+        if lower < upper {
+            for &row in rows {
+                if let Some(value) = factor[row] {
+                    if value >= upper {
+                        self.upper.push(label[row]);
+                    } else if value <= lower {
+                        self.lower.push(label[row]);
+                    }
+                }
+            }
+        }
+        if (lower >= upper || zero_empty_tails)
+            && (self.upper.count == 0 || self.lower.count == 0)
+            && rows
                 .iter()
                 .any(|&row| factor[row].is_some() && label[row].is_some())
-            {
+        {
+            if self.upper.count == 0 {
                 self.upper.push(Some(0.0));
-                self.lower.push(Some(0.0));
             }
-            return;
-        }
-        for &row in rows {
-            if let Some(value) = factor[row] {
-                if value >= upper {
-                    self.upper.push(label[row]);
-                } else if value <= lower {
-                    self.lower.push(label[row]);
-                }
+            if self.lower.count == 0 {
+                self.lower.push(Some(0.0));
             }
         }
     }
@@ -125,6 +207,75 @@ struct Observation {
     metrics: Metrics,
 }
 
+#[derive(Default)]
+struct DayGroups<'a> {
+    by_minute: BTreeMap<&'a str, Vec<usize>>,
+    by_product: BTreeMap<String, Vec<usize>>,
+}
+
+struct FactorSummary {
+    rows: Vec<Observation>,
+    history: Option<ThresholdHistory>,
+}
+
+impl FactorSummary {
+    fn new(mode: QuantileMode) -> Self {
+        Self {
+            rows: Vec::new(),
+            history: matches!(mode, QuantileMode::Trailing5).then(ThresholdHistory::default),
+        }
+    }
+
+    fn add_day(
+        &mut self,
+        date: i32,
+        groups: &DayGroups<'_>,
+        factor: &[Option<f64>],
+        returns: Option<&[Option<f64>]>,
+    ) {
+        let mut today = DailyThresholds::new();
+        let mut all = Metrics::default();
+        for (code, rows) in &groups.by_product {
+            let daily = TailThresholds::for_day(rows, factor);
+            if self.history.is_some() {
+                if let Some(daily) = daily {
+                    today.insert(code.clone(), daily);
+                }
+            }
+            let Some(returns) = returns else { continue };
+            let thresholds = match &self.history {
+                Some(history) => history.mean(code),
+                None => daily,
+            };
+            let mut local = Metrics::default();
+            local.add_pair_metrics(rows, factor, returns);
+            if let Some(thresholds) = thresholds {
+                local.add_tails(rows, factor, returns, thresholds, self.history.is_some());
+            }
+            all.average_tails(&local);
+            self.rows.push(Observation {
+                date,
+                code: code.clone(),
+                metrics: local,
+            });
+        }
+        if let Some(returns) = returns {
+            for rows in groups.by_minute.values() {
+                all.add_pair_metrics(rows, factor, returns);
+            }
+            self.rows.push(Observation {
+                date,
+                code: "all".to_string(),
+                metrics: all,
+            });
+        }
+        // Publish today's thresholds only after using the previous sessions.
+        if let Some(history) = &mut self.history {
+            history.advance(today);
+        }
+    }
+}
+
 pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Result<Vec<PathBuf>> {
     if request.start_date > request.end_date {
         return Err(err("start date must be on or before end date"));
@@ -149,8 +300,8 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
         .map(|code| code.to_ascii_uppercase())
         .collect();
     let calendar = TradingCalendar::load(&config.data_root, &config.future_calendar_exchange)?;
-    let dates = calendar.open_dates_between(request.start_date, request.end_date);
-    if dates.is_empty() {
+    let dates = evaluation_dates(&calendar, request);
+    if dates.last().is_none_or(|&date| date < request.start_date) {
         return Err(err("no futures trading dates in the requested range"));
     }
     let factor_root = request
@@ -158,84 +309,35 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
         .as_deref()
         .unwrap_or(&config.factor_root);
     let label_root = request.label_root.as_deref().unwrap_or(&config.label_root);
-    let mut summaries: Vec<Vec<Observation>> = (0..factors.len()).map(|_| Vec::new()).collect();
+    let mut summaries: Vec<_> = factors
+        .iter()
+        .map(|_| FactorSummary::new(request.quantile_mode))
+        .collect();
     let mut seen_products = BTreeSet::new();
     for date in dates {
-        let factor_table = read_day(factor_root, date, &factors)?;
-        let label_table = read_day(label_root, date, &[label])?;
+        let evaluate = date >= request.start_date;
+        let factor_path = minute_path(factor_root, date);
+        if !evaluate && !crate::artifact_io::exists(&factor_path)? {
+            for summary in &mut summaries {
+                if let Some(history) = &mut summary.history {
+                    history.advance(DailyThresholds::new());
+                }
+            }
+            continue;
+        }
+
+        let factor_table = read_day(&factor_path, &factors)?;
         let factor_keys = minute_keys(&factor_table, date)?;
-        let label_keys = minute_keys(&label_table, date)?;
-        let label_index: HashMap<_, _> = label_keys
-            .into_iter()
-            .enumerate()
-            .map(|(i, key)| (key, i))
-            .collect();
-        let aligned: Vec<_> = factor_keys
-            .iter()
-            .map(|key| label_index.get(key).copied())
-            .collect();
-        if !aligned.iter().any(Option::is_some) {
-            return Err(err(format!(
-                "no matching futures factor and label minute keys on {date}"
-            )));
-        }
-
-        let mut by_minute = BTreeMap::<&str, Vec<usize>>::new();
-        let mut product_rows = BTreeMap::<&str, Vec<usize>>::new();
-        let mut product_codes = HashMap::new();
-        for (row, &(time, contract)) in factor_keys.iter().enumerate() {
-            let code = product_codes
-                .entry(contract)
-                .or_insert_with(|| product(contract));
-            let Some(code) = code.as_deref() else {
-                return Err(err(format!(
-                    "invalid futures contract code {contract} on {date}"
-                )));
-            };
-            if products.is_empty()
-                || products.contains(code)
-                || products.contains(code.split_once('.').unwrap().0)
-            {
-                by_minute.entry(time).or_default().push(row);
-            }
-        }
-        for rows in by_minute.values() {
-            for &row in rows {
-                let code = product_codes[factor_keys[row].1]
-                    .as_deref()
-                    .expect("validated product");
-                product_rows.entry(code).or_default().push(row);
-            }
-        }
-        seen_products.extend(product_rows.keys().map(|code| code.to_string()));
-        let label_values = finite_column(&label_table, label)?;
-        let returns: Vec<_> = aligned
-            .iter()
-            .map(|index| index.and_then(|i| label_values[i]))
-            .collect();
-
+        let groups = group_rows(&factor_keys, &products, date)?;
+        let returns = if evaluate {
+            seen_products.extend(groups.by_product.keys().cloned());
+            Some(aligned_returns(label_root, label, date, &factor_keys)?)
+        } else {
+            None
+        };
         for (&factor, summary) in factors.iter().zip(&mut summaries) {
             let values = finite_column(&factor_table, factor)?;
-            let mut all = Metrics::default();
-            for rows in by_minute.values() {
-                all.add_pair_metrics(rows, &values, &returns);
-            }
-            for (&code, rows) in &product_rows {
-                let mut local = Metrics::default();
-                local.add_pair_metrics(rows, &values, &returns);
-                local.add_tails(rows, &values, &returns);
-                all.average_tails(&local);
-                summary.push(Observation {
-                    date,
-                    code: code.to_string(),
-                    metrics: local,
-                });
-            }
-            summary.push(Observation {
-                date,
-                code: "all".to_string(),
-                metrics: all,
-            });
+            summary.add_day(date, &groups, &values, returns.as_deref());
         }
     }
     for code in &products {
@@ -248,26 +350,109 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
             )));
         }
     }
-    let output_dir = request
-        .output_dir
-        .clone()
-        .unwrap_or_else(|| config.data_root.join("backtest").join("future"));
+    let output_dir = request.output_dir.clone().unwrap_or_else(|| {
+        let root = config.data_root.join("backtest").join("future");
+        match request.quantile_mode {
+            QuantileMode::Daily => root,
+            QuantileMode::Trailing5 => root.join("trailing-5"),
+        }
+    });
     factors
         .into_iter()
         .zip(summaries)
-        .map(|(factor, rows)| {
+        .map(|(factor, summary)| {
             let path = output_dir.join(factor).join("summary.parquet");
             let props = WriterProperties::builder()
                 .set_compression(Compression::SNAPPY)
-                .set_key_value_metadata(Some(vec![KeyValue::new(
-                    "label_id".to_string(),
-                    label.to_string(),
-                )]))
+                .set_key_value_metadata(Some(vec![
+                    KeyValue::new("label_id".to_string(), label.to_string()),
+                    KeyValue::new(
+                        "quantile_mode".to_string(),
+                        request.quantile_mode.as_str().to_string(),
+                    ),
+                ]))
                 .build();
-            write_parquet_batch(&path, &observations_batch(&rows)?, props)?;
+            write_parquet_batch(&path, &observations_batch(&summary.rows)?, props)?;
             Ok(path)
         })
         .collect()
+}
+
+fn evaluation_dates(calendar: &TradingCalendar, request: &FutureMinuteBacktestRequest) -> Vec<i32> {
+    let start = match request.quantile_mode {
+        QuantileMode::Daily => request.start_date,
+        QuantileMode::Trailing5 => calendar.warmup_start(request.start_date, TRAILING_DAYS),
+    };
+    calendar.open_dates_between(start, request.end_date)
+}
+
+fn group_rows<'a>(
+    keys: &[(&'a str, &str)],
+    products: &BTreeSet<String>,
+    date: i32,
+) -> Result<DayGroups<'a>> {
+    let mut groups = DayGroups::default();
+    let mut product_codes = HashMap::new();
+    for (row, &(time, contract)) in keys.iter().enumerate() {
+        let code = product_codes
+            .entry(contract)
+            .or_insert_with(|| product(contract));
+        let Some(code) = code.as_deref() else {
+            return Err(err(format!(
+                "invalid futures contract code {contract} on {date}"
+            )));
+        };
+        if products.is_empty()
+            || products.contains(code)
+            || products.contains(code.split_once('.').unwrap().0)
+        {
+            groups.by_minute.entry(time).or_default().push(row);
+        }
+    }
+    let mut product_rows = BTreeMap::<&str, Vec<usize>>::new();
+    for rows in groups.by_minute.values() {
+        for &row in rows {
+            let code = product_codes[keys[row].1]
+                .as_deref()
+                .expect("validated product");
+            product_rows.entry(code).or_default().push(row);
+        }
+    }
+    groups.by_product = product_rows
+        .into_iter()
+        .map(|(code, rows)| (code.to_string(), rows))
+        .collect();
+    Ok(groups)
+}
+
+fn aligned_returns(
+    root: &Path,
+    label: &str,
+    date: i32,
+    factor_keys: &[(&str, &str)],
+) -> Result<Vec<Option<f64>>> {
+    let label_table = read_day(&minute_path(root, date), &[label])?;
+    let label_index: HashMap<_, _> = minute_keys(&label_table, date)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, key)| (key, i))
+        .collect();
+    let values = finite_column(&label_table, label)?;
+    let mut matched = false;
+    let returns = factor_keys
+        .iter()
+        .map(|key| {
+            let index = label_index.get(key)?;
+            matched = true;
+            values[*index]
+        })
+        .collect();
+    if !matched {
+        return Err(err(format!(
+            "no matching futures factor and label minute keys on {date}"
+        )));
+    }
+    Ok(returns)
 }
 
 fn selected_columns<'a>(columns: &'a [String], kind: &str) -> Result<Vec<&'a str>> {
@@ -282,12 +467,14 @@ fn selected_columns<'a>(columns: &'a [String], kind: &str) -> Result<Vec<&'a str
     Ok(selected.into_iter().collect())
 }
 
-fn read_day(root: &Path, date: i32, values: &[&str]) -> Result<Table> {
-    let path = root
-        .join("future")
+fn minute_path(root: &Path, date: i32) -> PathBuf {
+    root.join("future")
         .join("minute_1m")
         .join((date / 10000).to_string())
-        .join(format!("{date}.parquet"));
+        .join(format!("{date}.parquet"))
+}
+
+fn read_day(path: &Path, values: &[&str]) -> Result<Table> {
     let projection: Vec<String> = ["trade_date", "trade_time", "ts_code"]
         .into_iter()
         .chain(values.iter().copied())
@@ -297,7 +484,7 @@ fn read_day(root: &Path, date: i32, values: &[&str]) -> Result<Table> {
         .iter()
         .map(|&name| (name.to_string(), DataType::Float64))
         .collect();
-    let table = read_parquet_with_null_types(&path, &projection, &null_types)?;
+    let table = read_parquet_with_null_types(path, &projection, &null_types)?;
     for column in &projection {
         if !table.columns.contains_key(column) {
             return Err(err(format!(

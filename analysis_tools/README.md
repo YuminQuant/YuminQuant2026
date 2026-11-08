@@ -73,6 +73,29 @@ python scripts/chn_stock_factor_analysis.py --remove some_factor
 指定展示分类。相关性仅重算本地收益与报告版本一致的因子对；数据不齐时，
 报告会说明覆盖范围。脚本保留原有曲线文件，新曲线写入独立子目录。
 
+## 期货因子评价 / Futures factor evaluation
+
+先用 Rust 期货分钟回测生成摘要。默认的过去五日阈值模式写入 `data/backtest/future/trailing-5`，显式选择单日模式时写入 `data/backtest/future`。读取、结算和绘图可以分别调用。
+
+```python
+from yq_analysis.future_io import load_future_backtest_result, load_future_sectors
+from yq_analysis.future_report import make_future_backtest_report, compare_future_sector_returns
+from yq_analysis.future_plots import plot_future_return_summary, plot_future_sector_comparison
+
+sectors = load_future_sectors("factor_engine/docs/FUTURE_SECTORS.md")
+daily = load_future_backtest_result("data/backtest/future", "yq_001")
+trailing = load_future_backtest_result("data/backtest/future/trailing-5", "yq_001")
+report = make_future_backtest_report(daily["summary"], sectors)
+rolling = make_future_backtest_report(trailing["summary"], sectors, direction=report["direction"])
+detail = plot_future_return_summary(report, title="yq_001 | Daily thresholds")
+curves = compare_future_sector_returns(
+    {"Daily": report["daily_product"], "Trailing 5": rolling["daily_product"]}, sectors,
+)
+comparison = plot_future_sector_comparison(curves, title="yq_001 | Threshold comparison")
+```
+
+对比采用同一品种 IC 方向，只使用两种模式都有有效双端收益的品种日。板块内对品种等权，日度值按交易日算术累加。应使用同一因子、同一标签和同一回测区间。
+
 ## 策略分析 / Strategy analysis
 
 ```python

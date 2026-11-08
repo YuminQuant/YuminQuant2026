@@ -142,9 +142,10 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- backtest --asset
 
 - 因子和标签分别从配置的 `factor_root` 和 `label_root` 读取，可用 `--factor-root` 和 `--label-root` 覆盖。两边均使用根目录下的 `future/minute_1m/{year}/{trade_date}.parquet`，按 `trade_date + trade_time + ts_code` 对齐。每个请求的交易日都需要有对应的两张表。每次运行选择一列标签，默认为 `future_open_return_5m`，可用 `--label` 切换。输出的 Parquet 元数据记录标签列名。使用同一输出目录重跑会替换该因子的摘要。
 - `--products` 可传 `RB` 或 `RB.SHF`，筛选同时作用于截面和单品种评价。未指定时使用全部品种。品种由实际交割合约代码归并，如 `RB2610.SHF` 归入 `RB.SHF`。同一品种若有多个期限，截面保留各合约，单品种评价合并这些合约的分钟样本。
-- 每个因子默认写出一份 `data/backtest/future/{factor_name}/summary.parquet`，列顺序为 `trade_date, ts_code, ic, cosic, long_rtn, short_rtn`。`--output-dir` 可覆盖因子目录的上一级。
+- 默认模式 `--quantile-mode trailing-5` 使用每个品种、因子在 T−5 至 T−1 的每日 P10、P90 各自的等权均值，写入 `data/backtest/future/trailing-5/{factor_name}/summary.parquet`。`--quantile-mode daily` 使用当日分位数，写入 `data/backtest/future/{factor_name}/summary.parquet`。列顺序均为 `trade_date, ts_code, ic, cosic, long_rtn, short_rtn`，模式记录在 Parquet 元数据中。`--output-dir` 可覆盖因子目录的上一级。
 - 每个交易日为每个品种输出一行，`ts_code` 存品种代码。`ic` 和 `cosic` 分别为 Pearson IC 和余弦相似度，使用该品种当日的有效分钟配对。`long_rtn` 和 `short_rtn` 分别为因子值达到 P90 及以上、P10 及以下的有效标签均值，沿用标签的单位和符号。分位点由当日所有有限因子值线性插值得到。两条阈值重合且当日有有效因子与标签配对时，上下尾收益均记为 0。没有有效配对时，收益留空。
 - 每个交易日还有一行 `ts_code=all`。`ic` 和 `cosic` 先在同一分钟跨合约计算，再分别对当日有效分钟等权平均。两端收益分别在当日有对应有效收益的品种间等权平均。余弦相似度直接使用原始因子值和标签，至少需要两个有效配对，任一向量全为零时为空。
+- 五日模式只用因子预热，最多读取回测起点之前五个交易日。前五个交易日有任一天缺少该品种的有效分位数时，当日两端收益留空。阈值可用且当日有有效配对时，某一端没有达到该端阈值的有效配对，则该端收益记为 0。IC 和 CosIC 的计算口径相同。
 - 板块分类、品种中英文名称和交易所代码见[期货板块](docs/FUTURE_SECTORS.md)。
 
 ## 输出 / Outputs

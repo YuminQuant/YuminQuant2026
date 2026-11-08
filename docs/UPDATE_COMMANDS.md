@@ -75,7 +75,9 @@ Reference tables are current API snapshots; historical date arguments do not rec
 python scripts/update_incremental.py --groups future_mapping --start-date 20260423 --end-date 20260424
 ```
 
-`future_mapping` 按交易日下载 `fut_mapping`，写入 `future_data/mapping/YYYY/YYYYMMDD.parquet`。分钟因子使用 `--future-main-source fut-mapping` 时，下载区间需包含预热交易日。
+`future_mapping` 按交易日下载 `fut_mapping`，写入 `future_data/basic/mapping/YYYY/YYYYMMDD.parquet`。分钟因子使用 `--future-main-source fut-mapping` 时，下载区间需包含预热交易日。
+
+`future_daily` 下载日线后调用 Rust 派生本地持仓量主力映射，包括下载区间结束后的下一交易日。也可单独运行 `python scripts/yq.py derive-future-main-oi --start-date 20260423 --end-date 20260424 --date-batch-size 120`。派生时从本地日线起点重放换月状态，只写请求日期。输出位于 `future_data/basic/mapping_oi/YYYY/YYYYMMDD.parquet`，包含 `ts_code`、`trade_date`、`mapping_ts_code`、`source_trade_date` 和 `oi`。
 
 ## 期货交易参数 / Futures trade parameters
 
@@ -83,7 +85,7 @@ python scripts/update_incremental.py --groups future_mapping --start-date 202604
 python scripts/update_incremental.py --groups future_trade_param --start-date 20260924 --end-date 20260924
 ```
 
-`future_trade_param` 是单独选择的增量组。省略开始日期时只处理结束日期，结束日期默认为北京时间当天。四个接口各用对应交易所的日历，保留接口默认返回的列，按交易所和交易日写入 Parquet。四个接口共享 `api.rate_limits.fut_trade_param`，默认上限为每分钟 500 次。满 3,000 条继续分页，收齐后发布当天文件。
+`future_trade_param` 是单独选择的增量组。省略开始日期时只处理结束日期，结束日期默认为北京时间当天。四个接口各用对应交易所的日历，保留接口默认返回的列，写入 `future_data/basic/trade_param/<交易所>/YYYY/YYYYMMDD.parquet`。四个接口共享 `api.rate_limits.fut_trade_param`，默认上限为每分钟 500 次。满 3,000 条继续分页，收齐后发布当天文件。
 
 Select `future_trade_param` explicitly. The start date defaults to the end date, which defaults to today in Beijing time. The four endpoints use their exchange calendars and share the `api.rate_limits.fut_trade_param` ceiling of 500 requests per minute by default. Each date is published after pagination completes, with the default response columns.
 

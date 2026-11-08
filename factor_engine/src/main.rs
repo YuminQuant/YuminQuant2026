@@ -481,6 +481,24 @@ fn run_cli() -> Result<()> {
                 report.missing_input_dates
             );
         }
+        "derive-future-main-oi" => {
+            let flags = parse_flags(&args[1..])?;
+            for key in flags.keys() {
+                if !["start-date", "end-date", "config", "date-batch-size", "include-next-trading-day"].contains(&key.as_str()) {
+                    return Err(yq_factor_engine::error::err(format!("unsupported derive-future-main-oi flag: --{key}")));
+                }
+            }
+            let date = |key: &str| -> Result<i32> {
+                parse_yyyymmdd(flags.get(key).ok_or_else(|| yq_factor_engine::error::err(format!("missing --{key}")))?, key)
+            };
+            let config = EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
+            let batch_size = flags.get("date-batch-size").map(|v| v.parse()).transpose()?.unwrap_or(DEFAULT_RUN_DATE_BATCH_SIZE);
+            let files = yq_factor_engine::derive::future_main_oi::derive(
+                &config, date("start-date")?, date("end-date")?, batch_size,
+                flag_enabled(&flags, "include-next-trading-day"),
+            )?;
+            println!("derived futures open-interest mapping files: {files}");
+        }
         "derive-bar" => {
             let request = parse_derive_bar_request(&args[1..])?;
             let engine = DeriveEngine::from_request(&request)?;
@@ -1601,6 +1619,7 @@ fn print_help() {
         "  derive-bar --asset stock --source minute --bar-size N --start-date YYYYMMDD --end-date YYYYMMDD"
     );
     println!("    derive-bar stock minute allowed N: divisors of 240 with 1 < N <= 120");
+    println!("  derive-future-main-oi --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size N] [--include-next-trading-day true]");
     println!(
         "  derive-consensus --start-date YYYYMMDD --end-date YYYYMMDD [--columns column1,column2]"
     );
@@ -1662,7 +1681,7 @@ fn print_help() {
     );
     println!("  --profile");
     println!("  --refresh-minute-cache");
-    println!("  --future-main-source open-interest|fut-mapping|all-contracts (default open-interest)");
+    println!("  --future-main-source open-interest|fut-mapping|all-contracts (default fut-mapping)");
     println!("  --future-adjust-daily true|false (default true)");
     println!("  --future-adjust-night|--future-adjust-morning|--future-adjust-noon true|false (default false)");
     println!("  --refresh-label-cache");

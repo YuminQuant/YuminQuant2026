@@ -54,7 +54,7 @@ A-share raw data lives under `data/chn_stock_data/`. Downloader path settings, R
 | `FutureDailyDownloader` | `fut_daily` | 按交易日全市场横截面 | 比较本地已存在 `trade_date` | 按年 `YYYY.parquet` |
 | `FutureLimitDownloader` | `ft_limit` | 按交易日全市场横截面 | 比较本地已存在 `trade_date` | 按年 `YYYY.parquet` |
 | `FutureMinuteDownloader` | `ft_mins` | 外层按交易日，内层按期货合约 batch | 按日期文件是否存在 | `future_data/minute/YYYY/YYYYMMDD.parquet` |
-| `FutureTradeParamDownloader` | `fut_trade_param`、`fut_trade_param_cfx`、`fut_trade_param_gfe`、`fut_trade_param_dce` | 按各交易所的 `trade_date` 请求，满 3,000 条继续分页 | 只跳过已发布的日期文件 | `future_data/trade_param/<交易所>/YYYY/YYYYMMDD.parquet` |
+| `FutureTradeParamDownloader` | `fut_trade_param`、`fut_trade_param_cfx`、`fut_trade_param_gfe`、`fut_trade_param_dce` | 按各交易所的 `trade_date` 请求，满 3,000 条继续分页 | 只跳过已发布的日期文件 | `future_data/basic/trade_param/<交易所>/YYYY/YYYYMMDD.parquet` |
 
 ## 指数
 

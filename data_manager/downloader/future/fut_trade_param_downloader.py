@@ -27,7 +27,7 @@ class FutureTradeParamDownloader(BaseDownloader):
         super().__init__(rate_limit=rate_limit)
         paths = self.config["paths"]
         self.save_dir = Path(self.base_data_dir) / paths.get(
-            "fut_trade_param_dir", "future_data/trade_param"
+            "fut_trade_param_dir", "future_data/basic/trade_param"
         )
         self.calendar_dir = Path(self.base_data_dir) / paths.get("calendar_dir", "calendar")
 

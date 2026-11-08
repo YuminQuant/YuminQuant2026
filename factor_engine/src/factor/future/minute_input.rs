@@ -4,11 +4,10 @@ use std::path::Path;
 use rayon::prelude::*;
 
 use crate::artifact_io::StoragePathExt;
-use crate::calendar::TradingCalendar;
 use crate::core::{
     DataRequest, DatasetId, FactorContext, FactorRowKey, FactorSeries, FactorSpec, FactorValue,
 };
-use crate::data::{parquet_io::read_parquet, DataPool, MarketDataLoader, Table};
+use crate::data::{parquet_io::read_parquet, DataPool, Table};
 use crate::error::{err, Result};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,7 +29,7 @@ pub struct FutureMinuteOptions {
 impl Default for FutureMinuteOptions {
     fn default() -> Self {
         Self {
-            main_source: FutureMainSource::OpenInterest,
+            main_source: FutureMainSource::FutMapping,
             adjust_daily: true,
             adjust_night: false,
             adjust_morning: false,
@@ -46,21 +45,20 @@ pub(crate) struct FutureMinuteInput {
 }
 
 impl FutureMinuteInput {
-    pub(crate) fn load(
-        options: FutureMinuteOptions,
-        root: &Path,
-        loader: &MarketDataLoader,
-        calendar: &TradingCalendar,
-        dates: &[i32],
-    ) -> Result<Self> {
+    pub(crate) fn load(options: FutureMinuteOptions, root: &Path, dates: &[i32]) -> Result<Self> {
         let mut main = BTreeMap::new();
         match options.main_source {
             FutureMainSource::AllContracts => {}
-            FutureMainSource::FutMapping => {
+            FutureMainSource::FutMapping | FutureMainSource::OpenInterest => {
+                let directory = if options.main_source == FutureMainSource::FutMapping {
+                    "future_data/basic/mapping"
+                } else {
+                    crate::derive::future_main_oi::DIRECTORY
+                };
                 let columns = ["trade_date", "ts_code", "mapping_ts_code"].map(str::to_string);
                 for &date in dates {
                     let path = root
-                        .join("future_data/mapping")
+                        .join(directory)
                         .join((date / 10_000).to_string())
                         .join(format!("{date}.parquet"));
                     if path.storage_exists() {
@@ -71,40 +69,13 @@ impl FutureMinuteInput {
                     }
                 }
             }
-            FutureMainSource::OpenInterest => {
-                let previous = dates
-                    .iter()
-                    .filter_map(|&date| {
-                        calendar
-                            .last_open_on_or_before(date - 1)
-                            .map(|previous| (date, previous))
-                    })
-                    .collect::<Vec<_>>();
-                for pairs in previous.chunks(120) {
-                    let days = pairs
-                        .iter()
-                        .map(|&(_, previous)| previous)
-                        .collect::<Vec<_>>();
-                    let table = loader.load_daily_by_dates(
-                        DatasetId::FutureDaily,
-                        &["oi".into()],
-                        &days,
-                    )?;
-                    let mut by_day = rank_daily_interest(&table)?;
-                    for &(date, previous) in pairs {
-                        if let Some(selected) = by_day.remove(&previous) {
-                            main.insert(date, selected);
-                        }
-                    }
-                }
-            }
         }
         Ok(Self { options, main })
     }
 }
 
 // Exclude continuous, index, TAS and special delivery variants from OI ranking.
-fn product(code: &str) -> Option<String> {
+pub(crate) fn product(code: &str) -> Option<String> {
     let (symbol, exchange) = code.split_once('.')?;
     let start = symbol.find(|ch: char| !ch.is_ascii_alphabetic())?;
     let month = &symbol[start..];
@@ -142,46 +113,8 @@ fn read_mapping(table: &Table, date: i32) -> Result<BTreeMap<String, String>> {
     Ok(result)
 }
 
-fn rank_daily_interest(table: &Table) -> Result<BTreeMap<i32, BTreeMap<String, String>>> {
-    if table.len == 0 {
-        return Ok(BTreeMap::new());
-    }
-    let dates = table.required_i32_date_cast("trade_date")?;
-    let codes = table.required_utf8("ts_code")?;
-    let oi = table.required_f64_cast("oi")?;
-    let mut ranked = BTreeMap::<i32, BTreeMap<String, (f64, &str)>>::new();
-    for idx in 0..table.len {
-        let (Some(date), Some(code), Some(oi)) = (dates[idx], codes[idx].as_deref(), oi[idx])
-        else {
-            continue;
-        };
-        if let Some(product) = product(code).filter(|_| oi.is_finite() && oi >= 0.0) {
-            let best = ranked
-                .entry(date)
-                .or_default()
-                .entry(product)
-                .or_insert((oi, code));
-            if oi > best.0 || (oi == best.0 && code < best.1) {
-                *best = (oi, code);
-            }
-        }
-    }
-    Ok(ranked
-        .into_iter()
-        .map(|(date, products)| {
-            (
-                date,
-                products
-                    .into_iter()
-                    .map(|(product, (_, code))| (product, code.to_string()))
-                    .collect(),
-            )
-        })
-        .collect())
-}
-
 pub fn future_minute_request(column: &str) -> DataRequest {
-    DataRequest::new(DatasetId::FutureMinute1m, &["open", "close", "oi", column])
+    DataRequest::new(DatasetId::FutureMinute1m, &["open", "close", column])
 }
 
 struct DayTail {
@@ -232,7 +165,7 @@ pub fn compute_future_minute_rolling(
                     }
                 }
             }
-            let selected = select_contracts(input, table, date, times, groups)?;
+            let selected = select_contracts(input, date, groups)?;
             let emit = targets.contains(&date);
             let compute = |(key, code, mut indices): (String, &str, Vec<usize>)| {
                 let time = |idx: usize| times[idx].as_deref().expect("grouped minute timestamp");
@@ -366,9 +299,7 @@ pub fn compute_future_minute_rolling(
 
 fn select_contracts<'a>(
     input: &FutureMinuteInput,
-    table: &Table,
     date: i32,
-    times: &[Option<String>],
     mut groups: BTreeMap<&'a str, Vec<usize>>,
 ) -> Result<Vec<(String, &'a str, Vec<usize>)>> {
     if input.options.main_source == FutureMainSource::AllContracts {
@@ -377,45 +308,22 @@ fn select_contracts<'a>(
             .map(|(code, indices)| (code.to_string(), code, indices))
             .collect());
     }
-    let mut main = input.main.get(&date).cloned().unwrap_or_default();
-    if input.options.main_source == FutureMainSource::FutMapping && main.is_empty() {
+    let Some(main) = input.main.get(&date) else {
+        let task = if input.options.main_source == FutureMainSource::FutMapping {
+            "sync future_mapping"
+        } else {
+            "run derive-future-main-oi"
+        };
         return Err(err(format!(
-            "missing fut_mapping on {date}; sync future_mapping including the warmup dates"
+            "missing futures main mapping on {date}; {task} including the warmup dates"
         )));
-    }
-    if input.options.main_source == FutureMainSource::OpenInterest {
-        let oi = table.required_f64_cast("oi")?;
-        let mut opening = BTreeMap::<String, (&str, &str, Option<f64>)>::new();
-        for (&code, indices) in &groups {
-            let Some(key) = product(code).filter(|key| !main.contains_key(key)) else {
-                continue;
-            };
-            let Some(idx) = indices
-                .iter()
-                .copied()
-                .min_by_key(|&idx| times[idx].as_deref())
-            else {
-                continue;
-            };
-            let time = times[idx].as_deref().expect("grouped minute timestamp");
-            let score = oi[idx].filter(|oi| oi.is_finite() && *oi >= 0.0);
-            let best = opening.entry(key).or_insert((time, code, score));
-            if time < best.0 || (time == best.0 && score > best.2) {
-                *best = (time, code, score);
-            }
-        }
-        main.extend(
-            opening
-                .into_iter()
-                .filter_map(|(key, (_, code, score))| score.map(|_| (key, code.to_string()))),
-        );
-    }
+    };
     Ok(main
-        .into_iter()
+        .iter()
         .filter_map(|(key, code)| {
             groups
                 .remove_entry(code.as_str())
-                .map(|(code, indices)| (key, code, indices))
+                .map(|(code, indices)| (key.clone(), code, indices))
         })
         .collect())
 }

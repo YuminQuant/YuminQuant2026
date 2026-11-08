@@ -374,8 +374,6 @@ impl Engine {
             Some(Arc::new(crate::factor::future::minute_input::FutureMinuteInput::load(
                 request.future_minute,
                 &self.config.data_root,
-                &loader,
-                &calendar,
                 &calendar.open_dates_between(load_start_date, effective_end_date),
             )?))
         } else {

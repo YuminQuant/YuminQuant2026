@@ -30,7 +30,7 @@ class FutureMappingDownloader(BaseDownloader):
             "cal_date",
         ]
         for date in sorted(dates.astype(str).unique()):
-            path = Path(daily_file_path(self.root / "future_data/mapping", date))
+            path = Path(daily_file_path(self.root / "future_data/basic/mapping", date))
             if path.is_file():
                 continue
             self.safe_sleep()

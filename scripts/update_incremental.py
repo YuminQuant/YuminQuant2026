@@ -417,8 +417,15 @@ def update_future_static(logger):
 def update_future_daily(args, logger):
     start_date = args.start_date or DEFAULT_START_DATES["future"]
     end_date = args.end_date or bj_today()
+    manifest = os.path.join(project_root, "factor_engine", "Cargo.toml")
     tasks = [
         ("future_daily", lambda: FutureDailyDownloader().sync(start_date, end_date)),
+        ("future_main_oi", lambda: subprocess.run(
+            ["cargo", "run", "--release", "--manifest-path", manifest, "--",
+             "derive-future-main-oi", "--start-date", start_date, "--end-date", end_date,
+             "--include-next-trading-day", "true"],
+            cwd=project_root, check=True,
+        )),
         ("future_limit", lambda: FutureLimitDownloader().sync(start_date, end_date)),
     ]
     for name, fn in tasks:

@@ -3,9 +3,9 @@ use crate::core::{
     Lookback,
 };
 use crate::data::DataPool;
-use crate::error::{err, Result};
+use crate::error::Result;
 use crate::factor::future::minute_input::{
-    compute_future_minute_many, future_minute_request, FutureMinuteField,
+    compute_future_minute, future_minute_request, FutureMinuteField,
     FutureMinuteField::{ContractDiff, Raw},
 };
 use crate::factor::future::rolling::{rolling_ema, rolling_exponential_mean};
@@ -63,15 +63,17 @@ const SIGNALS: [(Signal, &str); 25] = [
     (VolumeNetInterest(30), "Total trading volume over thirty bars divided by the signed net change in open interest over the same bars."),
 ];
 
-const PRICE: &[FutureMinuteField] = &[Raw("close")];
-const OHLC: &[FutureMinuteField] = &[Raw("close"), Raw("high"), Raw("low")];
-const ACTIVITY: &[FutureMinuteField] = &[Raw("vol"), Raw("oi"), ContractDiff("oi")];
-
-fn family(index: usize) -> (&'static str, &'static [FutureMinuteField], usize, usize) {
-    match index {
-        0..=5 => ("futures_minute_price", PRICE, 1, 30),
-        6..=14 => ("futures_minute_smoothed_price", OHLC, 3, 58),
-        _ => ("futures_minute_activity", ACTIVITY, 3, 30),
+impl Signal {
+    fn inputs(self) -> (&'static [FutureMinuteField], usize, usize) {
+        match self {
+            MaRatio(..) | CloseMa(_) | Return(_) => (&[Raw("close")], 1, 30),
+            AtrSpread(..) => (&[Raw("close"), Raw("high"), Raw("low")], 3, 58),
+            EmaZscore(_) => (&[Raw("close")], 3, 58),
+            VolumeEmaRatio(..) => (&[Raw("vol")], 3, 30),
+            InterestEmaRatio(..) => (&[ContractDiff("oi")], 3, 30),
+            VolumeInterestMean(_) => (&[Raw("vol"), Raw("oi")], 3, 30),
+            VolumeNetInterest(_) => (&[Raw("vol"), ContractDiff("oi")], 3, 30),
+        }
     }
 }
 
@@ -86,7 +88,7 @@ fn id(index: usize) -> String {
 }
 
 fn spec(index: usize) -> FactorSpec {
-    let (_, columns, days, _) = family(index);
+    let (columns, days, _) = SIGNALS[index].0.inputs();
     FactorSpec {
         id: id(index),
         aliases: Vec::new(),
@@ -107,43 +109,11 @@ impl Factor for MovingAverageSignal {
         spec(self.0)
     }
 
-    fn compute_provider_key(&self) -> String {
-        family(self.0).0.into()
-    }
-
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        let mut output = self.compute_many(&[id(self.0)], context, data)?;
-        Ok(output.remove(0))
-    }
-
-    fn compute_many(
-        &self,
-        requested: &[String],
-        context: &FactorContext,
-        data: &DataPool,
-    ) -> Result<Vec<FactorSeries>> {
-        let (provider, columns, _, bars) = family(self.0);
-        let indices = requested
-            .iter()
-            .map(|name| {
-                let index = name
-                    .strip_prefix("yq_")
-                    .and_then(|suffix| suffix.parse::<usize>().ok())
-                    .and_then(|number| number.checked_sub(1))
-                    .filter(|&index| index < SIGNALS.len() && family(index).0 == provider);
-                index.ok_or_else(|| {
-                    err(format!(
-                        "unknown futures minute signal {name} for {provider}"
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let specs = indices.iter().map(|&index| spec(index)).collect::<Vec<_>>();
-        compute_future_minute_many(&specs, context, data, columns, bars, |inputs| {
-            indices
-                .iter()
-                .map(|&index| compute_signal(SIGNALS[index].0, inputs))
-                .collect()
+        let signal = SIGNALS[self.0].0;
+        let (columns, _, bars) = signal.inputs();
+        compute_future_minute(self.spec(), context, data, columns, bars, |inputs| {
+            compute_signal(signal, inputs)
         })
     }
 }
@@ -173,17 +143,16 @@ fn compute_signal(signal: Signal, inputs: &[Vec<Option<f64>>]) -> Vec<Option<f64
             symmetric,
         ),
         InterestEmaRatio(fast, slow) => {
-            let interest = &inputs[2];
             combine(
-                &rolling_ema(interest, fast),
-                &rolling_ema(interest, slow),
+                &rolling_ema(first, fast),
+                &rolling_ema(first, slow),
                 signed_symmetric,
             )
         }
         VolumeInterestMean(window) => ts_mean(&combine(first, &inputs[1], divide), window, window),
         VolumeNetInterest(window) => combine(
             &ts_sum(first, window, window),
-            &ts_sum(&inputs[2], window, window),
+            &ts_sum(&inputs[1], window, window),
             divide,
         ),
     }

@@ -215,6 +215,47 @@ pub fn future_minute_request(fields: &[FutureMinuteField]) -> DataRequest {
 
 pub(crate) type ContractTails = BTreeMap<String, BTreeMap<String, Option<f64>>>;
 
+#[derive(Clone, Debug)]
+pub(crate) struct FutureMinuteDayIndex {
+    pub(crate) groups: BTreeMap<String, Vec<usize>>,
+    pub(crate) tails: ContractTails,
+}
+
+impl FutureMinuteDayIndex {
+    pub(crate) fn build(
+        date: i32,
+        table: &Table,
+        diff_columns: &[String],
+        mut tails: ContractTails,
+    ) -> Result<Self> {
+        let mut groups = BTreeMap::<&str, Vec<usize>>::new();
+        if table.len > 0 {
+            let dates = table.required_i32("trade_date")?;
+            let codes = table.required_utf8("ts_code")?;
+            let times = table.required_utf8("trade_time")?;
+            for idx in 0..table.len {
+                if dates[idx] == Some(date) && times[idx].is_some() {
+                    if let Some(code) = codes[idx].as_deref() {
+                        groups.entry(code).or_default().push(idx);
+                    }
+                }
+            }
+            for indices in groups.values_mut() {
+                indices.sort_unstable_by_key(|&idx| (times[idx].as_deref(), idx));
+            }
+            for name in diff_columns {
+                let values = table.required_f64_cast(name)?;
+                let tails = tails.entry(name.clone()).or_default();
+                for (&code, indices) in &groups {
+                    tails.insert(code.to_string(), values[indices[indices.len() - 1]]);
+                }
+            }
+        }
+        let groups = groups.into_iter().map(|(code, rows)| (code.to_string(), rows)).collect();
+        Ok(Self { groups, tails })
+    }
+}
+
 struct DayTail {
     first_open: Option<f64>,
     first_time: String,
@@ -232,10 +273,20 @@ pub fn compute_future_minute_rolling(
     history_bars: usize,
     expr: impl Fn(&[Option<f64>]) -> Vec<Option<f64>> + Sync,
 ) -> Result<FactorSeries> {
-    let mut result =
-        compute_future_minute_many(&[spec], context, data, &[field], history_bars, |inputs| {
-            vec![expr(&inputs[0])]
-        })?;
+    compute_future_minute(spec, context, data, &[field], history_bars, |inputs| expr(&inputs[0]))
+}
+
+pub fn compute_future_minute(
+    spec: FactorSpec,
+    context: &FactorContext,
+    data: &DataPool,
+    fields: &[FutureMinuteField],
+    history_bars: usize,
+    expr: impl Fn(&[Vec<Option<f64>>]) -> Vec<Option<f64>> + Sync,
+) -> Result<FactorSeries> {
+    let mut result = compute_future_minute_many(&[spec], context, data, fields, history_bars, |inputs| {
+        vec![expr(inputs)]
+    })?;
     Ok(result.remove(0))
 }
 
@@ -263,7 +314,7 @@ pub fn compute_future_minute_many(
         .map(|field| matches!(field, FutureMinuteField::Raw("open" | "high" | "low" | "close")))
         .collect::<Vec<_>>();
     let is_price = price_columns.iter().any(|&price| price);
-    let mut previous_tails = ContractTails::new();
+    let mut previous_day = None;
     let targets = context
         .target_dates
         .iter()
@@ -280,22 +331,12 @@ pub fn compute_future_minute_many(
         .collect::<Vec<_>>();
     for (day_idx, &date) in context.load_dates.iter().enumerate() {
         let mut next = BTreeMap::new();
-        let mut next_tails = ContractTails::new();
-        for field in fields {
-            if let FutureMinuteField::ContractDiff(name) = *field {
-                let tails = data
-                    .future_minute_tail(date, name)
-                    .cloned()
-                    .unwrap_or_default();
-                next_tails.insert(name.to_string(), tails);
-            }
-        }
+        let day_index = data.future_minute_day_index(date);
         if let Some(table) = data
             .minute(DatasetId::FutureMinute1m, date)
             .filter(|t| t.len > 0)
         {
-            let dates = table.required_i32("trade_date")?;
-            let codes = table.required_utf8("ts_code")?;
+            let day_index = day_index.ok_or_else(|| err("missing futures minute day index"))?;
             let times = table.required_utf8("trade_time")?;
             let opens = table.required_f64_cast("open")?;
             let closes = table.required_f64_cast("close")?;
@@ -303,34 +344,6 @@ pub fn compute_future_minute_many(
                 .iter()
                 .map(|field| table.required_f64_cast(field.raw()))
                 .collect::<Result<Vec<_>>>()?;
-            let mut groups = BTreeMap::<&str, Vec<usize>>::new();
-            for idx in 0..table.len {
-                if dates[idx] == Some(date) && times[idx].is_some() {
-                    if let Some(code) = codes[idx].as_deref() {
-                        groups.entry(code).or_default().push(idx);
-                    }
-                }
-            }
-            if !next_tails.is_empty() {
-                let diff_values = fields
-                    .iter()
-                    .zip(&values)
-                    .filter_map(|(field, values)| match field {
-                        FutureMinuteField::ContractDiff(name) => Some((*name, values)),
-                        FutureMinuteField::Raw(_) => None,
-                    })
-                    .collect::<Vec<_>>();
-                for (&code, indices) in &groups {
-                    if let Some(&last) = indices.iter().max_by_key(|&&idx| times[idx].as_deref()) {
-                        for &(name, values) in &diff_values {
-                            next_tails
-                                .get_mut(name)
-                                .expect("declared difference field")
-                                .insert(code.to_string(), values[last]);
-                        }
-                    }
-                }
-            }
             let current_main = input.selection(date).map(|mapping| {
                 mapping
                     .iter()
@@ -348,9 +361,10 @@ pub fn compute_future_minute_many(
                     .copied()
                     .filter(|future| targets.contains(future)),
             );
-            let selected = groups
-                .into_iter()
+            let selected = day_index.groups
+                .iter()
                 .filter_map(|(code, indices)| {
+                    let code = code.as_str();
                     let product = current_main
                         .as_ref()
                         .and_then(|mapping| mapping.get(code))
@@ -359,17 +373,16 @@ pub fn compute_future_minute_many(
                     keep_codes
                         .as_ref()
                         .is_none_or(|codes| codes.contains(code))
-                        .then_some((code, product, target && in_universe, indices))
+                        .then_some((code, product, target && in_universe, indices.as_slice()))
                 })
                 .collect::<Vec<_>>();
-            let compute = |(code, product, emit, mut indices): (
+            let compute = |(code, product, emit, indices): (
                 &str,
                 Option<&str>,
                 bool,
-                Vec<usize>,
+                &[usize],
             )| {
                 let time = |idx: usize| times[idx].as_deref().expect("grouped minute timestamp");
-                indices.sort_unstable_by(|&left, &right| time(left).cmp(time(right)));
                 if let Some(pair) = indices
                     .windows(2)
                     .find(|pair| time(pair[0]) == time(pair[1]))
@@ -400,8 +413,8 @@ pub fn compute_future_minute_many(
                         let value = values[column_idx][idx];
                         let value = if let FutureMinuteField::ContractDiff(name) = field {
                             let prior = if position == 0 {
-                                previous_tails
-                                    .get(name)
+                                previous_day
+                                    .and_then(|day: &FutureMinuteDayIndex| day.tails.get(name))
                                     .and_then(|tails| tails.get(code))
                                     .copied()
                                     .flatten()
@@ -544,7 +557,7 @@ pub fn compute_future_minute_many(
             }
         }
         history.push_back((date, next));
-        previous_tails = next_tails;
+        previous_day = day_index;
         if history.len() > lookback {
             history.pop_front();
         }

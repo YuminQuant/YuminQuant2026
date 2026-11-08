@@ -19,7 +19,9 @@ use yq_factor_engine::derive::DEFAULT_CONSENSUS_DATE_BATCH_SIZE;
 use yq_factor_engine::engine::{
     DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE, DEFAULT_RUN_DATE_BATCH_SIZE,
 };
-use yq_factor_engine::factor::future::minute_input::{FutureMainSource, FutureMinuteOptions};
+use yq_factor_engine::factor::future::minute_input::{
+    FutureMainSource, FutureMinuteOptions, FutureWarmupSource,
+};
 use yq_factor_engine::strategy::request::StrategyRunRequest;
 use yq_factor_engine::{
     AnalystConsensusRequest, BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest,
@@ -1108,13 +1110,15 @@ fn parse_future_minute_options(
 ) -> Result<FutureMinuteOptions> {
     let mut options = FutureMinuteOptions::default();
     let switches = [
+        ("future-main-only", &mut options.main_only),
         ("future-adjust-daily", &mut options.adjust_daily),
         ("future-adjust-night", &mut options.adjust_night),
         ("future-adjust-morning", &mut options.adjust_morning),
         ("future-adjust-noon", &mut options.adjust_noon),
     ];
     let source = flags.get("future-main-source");
-    if (source.is_some() || switches.iter().any(|(name, _)| flags.contains_key(*name)))
+    let warmup_source = flags.get("future-warmup-source");
+    if (source.is_some() || warmup_source.is_some() || switches.iter().any(|(name, _)| flags.contains_key(*name)))
         && (asset != AssetClass::Future || frequency != Frequency::Minute1)
     {
         return Err(yq_factor_engine::error::err("future adjustment options require --asset future --frequency minute_1m"));
@@ -1134,6 +1138,13 @@ fn parse_future_minute_options(
             "fut-mapping" => FutureMainSource::FutMapping,
             "all-contracts" => FutureMainSource::AllContracts,
             _ => return Err(yq_factor_engine::error::err("--future-main-source expects open-interest, fut-mapping or all-contracts")),
+        };
+    }
+    if let Some(source) = warmup_source {
+        options.warmup_source = match source.as_str() {
+            "main-sequence" => FutureWarmupSource::MainSequence,
+            "same-contract" => FutureWarmupSource::SameContract,
+            _ => return Err(yq_factor_engine::error::err("--future-warmup-source expects main-sequence or same-contract")),
         };
     }
     Ok(options)
@@ -1682,6 +1693,8 @@ fn print_help() {
     println!("  --profile");
     println!("  --refresh-minute-cache");
     println!("  --future-main-source open-interest|fut-mapping|all-contracts (default fut-mapping)");
+    println!("  --future-main-only true|false (default true; falls back to all contracts when mapping is absent)");
+    println!("  --future-warmup-source main-sequence|same-contract (default main-sequence)");
     println!("  --future-adjust-daily true|false (default true)");
     println!("  --future-adjust-night|--future-adjust-morning|--future-adjust-noon true|false (default false)");
     println!("  --refresh-label-cache");

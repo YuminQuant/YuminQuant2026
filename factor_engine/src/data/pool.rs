@@ -214,6 +214,7 @@ impl FinancialBatchContext {
 pub struct DataPool {
     trading_calendar: Option<Arc<crate::calendar::TradingCalendar>>,
     future_minute_input: Option<Arc<crate::factor::future::minute_input::FutureMinuteInput>>,
+    future_minute_coverage: Option<Arc<(BTreeSet<i32>, BTreeSet<String>)>>,
     daily: HashMap<DatasetId, Arc<Table>>,
     daily_panels: HashMap<DatasetId, DailyPanel>,
     stock_universe_panel: Option<DailyPanel>,
@@ -247,7 +248,7 @@ impl DataPool {
     }
 
     /// Physical date-batch inputs. Financial sources remain in their shared PIT context;
-    /// minute tables retain the existing bounded streaming path.
+    /// stock minute tables retain the existing bounded streaming path.
     pub fn load_batch_inputs(
         loader: &MarketDataLoader,
         requests: &[DataRequest],
@@ -255,9 +256,10 @@ impl DataPool {
         disclosure_cache: &mut DisclosureTableCache,
         financial_context: Option<Arc<FinancialBatchContext>>,
     ) -> Result<Self> {
-        let daily = requests.iter().filter(|request| request.dataset.frequency() == Frequency::Daily)
+        let shared = requests.iter().filter(|request| request.dataset.frequency() == Frequency::Daily
+            || (context.frequency == Frequency::Minute1 && request.dataset == DatasetId::FutureMinute1m))
             .cloned().collect::<Vec<_>>();
-        Self::load_inputs(loader, &daily, context, disclosure_cache, financial_context, true)
+        Self::load_inputs(loader, &shared, context, disclosure_cache, financial_context, true)
     }
 
     pub fn load_from_batch_inputs(
@@ -283,7 +285,13 @@ impl DataPool {
         for panel in pool.daily_panels.values_mut() { *panel = panel.compact_instruments(); }
         for panel in pool.index_daily_panels.values_mut() { *panel = panel.compact_instruments(); }
         let uncached = requests.iter().filter(|request| !is_financial_context_dataset(request.dataset)
-            && if request.dataset == DatasetId::IndexDaily {
+            && if request.dataset == DatasetId::FutureMinute1m && context.frequency == Frequency::Minute1 {
+                !self.future_minute_coverage.as_ref().is_some_and(|coverage| {
+                    let (dates, columns) = coverage.as_ref();
+                    request.columns.iter().all(|column| columns.contains(column))
+                        && request.resolved_dates(context).iter().all(|date| dates.contains(date))
+                })
+            } else if request.dataset == DatasetId::IndexDaily {
                 request.entity_id.as_ref().is_none_or(|id| !self.index_daily_panels.contains_key(id))
             } else if request.dataset == DatasetId::IndexMonthlyWeight {
                 request.entity_id.as_ref().is_none_or(|id| !pool.index_membership.contains_key(id))
@@ -488,6 +496,12 @@ impl DataPool {
                         pool.minute
                             .insert((dataset, bar_size, date), Arc::new(table));
                     }
+                    if dataset == DatasetId::FutureMinute1m && context.frequency == Frequency::Minute1 {
+                        pool.future_minute_coverage = Some(Arc::new((
+                            load_dates.into_iter().collect(),
+                            columns.into_iter().collect(),
+                        )));
+                    }
                 }
             }
         }
@@ -520,6 +534,7 @@ impl DataPool {
                 .collect(),
             minute: self.minute.clone(),
             future_minute_input: self.future_minute_input.clone(),
+            future_minute_coverage: self.future_minute_coverage.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self
                 .intraday_daily_raw_panel
@@ -573,6 +588,7 @@ impl DataPool {
                 .collect(),
             minute: self.minute.clone(),
             future_minute_input: self.future_minute_input.clone(),
+            future_minute_coverage: self.future_minute_coverage.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self
                 .intraday_daily_raw_panel
@@ -704,6 +720,7 @@ impl DataPool {
                 .collect(),
             minute: self.minute.clone(),
             future_minute_input: self.future_minute_input.clone(),
+            future_minute_coverage: self.future_minute_coverage.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self.intraday_daily_raw_panel.clone(),
         }
@@ -906,6 +923,9 @@ impl DataPool {
         self.index_membership.extend(other.index_membership);
         self.index_daily_panels.extend(other.index_daily_panels);
         self.minute.extend(other.minute);
+        if other.future_minute_coverage.is_some() {
+            self.future_minute_coverage = other.future_minute_coverage;
+        }
         if other.intraday_daily_raw.is_some() {
             self.intraday_daily_raw = other.intraday_daily_raw;
         }

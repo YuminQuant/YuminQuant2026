@@ -17,9 +17,17 @@ pub enum FutureMainSource {
     AllContracts,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FutureWarmupSource {
+    MainSequence,
+    SameContract,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct FutureMinuteOptions {
     pub main_source: FutureMainSource,
+    pub main_only: bool,
+    pub warmup_source: FutureWarmupSource,
     pub adjust_daily: bool,
     pub adjust_night: bool,
     pub adjust_morning: bool,
@@ -30,6 +38,8 @@ impl Default for FutureMinuteOptions {
     fn default() -> Self {
         Self {
             main_source: FutureMainSource::FutMapping,
+            main_only: true,
+            warmup_source: FutureWarmupSource::MainSequence,
             adjust_daily: true,
             adjust_night: false,
             adjust_morning: false,
@@ -47,7 +57,11 @@ pub(crate) struct FutureMinuteInput {
 impl FutureMinuteInput {
     pub(crate) fn load(options: FutureMinuteOptions, root: &Path, dates: &[i32]) -> Result<Self> {
         let mut main = BTreeMap::new();
-        match options.main_source {
+        match if options.main_only {
+            options.main_source
+        } else {
+            FutureMainSource::AllContracts
+        } {
             FutureMainSource::AllContracts => {}
             FutureMainSource::FutMapping | FutureMainSource::OpenInterest => {
                 let directory = if options.main_source == FutureMainSource::FutMapping {
@@ -89,6 +103,10 @@ impl FutureMinuteInput {
             }
         }
         Ok(Self { options, main })
+    }
+
+    fn selection(&self, date: i32) -> Option<&BTreeMap<String, String>> {
+        self.main.get(&date).filter(|mapping| !mapping.is_empty())
     }
 }
 
@@ -148,7 +166,7 @@ struct DayTail {
     last_close: Option<f64>,
     last_time: String,
     end_scale: f64,
-    values: Vec<Option<f64>>,
+    values: Vec<Vec<Option<f64>>>,
 }
 
 pub fn compute_future_minute_rolling(
@@ -159,19 +177,53 @@ pub fn compute_future_minute_rolling(
     history_bars: usize,
     expr: impl Fn(&[Option<f64>]) -> Vec<Option<f64>> + Sync,
 ) -> Result<FactorSeries> {
+    let mut result =
+        compute_future_minute_many(&[spec], context, data, &[column], history_bars, |inputs| {
+            vec![expr(&inputs[0])]
+        })?;
+    Ok(result.remove(0))
+}
+
+pub(crate) fn compute_future_minute_many(
+    specs: &[FactorSpec],
+    context: &FactorContext,
+    data: &DataPool,
+    columns: &[&str],
+    history_bars: usize,
+    expr: impl Fn(&[Vec<Option<f64>>]) -> Vec<Vec<Option<f64>>> + Sync,
+) -> Result<Vec<FactorSeries>> {
+    let lookback = specs
+        .iter()
+        .map(|spec| spec.lookback.trading_days)
+        .max()
+        .unwrap_or(0);
     let input = data
         .future_minute_input()
         .ok_or_else(|| err("missing futures minute input configuration"))?;
-    let is_price = matches!(column, "open" | "high" | "low" | "close");
+    let price_columns = columns
+        .iter()
+        .map(|&column| matches!(column, "open" | "high" | "low" | "close"))
+        .collect::<Vec<_>>();
+    let is_price = price_columns.iter().any(|&price| price);
+    let use_oi_diff = columns.contains(&"oi_diff");
+    let mut previous_oi = BTreeMap::<String, Option<f64>>::new();
     let targets = context
         .target_dates
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let mut history = VecDeque::<BTreeMap<String, DayTail>>::new();
-    let mut output = Vec::new();
-    for &date in &context.load_dates {
+    let mut history = VecDeque::<(i32, BTreeMap<String, DayTail>)>::new();
+    let mut output = specs
+        .iter()
+        .cloned()
+        .map(|spec| FactorSeries {
+            spec,
+            values: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    for (day_idx, &date) in context.load_dates.iter().enumerate() {
         let mut next = BTreeMap::new();
+        let mut next_oi = BTreeMap::new();
         if let Some(table) = data
             .minute(DatasetId::FutureMinute1m, date)
             .filter(|t| t.len > 0)
@@ -181,7 +233,12 @@ pub fn compute_future_minute_rolling(
             let times = table.required_utf8("trade_time")?;
             let opens = table.required_f64_cast("open")?;
             let closes = table.required_f64_cast("close")?;
-            let values = table.required_f64_cast(column)?;
+            let values = columns
+                .iter()
+                .map(|&column| {
+                    table.required_f64_cast(if column == "oi_diff" { "oi" } else { column })
+                })
+                .collect::<Result<Vec<_>>>()?;
             let mut groups = BTreeMap::<&str, Vec<usize>>::new();
             for idx in 0..table.len {
                 if dates[idx] == Some(date) && times[idx].is_some() {
@@ -190,9 +247,58 @@ pub fn compute_future_minute_rolling(
                     }
                 }
             }
-            let selected = select_contracts(input, date, groups)?;
-            let emit = targets.contains(&date);
-            let compute = |(key, code, mut indices): (String, &str, Vec<usize>)| {
+            if let Some(oi) = columns.iter().position(|&column| column == "oi_diff") {
+                for (&code, indices) in &groups {
+                    if let Some(&last) = indices.iter().max_by_key(|&&idx| times[idx].as_deref()) {
+                        next_oi.insert(code.to_string(), values[oi][last]);
+                    }
+                }
+            }
+            let current_main = input.selection(date).map(|mapping| {
+                mapping
+                    .iter()
+                    .map(|(product, code)| (code.as_str(), product.as_str()))
+                    .collect::<BTreeMap<_, _>>()
+            });
+            let same_contract = input.options.warmup_source == FutureWarmupSource::SameContract;
+            let mut keep_all = false;
+            let mut keep_codes = BTreeSet::new();
+            // Only retain additional tails for contracts needed by later targets.
+            for &future in context.load_dates.iter().skip(day_idx + 1).take(lookback) {
+                if !targets.contains(&future) {
+                    continue;
+                }
+                match input.selection(future) {
+                    None => keep_all = true,
+                    Some(mapping) if same_contract => {
+                        keep_codes.extend(mapping.values().map(String::as_str))
+                    }
+                    Some(_) => {}
+                }
+            }
+            let target = targets.contains(&date);
+            let selected = groups
+                .into_iter()
+                .filter_map(|(code, indices)| {
+                    let product = current_main
+                        .as_ref()
+                        .and_then(|mapping| mapping.get(code))
+                        .copied();
+                    let in_universe = current_main.is_none() || product.is_some();
+                    (in_universe || keep_all || keep_codes.contains(code)).then_some((
+                        code,
+                        product,
+                        target && in_universe,
+                        indices,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let compute = |(code, product, emit, mut indices): (
+                &str,
+                Option<&str>,
+                bool,
+                Vec<usize>,
+            )| {
                 let time = |idx: usize| times[idx].as_deref().expect("grouped minute timestamp");
                 indices.sort_unstable_by(|&left, &right| time(left).cmp(time(right)));
                 if let Some(pair) = indices
@@ -211,14 +317,37 @@ pub fn compute_future_minute_rolling(
                     .map(|(_, exchange)| exchange)
                     .unwrap_or_default();
                 let mut intraday_scale = 1.0;
-                let mut day_values = Vec::with_capacity(indices.len());
+                let mut day_values = columns
+                    .iter()
+                    .map(|_| Vec::with_capacity(indices.len()))
+                    .collect::<Vec<_>>();
                 let mut prev = first;
-                for &idx in &indices {
+                for (position, &idx) in indices.iter().enumerate() {
                     if is_price && intraday_boundary(input.options, exchange, time(prev), time(idx))
                     {
                         intraday_scale *= boundary_ratio(closes[prev], opens[idx]).unwrap_or(1.0);
                     }
-                    day_values.push(scale_value(values[idx], intraday_scale));
+                    for (column_idx, &column) in columns.iter().enumerate() {
+                        let value = values[column_idx][idx];
+                        let value = if column == "oi_diff" {
+                            let prior = if position == 0 {
+                                previous_oi.get(code).copied().flatten()
+                            } else {
+                                values[column_idx][prev]
+                            };
+                            value.zip(prior).map(|(current, prior)| current - prior)
+                        } else {
+                            value
+                        };
+                        day_values[column_idx].push(scale_value(
+                            value,
+                            if price_columns[column_idx] {
+                                intraday_scale
+                            } else {
+                                1.0
+                            },
+                        ));
+                    }
                     prev = idx;
                 }
                 let tail = DayTail {
@@ -227,13 +356,28 @@ pub fn compute_future_minute_rolling(
                     last_close: closes[last],
                     last_time: time(last).to_string(),
                     end_scale: intraday_scale,
-                    values: day_values[day_values.len().saturating_sub(history_bars)..].to_vec(),
+                    values: day_values
+                        .iter()
+                        .map(|values| values[values.len().saturating_sub(history_bars)..].to_vec())
+                        .collect(),
                 };
                 let rows = if emit {
-                    let mut seed = VecDeque::with_capacity(history_bars);
+                    let mut seeds = columns
+                        .iter()
+                        .map(|_| VecDeque::with_capacity(history_bars))
+                        .collect::<Vec<_>>();
                     let mut previous = None;
                     let mut scale = 1.0;
-                    for day in history.iter().filter_map(|day| day.get(&key)) {
+                    for day in history.iter().filter_map(|(history_date, tails)| {
+                        let history_code =
+                            match (same_contract, product, input.selection(*history_date)) {
+                                (false, Some(product), Some(mapping)) => {
+                                    mapping.get(product)?.as_str()
+                                }
+                                _ => code,
+                            };
+                        tails.get(history_code)
+                    }) {
                         scale = next_day_scale(
                             input.options,
                             is_price,
@@ -241,13 +385,17 @@ pub fn compute_future_minute_rolling(
                             previous,
                             day,
                             scale,
-                            &key,
+                            code,
                         )?;
-                        for &value in &day.values {
-                            if seed.len() == history_bars {
-                                seed.pop_front();
+                        for ((seed, values), &price) in
+                            seeds.iter_mut().zip(&day.values).zip(&price_columns)
+                        {
+                            for &value in values {
+                                if seed.len() == history_bars {
+                                    seed.pop_front();
+                                }
+                                seed.push_back(scale_value(value, if price { scale } else { 1.0 }));
                             }
-                            seed.push_back(scale_value(value, scale));
                         }
                         previous = Some(day);
                     }
@@ -258,42 +406,51 @@ pub fn compute_future_minute_rolling(
                         previous,
                         &tail,
                         scale,
-                        &key,
+                        code,
                     )?;
-                    let skip = seed.len();
-                    let series = seed
+                    let skip = seeds[0].len();
+                    let series = seeds
                         .into_iter()
-                        .chain(
-                            day_values
-                                .into_iter()
-                                .map(|value| scale_value(value, scale)),
-                        )
+                        .zip(day_values)
+                        .zip(&price_columns)
+                        .map(|((seed, day), &price)| {
+                            seed.into_iter()
+                                .chain(day.into_iter().map(|value| {
+                                    scale_value(value, if price { scale } else { 1.0 })
+                                }))
+                                .collect::<Vec<_>>()
+                        })
                         .collect::<Vec<_>>();
                     let computed = expr(&series);
-                    if computed.len() != series.len() {
-                        return Err(err(format!(
-                            "factor {} returned {} values for {code} on {date}, expected {}",
-                            spec.id,
-                            computed.len(),
-                            series.len()
-                        )));
+                    if computed.len() != specs.len()
+                        || computed
+                            .iter()
+                            .any(|values| values.len() != skip + indices.len())
+                    {
+                        return Err(err(format!("futures minute provider returned invalid dimensions for {code} on {date}")));
                     }
-                    indices
+                    computed
                         .into_iter()
-                        .zip(computed.into_iter().skip(skip))
-                        .map(|(idx, value)| FactorValue {
-                            key: FactorRowKey::Minute {
-                                trade_date: date,
-                                trade_time: time(idx).to_string(),
-                                ts_code: code.to_string(),
-                            },
-                            value,
+                        .map(|values| {
+                            indices
+                                .iter()
+                                .copied()
+                                .zip(values.into_iter().skip(skip))
+                                .map(|(idx, value)| FactorValue {
+                                    key: FactorRowKey::Minute {
+                                        trade_date: date,
+                                        trade_time: time(idx).to_string(),
+                                        ts_code: code.to_string(),
+                                    },
+                                    value,
+                                })
+                                .collect::<Vec<_>>()
                         })
                         .collect::<Vec<_>>()
                 } else {
                     Vec::new()
                 };
-                Ok((key, tail, rows))
+                Ok((code.to_string(), tail, rows))
             };
             let results = if crate::resources::parallel_work(table.len) && selected.len() > 1 {
                 selected
@@ -308,49 +465,20 @@ pub fn compute_future_minute_rolling(
             };
             for (key, tail, rows) in results {
                 next.insert(key, tail);
-                output.extend(rows);
+                for (series, values) in output.iter_mut().zip(rows) {
+                    series.values.extend(values);
+                }
             }
         }
-        history.push_back(next);
-        if history.len() > spec.lookback.trading_days {
+        history.push_back((date, next));
+        if use_oi_diff {
+            previous_oi = next_oi;
+        }
+        if history.len() > lookback {
             history.pop_front();
         }
     }
-    Ok(FactorSeries {
-        spec,
-        values: output,
-    })
-}
-
-fn select_contracts<'a>(
-    input: &FutureMinuteInput,
-    date: i32,
-    mut groups: BTreeMap<&'a str, Vec<usize>>,
-) -> Result<Vec<(String, &'a str, Vec<usize>)>> {
-    if input.options.main_source == FutureMainSource::AllContracts {
-        return Ok(groups
-            .into_iter()
-            .map(|(code, indices)| (code.to_string(), code, indices))
-            .collect());
-    }
-    let Some(main) = input.main.get(&date) else {
-        let task = if input.options.main_source == FutureMainSource::FutMapping {
-            "sync future_mapping"
-        } else {
-            "run derive-future-main-oi"
-        };
-        return Err(err(format!(
-            "missing futures main mapping on {date}; {task} including the warmup dates"
-        )));
-    };
-    Ok(main
-        .iter()
-        .filter_map(|(key, code)| {
-            groups
-                .remove_entry(code.as_str())
-                .map(|(code, indices)| (key.clone(), code, indices))
-        })
-        .collect())
+    Ok(output)
 }
 
 fn next_day_scale(

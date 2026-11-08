@@ -149,6 +149,7 @@ struct Metrics {
     upper: Mean,
     lower: Mean,
     trigger_count: Option<u64>,
+    eligible_contract_count: Option<u64>,
 }
 
 impl Metrics {
@@ -209,6 +210,9 @@ impl Metrics {
         if let Some(count) = other.trigger_count {
             *self.trigger_count.get_or_insert(0) += count;
         }
+        if let Some(count) = other.eligible_contract_count {
+            *self.eligible_contract_count.get_or_insert(0) += count;
+        }
     }
 }
 
@@ -240,8 +244,26 @@ struct Observation {
 #[derive(Default)]
 struct DayGroups {
     all: Vec<usize>,
-    by_product: BTreeMap<String, Vec<usize>>,
+    by_product: BTreeMap<String, ProductRows>,
     by_sector: BTreeMap<&'static str, Vec<usize>>,
+}
+
+#[derive(Default)]
+struct ProductRows {
+    pooled: Vec<usize>,
+    contracts: Vec<Vec<usize>>,
+}
+
+impl ProductRows {
+    fn eligible_contracts(&self, factor: &[Option<f64>], returns: &[Option<f64>]) -> u64 {
+        self.contracts
+            .iter()
+            .filter(|rows| {
+                rows.iter()
+                    .any(|&row| factor[row].is_some() && returns[row].is_some())
+            })
+            .count() as u64
+    }
 }
 
 struct FactorSummary {
@@ -268,7 +290,8 @@ impl FactorSummary {
     ) {
         let mut today = DailyThresholds::new();
         let mut all = Metrics::default();
-        for (code, rows) in &groups.by_product {
+        for (code, group) in &groups.by_product {
+            let rows = &group.pooled;
             let daily = TailThresholds::for_day(rows, factor, self.quantile);
             if self.history.is_some() {
                 if let Some(daily) = daily {
@@ -291,6 +314,9 @@ impl FactorSummary {
                     self.quantile == 50,
                     self.history.is_some(),
                 );
+                if local.trigger_count.is_some() {
+                    local.eligible_contract_count = Some(group.eligible_contracts(factor, returns));
+                }
             }
             all.average_tails(&local);
             self.rows.push(Observation {
@@ -609,16 +635,26 @@ fn group_rows(
             || products.contains(code.split_once('.').unwrap().0);
         codes.insert(contract, selected.then_some(code));
     }
-    let mut product_rows = BTreeMap::<&str, Vec<usize>>::new();
+    let mut product_rows = BTreeMap::<&str, ProductRows>::new();
+    let mut contract_rows = HashMap::<&str, Vec<usize>>::new();
     for (row, &(_, contract)) in keys.iter().enumerate() {
         let Some(code) = codes[contract].as_deref() else {
             continue;
         };
         groups.all.push(row);
-        product_rows.entry(code).or_default().push(row);
+        product_rows.entry(code).or_default().pooled.push(row);
+        contract_rows.entry(contract).or_default().push(row);
         if let Some(sector) = sectors.and_then(|mapping| mapping.get(code)) {
             groups.by_sector.entry(*sector).or_default().push(row);
         }
+    }
+    for (contract, rows) in contract_rows {
+        let code = codes[contract].as_deref().expect("selected contract");
+        product_rows
+            .get_mut(code)
+            .expect("selected product")
+            .contracts
+            .push(rows);
     }
     groups.by_product = product_rows
         .into_iter()
@@ -775,7 +811,7 @@ fn finite_column(table: &Table, name: &str) -> Result<Vec<Option<f64>>> {
 }
 
 fn observations_batch(rows: &[Observation]) -> Result<RecordBatch> {
-    let columns: [(&str, ArrayRef); 7] = [
+    let columns: [(&str, ArrayRef); 8] = [
         (
             "trade_date",
             Arc::new(Int32Array::from_iter_values(
@@ -816,6 +852,12 @@ fn observations_batch(rows: &[Observation]) -> Result<RecordBatch> {
             "trigger_count",
             Arc::new(UInt64Array::from_iter(
                 rows.iter().map(|row| row.metrics.trigger_count),
+            )),
+        ),
+        (
+            "eligible_contract_count",
+            Arc::new(UInt64Array::from_iter(
+                rows.iter().map(|row| row.metrics.eligible_contract_count),
             )),
         ),
     ];

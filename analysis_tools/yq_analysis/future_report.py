@@ -12,6 +12,7 @@ METRICS = ["ic", "cosic", "long_rtn", "short_rtn"]
 LEGS = ["long", "short"]
 SECTOR_PREFIX = "sector:"
 TRIGGER_COUNT = "trigger_count"
+ELIGIBLE_CONTRACT_COUNT = "eligible_contract_count"
 
 
 def orient_future_returns(frame: pd.DataFrame, direction: pd.Series) -> pd.DataFrame:
@@ -71,12 +72,14 @@ def _sector_daily(
 def _mean_daily_triggers(
     products: pd.DataFrame, market: pd.DataFrame, sectors: pd.DataFrame,
 ) -> pd.Series:
-    if TRIGGER_COUNT not in products.columns:
+    columns = [TRIGGER_COUNT, ELIGIBLE_CONTRACT_COUNT]
+    if not set(columns).issubset(products.columns):
         return pd.Series(dtype=float, name="trade_num")
-    groups = products[[TRIGGER_COUNT]].join(sectors["abbr"], on="ts_code")
-    daily = groups.groupby(["trade_date", "abbr"], observed=True)[TRIGGER_COUNT].sum(min_count=1)
-    means = daily.groupby("abbr", observed=True).mean().astype(float)
-    means.loc["All"] = market[TRIGGER_COUNT].mean()
+    groups = products[columns].join(sectors["abbr"], on="ts_code")
+    daily = groups.groupby(["trade_date", "abbr"], observed=True)[columns].sum(min_count=1)
+    per_contract = daily[TRIGGER_COUNT] / daily[ELIGIBLE_CONTRACT_COUNT]
+    means = per_contract.groupby("abbr", observed=True).mean().astype(float)
+    means.loc["All"] = (market[TRIGGER_COUNT] / market[ELIGIBLE_CONTRACT_COUNT]).mean()
     return means.rename("trade_num").rename_axis("sector")
 
 

@@ -144,10 +144,11 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- backtest --asset
 - 因子选择支持 `--factors`、`--tags`、`--all-factors` 三选一。标签按全部匹配筛选，`--tags pv,yq` 选择这批 YQ 期货分钟因子。标签读取当前期货分钟因子注册表。与股票入口一致，指定外部 `--factor-root` 时用 `--factors` 或 `--all-factors`。
 - 支持 `--factor-batch-size`、`--date-batch-size`、`--threads` 和 `--profile`。日历在启动时读取一次，五日窗口跨日期批次延续。股票专用选项如 `--benchmark`、`--barra`、`--neutralize` 和 `--detail` 可传入，在期货分钟回测中不参与计算。
 - `--products` 可传 `RB` 或 `RB.SHF`，筛选同时作用于 All、板块和品种评价。未指定时使用全部品种。品种由实际交割合约代码归并，如 `RB2610.SHF` 归入 `RB.SHF`。同一品种若有多个期限，品种评价合并这些合约的分钟样本。
-- 默认模式 `--quantile-mode trailing-5` 使用每个品种、因子在 T−5 至 T−1 的每日上下分位数的等权均值，写入 `data/backtest/future/minute_1m/{factor_name}/summary.parquet`。`--quantile-mode daily` 使用当日分位数，写入 `data/backtest/future/minute_1m/daily/{factor_name}/summary.parquet`。默认双端为 P05/P95，`--quantile 90` 可切换到 P10/P90。列顺序均为 `trade_date, ts_code, ic, cosic, long_rtn, short_rtn, trigger_count`，模式和分位参数记录在 Parquet 元数据中。`--output-dir` 可覆盖因子目录的上一级。
+- 默认模式 `--quantile-mode trailing-5` 使用每个品种、因子在 T−5 至 T−1 的每日上下分位数的等权均值，写入 `data/backtest/future/minute_1m/{factor_name}/summary.parquet`。`--quantile-mode daily` 使用当日分位数，写入 `data/backtest/future/minute_1m/daily/{factor_name}/summary.parquet`。默认双端为 P05/P95，`--quantile 90` 可切换到 P10/P90。列顺序均为 `trade_date, ts_code, ic, cosic, long_rtn, short_rtn, trigger_count, eligible_contract_count`，模式和分位参数记录在 Parquet 元数据中。`--output-dir` 可覆盖因子目录的上一级。
 - 每个交易日为每个品种输出一行，`ts_code` 存品种代码。`ic` 和 `cosic` 分别为 Pearson IC 和余弦相似度，使用该品种当日的有效分钟配对。`long_rtn` 和 `short_rtn` 分别为因子值达到上阈值及以上、下阈值及以下的有效标签均值，沿用标签的单位和符号。分位点由当日所有有限因子值线性插值得到。两条阈值重合且当日有有效因子与标签配对时，上下尾收益均记为 0。没有有效配对时，收益留空。`trigger_count` 记录上下端合计的有效合约分钟触发数，All 行为品种合计。有阈值和有效配对但没有触发时记 0，缺少阈值或有效配对时留空。
 - 每个交易日还有一行 `ts_code=all`。将全部合约当日的分钟样本拼接，直接对有效因子值和标签计算一次 `ic` 和 `cosic`。两端收益分别在当日有对应有效收益的品种间等权平均。余弦相似度至少需要两个有效配对，任一向量全为零时为空。
 - 板块行用 `ts_code=sector:<板块缩写>` 标识，按同一口径在板块内跨合约计算 IC 和 CosIC。板块行的两端收益列留空，报告侧使用各品种定向后的收益汇总板块收益。
+- `eligible_contract_count` 记录当日有可用阈值且至少有一个有效因子标签配对的合约数。品种和 All 行记录此分母，板块报告按品种汇总。
 - 五日模式只用因子预热，最多读取回测起点之前五个交易日。前五个交易日有任一天缺少该品种的有效分位数时，当日两端收益留空。阈值可用且当日有有效配对时，某一端没有达到该端阈值的有效配对，则该端收益记为 0。IC 和 CosIC 的计算口径相同。
 - `--quantile 50` 使用中位数作为分界。因子值严格高于或低于中位数的样本分别进入上端和下端，等于中位数的样本不归入两端。
 - 板块分类、品种中英文名称和交易所代码见[期货板块](docs/FUTURE_SECTORS.md)。

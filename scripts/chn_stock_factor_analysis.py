@@ -12,14 +12,16 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 from tempfile import TemporaryDirectory
-import uuid
 
 import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REPORT = ROOT / "data/reports/factor_review_20160101.html"
+DEFAULT_PLOTS = ROOT / "analysis_tools/plots/factor_review_2016_2026"
 sys.path.insert(0, str(ROOT / "analysis_tools"))
 from yq_analysis.io import load_backtest_result
 from yq_analysis.metrics import annual_return
@@ -86,6 +88,38 @@ def dated(frame, key="trade_date"):
 def plot_file(ctx, id, mode):
     relative = Path(mode) / f"{id}.jpg"
     return ctx["staged"] / relative, Path(os.path.relpath(ctx["plots"] / relative, ctx["report"].parent)).as_posix()
+
+
+def publish_report(ctx, new_html, obsolete):
+    """Publish only changed figures, restoring them if the HTML cannot be replaced."""
+    staged = ctx["staged"]
+    replacements = {ctx["plots"] / p.relative_to(staged): p for p in staged.glob("*/*.jpg")}
+    actions = {**dict.fromkeys(obsolete), **replacements}
+    backup = staged.parent / "previous_plots"
+    applied = []
+    try:
+        for index, (target, source) in enumerate(actions.items()):
+            if source is None and not target.is_file():
+                continue
+            prior = None
+            if target.exists():
+                backup.mkdir(exist_ok=True)
+                prior = backup / f"{index}.jpg"
+                shutil.copy2(target, prior)
+            if source is None:
+                target.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(source, target)
+            applied.append((target, prior))
+        os.replace(new_html, ctx["report"])
+    except OSError:
+        for target, prior in reversed(applied):
+            if prior is None:
+                target.unlink(missing_ok=True)
+            else:
+                os.replace(prior, target)
+        raise
 
 
 def folded(id, returns, screen, sha, ctx):
@@ -335,15 +369,17 @@ def overview(data):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--report", type=Path, default=ROOT/"data/reports/factor_review_20160101.html")
+    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--backtest-root", type=Path, default=ROOT/"data/backtest/stock/daily")
-    parser.add_argument("--plots-root", type=Path, default=ROOT/"analysis_tools/plots")
+    parser.add_argument("--plots-root", type=Path, help="Exact directory for the report's original/ and folded/ figures.")
     parser.add_argument("--remove", nargs="+", default=[], metavar="ID", help="Remove from HTML only; remember the exclusion.")
     parser.add_argument("--refresh", nargs="+", default=[], metavar="ID", help="Replace or restore selected IDs from local results.")
     parser.add_argument("--category", action="append", default=[], metavar="ID=LABEL", help="Set a display category.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     report, root = args.report.resolve(), args.backtest_root.resolve()
+    plot_root = (args.plots_root or (DEFAULT_PLOTS if report == DEFAULT_REPORT.resolve()
+                 else report.parent / f"{report.stem}_plots")).resolve()
     if not root.is_dir():
         parser.error(f"Backtest directory not found: {root}")
     text = report.read_text(encoding="utf-8")
@@ -388,6 +424,13 @@ def main():
         print("No changes.")
         return
     data["local_refresh"] = current_state
+    old_plots = {}
+    for id in changed | removed:
+        detail = data["details"].get(id, {})
+        for mode, part in (("original", detail), ("folded", detail.get("folded", {}))):
+            expected = plot_root / mode / f"{id}.jpg"
+            if part.get("plot") and (report.parent / part["plot"]).resolve() == expected:
+                old_plots[id, mode] = expected
     for id in removed:
         del old[id]
         del data["details"][id]
@@ -398,7 +441,7 @@ def main():
     with TemporaryDirectory(prefix="stock-factor-review-", dir=tmp) as directory:
         stage = Path(directory)
         os.environ.setdefault("MPLCONFIGDIR", str(stage/"mpl"))
-        ctx = dict(staged=stage/"plots", plots=args.plots_root.resolve()/("stock_factor_review_"+uuid.uuid4().hex[:12]), report=report)
+        ctx = dict(staged=stage/"plots", plots=plot_root, report=report)
         if substantive:
             import matplotlib
             matplotlib.use("Agg")
@@ -444,10 +487,9 @@ if(lc && lc.verified<lc.total) document.getElementById('local-correlation-scope'
             raise RuntimeError("Report changed while updating; run the command again")
         new_html = stage/"report.html"
         new_html.write_text(out,encoding="utf-8")
-        if changed:
-            ctx["plots"].parent.mkdir(parents=True,exist_ok=True)
-            os.replace(ctx["staged"],ctx["plots"])
-        os.replace(new_html,report)
+        obsolete = [path for (id, mode), path in old_plots.items()
+                    if id in removed or (mode == "folded" and not data["details"][id]["folded"].get("plot"))]
+        publish_report(ctx, new_html, obsolete)
     print(f"Updated {report} ({len(data['factors'])} factors)")
 
 

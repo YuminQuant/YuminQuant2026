@@ -544,7 +544,7 @@ fn volume_interest(index: usize, inputs: &[Series]) -> Series {
     }
 }
 
-type Slots<'a> = HashMap<(&'a str, &'a str), f64>;
+type Slots<'a> = HashMap<(&'a str, (&'a str, usize)), f64>;
 
 fn volume_surprise(
     spec: FactorSpec,
@@ -597,23 +597,34 @@ fn volume_surprise(
                 } else {
                     Vec::new()
                 };
+                // Some historical trading dates have the same clock time on two
+                // calendar dates. Match occurrences in chronological order.
+                let mut clock_counts = HashMap::new();
+                let mut previous_time = None;
                 for &row in indices {
                     let time = times[row].as_deref().expect("indexed minute timestamp");
-                    let clock = time.get(11..19);
+                    if previous_time == Some(time) {
+                        return Err(err(format!(
+                            "duplicate minute timestamp {time} for {code} on {date}"
+                        )));
+                    }
+                    previous_time = Some(time);
+                    let slot = time.get(11..19).map(|clock| {
+                        let count = clock_counts.entry(clock).or_insert(0);
+                        let slot = (clock, *count);
+                        *count += 1;
+                        slot
+                    });
                     let current = vol[row].map(f64::ln_1p);
-                    if let (Some(clock), Some(value)) = (clock, current) {
-                        if slots.insert((code, clock), value).is_some() {
-                            return Err(err(format!(
-                                "duplicate minute clock {clock} for {code} on {date}"
-                            )));
-                        }
+                    if let Some((slot, value)) = slot.zip(current) {
+                        slots.insert((code, slot), value);
                     }
                     if emit {
-                        let value = current.zip(clock).and_then(|(current, clock)| {
+                        let value = current.zip(slot).and_then(|(current, slot)| {
                             let mut count = 0;
                             let (mut mean, mut m2) = (0.0, 0.0);
                             for &(code, slots) in &history {
-                                if let Some(value) = slots.get(&(code, clock)) {
+                                if let Some(value) = slots.get(&(code, slot)) {
                                     count += 1;
                                     let delta = value - mean;
                                     mean += delta / count as f64;

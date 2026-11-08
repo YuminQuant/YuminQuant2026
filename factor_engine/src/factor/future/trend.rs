@@ -209,7 +209,7 @@ impl Factor for TrendFactor {
     }
 }
 
-fn efficiency_ratio(close: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
+pub(super) fn efficiency_ratio(close: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
     let mut output = vec![None; close.len()];
     if let Some(tail) = output.get_mut(n..) {
         for (slot, sample) in tail.iter_mut().zip(close.windows(n + 1)) {

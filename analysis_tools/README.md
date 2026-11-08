@@ -49,6 +49,30 @@ fig = plot_return_summary(
 
 Use horizon=1 for the main IC report and the full IC table for decay plots, rather than treating horizons as extra dates. Match `groups` to the backtest. Optional diagnostic tables may be absent.
 
+### 股票因子总报告 / Stock factor review
+
+从项目根目录运行以下命令，增量更新现有 `data/reports/factor_review_20160101.html`。
+首次执行登记已有本地文件，不用历史文件覆盖旧报告；之后新增或替换完整的五份
+Parquet 结果即可更新。删除曾登记的因子目录后，下次运行会从报告移除该因子。
+不读取因子元数据来决定增删，也不会删除回测文件。
+
+Run from the project root. The existing HTML is the template and initial baseline.
+Subsequent runs add or refresh complete local backtests and drop previously observed
+factor directories that have been deleted. Use comparable backtest settings; the
+script does not run the backtest or infer its settings.
+
+```powershell
+python scripts/chn_stock_factor_analysis.py
+python scripts/chn_stock_factor_analysis.py --dry-run
+python scripts/chn_stock_factor_analysis.py --refresh some_factor
+python scripts/chn_stock_factor_analysis.py --remove some_factor
+```
+
+`--remove` 只修改报告，并记住排除项；用 `--refresh` 可恢复。首次运行前刚覆盖的
+已有因子也可用 `--refresh` 强制结算。新因子可用 `--category "factor_id=分类"`
+指定展示分类。相关性仅重算本地收益与报告版本一致的因子对；数据不齐时，
+报告会说明覆盖范围。脚本保留原有曲线文件，新曲线写入独立子目录。
+
 ## 策略分析 / Strategy analysis
 
 ```python

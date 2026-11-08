@@ -38,7 +38,17 @@ def _plot_sector_means(ax, sector: pd.DataFrame, unit: str) -> None:
     _stack_returns(ax, x, sector)
     ax.scatter(x, sector["net"], marker="D", color="0.2", s=24, zorder=3, label="Net mean")
     _finish_axis(ax, "Equal-weight sector returns", f"Mean return ({unit})")
-    ax.set_xticks(x, sector.index, fontsize=9)
+    ax.set_xticks(x, sector.index, fontsize=9, rotation=45, ha="right")
+
+
+def _plot_sector_ic(ax, ic: pd.Series) -> None:
+    x = np.arange(len(ic))
+    ax.bar(x, ic, width=0.77, color=np.where(ic.ge(0), "tab:red", "tab:green"))
+    _finish_axis(ax, "Pooled IC by sector", "Mean Pearson IC")
+    ax.set_xticks(x, ic.index, fontsize=9, rotation=45, ha="right")
+    for position in x[ic.isna()]:
+        ax.annotate("N/A", (position, 0), xytext=(0, 4), textcoords="offset points",
+                    ha="center", fontsize=7)
 
 
 def _plot_cumulative_sectors(ax, cumulative: pd.DataFrame, unit: str) -> None:
@@ -50,28 +60,31 @@ def _plot_cumulative_sectors(ax, cumulative: pd.DataFrame, unit: str) -> None:
                 linestyle="-" if i < len(colors) else "--", linewidth=1.5, label=sector)
     _finish_axis(ax, "Cumulative sector returns", f"Cumulative return ({unit})")
     ax.set_xlabel("Trade date")
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
 
 
 def plot_future_return_summary(
     report: Mapping, *, title: str = "", unit: str = "bp", save: str | Path | None = None,
     dpi: int | str | None = None,
 ):
-    """Plot the futures summary and close the figure after saving when requested."""
+    """Plot sector IC and returns plus a full-width product returns panel."""
     import matplotlib.pyplot as plt
 
     products = report["product"]
     x = np.arange(len(products))
-    fig, axes = plt.subplots(2, 2, figsize=(19.0, 8.2), layout="constrained")
+    fig = plt.figure(figsize=(19.0, 10.8), layout="constrained")
+    grid = fig.add_gridspec(3, 2)
     fig.suptitle(title, fontsize=17, fontweight="bold")
-    ic_ax, product_ax, mean_ax, cumulative_ax = axes.flat
-    ic_ax.bar(x, products["ic"], width=0.77, color=np.where(products["ic"].ge(0), "tab:red", "tab:green"))
-    _finish_axis(ic_ax, "Mean IC by product", "Pearson IC")
-    _product_ticks(ic_ax, x, products.index)
+    ic_ax = fig.add_subplot(grid[0, 0])
+    mean_ax = fig.add_subplot(grid[0, 1])
+    cumulative_ax = fig.add_subplot(grid[1, :])
+    product_ax = fig.add_subplot(grid[2, :])
+    _plot_sector_ic(ic_ax, report["sector_ic"]["ic"])
+    _plot_sector_means(mean_ax, report["sector"], unit)
+    _plot_cumulative_sectors(cumulative_ax, report["cumulative_sector"], unit)
     _stack_returns(product_ax, x, report["directed"])
     _finish_axis(product_ax, "IC-directed returns by product", f"Mean return ({unit})")
     _product_ticks(product_ax, x, products.index)
-    _plot_sector_means(mean_ax, report["sector"], unit)
-    _plot_cumulative_sectors(cumulative_ax, report["cumulative_sector"], unit)
     bar_handles, bar_labels = mean_ax.get_legend_handles_labels()
     line_handles, line_labels = cumulative_ax.get_legend_handles_labels()
     fig.legend(bar_handles + line_handles, bar_labels + line_labels,

@@ -1304,11 +1304,7 @@ fn select_factors_from_metadata(
         }
         (None, Some(tags), false) => base
             .into_iter()
-            .filter(|row| !row.tags.iter().any(|tag| tag == "deprecated"))
-            .filter(|row| {
-                tags.iter()
-                    .all(|tag| row.tags.iter().any(|row_tag| row_tag == tag))
-            })
+            .filter(|row| active_factor_matches_tags(row, tags))
             .collect(),
         (None, None, true) => base
             .into_iter()
@@ -1326,7 +1322,12 @@ fn select_factors_from_metadata(
     Ok(dedup_factor_metadata(selected))
 }
 
-fn factor_metadata_matches(row: &FactorMetadata, id_or_name: &str) -> bool {
+pub(super) fn active_factor_matches_tags(row: &FactorMetadata, tags: &[String]) -> bool {
+    !row.tags.iter().any(|tag| tag == "deprecated")
+        && tags.iter().all(|tag| row.tags.contains(tag))
+}
+
+pub(super) fn factor_metadata_matches(row: &FactorMetadata, id_or_name: &str) -> bool {
     row.factor_id == id_or_name
         || row.name == id_or_name
         || row.aliases.iter().any(|alias| alias == id_or_name)
@@ -1334,7 +1335,7 @@ fn factor_metadata_matches(row: &FactorMetadata, id_or_name: &str) -> bool {
 
 const EXTERNAL_FACTOR_KEY_COLUMNS: &[&str] = &["trade_date", "trade_time", "ts_code"];
 
-fn external_factor_ids_from_root(
+pub(super) fn external_factor_ids_from_root(
     root: &Path,
     asset_class: AssetClass,
     frequency: Frequency,

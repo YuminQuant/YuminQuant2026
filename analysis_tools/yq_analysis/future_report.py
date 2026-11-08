@@ -10,6 +10,8 @@ from yq_analysis.metrics import annual_return, calmar, clean_series, max_drawdow
 
 METRICS = ["ic", "cosic", "long_rtn", "short_rtn"]
 LEGS = ["long", "short"]
+SECTOR_PREFIX = "sector:"
+TRIGGER_COUNT = "trigger_count"
 
 
 def orient_future_returns(frame: pd.DataFrame, direction: pd.Series) -> pd.DataFrame:
@@ -29,9 +31,26 @@ def _check_summary(summary: pd.DataFrame, sectors: pd.DataFrame) -> None:
         raise ValueError(f"Missing futures summary columns: {sorted(missing)}")
     if summary.duplicated(["trade_date", "ts_code"]).any():
         raise ValueError("Duplicate trade_date and ts_code in futures summary")
-    products = pd.Index(summary.loc[summary["ts_code"].ne("all"), "ts_code"].unique())
+    products = pd.Index(summary.loc[_product_rows(summary), "ts_code"].unique())
     if not products.difference(sectors.index).empty:
         raise ValueError(f"Products missing from sector map: {products.difference(sectors.index).tolist()}")
+
+
+def _product_rows(summary: pd.DataFrame) -> pd.Series:
+    codes = summary["ts_code"]
+    return codes.ne("all") & ~codes.str.startswith(SECTOR_PREFIX)
+
+
+def _mean_sector_ic(
+    summary: pd.DataFrame, market: pd.DataFrame, sectors: pd.DataFrame,
+) -> pd.DataFrame:
+    rows = summary.loc[summary["ts_code"].str.startswith(SECTOR_PREFIX)]
+    codes = rows["ts_code"].str.removeprefix(SECTOR_PREFIX)
+    correlations = rows.groupby(codes)[["ic", "cosic"]].mean()
+    correlations = correlations.reindex(sectors["abbr"].unique())
+    if not rows.empty:
+        correlations.loc["All"] = market[["ic", "cosic"]].mean()
+    return correlations.reindex(["All", *sectors["abbr"].unique()]).rename_axis("sector")
 
 
 def _sector_daily(
@@ -49,13 +68,25 @@ def _sector_daily(
     return result
 
 
+def _mean_daily_triggers(
+    products: pd.DataFrame, market: pd.DataFrame, sectors: pd.DataFrame,
+) -> pd.Series:
+    if TRIGGER_COUNT not in products.columns:
+        return pd.Series(dtype=float, name="trade_num")
+    groups = products[[TRIGGER_COUNT]].join(sectors["abbr"], on="ts_code")
+    daily = groups.groupby(["trade_date", "abbr"], observed=True)[TRIGGER_COUNT].sum(min_count=1)
+    means = daily.groupby("abbr", observed=True).mean().astype(float)
+    means.loc["All"] = market[TRIGGER_COUNT].mean()
+    return means.rename("trade_num").rename_axis("sector")
+
+
 def make_future_backtest_report(
     summary: pd.DataFrame, sectors: pd.DataFrame, *, direction: pd.Series | None = None,
 ) -> dict:
     """Summarize daily product metrics and form equal-weight sector return proxies."""
     _check_summary(summary, sectors)
     market = summary.loc[summary["ts_code"].eq("all")].set_index("trade_date").sort_index()
-    products = summary.loc[summary["ts_code"].ne("all")].set_index(["trade_date", "ts_code"])
+    products = summary.loc[_product_rows(summary)].set_index(["trade_date", "ts_code"])
     means = products.groupby("ts_code", sort=True)[METRICS].mean()
     if direction is None:
         direction = np.sign(means["ic"]).rename("direction")
@@ -68,12 +99,17 @@ def make_future_backtest_report(
     daily_legs = orient_future_returns(products, pd.Series(daily_direction, index=products.index))
     daily_product = daily_legs.sum(axis=1, min_count=2).rename("net").sort_index()
     daily_sector = _sector_daily(daily_product.to_frame(), sectors, market.index)["net"]
+    market_direction = pd.Series(np.sign(market["ic"].mean()), index=market.index)
+    market_net = orient_future_returns(market, market_direction).sum(axis=1, min_count=2)
     return {
         "market": market,
+        "market_net": market_net,
         "product": means,
         "direction": direction,
         "directed": directed,
         "sector": sector_returns,
+        "sector_ic": _mean_sector_ic(summary, market, sectors),
+        "trade_num": _mean_daily_triggers(products, market, sectors),
         "daily_product": daily_product,
         "product_ic": products[["ic", "cosic"]],
         "daily_sector": daily_sector,
@@ -112,18 +148,14 @@ def _sector_return_metrics(returns_bp: pd.Series, periods_per_year: int) -> dict
 def make_future_sector_metrics(
     report: Mapping, sectors: pd.DataFrame, *, periods_per_year: int = 240,
 ) -> pd.DataFrame:
-    """Summarize sector IC and stock-style metrics from one report's daily bp returns."""
+    """Summarize All and sector pooled IC alongside daily return metrics."""
     if periods_per_year <= 0:
         raise ValueError("periods_per_year must be positive")
-    valid = clean_series(report["daily_product"]).index
-    product_ic = report["product_ic"].reindex(valid)
-    daily_ic = _sector_daily(product_ic, sectors, report["market"].index)
-    return pd.DataFrame([
-        {
-            "sector": sector,
-            "ic": daily_ic["ic"][sector].mean(),
-            "cosic": daily_ic["cosic"][sector].mean(),
-            **_sector_return_metrics(returns, periods_per_year),
-        }
-        for sector, returns in report["daily_sector"].items()
-    ]).set_index("sector")
+    returns = {"All": report["market_net"]}
+    returns.update((sector, report["daily_sector"][sector]) for sector in sectors["abbr"].unique())
+    metrics = pd.DataFrame.from_dict(
+        {name: _sector_return_metrics(values, periods_per_year) for name, values in returns.items()},
+        orient="index",
+    ).rename_axis("sector")
+    metrics["observations"] = metrics["observations"].astype(int)
+    return report["sector_ic"].join(metrics).join(report["trade_num"])

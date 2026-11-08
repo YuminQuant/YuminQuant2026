@@ -96,7 +96,7 @@ fn spec(index: usize) -> FactorSpec {
         asset_class: AssetClass::Future,
         frequency: Frequency::Minute1,
         version: "0.1.0".into(),
-        tags: vec!["minute".into(), "price_volume".into()],
+        tags: vec!["minute".into(), "price_volume".into(), "pv".into(), "yq".into()],
         description: SIGNALS[index].1.into(),
         dependencies: vec![future_minute_request(columns)],
         intraday_raw_dependencies: Vec::new(),

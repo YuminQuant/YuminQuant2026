@@ -783,13 +783,18 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
 }
 
 fn run_future_minute_backtest(flags: &HashMap<String, String>) -> Result<()> {
-    use yq_factor_engine::backtest::future_minute::{run, FutureMinuteBacktestRequest, QuantileMode};
+    use yq_factor_engine::backtest::future_minute::{
+        run, FactorSelection, FutureMinuteBacktestRequest, QuantileMode, DEFAULT_TAIL_QUANTILE,
+    };
     use yq_factor_engine::error::err;
 
     for key in flags.keys() {
         if !matches!(key.as_str(), "asset" | "frequency" | "start-date" | "end-date" |
-            "factors" | "label" | "labels" | "products" | "factor-root" | "label-root" |
-            "output-dir" | "config" | "quantile-mode")
+            "factors" | "tags" | "all-factors" | "label" | "labels" | "products" |
+            "factor-root" | "label-root" | "output-dir" | "config" | "quantile-mode" |
+            "quantile" | "date-batch-size" | "factor-batch-size" | "threads" | "profile" |
+            "groups" | "rebalance" | "neutralize" | "universe" | "benchmark" | "barra" |
+            "exclude-limit" | "exclude-st" | "limit-side" | "factor-fill" | "detail" | "detail-sector")
         {
             return Err(err(format!("unsupported futures minute backtest flag --{key}")));
         }
@@ -813,22 +818,46 @@ fn run_future_minute_backtest(flags: &HashMap<String, String>) -> Result<()> {
     let [label_column]: [String; 1] = labels.try_into().map_err(|_| {
         err("futures minute backtest requires a single --label per summary")
     })?;
+    let factor_selection = match (
+        flags.contains_key("factors"),
+        flags.contains_key("tags"),
+        flag_enabled(flags, "all-factors"),
+    ) {
+        (true, false, false) => FactorSelection::Columns(columns("factors")?),
+        (false, true, false) => FactorSelection::Tags(columns("tags")?),
+        (false, false, true) => FactorSelection::All,
+        (false, false, false) => return Err(err("backtest requires --factors, --tags or --all-factors")),
+        _ => return Err(err("--factors, --tags and --all-factors cannot be used together")),
+    };
     let request = FutureMinuteBacktestRequest {
         start_date: date("start-date")?,
         end_date: date("end-date")?,
-        factor_columns: columns("factors")?,
+        factor_selection,
         label_column,
         products: flags.get("products").map(|_| columns("products")).transpose()?.unwrap_or_default(),
         factor_root: flags.get("factor-root").map(PathBuf::from),
         label_root: flags.get("label-root").map(PathBuf::from),
         output_dir: flags.get("output-dir").map(PathBuf::from),
         quantile_mode: flags.get("quantile-mode").map(|value| QuantileMode::parse(value)).transpose()?.unwrap_or_default(),
+        quantile: flags.get("quantile").map(|value| value.parse::<u8>()).transpose()?.unwrap_or(DEFAULT_TAIL_QUANTILE),
+        factor_batch_size: backtest_batch_size(flags, "factor-batch-size", DEFAULT_BACKTEST_FACTOR_BATCH_SIZE)?,
+        date_batch_size: backtest_batch_size(flags, "date-batch-size", DEFAULT_BACKTEST_DATE_BATCH_SIZE)?,
+        threads: flags.get("threads").map(|value| value.parse::<usize>()).transpose()?,
+        profile: flag_enabled(flags, "profile"),
     };
     let config = yq_factor_engine::config::EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
     for path in run(&config, &request)? {
         println!("wrote {}", path.display());
     }
     Ok(())
+}
+
+fn backtest_batch_size(flags: &HashMap<String, String>, name: &str, default: usize) -> Result<usize> {
+    let size = flags.get(name).map(|value| value.parse::<usize>()).transpose()?.unwrap_or(default);
+    if size == 0 {
+        return Err(yq_factor_engine::error::err(format!("--{name} must be greater than 0")));
+    }
+    Ok(size)
 }
 
 fn parse_backtest_run_request(flags: &HashMap<String, String>) -> Result<BacktestRunRequest> {
@@ -895,30 +924,10 @@ fn parse_backtest_run_request(flags: &HashMap<String, String>) -> Result<Backtes
         .map(|value| NeutralizeSpec::parse(value))
         .transpose()?
         .unwrap_or(NeutralizeSpec::None);
-    let factor_batch_size = match flags.get("factor-batch-size") {
-        Some(value) => {
-            let parsed = value.parse::<usize>()?;
-            if parsed == 0 {
-                return Err(yq_factor_engine::error::err(
-                    "--factor-batch-size must be greater than 0",
-                ));
-            }
-            parsed
-        }
-        None => DEFAULT_BACKTEST_FACTOR_BATCH_SIZE,
-    };
-    let date_batch_size = match flags.get("date-batch-size") {
-        Some(value) => {
-            let parsed = value.parse::<usize>()?;
-            if parsed == 0 {
-                return Err(yq_factor_engine::error::err(
-                    "--date-batch-size must be greater than 0",
-                ));
-            }
-            parsed
-        }
-        None => DEFAULT_BACKTEST_DATE_BATCH_SIZE,
-    };
+    let factor_batch_size =
+        backtest_batch_size(flags, "factor-batch-size", DEFAULT_BACKTEST_FACTOR_BATCH_SIZE)?;
+    let date_batch_size =
+        backtest_batch_size(flags, "date-batch-size", DEFAULT_BACKTEST_DATE_BATCH_SIZE)?;
     let threads = match flags.get("threads") {
         Some(value) => {
             let parsed = value.parse::<usize>()?;
@@ -1682,7 +1691,7 @@ fn print_help() {
     println!(
         "  backtest --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD --factors factor_id[,factor_id...]"
     );
-    println!("  backtest --asset future --frequency minute_1m --start-date YYYYMMDD --end-date YYYYMMDD --factors column[,column...] [--quantile-mode daily|trailing-5] [--label column] [--products RB.SHF,IF.CFX] [--label-root PATH]");
+    println!("  backtest --asset future --frequency minute_1m --start-date YYYYMMDD --end-date YYYYMMDD (--factors column[,column...] | --tags tag[,tag...] | --all-factors) [--quantile-mode daily|trailing-5] [--quantile 95] [--label column] [--products RB.SHF,IF.CFX] [--label-root PATH]");
     println!("  strategy-run --config strategy_config/stock/strategy_001.toml");
     println!(
         "  derive-bar --asset stock --source minute --bar-size N --start-date YYYYMMDD --end-date YYYYMMDD"

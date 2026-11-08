@@ -75,7 +75,7 @@ python scripts/chn_stock_factor_analysis.py --remove some_factor
 
 ## 期货因子评价 / Futures factor evaluation
 
-先用 Rust 期货分钟回测生成摘要。默认的过去五日阈值模式写入 `data/backtest/future/trailing-5`。读取、结算和绘图可以分别调用。
+先用 Rust 期货分钟回测生成摘要。默认的过去五日阈值模式写入 `data/backtest/future/minute_1m`。读取、结算和绘图可以分别调用。
 
 ```python
 from yq_analysis.future_io import load_future_backtest_result, load_future_sectors
@@ -83,7 +83,7 @@ from yq_analysis.future_report import make_future_backtest_report, make_future_s
 from yq_analysis.future_plots import plot_future_return_summary
 
 sectors = load_future_sectors("factor_engine/docs/FUTURE_SECTORS.md")
-trailing = load_future_backtest_result("data/backtest/future/trailing-5", "yq_001")
+trailing = load_future_backtest_result("data/backtest/future/minute_1m", "yq_001")
 report = make_future_backtest_report(trailing["summary"], sectors)
 print(make_future_sector_metrics(report, sectors))
 fig = plot_future_return_summary(
@@ -93,7 +93,9 @@ fig = plot_future_return_summary(
 
 运行 `future_factor.ipynb` 会显示指标表，并将当前因子的图保存到 `analysis_tools/plots/future/{factor_id}.png`。
 
-指标表按板块展示原始 IC、CosIC、年化收益、夏普、最大回撤、卡玛、胜率、盈亏比和有效交易日数。IC、CosIC 和收益使用五日模式中有有效双端收益的品种日，板块内按品种等权。收益指标将日度 bp 转为小数后沿用股票报告函数，默认每年 240 个交易日。盈亏比为盈利日平均收益除以亏损日平均亏损的绝对值。累计图按交易日算术累加。
+指标表的 `trade_num` 是日均有效阈值触发数。每个板块每天先将品种上下端触发数求和，再对有统计的交易日取均值，All 使用全体品种的合计。零触发日计入均值，缺阈值或没有有效配对的品种日留空。连续分钟触发分别计数。
+
+指标表首行展示 All，随后按板块展示原始 IC、CosIC、年化收益、夏普、最大回撤、卡玛、胜率、盈亏比和有效交易日数。All 和各板块的 IC、CosIC 使用回测按交易日拼接合约分钟样本后直接计算的结果，再对有效交易日等权平均。All 收益使用回测的 `all` 两端收益，按 All 平均 IC 定向后相加。各板块先按品种 IC 定向，再对有有效双端收益的品种等权。收益指标将日度 bp 转为小数后沿用股票报告函数，默认每年 240 个交易日。盈亏比为盈利日平均收益除以亏损日平均亏损的绝对值。累计图按交易日算术累加。
 
 ## 策略分析 / Strategy analysis
 

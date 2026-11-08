@@ -14,6 +14,7 @@ def load_future_backtest_result(root: str | Path, factor_id: str) -> dict:
         "summary": source.read().to_pandas(),
         "label_id": metadata.get(b"label_id", b"").decode(),
         "quantile_mode": metadata.get(b"quantile_mode", b"daily").decode(),
+        "tail_quantile": int(metadata.get(b"tail_quantile", b"90")),
     }
 
 

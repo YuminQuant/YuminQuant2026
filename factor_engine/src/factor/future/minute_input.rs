@@ -56,20 +56,18 @@ impl FutureMinuteInput {
                     crate::derive::future_main_oi::DIRECTORY
                 };
                 let columns = ["trade_date", "ts_code", "mapping_ts_code"].map(str::to_string);
-                if options.main_source == FutureMainSource::FutMapping {
-                    let wanted = dates.iter().copied().collect::<BTreeSet<_>>();
-                    let years = dates
-                        .iter()
-                        .map(|date| date / 10_000)
-                        .collect::<BTreeSet<_>>();
-                    for year in years {
-                        let path = root.join(directory).join(format!("{year}.parquet"));
-                        if path.storage_exists() {
-                            main.extend(read_mapping(
-                                &read_parquet(&path, Some(&columns))?,
-                                &wanted,
-                            )?);
-                        }
+                let wanted = dates.iter().copied().collect::<BTreeSet<_>>();
+                let years = dates
+                    .iter()
+                    .map(|date| date / 10_000)
+                    .collect::<BTreeSet<_>>();
+                for year in years {
+                    let path = root.join(directory).join(format!("{year}.parquet"));
+                    if path.storage_exists() {
+                        main.extend(read_mapping(
+                            &read_parquet(&path, Some(&columns))?,
+                            &wanted,
+                        )?);
                     }
                 }
                 for &date in dates {

@@ -1,9 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::artifact_io::StoragePathExt;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::DatasetId;
-use crate::data::{parquet_io::write_parquet, ColumnData, DataCatalog, MarketDataLoader, Table};
+use crate::data::{
+    parquet_io::{read_parquet, write_parquet},
+    ColumnData, DataCatalog, MarketDataLoader, Table,
+};
 use crate::error::{err, Result};
 use crate::factor::future::minute_input::product;
 
@@ -39,6 +43,8 @@ pub fn derive(
     let mut state = BTreeMap::new();
     let mut previous = None;
     let mut written = 0;
+    let mut year = 0;
+    let mut pending = Table::empty();
     // Replay from the first local snapshot. Only the requested dates are written.
     for batch in dates.chunks(batch_size) {
         let table = loader.load_daily_by_dates(DatasetId::FutureDaily, &["oi".into()], batch)?;
@@ -57,8 +63,15 @@ pub fn derive(
                     (Some((source, selected)), false) => (*source, Some(selected)),
                     (None, false) => (date, None),
                 };
-                write_day(config, date, source, mapping)?;
-                written += 1;
+                if date / 10_000 != year {
+                    if pending.len > 0 {
+                        write_year(config, year, &pending)?;
+                        written += 1;
+                        pending = Table::empty();
+                    }
+                    year = date / 10_000;
+                }
+                pending.append(&day_table(date, source, mapping)?)?;
             }
             previous = Some((
                 date,
@@ -69,6 +82,10 @@ pub fn derive(
                 },
             ));
         }
+    }
+    if pending.len > 0 {
+        write_year(config, year, &pending)?;
+        written += 1;
     }
     Ok(written)
 }
@@ -138,12 +155,7 @@ fn select(state: &mut BTreeMap<String, Contract>, today: DayInterest) -> Selecti
     selected
 }
 
-fn write_day(
-    config: &EngineConfig,
-    date: i32,
-    source: i32,
-    mapping: Option<&Selection>,
-) -> Result<()> {
+fn day_table(date: i32, source: i32, mapping: Option<&Selection>) -> Result<Table> {
     let mut keys = Vec::new();
     let mut codes = Vec::new();
     let mut interest = Vec::new();
@@ -151,6 +163,12 @@ fn write_day(
         keys.push(Some(key.clone()));
         codes.push(Some(contract.code.clone()));
         interest.push(Some(*oi));
+    }
+    // Keep a date marker so an empty recalculation overrides old daily data.
+    if keys.is_empty() {
+        keys.push(None);
+        codes.push(None);
+        interest.push(None);
     }
     let len = keys.len();
     let mut table = Table::empty();
@@ -162,11 +180,39 @@ fn write_day(
         ColumnData::I32(vec![Some(source); len]),
     )?;
     table.insert("oi", ColumnData::F64(interest))?;
+    Ok(table)
+}
+
+fn write_year(config: &EngineConfig, year: i32, pending: &Table) -> Result<()> {
     let path = config
         .data_root
         .join(DIRECTORY)
-        .join((date / 10_000).to_string())
-        .join(format!("{date}.parquet"));
+        .join(format!("{year}.parquet"));
     let _guard = crate::artifact_io::lock(&path)?;
-    write_parquet(&path, &table)
+    if !path.storage_exists() {
+        return write_parquet(&path, pending);
+    }
+    let old = read_parquet(&path, None)?;
+    let replaced = pending
+        .required_i32("trade_date")?
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let retained = old
+        .required_i32("trade_date")?
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, date)| (!replaced.contains(date)).then_some(idx))
+        .collect::<Vec<_>>();
+    let mut merged = old.take(&retained)?;
+    merged.append(pending)?;
+    let dates = merged.required_i32("trade_date")?;
+    let codes = merged.required_utf8("ts_code")?;
+    let mut order = (0..merged.len).collect::<Vec<_>>();
+    order.sort_unstable_by(|&a, &b| {
+        dates[a]
+            .cmp(&dates[b])
+            .then_with(|| codes[a].cmp(&codes[b]))
+    });
+    write_parquet(&path, &merged.take(&order)?)
 }

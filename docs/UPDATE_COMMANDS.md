@@ -77,7 +77,9 @@ python scripts/update_incremental.py --groups future_mapping --start-date 202604
 
 `future_mapping` 按交易日下载 `fut_mapping`，将缺失日期追加合并到 `future_data/basic/mapping/YYYY.parquet`。同步某年时会合并该年已有的旧版按日文件。分钟因子使用 `--future-main-source fut-mapping` 时，下载区间需包含预热交易日。
 
-`future_daily` 下载日线后调用 Rust 派生本地持仓量主力映射，包括下载区间结束后的下一交易日。也可单独运行 `python scripts/yq.py derive-future-main-oi --start-date 20260423 --end-date 20260424 --date-batch-size 120`。派生时从本地日线起点重放换月状态，只写请求日期。输出位于 `future_data/basic/mapping_oi/YYYY/YYYYMMDD.parquet`，包含 `ts_code`、`trade_date`、`mapping_ts_code`、`source_trade_date` 和 `oi`。
+`future_daily` 下载日线后调用 Rust 派生本地持仓量主力映射，包括下载区间结束后的下一交易日。也可单独运行 `python scripts/yq.py derive-future-main-oi --start-date 20260423 --end-date 20260424 --date-batch-size 120`。派生时从本地日线起点重放换月状态，只写请求日期。输出位于 `future_data/basic/mapping_oi/YYYY.parquet`，包含 `ts_code`、`trade_date`、`mapping_ts_code`、`source_trade_date` 和 `oi`。
+
+重算时在年度文件中替换对应交易日，保留其他日期。无主力映射的交易日保留一条合约列为空的日期标记。引擎优先读年度文件，只对年度文件中未覆盖的日期回读旧版日文件。
 
 ## 期货交易参数 / Futures trade parameters
 

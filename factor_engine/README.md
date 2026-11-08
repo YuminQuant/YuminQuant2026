@@ -58,7 +58,7 @@ python scripts/update_incremental.py --groups future_mapping --start-date 202604
 ```
 
 - `--future-main-source open-interest` 读取 `future_data/basic/mapping_oi/YYYY/YYYYMMDD.parquet`。先运行 `derive-future-main-oi --start-date YYYYMMDD --end-date YYYYMMDD --date-batch-size 120`，区间需覆盖预热日。首个有持仓数据的交易日按当日最大持仓量初始化，并沿用到下一交易日。此后使用上一交易日的持仓量，只切换到更远月份，且新合约持仓量达到旧主力的 1.1 倍。旧主力缺有效持仓量时从更远月份中重新选择。缺上一交易日数据的映射留空。
-- `--future-main-source fut-mapping` 是默认选项，使用 `future_data/basic/mapping/YYYY/YYYYMMDD.parquet` 的主力映射。下载时应覆盖所选因子的预热日期。输出的 `ts_code` 为目标交易日实际选中的合约代码。
+- `--future-main-source fut-mapping` 是默认选项，优先读取 `future_data/basic/mapping/YYYY.parquet`，缺少日期时兼容旧版按日文件。下载时应覆盖所选因子的预热日期。输出的 `ts_code` 为目标交易日实际选中的合约代码。
 - `--future-main-source all-contracts` 对每个真实合约独立计算。再指定 `--future-adjust-daily false` 可计算未复权的全合约分钟因子。
 - `--future-adjust-daily` 默认开启，连接上一交易日日盘收市和下一交易日的首个开市段。夜盘结束到同一交易日日盘开市、早盘短休和午休分别由 `--future-adjust-night`、`--future-adjust-morning`、`--future-adjust-noon` 控制，默认关闭。
 - 每个目标日以声明的预热范围内最早可用的分钟数据为基准。启用的边界按上一段收盘价除以下一段开盘价，把比例累计乘到后续价格。边界价格缺失或非正时跳过该次比例调整。期货分钟输出按日替换本次计算的因子列。

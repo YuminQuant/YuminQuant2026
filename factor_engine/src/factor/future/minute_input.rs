@@ -56,16 +56,36 @@ impl FutureMinuteInput {
                     crate::derive::future_main_oi::DIRECTORY
                 };
                 let columns = ["trade_date", "ts_code", "mapping_ts_code"].map(str::to_string);
+                if options.main_source == FutureMainSource::FutMapping {
+                    let wanted = dates.iter().copied().collect::<BTreeSet<_>>();
+                    let years = dates
+                        .iter()
+                        .map(|date| date / 10_000)
+                        .collect::<BTreeSet<_>>();
+                    for year in years {
+                        let path = root.join(directory).join(format!("{year}.parquet"));
+                        if path.storage_exists() {
+                            main.extend(read_mapping(
+                                &read_parquet(&path, Some(&columns))?,
+                                &wanted,
+                            )?);
+                        }
+                    }
+                }
                 for &date in dates {
+                    if main.contains_key(&date) {
+                        continue;
+                    }
                     let path = root
                         .join(directory)
                         .join((date / 10_000).to_string())
                         .join(format!("{date}.parquet"));
                     if path.storage_exists() {
-                        main.insert(
-                            date,
-                            read_mapping(&read_parquet(&path, Some(&columns))?, date)?,
-                        );
+                        let mut day = read_mapping(
+                            &read_parquet(&path, Some(&columns))?,
+                            &BTreeSet::from([date]),
+                        )?;
+                        main.insert(date, day.remove(&date).unwrap_or_default());
                     }
                 }
             }
@@ -89,19 +109,26 @@ pub(crate) fn product(code: &str) -> Option<String> {
     Some(format!("{}.{exchange}", &symbol[..start]))
 }
 
-fn read_mapping(table: &Table, date: i32) -> Result<BTreeMap<String, String>> {
+fn read_mapping(
+    table: &Table,
+    wanted: &BTreeSet<i32>,
+) -> Result<BTreeMap<i32, BTreeMap<String, String>>> {
     let dates = table.required_i32_date_cast("trade_date")?;
     let keys = table.required_utf8("ts_code")?;
     let codes = table.required_utf8("mapping_ts_code")?;
-    let mut result = BTreeMap::new();
+    let mut result = BTreeMap::<i32, BTreeMap<String, String>>::new();
     for idx in 0..table.len {
+        let Some(date) = dates[idx].filter(|date| wanted.contains(date)) else {
+            continue;
+        };
+        let day = result.entry(date).or_default();
         let (Some(key), Some(code)) = (&keys[idx], &codes[idx]) else {
             continue;
         };
-        if dates[idx] != Some(date) || product(code).as_ref() != Some(key) {
+        if product(code).as_ref() != Some(key) {
             continue;
         }
-        if result
+        if day
             .insert(key.clone(), code.clone())
             .is_some_and(|old| old != *code)
         {

@@ -371,11 +371,19 @@ impl Engine {
         let future_minute = if request.asset_class == AssetClass::Future
             && request.frequency == Frequency::Minute1
         {
-            Some(Arc::new(crate::factor::future::minute_input::FutureMinuteInput::load(
+            use crate::factor::future::minute_input::{FutureMinuteField, FutureMinuteInput};
+            let mut input = FutureMinuteInput::load(
                 request.future_minute,
                 &self.config.data_root,
                 &calendar.open_dates_between(load_start_date, effective_end_date),
-            )?))
+            )?;
+            if specs.iter().flat_map(|spec| &spec.dependencies).any(|request|
+                request.dataset == DatasetId::FutureMinute1m
+                    && request.columns.iter().any(|name| name == FutureMinuteField::VWAP_NOTIONAL))
+            {
+                input.load_multipliers(&self.config.data_root)?;
+            }
+            Some(Arc::new(input))
         } else {
             None
         };

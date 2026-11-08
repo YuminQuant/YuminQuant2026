@@ -243,8 +243,16 @@ impl DataPool {
     ) -> Result<()> {
         let mut dates = BTreeSet::new();
         let mut columns = BTreeSet::new();
+        let mut same_contract_lookback = 0;
         for request in requests.iter().filter(|request| request.dataset == DatasetId::FutureMinute1m) {
-            dates.extend(request.resolved_dates(context));
+            let resolved = request.resolved_dates(context);
+            if request.columns.iter().any(|name| FutureMinuteField::contract_source(name).is_some()) {
+                let first_target = context.target_dates.first().copied().unwrap_or(context.start_date);
+                same_contract_lookback = same_contract_lookback.max(
+                    resolved.iter().filter(|&&date| date < first_target).count(),
+                );
+            }
+            dates.extend(resolved);
             columns.extend(request.columns.iter().cloned());
         }
         let diff_columns = columns
@@ -254,21 +262,32 @@ impl DataPool {
             .collect::<Vec<_>>();
         let projection = columns
             .iter()
-            .map(|name| FutureMinuteField::diff_source(name).unwrap_or(name).to_string())
+            .map(|name| {
+                if name == FutureMinuteField::VWAP_NOTIONAL {
+                    "amount"
+                } else {
+                    FutureMinuteField::diff_source(name)
+                        .or_else(|| FutureMinuteField::contract_source(name)).unwrap_or(name)
+                }.to_string()
+            })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
         let targets = context.target_dates.iter().copied().collect::<BTreeSet<_>>();
         let plans = context.load_dates.iter().enumerate()
-            .map(|(index, &date)| input.full_contracts(
-                date,
-                targets.contains(&date),
-                context.load_dates.iter()
+            .map(|(index, &date)| {
+                let later_targets = |days| context.load_dates.iter()
                     .skip(index + 1)
-                    .take(lookback)
+                    .take(days)
                     .copied()
-                    .filter(|date| targets.contains(date)),
-            ))
+                    .filter(|date| targets.contains(date));
+                let target = targets.contains(&date);
+                let mut codes = input.full_contracts(date, target, later_targets(lookback), false)?;
+                if same_contract_lookback > 0 {
+                    codes.extend(input.full_contracts(date, target, later_targets(same_contract_lookback), true)?);
+                }
+                Some(codes)
+            })
             .collect::<Vec<_>>();
         let mut day_indexes = HashMap::new();
         for (index, &date) in context.load_dates.iter().enumerate() {

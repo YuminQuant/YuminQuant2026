@@ -1,4 +1,5 @@
 mod aroon;
+mod flow;
 pub mod minute;
 pub mod minute_input;
 mod moving_average;

@@ -52,6 +52,7 @@ impl Default for FutureMinuteOptions {
 pub(crate) struct FutureMinuteInput {
     options: FutureMinuteOptions,
     main: BTreeMap<i32, BTreeMap<String, String>>,
+    multipliers: BTreeMap<String, f64>,
 }
 
 impl FutureMinuteInput {
@@ -106,11 +107,36 @@ impl FutureMinuteInput {
                 }
             }
         }
-        Ok(Self { options, main })
+        Ok(Self { options, main, multipliers: BTreeMap::new() })
     }
 
-    fn selection(&self, date: i32) -> Option<&BTreeMap<String, String>> {
+    pub(crate) fn load_multipliers(&mut self, root: &Path) -> Result<()> {
+        let path = root.join("future_data/basic/fut_basic.parquet");
+        if path.storage_exists() {
+            let columns = ["ts_code", "multiplier"].map(str::to_string);
+            let table = read_parquet(&path, Some(&columns))?;
+            if table.columns.contains_key("multiplier") {
+                let codes = table.required_utf8("ts_code")?;
+                let multipliers = table.required_f64_cast("multiplier")?;
+                self.multipliers = codes.iter().zip(multipliers).filter_map(|(code, value)| {
+                    Some((code.clone()?, value.filter(|v| v.is_finite() && *v > 0.0)?))
+                }).collect();
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn selection(&self, date: i32) -> Option<&BTreeMap<String, String>> {
         self.main.get(&date).filter(|mapping| !mapping.is_empty())
+    }
+
+    pub(crate) fn history_contract<'a>(
+        &'a self, date: i32, code: &'a str, product: Option<&str>, same_contract: bool,
+    ) -> Option<&'a str> {
+        match (same_contract, product, self.selection(date)) {
+            (false, Some(product), Some(mapping)) => mapping.get(product).map(String::as_str),
+            _ => Some(code),
+        }
     }
 
     pub(crate) fn full_contracts(
@@ -118,8 +144,10 @@ impl FutureMinuteInput {
         date: i32,
         is_target: bool,
         later_targets: impl Iterator<Item = i32>,
+        force_same_contract: bool,
     ) -> Option<BTreeSet<String>> {
-        let same_contract = self.options.warmup_source == FutureWarmupSource::SameContract;
+        let same_contract = force_same_contract
+            || self.options.warmup_source == FutureWarmupSource::SameContract;
         let mut codes = BTreeSet::new();
         if is_target || !same_contract {
             codes.extend(self.selection(date)?.values().cloned());
@@ -187,19 +215,30 @@ fn read_mapping(
 pub enum FutureMinuteField {
     Raw(&'static str),
     ContractDiff(&'static str),
+    /// A level whose history must stay on the actual contract even in main-sequence mode.
+    ContractLevel(&'static str),
+    /// Amount divided by contract multiplier, in price times lots.
+    VwapNotional,
 }
 
 impl FutureMinuteField {
     const DIFF_PREFIX: &str = "contract_diff:";
+    const CONTRACT_PREFIX: &str = "contract_level:";
+    pub(crate) const VWAP_NOTIONAL: &str = "vwap_notional";
 
     fn raw(self) -> &'static str {
         match self {
-            Self::Raw(name) | Self::ContractDiff(name) => name,
+            Self::Raw(name) | Self::ContractDiff(name) | Self::ContractLevel(name) => name,
+            Self::VwapNotional => "amount",
         }
     }
 
     pub(crate) fn diff_source(requested: &str) -> Option<&str> {
         requested.strip_prefix(Self::DIFF_PREFIX)
+    }
+
+    pub(crate) fn contract_source(requested: &str) -> Option<&str> {
+        requested.strip_prefix(Self::CONTRACT_PREFIX)
     }
 }
 
@@ -209,6 +248,8 @@ pub fn future_minute_request(fields: &[FutureMinuteField]) -> DataRequest {
         let name = match field {
             FutureMinuteField::Raw(name) => name.to_string(),
             FutureMinuteField::ContractDiff(name) => format!("{}{name}", FutureMinuteField::DIFF_PREFIX),
+            FutureMinuteField::ContractLevel(name) => format!("{}{name}", FutureMinuteField::CONTRACT_PREFIX),
+            FutureMinuteField::VwapNotional => FutureMinuteField::VWAP_NOTIONAL.to_string(),
         };
         if !request.columns.contains(&name) {
             request.columns.push(name);
@@ -315,8 +356,10 @@ pub fn compute_future_minute_many(
         .ok_or_else(|| err("missing futures minute input configuration"))?;
     let price_columns = fields
         .iter()
-        .map(|field| matches!(field, FutureMinuteField::Raw("open" | "high" | "low" | "close")))
+        .map(|field| matches!(field, FutureMinuteField::Raw("open" | "high" | "low" | "close") | FutureMinuteField::VwapNotional))
         .collect::<Vec<_>>();
+    let force_same_contract = fields.iter().any(|field| matches!(field, FutureMinuteField::ContractLevel(_)));
+    let same_contract = force_same_contract || input.options.warmup_source == FutureWarmupSource::SameContract;
     let is_price = price_columns.iter().any(|&price| price);
     let mut previous_day = None;
     let targets = context
@@ -346,7 +389,13 @@ pub fn compute_future_minute_many(
             let closes = table.required_f64_cast("close")?;
             let values = fields
                 .iter()
-                .map(|field| table.required_f64_cast(field.raw()))
+                .map(|field| {
+                    if matches!(field, FutureMinuteField::VwapNotional) && !table.columns.contains_key("amount") {
+                        Ok(vec![None; table.len])
+                    } else {
+                        table.required_f64_cast(field.raw())
+                    }
+                })
                 .collect::<Result<Vec<_>>>()?;
             let current_main = input.selection(date).map(|mapping| {
                 mapping
@@ -354,7 +403,6 @@ pub fn compute_future_minute_many(
                     .map(|(product, code)| (code.as_str(), product.as_str()))
                     .collect::<BTreeMap<_, _>>()
             });
-            let same_contract = input.options.warmup_source == FutureWarmupSource::SameContract;
             let target = targets.contains(&date);
             let keep_codes = input.full_contracts(
                 date,
@@ -364,6 +412,7 @@ pub fn compute_future_minute_many(
                     .take(lookback)
                     .copied()
                     .filter(|future| targets.contains(future)),
+                force_same_contract,
             );
             let selected = day_index.groups
                 .iter()
@@ -408,6 +457,7 @@ pub fn compute_future_minute_many(
                     .map(|_| Vec::with_capacity(indices.len()))
                     .collect::<Vec<_>>();
                 let mut prev = first;
+                let multiplier = input.multipliers.get(code).copied();
                 for (position, &idx) in indices.iter().enumerate() {
                     if is_price && intraday_boundary(input.options, exchange, time(prev), time(idx))
                     {
@@ -426,6 +476,9 @@ pub fn compute_future_minute_many(
                                 values[column_idx][prev]
                             };
                             value.zip(prior).map(|(current, prior)| current - prior)
+                        } else if matches!(field, FutureMinuteField::VwapNotional) {
+                            value.filter(|amount| *amount > 0.0).zip(multiplier)
+                                .map(|(amount, multiplier)| amount / multiplier)
                         } else {
                             value
                         };
@@ -459,13 +512,7 @@ pub fn compute_future_minute_many(
                     let mut previous = None;
                     let mut scale = 1.0;
                     for day in history.iter().filter_map(|(history_date, tails)| {
-                        let history_code =
-                            match (same_contract, product, input.selection(*history_date)) {
-                                (false, Some(product), Some(mapping)) => {
-                                    mapping.get(product)?.as_str()
-                                }
-                                _ => code,
-                            };
+                        let history_code = input.history_contract(*history_date, code, product, same_contract)?;
                         tails.get(history_code)
                     }) {
                         scale = next_day_scale(

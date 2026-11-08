@@ -12,6 +12,7 @@ config.toml
 *.log
 
 # Python caches and environments
+/test/
 /tests/
 /ml_alpha/tests/
 __pycache__/
@@ -42,3 +43,11 @@ Thumbs.db
 target/
 factor_engine/target/
 /factor_engine/target_liq_verify/
+
+# Local validation scripts and benchmark results
+/analysis_tools/tests/
+/scripts/forecast_bias/test_analyze.py
+/factor_engine/examples/architecture_benchmark.rs
+/factor_engine/examples/disclosure_loader_benchmark.rs
+/factor_engine/scripts/benchmark_factor_engine.py
+/factor_engine/docs/benchmarks/

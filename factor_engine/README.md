@@ -53,7 +53,7 @@ Parquet random reads use a bounded, per-file in-memory block buffer shared by pa
 ## 期货分钟复权 / Futures minute adjustment
 
 ```bash
-python scripts/yq.py run --asset future --frequency minute_1m --start-date 20260424 --end-date 20260424 --factors test
+python scripts/yq.py run --asset future --frequency minute_1m --start-date 20260424 --end-date 20260424 --factors yq_001
 python scripts/update_incremental.py --groups future_mapping --start-date 20260423 --end-date 20260424
 ```
 

@@ -384,23 +384,20 @@ pub fn write_parquet_with_compression(
     table: &Table,
     compression: Compression,
 ) -> Result<()> {
-    let ordered_names = ordered_column_names(table);
-    let fields = ordered_names
-        .iter()
-        .map(|name| table.columns[name].field(name))
-        .collect::<Vec<_>>();
-    let arrays = ordered_names
-        .iter()
-        .map(|name| table.columns[name].to_arrow())
-        .collect::<Vec<_>>();
-    let schema = Arc::new(Schema::new(fields));
-    let batch = RecordBatch::try_new(schema.clone(), arrays)?;
     let props = WriterProperties::builder()
         .set_compression(compression)
         .build();
+    write_parquet_batch(path, &table_record_batch(table)?, props)
+}
+
+pub(crate) fn write_parquet_batch(
+    path: &Path,
+    batch: &RecordBatch,
+    props: WriterProperties,
+) -> Result<()> {
     let file = crate::artifact_io::open_writer(path)?;
-    let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
-    writer.write(&batch)?;
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
+    writer.write(batch)?;
     writer.into_inner()?.commit()
 }
 

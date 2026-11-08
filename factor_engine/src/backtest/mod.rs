@@ -1,5 +1,6 @@
 pub mod cross_section;
 pub mod data;
+pub mod future_minute;
 pub mod ic;
 pub mod metrics;
 pub mod preprocess;

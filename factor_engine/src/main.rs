@@ -311,10 +311,17 @@ fn run_cli() -> Result<()> {
             print_barra_report("barra-run", &report);
         }
         "backtest" => {
-            let request = parse_backtest_run_request(&args[1..])?;
-            let engine = BacktestEngine::from_request(&request)?;
-            let report = engine.run(&request)?;
-            print_backtest_report(&report);
+            let flags = parse_flags(&args[1..])?;
+            if flags.get("asset").and_then(|value| AssetClass::parse(value)) == Some(AssetClass::Future)
+                && flags.get("frequency").and_then(|value| Frequency::parse(value)) == Some(Frequency::Minute1)
+            {
+                run_future_minute_backtest(&flags)?;
+            } else {
+                let request = parse_backtest_run_request(&flags)?;
+                let engine = BacktestEngine::from_request(&request)?;
+                let report = engine.run(&request)?;
+                print_backtest_report(&report);
+            }
         }
         "strategy-run" => {
             let request = parse_strategy_run_request(&args[1..])?;
@@ -775,8 +782,55 @@ fn parse_barra_run_request(args: &[String], dry_run: bool) -> Result<BarraRunReq
     })
 }
 
-fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
-    let flags = parse_flags(args)?;
+fn run_future_minute_backtest(flags: &HashMap<String, String>) -> Result<()> {
+    use yq_factor_engine::backtest::future_minute::{run, FutureMinuteBacktestRequest};
+    use yq_factor_engine::error::err;
+
+    for key in flags.keys() {
+        if !matches!(key.as_str(), "asset" | "frequency" | "start-date" | "end-date" |
+            "factors" | "label" | "labels" | "products" | "factor-root" | "label-root" |
+            "output-dir" | "config")
+        {
+            return Err(err(format!("unsupported futures minute backtest flag --{key}")));
+        }
+    }
+    let date = |key: &str| {
+        parse_yyyymmdd(flags.get(key).ok_or_else(|| err(format!("missing --{key} YYYYMMDD")))?, key)
+    };
+    let columns = |key: &str| -> Result<Vec<String>> {
+        let values = parse_csv_values(flags.get(key).ok_or_else(|| err(format!("missing --{key}")))?);
+        if values.is_empty() || values == ["true"] {
+            return Err(err(format!("provide comma-separated values for --{key}")));
+        }
+        Ok(values)
+    };
+    let labels = match (flags.contains_key("label"), flags.contains_key("labels")) {
+        (true, true) => return Err(err("use either --label or --labels")),
+        (true, false) => columns("label")?,
+        (false, true) => columns("labels")?,
+        (false, false) => vec!["future_open_return_5m".to_string()],
+    };
+    let [label_column]: [String; 1] = labels.try_into().map_err(|_| {
+        err("futures minute backtest requires a single --label per summary")
+    })?;
+    let request = FutureMinuteBacktestRequest {
+        start_date: date("start-date")?,
+        end_date: date("end-date")?,
+        factor_columns: columns("factors")?,
+        label_column,
+        products: flags.get("products").map(|_| columns("products")).transpose()?.unwrap_or_default(),
+        factor_root: flags.get("factor-root").map(PathBuf::from),
+        label_root: flags.get("label-root").map(PathBuf::from),
+        output_dir: flags.get("output-dir").map(PathBuf::from),
+    };
+    let config = yq_factor_engine::config::EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
+    for path in run(&config, &request)? {
+        println!("wrote {}", path.display());
+    }
+    Ok(())
+}
+
+fn parse_backtest_run_request(flags: &HashMap<String, String>) -> Result<BacktestRunRequest> {
     if flags.contains_key("write-detail") {
         return Err(yq_factor_engine::error::err(
             "--write-detail has been removed; backtest now always writes returns, ic and factor_stats files",
@@ -804,7 +858,7 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
     )?;
     let factor_ids = flags.get("factors").map(|value| parse_csv_values(value));
     let tags = flags.get("tags").map(|value| parse_csv_values(value));
-    let all_factors = flag_enabled(&flags, "all-factors");
+    let all_factors = flag_enabled(flags, "all-factors");
     let selection_count =
         usize::from(factor_ids.is_some()) + usize::from(tags.is_some()) + usize::from(all_factors);
     if selection_count > 1 {
@@ -915,8 +969,8 @@ fn parse_backtest_run_request(args: &[String]) -> Result<BacktestRunRequest> {
             .get("benchmark")
             .cloned()
             .unwrap_or_else(|| DEFAULT_BENCHMARK.to_string()),
-        exclude_limit: flag_bool(&flags, "exclude-limit", DEFAULT_EXCLUDE_LIMIT),
-        exclude_st: flag_bool(&flags, "exclude-st", DEFAULT_EXCLUDE_ST),
+        exclude_limit: flag_bool(flags, "exclude-limit", DEFAULT_EXCLUDE_LIMIT),
+        exclude_st: flag_bool(flags, "exclude-st", DEFAULT_EXCLUDE_ST),
         limit_side: flags
             .get("limit-side")
             .map(|value| LimitSide::parse(value))
@@ -1627,6 +1681,7 @@ fn print_help() {
     println!(
         "  backtest --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD --factors factor_id[,factor_id...]"
     );
+    println!("  backtest --asset future --frequency minute_1m --start-date YYYYMMDD --end-date YYYYMMDD --factors column[,column...] [--label column] [--products RB.SHF,IF.CFX] [--label-root PATH]");
     println!("  strategy-run --config strategy_config/stock/strategy_001.toml");
     println!(
         "  derive-bar --asset stock --source minute --bar-size N --start-date YYYYMMDD --end-date YYYYMMDD"

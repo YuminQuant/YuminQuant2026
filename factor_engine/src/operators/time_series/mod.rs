@@ -1,5 +1,7 @@
 mod utils;
 
+pub(crate) use utils::pearson_corr as pearson_corr_finite;
+
 pub mod ts_argmax;
 pub mod ts_argmin;
 pub mod ts_central_moment;

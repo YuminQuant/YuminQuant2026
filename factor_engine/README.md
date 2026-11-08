@@ -134,6 +134,19 @@ Backtests support configurable factor roots, labels, universes, benchmarks and n
 
 With the defaults `--exclude-limit true --limit-side both`, groups and target weights use only the T signal, universe, and ST status. At rebalance, T+1 closing limit status blocks increases in exposure; an existing same-side position can be kept up to its target, and reductions are allowed. Unfilled allocation stays in zero-return cash until the next rebalance, with no replacements or renormalization. Missing returns do not redistribute portfolio weight. The market-mean benchmark uses signal-date ST status and finite returns, not T+1 limits. If the final signal date has no T+1 trade-filter file, its limit constraint is skipped; missing files inside the range remain errors. Closing limits proxy execution constraints, not individual fills; strategy execution is unchanged.
 
+### 期货分钟因子评价
+
+```powershell
+cargo run --release --manifest-path factor_engine/Cargo.toml -- backtest --asset future --frequency minute_1m --start-date 20260423 --end-date 20260424 --factors yq_001,yq_002
+```
+
+- 因子和标签分别从配置的 `factor_root` 和 `label_root` 读取，可用 `--factor-root` 和 `--label-root` 覆盖。两边均使用根目录下的 `future/minute_1m/{year}/{trade_date}.parquet`，按 `trade_date + trade_time + ts_code` 对齐。每个请求的交易日都需要有对应的两张表。每次运行选择一列标签，默认为 `future_open_return_5m`，可用 `--label` 切换。输出的 Parquet 元数据记录标签列名。使用同一输出目录重跑会替换该因子的摘要。
+- `--products` 可传 `RB` 或 `RB.SHF`，筛选同时作用于截面和单品种评价。未指定时使用全部品种。品种由实际交割合约代码归并，如 `RB2610.SHF` 归入 `RB.SHF`。同一品种若有多个期限，截面保留各合约，单品种评价合并这些合约的分钟样本。
+- 每个因子默认写出一份 `data/backtest/future/{factor_name}/summary.parquet`，列顺序为 `trade_date, ts_code, ic, cosic, long_rtn, short_rtn`。`--output-dir` 可覆盖因子目录的上一级。
+- 每个交易日为每个品种输出一行，`ts_code` 存品种代码。`ic` 和 `cosic` 分别为 Pearson IC 和余弦相似度，使用该品种当日的有效分钟配对。`long_rtn` 和 `short_rtn` 分别为因子值达到 P90 及以上、P10 及以下的有效标签均值，沿用标签的单位和符号。分位点由当日所有有限因子值线性插值得到，两条阈值重合时尾部结果为空。
+- 每个交易日还有一行 `ts_code=all`。`ic` 和 `cosic` 先在同一分钟跨合约计算，再分别对当日有效分钟等权平均。两端收益分别在当日有对应有效收益的品种间等权平均。余弦相似度直接使用原始因子值和标签，至少需要两个有效配对，任一向量全为零时为空。
+- 板块分类、品种中英文名称和交易所代码见[期货板块](docs/FUTURE_SECTORS.md)。
+
 ## 输出 / Outputs
 
 ```text

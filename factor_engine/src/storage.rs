@@ -502,12 +502,20 @@ fn merge_factor_columns(
             trade_time: Some(trade_time.clone()),
         },
     };
-    let mut keys = old_keys.iter().flatten().cloned().collect::<BTreeSet<_>>();
+    let replace_series = asset_class == AssetClass::Future && frequency == Frequency::Minute1;
+    let has_untouched_columns = existing.columns.keys().any(|name| {
+        !matches!(name.as_str(), "trade_date" | "ts_code" | "trade_time")
+            && !updates.contains_key(name)
+    });
+    let mut keys = BTreeSet::new();
+    if !replace_series || has_untouched_columns {
+        keys.extend(old_keys.iter().flatten().cloned());
+    }
     for values in updates.values() {
         keys.extend(values.iter().map(|value| key_of(value)));
     }
     let mut keys = keys.into_iter().collect::<Vec<_>>();
-    if asset_class == AssetClass::Future && frequency == Frequency::Minute1 {
+    if replace_series {
         keys.sort_unstable_by(|left, right| {
             left.trade_time
                 .cmp(&right.trade_time)
@@ -524,7 +532,8 @@ fn merge_factor_columns(
         .iter()
         .map(|key| {
             key.as_ref()
-                .and_then(|key| seen.insert(key).then(|| positions[key]))
+                .filter(|key| seen.insert(*key))
+                .and_then(|key| positions.get(key).copied())
         })
         .collect::<Vec<_>>();
     let mut table = Table::empty();
@@ -551,7 +560,7 @@ fn merge_factor_columns(
         .collect::<BTreeSet<_>>();
     for name in names {
         let mut values = vec![None; keys.len()];
-        if existing.columns.contains_key(&name) {
+        if existing.columns.contains_key(&name) && !(replace_series && updates.contains_key(&name)) {
             let old = existing.required_f64_cast(&name)?;
             for (idx, dest) in old_positions.iter().enumerate() {
                 if let Some(dest) = dest {

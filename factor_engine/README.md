@@ -50,6 +50,19 @@ Parquet 随机读使用文件生命周期内的有界内存块缓冲，复用页
 
 Parquet random reads use a bounded, per-file in-memory block buffer shared by page-header and page-body reads. Small files remain unchanged; no node disk data cache is introduced. Target-date columns are accumulated and flushed at an approximate 256 MiB threshold; batches below that threshold merge each day's outputs once. Locking, Snappy, atomic publication and preservation of unrelated columns remain unchanged. `YQ_OUTPUT_BUFFER_BYTES` changes this flush threshold, not the total process memory limit. Profile bytes, opens, range reads and cache hits are client-side counters, not global DataNode RPC counts.
 
+## 期货分钟复权 / Futures minute adjustment
+
+```bash
+python scripts/yq.py run --asset future --frequency minute_1m --start-date 20260424 --end-date 20260424 --factors test
+python scripts/update_incremental.py --groups future_mapping --start-date 20260423 --end-date 20260424
+```
+
+- `--future-main-source open-interest` 默认按上一交易日的本地日线持仓量选主力，并逐日拼接。持仓量相同取代码排序靠前的合约。某品种缺上一交易日排名时，用该品种开盘第一分钟可见的持仓量筛选。
+- `--future-main-source fut-mapping` 使用 `future_data/mapping/YYYY/YYYYMMDD.parquet` 的主力映射。下载时应覆盖所选因子的预热日期。输出的 `ts_code` 为目标交易日实际选中的合约代码。
+- `--future-main-source all-contracts` 对每个真实合约独立计算。再指定 `--future-adjust-daily false` 可计算未复权的全合约分钟因子。
+- `--future-adjust-daily` 默认开启，连接上一交易日日盘收市和下一交易日的首个开市段。夜盘结束到同一交易日日盘开市、早盘短休和午休分别由 `--future-adjust-night`、`--future-adjust-morning`、`--future-adjust-noon` 控制，默认关闭。
+- 每个目标日以声明的预热范围内最早可用的分钟数据为基准。启用的边界按上一段收盘价除以下一段开盘价，把比例累计乘到后续价格。边界价格缺失或非正时跳过该次比例调整。期货分钟输出按日替换本次计算的因子列。
+
 ## 回测输入读取 / Backtest input reads
 
 回测在本地默认串行读文件；远程存储可通过通用 `ArtifactBackend::read_options()` 配置 IO worker、打开速率和预读预算。通用默认值为 4 个 worker、每秒启动 10 次打开、128 MiB，实际值由适配器配置决定。远程 worker 并发读取所需列的压缩数据，复用同一次打开取得的 footer/schema；解压和 Table 转换受 `--threads` 约束，结果按原日期顺序消费。完成后立即补充新文件，不再等待整波文件。文件状态和来源规划也复用 IO 并发预算；适配器若已限速，通过 `paces_read_opens()` 避免引擎重复限速。本地不启用该流水线，不创建节点磁盘数据缓存。

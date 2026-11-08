@@ -69,6 +69,14 @@ python scripts/update_incremental.py --groups etf_static option_static index_sta
 基础信息是接口当前快照，不应将历史起止日期理解为历史版本还原。
 Reference tables are current API snapshots; historical date arguments do not reconstruct past versions.
 
+## 期货主力映射 / Futures main contract mapping
+
+```bash
+python scripts/update_incremental.py --groups future_mapping --start-date 20260423 --end-date 20260424
+```
+
+`future_mapping` 按交易日下载 `fut_mapping`，写入 `future_data/mapping/YYYY/YYYYMMDD.parquet`。分钟因子使用 `--future-main-source fut-mapping` 时，下载区间需包含预热交易日。
+
 ## 期货交易参数 / Futures trade parameters
 
 ```bash

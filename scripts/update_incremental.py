@@ -24,6 +24,7 @@ from data_manager import (
     FutureBasicDownloader,
     FutureDailyDownloader,
     FutureLimitDownloader,
+    FutureMappingDownloader,
     FutureMinuteDownloader,
     FutureTradeParamDownloader,
     FundBasicDownloader,
@@ -442,6 +443,14 @@ def update_future_trade_param(args, logger):
     )
 
 
+def update_future_mapping(args, logger):
+    run_task(
+        logger,
+        "future_mapping",
+        lambda: FutureMappingDownloader().sync(args.start_date, args.end_date),
+    )
+
+
 def update_etf(args, logger):
     start_date = args.start_date or DEFAULT_START_DATES["etf"]
     end_date = args.end_date or bj_today()
@@ -524,6 +533,7 @@ GROUPS = {
     "future_daily": update_future_daily,
     "future_minute": update_future_minute,
     "future_trade_param": update_future_trade_param,
+    "future_mapping": update_future_mapping,
     "etf": update_etf,
     "option": update_option,
 }

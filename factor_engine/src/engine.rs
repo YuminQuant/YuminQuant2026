@@ -43,6 +43,7 @@ pub struct RunRequest {
     pub threads: Option<usize>,
     pub profile: bool,
     pub refresh_minute_cache: bool,
+    pub future_minute: crate::factor::future::minute_input::FutureMinuteOptions,
 }
 
 #[derive(Clone, Debug)]
@@ -367,6 +368,19 @@ impl Engine {
             .with_stock_sw_classification_path(self.config.stock_sw_classification_path.clone())
             .with_stock_ci_classification_path(self.config.stock_ci_classification_path.clone());
         let loader = MarketDataLoader::new(catalog);
+        let future_minute = if request.asset_class == AssetClass::Future
+            && request.frequency == Frequency::Minute1
+        {
+            Some(Arc::new(crate::factor::future::minute_input::FutureMinuteInput::load(
+                request.future_minute,
+                &self.config.data_root,
+                &loader,
+                &calendar,
+                &calendar.open_dates_between(load_start_date, effective_end_date),
+            )?))
+        } else {
+            None
+        };
         let storage = FactorStorage::new(self.config.factor_root.clone());
         let raw_storage = self.raw_storage();
         let thread_pool = build_thread_pool(request.threads)?;
@@ -521,6 +535,7 @@ impl Engine {
                     let load_ms = load_started.elapsed().as_millis()
                         + if factor_batch_index == 0 { shared_load_ms } else { 0 };
                     pool.set_trading_calendar(Arc::clone(&factor_calendar));
+                    pool.set_future_minute_input(future_minute.clone());
                     let raw_ids = raw_ids_for_specs(&batch_specs);
                     if !raw_ids.is_empty() {
                         let (raw_table, mut raw_profiles) = if raw_mode == RawMode::Prepared {

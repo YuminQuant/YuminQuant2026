@@ -213,6 +213,7 @@ impl FinancialBatchContext {
 #[derive(Clone, Debug, Default)]
 pub struct DataPool {
     trading_calendar: Option<Arc<crate::calendar::TradingCalendar>>,
+    future_minute_input: Option<Arc<crate::factor::future::minute_input::FutureMinuteInput>>,
     daily: HashMap<DatasetId, Arc<Table>>,
     daily_panels: HashMap<DatasetId, DailyPanel>,
     stock_universe_panel: Option<DailyPanel>,
@@ -518,6 +519,7 @@ impl DataPool {
                 .map(|(ts_code, panel)| (ts_code.clone(), panel.with_target_dates(target_dates)))
                 .collect(),
             minute: self.minute.clone(),
+            future_minute_input: self.future_minute_input.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self
                 .intraday_daily_raw_panel
@@ -570,6 +572,7 @@ impl DataPool {
                 .map(|(ts_code, panel)| (ts_code.clone(), panel.slice_dates(selected_dates)))
                 .collect(),
             minute: self.minute.clone(),
+            future_minute_input: self.future_minute_input.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self
                 .intraday_daily_raw_panel
@@ -700,6 +703,7 @@ impl DataPool {
                 })
                 .collect(),
             minute: self.minute.clone(),
+            future_minute_input: self.future_minute_input.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self.intraday_daily_raw_panel.clone(),
         }
@@ -850,6 +854,19 @@ impl DataPool {
     pub(crate) fn index_monthly_members(&self, code: &str) -> Result<&crate::data::loader::IndexMembership> {
         self.index_membership.get(code).map(Arc::as_ref)
             .ok_or_else(|| err(format!("index membership not loaded: {code}")))
+    }
+
+    pub(crate) fn set_future_minute_input(
+        &mut self,
+        input: Option<Arc<crate::factor::future::minute_input::FutureMinuteInput>>,
+    ) {
+        self.future_minute_input = input;
+    }
+
+    pub(crate) fn future_minute_input(
+        &self,
+    ) -> Option<&crate::factor::future::minute_input::FutureMinuteInput> {
+        self.future_minute_input.as_deref()
     }
 
     pub fn minute(&self, dataset: DatasetId, trade_date: i32) -> Option<&Table> {

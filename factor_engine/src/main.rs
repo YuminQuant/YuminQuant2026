@@ -19,6 +19,7 @@ use yq_factor_engine::derive::DEFAULT_CONSENSUS_DATE_BATCH_SIZE;
 use yq_factor_engine::engine::{
     DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE, DEFAULT_RUN_DATE_BATCH_SIZE,
 };
+use yq_factor_engine::factor::future::minute_input::{FutureMainSource, FutureMinuteOptions};
 use yq_factor_engine::strategy::request::StrategyRunRequest;
 use yq_factor_engine::{
     AnalystConsensusRequest, BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest,
@@ -1056,6 +1057,7 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
     let config_path = flags.get("config").map(PathBuf::from);
     let profile = flag_enabled(&flags, "profile");
     let refresh_minute_cache = flag_enabled(&flags, "refresh-minute-cache");
+    let future_minute = parse_future_minute_options(&flags, asset_class, frequency)?;
     let include_deprecated = flag_enabled(&flags, "include-deprecated");
     if include_deprecated && (factor_ids.as_ref().is_none_or(Vec::is_empty) || tags.is_some()) {
         return Err(yq_factor_engine::error::err(
@@ -1077,7 +1079,46 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
         threads,
         profile,
         refresh_minute_cache,
+        future_minute,
     })
+}
+
+fn parse_future_minute_options(
+    flags: &HashMap<String, String>,
+    asset: AssetClass,
+    frequency: Frequency,
+) -> Result<FutureMinuteOptions> {
+    let mut options = FutureMinuteOptions::default();
+    let switches = [
+        ("future-adjust-daily", &mut options.adjust_daily),
+        ("future-adjust-night", &mut options.adjust_night),
+        ("future-adjust-morning", &mut options.adjust_morning),
+        ("future-adjust-noon", &mut options.adjust_noon),
+    ];
+    let source = flags.get("future-main-source");
+    if (source.is_some() || switches.iter().any(|(name, _)| flags.contains_key(*name)))
+        && (asset != AssetClass::Future || frequency != Frequency::Minute1)
+    {
+        return Err(yq_factor_engine::error::err("future adjustment options require --asset future --frequency minute_1m"));
+    }
+    for (name, target) in switches {
+        if let Some(value) = flags.get(name) {
+            *target = match value.as_str() {
+                "true" => true,
+                "false" => false,
+                _ => return Err(yq_factor_engine::error::err(format!("--{name} expects true or false"))),
+            };
+        }
+    }
+    if let Some(source) = source {
+        options.main_source = match source.as_str() {
+            "open-interest" => FutureMainSource::OpenInterest,
+            "fut-mapping" => FutureMainSource::FutMapping,
+            "all-contracts" => FutureMainSource::AllContracts,
+            _ => return Err(yq_factor_engine::error::err("--future-main-source expects open-interest, fut-mapping or all-contracts")),
+        };
+    }
+    Ok(options)
 }
 
 fn parse_label_batch_size(flags: &HashMap<String, String>) -> Result<usize> {
@@ -1621,6 +1662,9 @@ fn print_help() {
     );
     println!("  --profile");
     println!("  --refresh-minute-cache");
+    println!("  --future-main-source open-interest|fut-mapping|all-contracts (default open-interest)");
+    println!("  --future-adjust-daily true|false (default true)");
+    println!("  --future-adjust-night|--future-adjust-morning|--future-adjust-noon true|false (default false)");
     println!("  --refresh-label-cache");
     println!("  --config D:/path/to/config.toml");
     println!("  --project-config D:/path/to/config.toml (project config)");

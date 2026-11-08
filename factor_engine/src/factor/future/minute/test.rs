@@ -1,10 +1,7 @@
-use crate::core::{
-    AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
-    Lookback,
-};
+use crate::core::{AssetClass, FactorContext, FactorSeries, FactorSpec, Frequency, Lookback};
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::common::compute_rolling_minute_by_instrument;
+use crate::factor::future::minute_input::{compute_future_minute_rolling, future_minute_request};
 use crate::factor::Factor;
 use crate::operators::ts_mean;
 
@@ -25,25 +22,24 @@ impl Factor for MovingAverageRatio {
             name: "Futures minute moving average ratio".to_string(),
             asset_class: AssetClass::Future,
             frequency: Frequency::Minute1,
-            version: "0.1.0".to_string(),
+            version: "0.2.0".to_string(),
             tags: ["price_volume", "momentum", "minute"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
-            description: "MA(5) / MA(10) - 1 of one-minute closes per contract, seeded from the previous trading day."
+            description: "MA(5) / MA(10) - 1 of one-minute closes with configurable futures price adjustment."
                 .to_string(),
-            dependencies: vec![DataRequest::new(DatasetId::FutureMinute1m, &["close"])],
+            dependencies: vec![future_minute_request("close")],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 1 },
         }
     }
 
     fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
-        compute_rolling_minute_by_instrument(
+        compute_future_minute_rolling(
             self.spec(),
             context,
             data,
-            DatasetId::FutureMinute1m,
             "close",
             LONG_WINDOW - 1,
             |closes| {

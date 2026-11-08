@@ -43,6 +43,7 @@ fut_basic = 500
 fut_daily = 500
 fut_minute = 500
 fut_limit = 500
+fut_mapping = 200
 fut_trade_param = 500
 opt_basic = 500
 opt_daily = 500

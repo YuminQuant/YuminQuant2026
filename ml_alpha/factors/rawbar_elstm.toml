@@ -1,5 +1,5 @@
 factor_id = "rawbar_elstm"
-tags = ["DBZQ", "rawbar", "elstm", "exponential_gate", "mse_loss"]
+tags = ["DBZQ", "rawbar", "elstm", "exponential_gate", "mse_loss", "deprecated"]
 data_root = "data"
 data_version = "rawbar_elstm_temporal_zscore60_v1"
 

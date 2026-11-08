@@ -55,6 +55,10 @@ pub(crate) struct FutureMinuteInput {
 }
 
 impl FutureMinuteInput {
+    pub(crate) fn options(&self) -> FutureMinuteOptions {
+        self.options
+    }
+
     pub(crate) fn load(options: FutureMinuteOptions, root: &Path, dates: &[i32]) -> Result<Self> {
         let mut main = BTreeMap::new();
         match if options.main_only {
@@ -599,7 +603,7 @@ fn scale_value(value: Option<f64>, scale: f64) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
-fn boundary_ratio(close: Option<f64>, open: Option<f64>) -> Option<f64> {
+pub(crate) fn boundary_ratio(close: Option<f64>, open: Option<f64>) -> Option<f64> {
     let (close, open) = (close?, open?);
     if close > 0.0 && open > 0.0 {
         let ratio = close / open;
@@ -632,7 +636,7 @@ fn daily_boundary(exchange: &str, previous: &str, current: &str) -> bool {
     close && (day_open(exchange, current) || near(current, 21, 0))
 }
 
-fn intraday_boundary(
+pub(crate) fn intraday_boundary(
     options: FutureMinuteOptions,
     exchange: &str,
     previous: &str,

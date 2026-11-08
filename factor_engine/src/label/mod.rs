@@ -1,5 +1,6 @@
 pub mod chn_stock;
 pub mod engine;
+pub mod future;
 pub mod registry;
 
 use crate::core::{

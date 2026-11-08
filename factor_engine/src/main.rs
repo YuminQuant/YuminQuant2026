@@ -942,7 +942,7 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
     let frequency = flags
         .get("frequency")
         .and_then(|value| Frequency::parse(value))
-        .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --frequency daily"))?;
+        .ok_or_else(|| yq_factor_engine::error::err("missing or invalid --frequency daily|minute_1m"))?;
     let start_date = parse_yyyymmdd(
         flags
             .get("start-date")
@@ -990,6 +990,7 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
     let config_path = flags.get("config").map(PathBuf::from);
     let profile = flag_enabled(&flags, "profile");
     let refresh_label_cache = flag_enabled(&flags, "refresh-label-cache");
+    let future_minute = parse_future_minute_options(&flags, asset_class, frequency)?;
     Ok(LabelRunRequest {
         asset_class,
         frequency,
@@ -1004,6 +1005,7 @@ fn parse_label_run_request(args: &[String], dry_run: bool) -> Result<LabelRunReq
         threads,
         profile,
         refresh_label_cache,
+        future_minute,
     })
 }
 
@@ -1607,12 +1609,12 @@ fn print_help() {
     println!("  plan --asset stock|future --frequency daily|minute_1m --start-date YYYYMMDD --end-date YYYYMMDD");
     println!("  run  --asset stock|future --frequency daily|minute_1m --start-date YYYYMMDD --end-date YYYYMMDD");
     println!("  label-metadata [--config D:/path/to/config.toml]");
-    println!("  label-list [--asset stock|future] [--frequency daily] [--ids-only true]");
+    println!("  label-list [--asset stock|future] [--frequency daily|minute_1m] [--ids-only true]");
     println!(
-        "  label-plan --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD"
+        "  label-plan --asset stock|future --frequency daily|minute_1m --start-date YYYYMMDD --end-date YYYYMMDD"
     );
     println!(
-        "  label-run  --asset stock --frequency daily --start-date YYYYMMDD --end-date YYYYMMDD"
+        "  label-run  --asset stock|future --frequency daily|minute_1m --start-date YYYYMMDD --end-date YYYYMMDD"
     );
     println!("  barra-metadata [--config D:/path/to/config.toml]");
     println!("  barra-list [--asset stock|future] [--frequency daily] [--ids-only true]");

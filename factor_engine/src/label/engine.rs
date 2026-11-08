@@ -15,6 +15,7 @@ use crate::core::{
 use crate::data::{DataCatalog, DataPool, DisclosureTableCache, MarketDataLoader, Table};
 use crate::engine::{BatchProfile, FactorProfile};
 use crate::error::{err, Result};
+use crate::factor::future::minute_input::{FutureMinuteInput, FutureMinuteOptions};
 use crate::label::registry::{all_labels, label_map};
 use crate::label::Label;
 use crate::progress::ProgressBar;
@@ -35,6 +36,7 @@ pub struct LabelRunRequest {
     pub threads: Option<usize>,
     pub profile: bool,
     pub refresh_label_cache: bool,
+    pub future_minute: FutureMinuteOptions,
 }
 
 #[derive(Clone, Debug)]
@@ -93,10 +95,12 @@ impl LabelEngine {
     fn execute(&self, request: &LabelRunRequest, dry_run: bool) -> Result<LabelRunReport> {
         validate_date_value(request.start_date, "start-date")?;
         validate_date_value(request.end_date, "end-date")?;
-        if request.frequency != Frequency::Daily {
+        let future_minute_labels =
+            request.asset_class == AssetClass::Future && request.frequency == Frequency::Minute1;
+        if request.frequency != Frequency::Daily && !future_minute_labels {
             return Ok(empty_label_report(
                 request,
-                "Label engine currently supports daily labels only.".to_string(),
+                "Label engine supports daily labels and futures one-minute labels.".to_string(),
             ));
         }
 
@@ -222,6 +226,15 @@ impl LabelEngine {
             .with_stock_sw_classification_path(self.config.stock_sw_classification_path.clone())
             .with_stock_ci_classification_path(self.config.stock_ci_classification_path.clone());
         let loader = MarketDataLoader::new(catalog);
+        let future_minute = if future_minute_labels {
+            Some(Arc::new(FutureMinuteInput::load(
+                request.future_minute,
+                &self.config.data_root,
+                &target_dates,
+            )?))
+        } else {
+            None
+        };
         let storage = LabelStorage::new(self.config.label_root.clone());
         let raw_storage = IntradayDailyRawStorage::new(self.config.label_root.clone());
         let raw_providers = label_raw_providers();
@@ -266,8 +279,16 @@ impl LabelEngine {
             let physical_requests = merge_requests(physical_requests);
             let mut disclosure_cache = DisclosureTableCache::default();
             let shared_started = Instant::now();
-            let inputs = DataPool::load_reused_batch_inputs(&loader, &physical_requests, &request_batches,
+            let shared_requests = physical_requests.iter().filter(|request|
+                !future_minute_labels || request.dataset != DatasetId::FutureMinute1m
+            ).cloned().collect::<Vec<_>>();
+            let mut inputs = DataPool::load_reused_batch_inputs(&loader, &shared_requests, &request_batches,
                 &input_context, &mut disclosure_cache, None)?;
+            if let Some(input) = &future_minute {
+                inputs.load_future_minute_batch(
+                    &loader, &physical_requests, &input_context, Arc::clone(input), 0,
+                )?;
+            }
             let shared_load_ms = shared_started.elapsed().as_millis();
             let mut shared_load_pending = true;
             let mut output = crate::storage::OutputBatch::default();

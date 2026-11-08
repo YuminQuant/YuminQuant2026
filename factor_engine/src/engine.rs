@@ -23,7 +23,8 @@ use crate::progress::ProgressBar;
 use crate::storage::{FactorMetadata, FactorStorage, IntradayDailyRawStorage};
 use rayon::prelude::*;
 
-pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 64;
+pub const DEFAULT_FACTOR_BATCH_SIZE: usize = 10;
+pub const DEFAULT_RUN_DATE_BATCH_SIZE: usize = 120;
 pub const DEFAULT_DATE_BATCH_SIZE: usize = 1;
 
 #[derive(Clone, Debug)]

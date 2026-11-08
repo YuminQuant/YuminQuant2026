@@ -16,7 +16,9 @@ use yq_factor_engine::derive::request::{
     BarSource, DeriveLogsigRequest, DEFAULT_DERIVE_DATE_BATCH_SIZE,
 };
 use yq_factor_engine::derive::DEFAULT_CONSENSUS_DATE_BATCH_SIZE;
-use yq_factor_engine::engine::{DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE};
+use yq_factor_engine::engine::{
+    DEFAULT_DATE_BATCH_SIZE, DEFAULT_FACTOR_BATCH_SIZE, DEFAULT_RUN_DATE_BATCH_SIZE,
+};
 use yq_factor_engine::strategy::request::StrategyRunRequest;
 use yq_factor_engine::{
     AnalystConsensusRequest, BacktestEngine, BacktestRunReport, BarraEngine, BarraRunRequest,
@@ -1037,7 +1039,7 @@ fn parse_run_request(args: &[String], dry_run: bool) -> Result<RunRequest> {
             }
             parsed
         }
-        None => DEFAULT_DATE_BATCH_SIZE,
+        None => DEFAULT_RUN_DATE_BATCH_SIZE,
     };
     let threads = match flags.get("threads") {
         Some(value) => {
@@ -1597,7 +1599,7 @@ fn print_help() {
     );
     println!(
         "  --date-batch-size N (run default {}, backtest default {})",
-        DEFAULT_DATE_BATCH_SIZE, DEFAULT_BACKTEST_DATE_BATCH_SIZE
+        DEFAULT_RUN_DATE_BATCH_SIZE, DEFAULT_BACKTEST_DATE_BATCH_SIZE
     );
     println!(
         "  --date-batch-size N for derive-bar controls concurrent dates (default {})",

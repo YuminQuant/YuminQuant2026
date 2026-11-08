@@ -8,7 +8,7 @@ use crate::factor::future::minute_input::{
     compute_future_minute, future_minute_request, FutureMinuteField,
     FutureMinuteField::{ContractDiff, Raw},
 };
-use crate::factor::future::rolling::{rolling_ema, rolling_exponential_mean};
+use crate::factor::future::rolling::{atr, rolling_ema, with_atr};
 use crate::factor::Factor;
 use crate::operators::{ts_mean, ts_pctchg, ts_sum, ts_zscore};
 
@@ -134,7 +134,11 @@ fn compute_signal(signal: Signal, inputs: &[Vec<Option<f64>>]) -> Vec<Option<f64
                 &smooth(first, slow, kind),
                 |a, b| Some(a - b),
             );
-            combine(&spread, &atr(first, &inputs[1], &inputs[2], slow), divide)
+            spread
+                .into_iter()
+                .zip(atr(first, &inputs[1], &inputs[2], slow))
+                .map(|(spread, range)| with_atr(range, |range| Some(spread? / range)))
+                .collect()
         }
         EmaZscore(window) => ts_zscore(&rolling_ema(first, window), 30, 30),
         VolumeEmaRatio(fast, slow) => combine(
@@ -204,25 +208,4 @@ fn smooth(values: &[Option<f64>], window: usize, kind: Average) -> Vec<Option<f6
             combine(&ema, &rolling_ema(&ema, window), |a, b| Some(2.0 * a - b))
         }
     }
-}
-
-fn atr(
-    close: &[Option<f64>],
-    high: &[Option<f64>],
-    low: &[Option<f64>],
-    window: usize,
-) -> Vec<Option<f64>> {
-    let ranges = (0..close.len())
-        .map(|idx| {
-            let (high, low) = (high[idx]?, low[idx]?);
-            let previous = idx.checked_sub(1).and_then(|i| close[i]);
-            let range = previous.map_or(high - low, |previous| {
-                (high - low)
-                    .max((high - previous).abs())
-                    .max((low - previous).abs())
-            });
-            Some(range)
-        })
-        .collect::<Vec<_>>();
-    rolling_exponential_mean(&ranges, window, 1.0 - 1.0 / window as f64)
 }

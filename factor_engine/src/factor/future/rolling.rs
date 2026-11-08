@@ -33,3 +33,34 @@ pub(crate) fn rolling_exponential_mean(
     }
     output
 }
+
+pub(super) fn atr(
+    close: &[Option<f64>],
+    high: &[Option<f64>],
+    low: &[Option<f64>],
+    window: usize,
+) -> Vec<Option<f64>> {
+    let ranges = (0..close.len())
+        .map(|idx| {
+            let (high, low) = (high[idx]?, low[idx]?);
+            let previous = idx.checked_sub(1).and_then(|i| close[i]);
+            Some(previous.map_or(high - low, |previous| {
+                (high - low)
+                    .max((high - previous).abs())
+                    .max((low - previous).abs())
+            }))
+        })
+        .collect::<Vec<_>>();
+    rolling_exponential_mean(&ranges, window, 1.0 - 1.0 / window as f64)
+}
+
+pub(super) fn with_atr(
+    atr: Option<f64>,
+    operation: impl FnOnce(f64) -> Option<f64>,
+) -> Option<f64> {
+    let atr = atr?;
+    if atr == 0.0 {
+        return Some(0.0);
+    }
+    operation(atr).filter(|value| value.is_finite())
+}

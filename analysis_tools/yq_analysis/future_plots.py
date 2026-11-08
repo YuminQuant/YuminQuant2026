@@ -51,11 +51,20 @@ def _plot_sector_ic(ax, ic: pd.Series) -> None:
                     ha="center", fontsize=7)
 
 
+def _with_zero_start(values: pd.Series) -> pd.Series:
+    first = values.first_valid_index()
+    if first is None:
+        return values
+    anchor = pd.Series([0.0], index=[first - pd.Timedelta(days=1)], name=values.name)
+    return pd.concat([anchor, values.loc[first:]])
+
+
 def _plot_cumulative_sectors(ax, cumulative: pd.DataFrame, unit: str) -> None:
     import matplotlib.pyplot as plt
 
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     for i, (sector, values) in enumerate(cumulative.items()):
+        values = _with_zero_start(values)
         ax.plot(values.index, values, color=colors[i % len(colors)],
                 linestyle="-" if i < len(colors) else "--", linewidth=1.5, label=sector)
     _finish_axis(ax, "Cumulative sector returns", f"Cumulative return ({unit})")
@@ -123,7 +132,8 @@ def plot_future_sector_comparison(
                              sharex=True, squeeze=False, layout="constrained")
     for ax, sector in zip(axes.flat, first.columns):
         for name, frame in cumulative.items():
-            ax.plot(frame.index, frame[sector], label=name, linewidth=1.5)
+            values = _with_zero_start(frame[sector])
+            ax.plot(values.index, values, label=name, linewidth=1.5)
         _finish_axis(ax, str(sector))
     for ax in list(axes.flat)[len(first.columns):]:
         ax.set_axis_off()

@@ -60,6 +60,29 @@ python scripts/update_incremental.py --groups future_mapping --start-date 202604
 - `--future-main-source open-interest` 读取 `future_data/basic/mapping_oi/YYYY.parquet`。先运行 `derive-future-main-oi --start-date YYYYMMDD --end-date YYYYMMDD --date-batch-size 120`，区间需覆盖预热日。首个有持仓数据的交易日按当日最大持仓量初始化，并沿用到下一交易日。此后使用上一交易日的持仓量，只切换到更远月份，且新合约持仓量达到旧主力的 1.1 倍。旧主力缺有效持仓量时从更远月份中重新选择。缺上一交易日数据的映射留空。
 - `--future-main-source fut-mapping` 是默认选项，优先读取 `future_data/basic/mapping/YYYY.parquet`，缺少日期时兼容旧版按日文件。下载时应覆盖所选因子的预热日期。输出的 `ts_code` 为目标交易日实际选中的合约代码。
 - `--future-main-source all-contracts` 对每个真实合约独立计算。再指定 `--future-adjust-daily false` 可计算未复权的全合约分钟因子。
+
+### YQ 分钟趋势因子
+
+| 因子 ID | 公式 | 窗口 |
+| --- | --- | --- |
+| `yq_026–027` | `(KAMA − EMA) / ATR` | 15、30 |
+| `yq_028–030` | `sign(momentum) × ER` | 5、15、30 |
+| `yq_031–033` | `sigmoid((U − C)/ATR) − sigmoid((C − L)/ATR)` | 5、15、30 |
+| `yq_034–036` | `exp(−abs(C − U)/ATR) − exp(−abs(C − L)/ATR)` | 5、15、30 |
+| `yq_037–039` | `tanh(max(C − U, 0)/ATR) − tanh(max(L − C, 0)/ATR)` | 5、15、30 |
+| `yq_040–042` | `exp(−abs(C − U)/ATR) × tanh((U_t − U_{t−n})/ATR)` | 5、15、30 |
+| `yq_043–045` | `exp(−abs(C − L)/ATR) × tanh((L_t − L_{t−n})/ATR)` | 5、15、30 |
+| `yq_046–048` | `(C_t − LL)/(HH − LL)` | 5、15、30 |
+| `yq_049–050` | `ER_s × d × (1 + sign(Vol_f/Vol_s) + sign(d × ΔOI_s))` | `(f, s) = (5, 15)、(15, 30)` |
+| `yq_051` | `M × (1 + 0.5 × M × A)` | MACD `(15, 30, 5)`，ATR `30` |
+
+所有新因子都带 `pv` 和 `yq` 标签。KAMA 每次仅使用最近 `2n` 根收盘价，以前 `n` 根的均值为初值，再用 `n` 次自适应更新。KAMA 的 ER 周期为 `n`，平滑系数使用标准快慢参数 2 和 30。EMA 使用最近 `n` 根收盘价的归一化指数权重。[KAMA 平滑公式](https://ta-lib.org/functions/kama.html)
+
+布林带使用 `MA ± 1.5σ`，其中 `σ` 为总体标准差，带宽、ATR 和斜率滞后都使用对应窗口 `n`。`HH` 和 `LL` 使用 `t−n` 到 `t−1` 的最高价和最低价，区间宽度为零时留空。所有以 ATR 为分母的 YQ 分钟因子在 ATR 为零时输出 0。ER 的价格路径长度为零时输出 0。
+
+`yq_049–050` 中 `d = sign(C_t − C_{t−f})`，`Vol_n` 是含当前分钟的最近 `n` 根 bar 的成交量之和。`Vol_s` 为零时成交量项取 0。`ΔOI_s` 为最近 `s` 根 bar 的合约内持仓量差分之和，主力换月时沿用合约内差分口径。
+
+`yq_051` 使用 `DIF = EMA_15(C) − EMA_30(C)`、`DEA = EMA_5(DIF)` 和 `H = DIF − DEA`。`M = tanh(DIF / ATR_30)`，`A = tanh(H / ATR_30)`。三次 EMA 均使用有限窗口。
 - `--future-main-only true` 默认仅计算并输出目标日的主力合约。目标日缺少可用映射时回退到全合约；设为 `false` 则所有日期都计算全合约。
 - `--future-warmup-source main-sequence` 默认用各历史日的主力为目标日主力预热。设为 `same-contract` 则用目标日实际合约的历史。全合约输出使用各合约自己的历史。历史日没有映射时，主力序列预热使用目标日实际合约在该日的历史。
 - `oi_diff` 始终先在实际合约内做差，日首根使用该合约上一交易日最后一根 bar 的原始持仓量。差分得到的序列再按所选预热方式拼接。

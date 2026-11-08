@@ -108,6 +108,27 @@ impl FutureMinuteInput {
     fn selection(&self, date: i32) -> Option<&BTreeMap<String, String>> {
         self.main.get(&date).filter(|mapping| !mapping.is_empty())
     }
+
+    pub(crate) fn full_contracts(
+        &self,
+        date: i32,
+        is_target: bool,
+        later_targets: impl Iterator<Item = i32>,
+    ) -> Option<BTreeSet<String>> {
+        let same_contract = self.options.warmup_source == FutureWarmupSource::SameContract;
+        let mut codes = BTreeSet::new();
+        if is_target || !same_contract {
+            codes.extend(self.selection(date)?.values().cloned());
+        }
+        for target in later_targets {
+            // A target with no map can need history for any contract.
+            let mapping = self.selection(target)?;
+            if same_contract {
+                codes.extend(mapping.values().cloned());
+            }
+        }
+        Some(codes)
+    }
 }
 
 // Exclude continuous, index, TAS and special delivery variants from OI ranking.
@@ -156,9 +177,43 @@ fn read_mapping(
     Ok(result)
 }
 
-pub fn future_minute_request(column: &str) -> DataRequest {
-    DataRequest::new(DatasetId::FutureMinute1m, &["open", "close", column])
+/// Select a raw bar field or its one-bar difference within the actual contract.
+/// The first bar uses the preceding trading day's final raw observation.
+#[derive(Clone, Copy)]
+pub enum FutureMinuteField {
+    Raw(&'static str),
+    ContractDiff(&'static str),
 }
+
+impl FutureMinuteField {
+    const DIFF_PREFIX: &str = "contract_diff:";
+
+    fn raw(self) -> &'static str {
+        match self {
+            Self::Raw(name) | Self::ContractDiff(name) => name,
+        }
+    }
+
+    pub(crate) fn diff_source(requested: &str) -> Option<&str> {
+        requested.strip_prefix(Self::DIFF_PREFIX)
+    }
+}
+
+pub fn future_minute_request(fields: &[FutureMinuteField]) -> DataRequest {
+    let mut request = DataRequest::new(DatasetId::FutureMinute1m, &["open", "close"]);
+    for &field in fields {
+        let name = match field {
+            FutureMinuteField::Raw(name) => name.to_string(),
+            FutureMinuteField::ContractDiff(name) => format!("{}{name}", FutureMinuteField::DIFF_PREFIX),
+        };
+        if !request.columns.contains(&name) {
+            request.columns.push(name);
+        }
+    }
+    request
+}
+
+pub(crate) type ContractTails = BTreeMap<String, BTreeMap<String, Option<f64>>>;
 
 struct DayTail {
     first_open: Option<f64>,
@@ -173,25 +228,28 @@ pub fn compute_future_minute_rolling(
     spec: FactorSpec,
     context: &FactorContext,
     data: &DataPool,
-    column: &str,
+    field: FutureMinuteField,
     history_bars: usize,
     expr: impl Fn(&[Option<f64>]) -> Vec<Option<f64>> + Sync,
 ) -> Result<FactorSeries> {
     let mut result =
-        compute_future_minute_many(&[spec], context, data, &[column], history_bars, |inputs| {
+        compute_future_minute_many(&[spec], context, data, &[field], history_bars, |inputs| {
             vec![expr(&inputs[0])]
         })?;
     Ok(result.remove(0))
 }
 
-pub(crate) fn compute_future_minute_many(
+pub fn compute_future_minute_many(
     specs: &[FactorSpec],
     context: &FactorContext,
     data: &DataPool,
-    columns: &[&str],
+    fields: &[FutureMinuteField],
     history_bars: usize,
     expr: impl Fn(&[Vec<Option<f64>>]) -> Vec<Vec<Option<f64>>> + Sync,
 ) -> Result<Vec<FactorSeries>> {
+    if fields.is_empty() {
+        return Err(err("futures minute factors require at least one input field"));
+    }
     let lookback = specs
         .iter()
         .map(|spec| spec.lookback.trading_days)
@@ -200,13 +258,12 @@ pub(crate) fn compute_future_minute_many(
     let input = data
         .future_minute_input()
         .ok_or_else(|| err("missing futures minute input configuration"))?;
-    let price_columns = columns
+    let price_columns = fields
         .iter()
-        .map(|&column| matches!(column, "open" | "high" | "low" | "close"))
+        .map(|field| matches!(field, FutureMinuteField::Raw("open" | "high" | "low" | "close")))
         .collect::<Vec<_>>();
     let is_price = price_columns.iter().any(|&price| price);
-    let use_oi_diff = columns.contains(&"oi_diff");
-    let mut previous_oi = BTreeMap::<String, Option<f64>>::new();
+    let mut previous_tails = ContractTails::new();
     let targets = context
         .target_dates
         .iter()
@@ -223,7 +280,16 @@ pub(crate) fn compute_future_minute_many(
         .collect::<Vec<_>>();
     for (day_idx, &date) in context.load_dates.iter().enumerate() {
         let mut next = BTreeMap::new();
-        let mut next_oi = BTreeMap::new();
+        let mut next_tails = ContractTails::new();
+        for field in fields {
+            if let FutureMinuteField::ContractDiff(name) = *field {
+                let tails = data
+                    .future_minute_tail(date, name)
+                    .cloned()
+                    .unwrap_or_default();
+                next_tails.insert(name.to_string(), tails);
+            }
+        }
         if let Some(table) = data
             .minute(DatasetId::FutureMinute1m, date)
             .filter(|t| t.len > 0)
@@ -233,11 +299,9 @@ pub(crate) fn compute_future_minute_many(
             let times = table.required_utf8("trade_time")?;
             let opens = table.required_f64_cast("open")?;
             let closes = table.required_f64_cast("close")?;
-            let values = columns
+            let values = fields
                 .iter()
-                .map(|&column| {
-                    table.required_f64_cast(if column == "oi_diff" { "oi" } else { column })
-                })
+                .map(|field| table.required_f64_cast(field.raw()))
                 .collect::<Result<Vec<_>>>()?;
             let mut groups = BTreeMap::<&str, Vec<usize>>::new();
             for idx in 0..table.len {
@@ -247,10 +311,23 @@ pub(crate) fn compute_future_minute_many(
                     }
                 }
             }
-            if let Some(oi) = columns.iter().position(|&column| column == "oi_diff") {
+            if !next_tails.is_empty() {
+                let diff_values = fields
+                    .iter()
+                    .zip(&values)
+                    .filter_map(|(field, values)| match field {
+                        FutureMinuteField::ContractDiff(name) => Some((*name, values)),
+                        FutureMinuteField::Raw(_) => None,
+                    })
+                    .collect::<Vec<_>>();
                 for (&code, indices) in &groups {
                     if let Some(&last) = indices.iter().max_by_key(|&&idx| times[idx].as_deref()) {
-                        next_oi.insert(code.to_string(), values[oi][last]);
+                        for &(name, values) in &diff_values {
+                            next_tails
+                                .get_mut(name)
+                                .expect("declared difference field")
+                                .insert(code.to_string(), values[last]);
+                        }
                     }
                 }
             }
@@ -261,22 +338,16 @@ pub(crate) fn compute_future_minute_many(
                     .collect::<BTreeMap<_, _>>()
             });
             let same_contract = input.options.warmup_source == FutureWarmupSource::SameContract;
-            let mut keep_all = false;
-            let mut keep_codes = BTreeSet::new();
-            // Only retain additional tails for contracts needed by later targets.
-            for &future in context.load_dates.iter().skip(day_idx + 1).take(lookback) {
-                if !targets.contains(&future) {
-                    continue;
-                }
-                match input.selection(future) {
-                    None => keep_all = true,
-                    Some(mapping) if same_contract => {
-                        keep_codes.extend(mapping.values().map(String::as_str))
-                    }
-                    Some(_) => {}
-                }
-            }
             let target = targets.contains(&date);
+            let keep_codes = input.full_contracts(
+                date,
+                target,
+                context.load_dates.iter()
+                    .skip(day_idx + 1)
+                    .take(lookback)
+                    .copied()
+                    .filter(|future| targets.contains(future)),
+            );
             let selected = groups
                 .into_iter()
                 .filter_map(|(code, indices)| {
@@ -285,12 +356,10 @@ pub(crate) fn compute_future_minute_many(
                         .and_then(|mapping| mapping.get(code))
                         .copied();
                     let in_universe = current_main.is_none() || product.is_some();
-                    (in_universe || keep_all || keep_codes.contains(code)).then_some((
-                        code,
-                        product,
-                        target && in_universe,
-                        indices,
-                    ))
+                    keep_codes
+                        .as_ref()
+                        .is_none_or(|codes| codes.contains(code))
+                        .then_some((code, product, target && in_universe, indices))
                 })
                 .collect::<Vec<_>>();
             let compute = |(code, product, emit, mut indices): (
@@ -317,7 +386,7 @@ pub(crate) fn compute_future_minute_many(
                     .map(|(_, exchange)| exchange)
                     .unwrap_or_default();
                 let mut intraday_scale = 1.0;
-                let mut day_values = columns
+                let mut day_values = fields
                     .iter()
                     .map(|_| Vec::with_capacity(indices.len()))
                     .collect::<Vec<_>>();
@@ -327,11 +396,15 @@ pub(crate) fn compute_future_minute_many(
                     {
                         intraday_scale *= boundary_ratio(closes[prev], opens[idx]).unwrap_or(1.0);
                     }
-                    for (column_idx, &column) in columns.iter().enumerate() {
+                    for (column_idx, &field) in fields.iter().enumerate() {
                         let value = values[column_idx][idx];
-                        let value = if column == "oi_diff" {
+                        let value = if let FutureMinuteField::ContractDiff(name) = field {
                             let prior = if position == 0 {
-                                previous_oi.get(code).copied().flatten()
+                                previous_tails
+                                    .get(name)
+                                    .and_then(|tails| tails.get(code))
+                                    .copied()
+                                    .flatten()
                             } else {
                                 values[column_idx][prev]
                             };
@@ -362,7 +435,7 @@ pub(crate) fn compute_future_minute_many(
                         .collect(),
                 };
                 let rows = if emit {
-                    let mut seeds = columns
+                    let mut seeds = fields
                         .iter()
                         .map(|_| VecDeque::with_capacity(history_bars))
                         .collect::<Vec<_>>();
@@ -471,9 +544,7 @@ pub(crate) fn compute_future_minute_many(
             }
         }
         history.push_back((date, next));
-        if use_oi_diff {
-            previous_oi = next_oi;
-        }
+        previous_tails = next_tails;
         if history.len() > lookback {
             history.pop_front();
         }

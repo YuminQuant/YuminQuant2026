@@ -1,10 +1,13 @@
 use crate::core::{
-    AssetClass, DataRequest, DatasetId, FactorContext, FactorSeries, FactorSpec, Frequency,
+    AssetClass, FactorContext, FactorSeries, FactorSpec, Frequency,
     Lookback,
 };
 use crate::data::DataPool;
 use crate::error::{err, Result};
-use crate::factor::future::minute_input::compute_future_minute_many;
+use crate::factor::future::minute_input::{
+    compute_future_minute_many, future_minute_request, FutureMinuteField,
+    FutureMinuteField::{ContractDiff, Raw},
+};
 use crate::factor::future::rolling::{rolling_ema, rolling_exponential_mean};
 use crate::factor::Factor;
 use crate::operators::{ts_mean, ts_pctchg, ts_sum, ts_zscore};
@@ -60,11 +63,11 @@ const SIGNALS: [(Signal, &str); 25] = [
     (VolumeNetInterest(30), "Total trading volume over thirty bars divided by the signed net change in open interest over the same bars."),
 ];
 
-const PRICE: &[&str] = &["close"];
-const OHLC: &[&str] = &["close", "high", "low"];
-const ACTIVITY: &[&str] = &["vol", "oi", "oi_diff"];
+const PRICE: &[FutureMinuteField] = &[Raw("close")];
+const OHLC: &[FutureMinuteField] = &[Raw("close"), Raw("high"), Raw("low")];
+const ACTIVITY: &[FutureMinuteField] = &[Raw("vol"), Raw("oi"), ContractDiff("oi")];
 
-fn family(index: usize) -> (&'static str, &'static [&'static str], usize, usize) {
+fn family(index: usize) -> (&'static str, &'static [FutureMinuteField], usize, usize) {
     match index {
         0..=5 => ("futures_minute_price", PRICE, 1, 30),
         6..=14 => ("futures_minute_smoothed_price", OHLC, 3, 58),
@@ -84,13 +87,6 @@ fn id(index: usize) -> String {
 
 fn spec(index: usize) -> FactorSpec {
     let (_, columns, days, _) = family(index);
-    let mut inputs = vec!["open", "close"];
-    inputs.extend(
-        columns
-            .iter()
-            .copied()
-            .filter(|column| !matches!(*column, "close" | "oi_diff")),
-    );
     FactorSpec {
         id: id(index),
         aliases: Vec::new(),
@@ -100,7 +96,7 @@ fn spec(index: usize) -> FactorSpec {
         version: "0.1.0".into(),
         tags: vec!["minute".into(), "price_volume".into()],
         description: SIGNALS[index].1.into(),
-        dependencies: vec![DataRequest::new(DatasetId::FutureMinute1m, &inputs)],
+        dependencies: vec![future_minute_request(columns)],
         intraday_raw_dependencies: Vec::new(),
         lookback: Lookback { trading_days: days },
     }

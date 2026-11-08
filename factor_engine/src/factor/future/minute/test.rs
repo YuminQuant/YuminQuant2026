@@ -1,7 +1,9 @@
 use crate::core::{AssetClass, FactorContext, FactorSeries, FactorSpec, Frequency, Lookback};
 use crate::data::DataPool;
 use crate::error::Result;
-use crate::factor::future::minute_input::{compute_future_minute_rolling, future_minute_request};
+use crate::factor::future::minute_input::{
+    compute_future_minute_rolling, future_minute_request, FutureMinuteField::Raw,
+};
 use crate::factor::Factor;
 use crate::operators::ts_mean;
 
@@ -29,7 +31,7 @@ impl Factor for MovingAverageRatio {
                 .collect(),
             description: "MA(5) / MA(10) - 1 of one-minute closes with configurable futures price adjustment."
                 .to_string(),
-            dependencies: vec![future_minute_request("close")],
+            dependencies: vec![future_minute_request(&[Raw("close")])],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 1 },
         }
@@ -40,7 +42,7 @@ impl Factor for MovingAverageRatio {
             self.spec(),
             context,
             data,
-            "close",
+            Raw("close"),
             LONG_WINDOW - 1,
             |closes| {
                 let short = ts_mean(closes, SHORT_WINDOW, SHORT_WINDOW);

@@ -192,6 +192,21 @@ pub(crate) fn read_projected_reader(
     read_parquet_from_reader(file, path, columns, None, &BTreeMap::new())
 }
 
+pub(crate) fn read_projected_symbols(
+    file: crate::artifact_io::StorageReader,
+    path: &Path,
+    columns: &[String],
+    predicate: impl Fn(&str) -> bool + Send + 'static,
+) -> Result<Table> {
+    read_parquet_from_reader(
+        file,
+        path,
+        Some(columns),
+        Some(Box::new(predicate)),
+        &BTreeMap::new(),
+    )
+}
+
 pub(crate) fn read_projected_reader_excluding(
     file: crate::artifact_io::StorageReader,
     path: &Path,

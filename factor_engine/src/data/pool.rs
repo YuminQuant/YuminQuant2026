@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::core::{DataRequest, DatasetId, FactorContext, Frequency};
@@ -10,6 +10,7 @@ use crate::factor::common::{
     DailyPanel, DividendIndex, DividendReader, FinancialPitIndex, FinancialPitReader,
     MainBusinessIndex, MainBusinessReader, ReportTypePreference,
 };
+use crate::factor::future::minute_input::{ContractTails, FutureMinuteField, FutureMinuteInput};
 
 #[derive(Clone, Debug, Default)]
 pub struct FinancialBatchProfile {
@@ -213,8 +214,9 @@ impl FinancialBatchContext {
 #[derive(Clone, Debug, Default)]
 pub struct DataPool {
     trading_calendar: Option<Arc<crate::calendar::TradingCalendar>>,
-    future_minute_input: Option<Arc<crate::factor::future::minute_input::FutureMinuteInput>>,
+    future_minute_input: Option<Arc<FutureMinuteInput>>,
     future_minute_coverage: Option<Arc<(BTreeSet<i32>, BTreeSet<String>)>>,
+    future_minute_tails: Option<Arc<HashMap<i32, ContractTails>>>,
     daily: HashMap<DatasetId, Arc<Table>>,
     daily_panels: HashMap<DatasetId, DailyPanel>,
     stock_universe_panel: Option<DailyPanel>,
@@ -231,6 +233,72 @@ pub struct DataPool {
 }
 
 impl DataPool {
+    pub(crate) fn load_future_minute_batch(
+        &mut self,
+        loader: &MarketDataLoader,
+        requests: &[DataRequest],
+        context: &FactorContext,
+        input: Arc<FutureMinuteInput>,
+        lookback: usize,
+    ) -> Result<()> {
+        let mut dates = BTreeSet::new();
+        let mut columns = BTreeSet::new();
+        for request in requests.iter().filter(|request| request.dataset == DatasetId::FutureMinute1m) {
+            dates.extend(request.resolved_dates(context));
+            columns.extend(request.columns.iter().cloned());
+        }
+        let diff_columns = columns
+            .iter()
+            .filter_map(|name| FutureMinuteField::diff_source(name))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let projection = columns
+            .iter()
+            .map(|name| FutureMinuteField::diff_source(name).unwrap_or(name).to_string())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let targets = context.target_dates.iter().copied().collect::<BTreeSet<_>>();
+        let plans = context.load_dates.iter().enumerate()
+            .map(|(index, &date)| input.full_contracts(
+                date,
+                targets.contains(&date),
+                context.load_dates.iter()
+                    .skip(index + 1)
+                    .take(lookback)
+                    .copied()
+                    .filter(|date| targets.contains(date)),
+            ))
+            .collect::<Vec<_>>();
+        let mut tails = HashMap::new();
+        for (index, &date) in context.load_dates.iter().enumerate() {
+            if !dates.contains(&date) {
+                continue;
+            }
+            let diff_columns = if context.load_dates.get(index + 1).is_some_and(|next| dates.contains(next)) {
+                diff_columns.as_slice()
+            } else {
+                &[]
+            };
+            if let Some((table, day_tails)) = loader.load_future_minute_day(
+                date,
+                &projection,
+                plans[index].as_ref(),
+                plans.get(index + 1).and_then(Option::as_ref),
+                diff_columns,
+            )? {
+                self.minute.insert((DatasetId::FutureMinute1m, None, date), Arc::new(table));
+                if !day_tails.is_empty() {
+                    tails.insert(date, day_tails);
+                }
+            }
+        }
+        self.future_minute_input = Some(input);
+        self.future_minute_coverage = Some(Arc::new((dates, columns)));
+        self.future_minute_tails = Some(Arc::new(tails));
+        Ok(())
+    }
+
     pub(crate) fn load_reused_batch_inputs(
         loader: &MarketDataLoader, requests: &[DataRequest], request_batches: &[Vec<DataRequest>],
         context: &FactorContext, disclosure_cache: &mut DisclosureTableCache,
@@ -535,6 +603,7 @@ impl DataPool {
             minute: self.minute.clone(),
             future_minute_input: self.future_minute_input.clone(),
             future_minute_coverage: self.future_minute_coverage.clone(),
+            future_minute_tails: self.future_minute_tails.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self
                 .intraday_daily_raw_panel
@@ -589,6 +658,7 @@ impl DataPool {
             minute: self.minute.clone(),
             future_minute_input: self.future_minute_input.clone(),
             future_minute_coverage: self.future_minute_coverage.clone(),
+            future_minute_tails: self.future_minute_tails.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self
                 .intraday_daily_raw_panel
@@ -721,6 +791,7 @@ impl DataPool {
             minute: self.minute.clone(),
             future_minute_input: self.future_minute_input.clone(),
             future_minute_coverage: self.future_minute_coverage.clone(),
+            future_minute_tails: self.future_minute_tails.clone(),
             intraday_daily_raw: self.intraday_daily_raw.clone(),
             intraday_daily_raw_panel: self.intraday_daily_raw_panel.clone(),
         }
@@ -873,17 +944,16 @@ impl DataPool {
             .ok_or_else(|| err(format!("index membership not loaded: {code}")))
     }
 
-    pub(crate) fn set_future_minute_input(
-        &mut self,
-        input: Option<Arc<crate::factor::future::minute_input::FutureMinuteInput>>,
-    ) {
-        self.future_minute_input = input;
+    pub(crate) fn future_minute_input(&self) -> Option<&FutureMinuteInput> {
+        self.future_minute_input.as_deref()
     }
 
-    pub(crate) fn future_minute_input(
+    pub(crate) fn future_minute_tail(
         &self,
-    ) -> Option<&crate::factor::future::minute_input::FutureMinuteInput> {
-        self.future_minute_input.as_deref()
+        date: i32,
+        field: &str,
+    ) -> Option<&BTreeMap<String, Option<f64>>> {
+        self.future_minute_tails.as_ref()?.get(&date)?.get(field)
     }
 
     pub fn minute(&self, dataset: DatasetId, trade_date: i32) -> Option<&Table> {

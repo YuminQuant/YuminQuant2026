@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use crate::core::{AssetClass, DatasetId};
 use crate::data::catalog::DataCatalog;
-use crate::data::parquet_io::read_parquet;
+use crate::data::parquet_io::{read_parquet, read_projected_symbols};
 use crate::data::table::{ColumnData, Table};
 use crate::error::{err, Result};
 use crate::factor::common::FinancialPitIndex;
+use crate::factor::future::minute_input::ContractTails;
 use crate::data::FundPortfolioIndex;
 
 #[derive(Clone, Debug)]
@@ -795,6 +796,72 @@ impl MarketDataLoader {
             }
         }
         Ok(tables)
+    }
+
+    pub(crate) fn load_future_minute_day(
+        &self,
+        date: i32,
+        requested_columns: &[String],
+        full_contracts: Option<&BTreeSet<String>>,
+        next_contracts: Option<&BTreeSet<String>>,
+        diff_columns: &[String],
+    ) -> Result<Option<(Table, ContractTails)>> {
+        let Some(path) = self.catalog.minute_file(DatasetId::FutureMinute1m, date) else {
+            return Ok(None);
+        };
+        let keys = ["trade_date", "trade_time", "ts_code"];
+        let columns = with_required_columns(requested_columns, &keys);
+        let mut tails = ContractTails::new();
+        let table = if let Some(full) = full_contracts {
+            let reader = crate::artifact_io::open_reader(&path)?;
+            // Only contracts needed tomorrow but omitted from today's bars need a second projection.
+            let tail_codes = next_contracts
+                .map(|next| next.difference(full).cloned().collect::<BTreeSet<_>>());
+            if !diff_columns.is_empty()
+                && tail_codes.as_ref().is_none_or(|codes| !codes.is_empty())
+            {
+                let full = full.clone();
+                let tail_rows = read_projected_symbols(
+                    reader.clone(),
+                    &path,
+                    &with_required_columns(diff_columns, &keys),
+                    move |code| match &tail_codes {
+                        Some(codes) => codes.contains(code),
+                        None => !full.contains(code),
+                    },
+                )?;
+                if tail_rows.len > 0 {
+                    let codes = tail_rows.required_utf8("ts_code")?;
+                    let times = tail_rows.required_utf8("trade_time")?;
+                    let dates = tail_rows.required_i32("trade_date")?;
+                    let mut last = BTreeMap::<&str, (&str, usize)>::new();
+                    for row in 0..tail_rows.len {
+                        if dates[row] != Some(date) {
+                            continue;
+                        }
+                        if let (Some(code), Some(time)) =
+                            (codes[row].as_deref(), times[row].as_deref())
+                        {
+                            if last.get(code).is_none_or(|&(previous, _)| time >= previous) {
+                                last.insert(code, (time, row));
+                            }
+                        }
+                    }
+                    for name in diff_columns {
+                        let values = tail_rows.required_f64_cast(name)?;
+                        let by_contract = last.iter()
+                            .map(|(&code, &(_, row))| (code.to_string(), values[row]))
+                            .collect();
+                        tails.insert(name.clone(), by_contract);
+                    }
+                }
+            }
+            let full = full.clone();
+            read_projected_symbols(reader, &path, &columns, move |code| full.contains(code))?
+        } else {
+            read_parquet(&path, Some(&columns))?
+        };
+        Ok(Some((table, tails)))
     }
 
     pub fn load_stock_derived_bar_by_date(

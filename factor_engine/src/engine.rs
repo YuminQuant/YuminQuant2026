@@ -491,11 +491,25 @@ impl Engine {
                     &mut disclosure_cache,
                 )?;
                 let shared_load_started = Instant::now();
-                let batch_inputs = if provider_batches.len() > 1 {
+                let future_input = future_minute.as_ref().filter(|_| {
+                    group_requests.iter().any(|request| request.dataset == DatasetId::FutureMinute1m)
+                });
+                let batch_inputs = if provider_batches.len() > 1 || future_input.is_some() {
                     let request_batches = provider_batches.iter().map(|batch| batch.iter()
                         .flat_map(|index| specs[*index].dependencies.clone()).collect()).collect::<Vec<_>>();
-                    Some(DataPool::load_reused_batch_inputs(&loader, &group_requests, &request_batches, &context,
-                        &mut disclosure_cache, financial_context.clone())?)
+                    let shared_requests = group_requests.iter().filter(|request|
+                        future_input.is_none() || request.dataset != DatasetId::FutureMinute1m)
+                        .cloned().collect::<Vec<_>>();
+                    let mut inputs = DataPool::load_reused_batch_inputs(
+                        &loader, &shared_requests, &request_batches, &context,
+                        &mut disclosure_cache, financial_context.clone(),
+                    )?;
+                    if let Some(input) = future_input {
+                        inputs.load_future_minute_batch(
+                            &loader, &group_requests, &context, Arc::clone(input), group_max_lookback,
+                        )?;
+                    }
+                    Some(inputs)
                 } else { None };
                 let shared_load_ms = shared_load_started.elapsed().as_millis();
                 let mut batch_outputs = crate::storage::OutputBatch::default();
@@ -533,7 +547,6 @@ impl Engine {
                     let load_ms = load_started.elapsed().as_millis()
                         + if factor_batch_index == 0 { shared_load_ms } else { 0 };
                     pool.set_trading_calendar(Arc::clone(&factor_calendar));
-                    pool.set_future_minute_input(future_minute.clone());
                     let raw_ids = raw_ids_for_specs(&batch_specs);
                     if !raw_ids.is_empty() {
                         let (raw_table, mut raw_profiles) = if raw_mode == RawMode::Prepared {

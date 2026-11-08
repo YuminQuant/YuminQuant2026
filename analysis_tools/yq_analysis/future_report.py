@@ -5,6 +5,8 @@ from collections.abc import Mapping
 import numpy as np
 import pandas as pd
 
+from yq_analysis.metrics import annual_return, calmar, clean_series, max_drawdown, sharpe, win_rate
+
 
 METRICS = ["ic", "cosic", "long_rtn", "short_rtn"]
 LEGS = ["long", "short"]
@@ -73,6 +75,7 @@ def make_future_backtest_report(
         "directed": directed,
         "sector": sector_returns,
         "daily_product": daily_product,
+        "product_ic": products[["ic", "cosic"]],
         "daily_sector": daily_sector,
         "cumulative_sector": daily_sector.cumsum(),
     }
@@ -89,3 +92,38 @@ def compare_future_sector_returns(
         raise ValueError("No common valid product-date pairs for futures comparison")
     daily = _sector_daily(common, sectors, dates)
     return {name: frame.cumsum() for name, frame in daily.items()}
+
+
+def _sector_return_metrics(returns_bp: pd.Series, periods_per_year: int) -> dict:
+    returns = clean_series(returns_bp) / 10_000
+    gains = returns[returns > 0]
+    losses = returns[returns < 0]
+    return {
+        "annual_return(%)": 100 * annual_return(returns, periods_per_year=periods_per_year),
+        "sharpe": sharpe(returns, periods_per_year=periods_per_year),
+        "max_drawdown(%)": 100 * max_drawdown(returns),
+        "calmar": calmar(returns, periods_per_year=periods_per_year),
+        "win_rate(%)": 100 * win_rate(returns),
+        "payoff_ratio": gains.mean() / -losses.mean(),
+        "observations": len(returns),
+    }
+
+
+def make_future_sector_metrics(
+    report: Mapping, sectors: pd.DataFrame, *, periods_per_year: int = 240,
+) -> pd.DataFrame:
+    """Summarize sector IC and stock-style metrics from one report's daily bp returns."""
+    if periods_per_year <= 0:
+        raise ValueError("periods_per_year must be positive")
+    valid = clean_series(report["daily_product"]).index
+    product_ic = report["product_ic"].reindex(valid)
+    daily_ic = _sector_daily(product_ic, sectors, report["market"].index)
+    return pd.DataFrame([
+        {
+            "sector": sector,
+            "ic": daily_ic["ic"][sector].mean(),
+            "cosic": daily_ic["cosic"][sector].mean(),
+            **_sector_return_metrics(returns, periods_per_year),
+        }
+        for sector, returns in report["daily_sector"].items()
+    ]).set_index("sector")

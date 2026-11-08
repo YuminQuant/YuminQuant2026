@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from math import ceil
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -38,7 +39,6 @@ def _plot_sector_means(ax, sector: pd.DataFrame, unit: str) -> None:
     ax.scatter(x, sector["net"], marker="D", color="0.2", s=24, zorder=3, label="Net mean")
     _finish_axis(ax, "Equal-weight sector returns", f"Mean return ({unit})")
     ax.set_xticks(x, sector.index, fontsize=9)
-    ax.legend(frameon=False, ncols=3)
 
 
 def _plot_cumulative_sectors(ax, cumulative: pd.DataFrame, unit: str) -> None:
@@ -50,16 +50,18 @@ def _plot_cumulative_sectors(ax, cumulative: pd.DataFrame, unit: str) -> None:
                 linestyle="-" if i < len(colors) else "--", linewidth=1.5, label=sector)
     _finish_axis(ax, "Cumulative sector returns", f"Cumulative return ({unit})")
     ax.set_xlabel("Trade date")
-    ax.legend(frameon=False, ncols=4, fontsize=8)
 
 
-def plot_future_return_summary(report: Mapping, *, title: str = "", unit: str = "bp"):
-    """Plot the IC, directed product returns, and both sector views."""
+def plot_future_return_summary(
+    report: Mapping, *, title: str = "", unit: str = "bp", save: str | Path | None = None,
+    dpi: int | str | None = None,
+):
+    """Plot the futures summary and close the figure after saving when requested."""
     import matplotlib.pyplot as plt
 
     products = report["product"]
     x = np.arange(len(products))
-    fig, axes = plt.subplots(2, 2, figsize=(27, 10), layout="constrained")
+    fig, axes = plt.subplots(2, 2, figsize=(19.0, 8.2), layout="constrained")
     fig.suptitle(title, fontsize=17, fontweight="bold")
     ic_ax, product_ax, mean_ax, cumulative_ax = axes.flat
     ic_ax.bar(x, products["ic"], width=0.77, color=np.where(products["ic"].ge(0), "tab:red", "tab:green"))
@@ -68,9 +70,22 @@ def plot_future_return_summary(report: Mapping, *, title: str = "", unit: str = 
     _stack_returns(product_ax, x, report["directed"])
     _finish_axis(product_ax, "IC-directed returns by product", f"Mean return ({unit})")
     _product_ticks(product_ax, x, products.index)
-    product_ax.legend(frameon=False, ncols=2)
     _plot_sector_means(mean_ax, report["sector"], unit)
     _plot_cumulative_sectors(cumulative_ax, report["cumulative_sector"], unit)
+    bar_handles, bar_labels = mean_ax.get_legend_handles_labels()
+    line_handles, line_labels = cumulative_ax.get_legend_handles_labels()
+    fig.legend(bar_handles + line_handles, bar_labels + line_labels,
+               loc="outside lower center", ncols=8, frameon=False, fontsize=9)
+    if save is not None:
+        try:
+            path = Path(save)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            save_kwargs = {"bbox_inches": "tight"}
+            if dpi is not None:
+                save_kwargs["dpi"] = dpi
+            fig.savefig(path, **save_kwargs)
+        finally:
+            plt.close(fig)
     return fig
 
 

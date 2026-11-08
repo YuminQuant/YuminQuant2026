@@ -75,26 +75,25 @@ python scripts/chn_stock_factor_analysis.py --remove some_factor
 
 ## 期货因子评价 / Futures factor evaluation
 
-先用 Rust 期货分钟回测生成摘要。默认的过去五日阈值模式写入 `data/backtest/future/trailing-5`，显式选择单日模式时写入 `data/backtest/future`。读取、结算和绘图可以分别调用。
+先用 Rust 期货分钟回测生成摘要。默认的过去五日阈值模式写入 `data/backtest/future/trailing-5`。读取、结算和绘图可以分别调用。
 
 ```python
 from yq_analysis.future_io import load_future_backtest_result, load_future_sectors
-from yq_analysis.future_report import make_future_backtest_report, compare_future_sector_returns
-from yq_analysis.future_plots import plot_future_return_summary, plot_future_sector_comparison
+from yq_analysis.future_report import make_future_backtest_report, make_future_sector_metrics
+from yq_analysis.future_plots import plot_future_return_summary
 
 sectors = load_future_sectors("factor_engine/docs/FUTURE_SECTORS.md")
-daily = load_future_backtest_result("data/backtest/future", "yq_001")
 trailing = load_future_backtest_result("data/backtest/future/trailing-5", "yq_001")
-report = make_future_backtest_report(daily["summary"], sectors)
-rolling = make_future_backtest_report(trailing["summary"], sectors, direction=report["direction"])
-detail = plot_future_return_summary(report, title="yq_001 | Daily thresholds")
-curves = compare_future_sector_returns(
-    {"Daily": report["daily_product"], "Trailing 5": rolling["daily_product"]}, sectors,
+report = make_future_backtest_report(trailing["summary"], sectors)
+print(make_future_sector_metrics(report, sectors))
+fig = plot_future_return_summary(
+    report, title="yq_001 | Trailing 5", save="analysis_tools/plots/future/yq_001.png",
 )
-comparison = plot_future_sector_comparison(curves, title="yq_001 | Threshold comparison")
 ```
 
-对比采用同一品种 IC 方向，只使用两种模式都有有效双端收益的品种日。板块内对品种等权，日度值按交易日算术累加。应使用同一因子、同一标签和同一回测区间。
+运行 `future_factor.ipynb` 会显示指标表，并将当前因子的图保存到 `analysis_tools/plots/future/{factor_id}.png`。
+
+指标表按板块展示原始 IC、CosIC、年化收益、夏普、最大回撤、卡玛、胜率、盈亏比和有效交易日数。IC、CosIC 和收益使用五日模式中有有效双端收益的品种日，板块内按品种等权。收益指标将日度 bp 转为小数后沿用股票报告函数，默认每年 240 个交易日。盈亏比为盈利日平均收益除以亏损日平均亏损的绝对值。累计图按交易日算术累加。
 
 ## 策略分析 / Strategy analysis
 

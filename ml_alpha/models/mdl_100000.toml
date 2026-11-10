@@ -4,8 +4,8 @@ data_root = "data"
 calendar_exchange = "SHFE"
 
 [dates]
-train = [20200101, 20260930]
-predict = [20250101, 20261231]
+train = [20150101, 20260930]
+predict = [20200101, 20261231]
 
 [sample]
 train_frequency = "5"

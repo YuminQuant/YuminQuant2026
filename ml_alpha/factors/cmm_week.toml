@@ -1,0 +1,89 @@
+factor_id = "cmm_week"
+tags = ["HYZQ", "cmm", "week", "momentum", "reversal", "mse_loss"]
+data_root = "data"
+
+[output]
+kind = "factor"
+id = "cmm_week"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+write_workers = 4
+
+[dates]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "resnet_panel"
+root = "data/chn_stock_data/daily/pv"
+columns = ["open", "high", "low", "close", "vwap", "turnover_rate_f", "daily_return_zscore"]
+
+[features.params]
+dataset = "week"
+daily_root = "data/chn_stock_data/daily"
+max_cache_sessions = 150
+include_daily_return = true
+
+[materialize]
+cache_samples = false
+cache_dir = "data/model_workspace/cmm_week/cache"
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "cmm_week"
+class = "yq_ml_alpha.models.cmm_model.CMMWeekAlphaModel"
+artifact_dir = "data/model_workspace/cmm_week/artifacts"
+
+[model.params]
+sequence_length = 150
+input_size = 7
+return_lookback = 20
+half_life = 10.0
+conv_channels = 32
+kernel_size = 3
+hidden_size = 64
+num_layers = 2
+dropout = 0.1
+epochs = 100
+batch_size = 5000
+lr = 0.001
+weight_decay = 0.0
+seed = 42
+device = "auto"
+patience = 10

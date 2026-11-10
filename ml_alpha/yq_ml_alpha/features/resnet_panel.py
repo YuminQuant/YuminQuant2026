@@ -9,6 +9,7 @@ import pandas as pd
 from yq_ml_alpha.data.stores import daily_path, read_daily
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarTensorWindow, _feature_columns
+from yq_ml_alpha.features.transforms import _zscore_series
 
 
 class ResNetPanelProvider(FeatureProvider):
@@ -28,6 +29,11 @@ class ResNetPanelProvider(FeatureProvider):
         self.total_steps = self.lookback_sessions * self.steps_per_session
         self.output_features = (["open", "high", "low", "close", "vwap", "turnover_rate_f"]
                                 if self.dataset == "week" else ["open", "high", "low", "close", "amount"])
+        self.include_daily_return = params.get("include_daily_return", False)
+        if not isinstance(self.include_daily_return, bool) or (self.include_daily_return and self.dataset != "week"):
+            raise ValueError("include_daily_return is a boolean option for the week dataset")
+        if self.include_daily_return:
+            self.output_features.append("daily_return_zscore")
         if list(columns) != self.output_features:
             raise ValueError(f"resnet_panel {self.dataset} requires columns {self.output_features}")
         daily_root = params.get("daily_root")
@@ -102,7 +108,15 @@ class ResNetPanelProvider(FeatureProvider):
         return session
 
     def _week_session(self, date):
-        frame = _read_required(self.root, date, ["open", "high", "low", "close", "vol", "amount"])
+        columns = ["open", "high", "low", "close", "vol", "amount"]
+        if self.include_daily_return:
+            columns.append("pre_close")
+        frame = _read_required(self.root, date, columns)
+        if self.include_daily_return:
+            close = frame.close.astype("float64")
+            previous = frame.pre_close.astype("float64")
+            returns = close.where(close > 0) / previous.where(previous > 0) - 1.0
+            frame = frame.assign(daily_return_zscore=_zscore_series(returns))
         adjustment = _read_required(self.daily_root / "adj_factor", date, ["adj_factor"])
         basic = _read_required(self.daily_root / "basic", date, ["turnover_rate_f"])
         frame = frame.merge(adjustment, on=["trade_date", "ts_code"], validate="one_to_one")
@@ -112,6 +126,8 @@ class ResNetPanelProvider(FeatureProvider):
         numeric = numeric.loc[valid].copy()
         numeric["vwap"] = numeric["amount"] * 10.0 / numeric["vol"]  # Daily source: thousand yuan / lots.
         numeric.loc[:, self.output_features[:5]] = numeric[self.output_features[:5]].mul(numeric.adj_factor, axis=0)
+        if self.include_daily_return:
+            numeric["daily_return_zscore"] = frame["daily_return_zscore"]
         return numeric.index, numeric[self.output_features].to_numpy(dtype="float64")[:, None, :]
 
     def _minute_session(self, date):

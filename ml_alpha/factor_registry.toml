@@ -29,6 +29,16 @@ label = "future_vwap_return_10d"
 tags = ["e2e", "DFZQ", "astgnn", "adaptive_graph", "msnew", "orthogonal", "mse_loss"]
 
 [[factors]]
+factor_id = "cmm_week"
+config = "factors/cmm_week.toml"
+status = "active"
+display_name = "CMM weekly-bar momentum and reversal alpha"
+model_class = "yq_ml_alpha.models.cmm_model.CMMWeekAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "HYZQ", "cmm", "week", "momentum", "reversal", "mse_loss"]
+
+[[factors]]
 factor_id = "rawbar_restcn"
 config = "factors/rawbar_restcn.toml"
 status = "active"

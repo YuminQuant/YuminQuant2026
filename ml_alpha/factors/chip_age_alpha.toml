@@ -68,7 +68,7 @@ write_window_summary = true
 [model]
 name = "chip_age_cnn_gru"
 class = "yq_ml_alpha.models.chip_age_cnn_gru_model.ChipAgeCNNGRUAlphaModel"
-artifact_dir = "data/model_workspace/chip_age_alpha/rolling60m_bs5000/artifacts"
+artifact_dir = "data/model_workspace/chip_age_alpha/artifacts"
 
 [model.params]
 seeds = [42]

@@ -159,7 +159,7 @@ write_window_summary = true
 [model]
 name = "logsigrnn_week"
 class = "yq_ml_alpha.models.logsigrnn_model.LogsigRNNAlphaModel"
-artifact_dir = "data/model_workspace/logsigrnn_week/rolling60m_5d_3passes/artifacts"
+artifact_dir = "data/model_workspace/logsigrnn_week/artifacts"
 
 [model.params]
 sequence_length = 21

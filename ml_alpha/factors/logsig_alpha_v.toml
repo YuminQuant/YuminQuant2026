@@ -62,7 +62,7 @@ write_window_summary = true
 [model]
 name = "logsig_orthogonal_mlp"
 class = "yq_ml_alpha.models.logsig_orthogonal_mlp_model.LogsigOrthogonalMLPAlphaModel"
-artifact_dir = "data/model_workspace/logsig_alpha_v/rolling60m_bs5000/artifacts"
+artifact_dir = "data/model_workspace/logsig_alpha_v/artifacts"
 
 [model.params]
 base_factors = 8

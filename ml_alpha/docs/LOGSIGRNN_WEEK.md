@@ -66,6 +66,6 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- derive-logsigrnn
 & $py -B -u -m yq_ml_alpha factor-run --config ml_alpha\factors\logsigrnn_week.toml
 ```
 
-权重在 `data/model_workspace/logsigrnn_week/rolling60m_5d_3passes/artifacts/annual_YYYY/model.pkl`，含版本、参数、LSTM/BN/线性权重和诊断。同目录保存 manifest、loss_history.parquet 和 model_info.json。预测因子写入 `data/factors/stock/daily/YYYY/YYYYMMDD_ml.parquet` 的 `logsigrnn_week` 列。
+权重在 `data/model_workspace/logsigrnn_week/artifacts/annual_YYYY/model.pkl`，含版本、参数、LSTM/BN/线性权重和诊断。同目录保存 manifest、loss_history.parquet 和 model_info.json。预测因子写入 `data/factors/stock/daily/YYYY/YYYYMMDD_ml.parquet` 的 `logsigrnn_week` 列。
 
 本轮不启动正式派生、训练、Slurm或正式预测，不改动运行任务。

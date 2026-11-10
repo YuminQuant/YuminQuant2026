@@ -20,10 +20,7 @@ therefore use no feature date later than 11 prior trading sessions, with the
 actual sampled endpoint potentially earlier. This is not a simple calendar-day
 subtraction or delayed prediction using labels unavailable at fit time.
 
-Both first cluster fits write under
-`data/model_workspace/<factor>/rolling60m_bs5000/artifacts/annual_<year>/` to
-preserve previously produced weights. Other price configurations retain their
-configured artifact roots until submitted.
+Annual weights are stored under `data/model_workspace/<factor>/artifacts/annual_<year>/`.
 
 Chip-age numerical semantics remain `chip_age_rolling250_v2`: every output is
 computed from250 trading sessions with zero initial mass. Each annual shard

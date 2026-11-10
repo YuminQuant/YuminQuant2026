@@ -18,6 +18,10 @@ class TradingCalendar:
         dates = table.loc[table["is_open"].astype(int) == 1, "cal_date"].astype(int).tolist()
         return cls(sorted(dates))
 
+    @classmethod
+    def for_config(cls, config) -> "TradingCalendar":
+        return cls.load(config.data_root, config.calendar_exchange)
+
     def between(self, start: int, end: int) -> list[int]:
         return [date for date in self.dates if start <= date <= end]
 

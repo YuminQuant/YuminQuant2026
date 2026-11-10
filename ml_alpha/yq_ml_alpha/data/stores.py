@@ -9,7 +9,8 @@ import pandas as pd
 
 
 KEY_COLUMNS = ["trade_date", "ts_code"]
-NON_FEATURE_COLUMNS = {"trade_date", "ts_code", "trade_time"}
+MINUTE_KEY_COLUMNS = ["trade_date", "trade_time", "ts_code"]
+NON_FEATURE_COLUMNS = set(MINUTE_KEY_COLUMNS)
 
 
 def daily_path(root: str | Path, trade_date: int) -> Path:
@@ -30,6 +31,40 @@ def read_daily(root: str | Path, trade_date: int, columns: Iterable[str], *, req
         if column not in frame.columns:
             frame[column] = pd.NA
     return frame[requested]
+
+
+def require_hdfs_input(path: Path) -> None:
+    if not data_io.remote_enabled() or data_io.backend(data_io.read_path(path)) is None:
+        raise RuntimeError(f"HDFS input requires a registered HDFS deployment backend for {path}")
+
+
+def read_minute(root: str | Path, trade_date: int, columns: Iterable[str], *,
+                require_hdfs: bool = False) -> pd.DataFrame:
+    path = daily_path(root, trade_date)
+    if require_hdfs:
+        require_hdfs_input(path)
+    values = list(columns)
+    requested = [*MINUTE_KEY_COLUMNS, *values]
+    frame = data_io.read_projected_frame(path, requested, required=requested)
+    validate_minute_keys(frame, trade_date, path)
+    return frame.astype({"trade_date": "int32", **dict.fromkeys(values, "float32")})
+
+
+def validate_minute_keys(frame: pd.DataFrame, trade_date: int, source: str | Path) -> None:
+    missing = set(MINUTE_KEY_COLUMNS) - set(frame.columns)
+    if missing:
+        raise ValueError(f"missing minute keys {sorted(missing)} in {source}")
+    keys = frame[MINUTE_KEY_COLUMNS]
+    if keys.isna().any().any() or not keys["trade_date"].eq(trade_date).all():
+        raise ValueError(f"null minute key or incorrect trade_date {trade_date} in {source}")
+    for column in ("trade_time", "ts_code"):
+        values = keys[column]
+        if not values.empty and (
+            pd.api.types.infer_dtype(values.to_numpy()) != "string" or values.str.strip().eq("").any()
+        ):
+            raise ValueError(f"{column} must contain nonempty strings in {source}")
+    if keys.duplicated().any():
+        raise ValueError(f"duplicate minute key in {source}")
 
 
 def read_daily_range(root: str | Path, dates: Iterable[int], columns: Iterable[str]) -> pd.DataFrame:

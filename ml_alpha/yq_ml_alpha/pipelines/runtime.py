@@ -19,6 +19,7 @@ from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.data.dataset import DatasetBuilder, DatasetBundle
 from yq_ml_alpha.data.sampler import refit_dates, sample_dates
+from yq_ml_alpha.data.stores import KEY_COLUMNS, MINUTE_KEY_COLUMNS
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
 from yq_ml_alpha.output.artifacts import window_artifact_path
 
@@ -61,7 +62,7 @@ def _predict_write_window_active(
         predict_bundle = _load_bundle(config, dataset, calendar, dates, include_label=False)
         if predict_bundle.frame.empty:
             progress.step(f"write {batch_idx}/{len(batches)}")
-            empty_prediction = _empty_prediction_frame()
+            empty_prediction = _empty_prediction_frame(config.key_columns)
             try:
                 written.extend(writer.write(empty_prediction, coverage_dates=dates, schema_dates=schema_dates))
             finally:
@@ -73,7 +74,7 @@ def _predict_write_window_active(
             batch_context = context or _context(config, window.window_id, predict_bundle.feature_columns)
             score = _predict_model(model, predict_bundle, batch_context)
             progress.step(f"write {batch_idx}/{len(batches)}")
-            prediction = _prediction_frame(predict_bundle.frame, score)
+            prediction = _prediction_frame(predict_bundle.frame, score, config.key_columns)
             written.extend(
                 writer.write(prediction, coverage_dates=dates, schema_dates=schema_dates)
             )
@@ -806,29 +807,29 @@ def _context(config: MlAlphaConfig, window_id: str, feature_columns: list[str] |
     )
 
 
-def _prediction_frame(source: pd.DataFrame, score: pd.Series) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "trade_date": source["trade_date"].astype("int32").to_numpy(),
-            "ts_code": source["ts_code"].to_numpy(),
-            "score": score.astype("float32").to_numpy(),
-        }
-    )
+def _prediction_frame(source: pd.DataFrame, score: pd.Series, key_columns=KEY_COLUMNS) -> pd.DataFrame:
+    if key_columns == MINUTE_KEY_COLUMNS and not score.index.equals(source.index):
+        raise ValueError("Minute prediction scores must preserve the input row index")
+    columns = {key: source[key].to_numpy() for key in key_columns}
+    columns["trade_date"] = columns["trade_date"].astype("int32", copy=False)
+    columns["score"] = score.astype("float32").to_numpy()
+    return pd.DataFrame(columns)
 
 
-def _empty_prediction_frame() -> pd.DataFrame:
-    return pd.DataFrame(columns=["trade_date", "ts_code", "score"])
+def _empty_prediction_frame(key_columns=KEY_COLUMNS) -> pd.DataFrame:
+    return pd.DataFrame(columns=[*key_columns, "score"])
 
 
 def _write_missing_coverage(
     writer: Any,
     all_predict_dates: list[int],
     covered_dates: set[int],
+    key_columns=KEY_COLUMNS,
 ) -> list[Path]:
     missing = [date for date in all_predict_dates if date not in covered_dates]
     if not missing:
         return []
-    return writer.write(_empty_prediction_frame(), coverage_dates=missing, schema_dates=all_predict_dates)
+    return writer.write(_empty_prediction_frame(key_columns), coverage_dates=missing, schema_dates=all_predict_dates)
 
 
 def _chunks(values: list[int], size: int) -> list[list[int]]:

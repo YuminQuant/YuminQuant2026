@@ -73,7 +73,7 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     if config.features.type == "analyst_report_events":
         from yq_ml_alpha.pipelines.report_sentiment import execute
         return execute(config, train=True, predict=True, resume=resume)
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     dataset = DatasetBuilder(config)
     writer = _new_writer(config)
     written: list[Path] = []
@@ -162,7 +162,7 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False, window_ids=None
     if config.features.type == "analyst_report_events":
         from yq_ml_alpha.pipelines.report_sentiment import execute
         return execute(config, train=True, predict=False, resume=resume, window_ids=window_ids)
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     paths: list[Path] = []
     windows = training_windows(config, calendar, window_ids)
     dataset = DatasetBuilder(config)
@@ -202,7 +202,7 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
         return execute(config, train=False, predict=True)
     if config.dates.predict is None:
         return []
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     dataset = DatasetBuilder(config)
     writer = _new_writer(config)
     written: list[Path] = []

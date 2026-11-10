@@ -11,12 +11,11 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from yq_ml_alpha.data.stores import daily_path, read_daily
+from yq_ml_alpha.data.stores import KEY_COLUMNS, MINUTE_KEY_COLUMNS, daily_path, read_daily, validate_minute_keys
 from yq_ml_alpha.output.file_lock import daily_file_lock
 from yq_ml_alpha.output import artifact_io
 
 
-KEY_COLUMNS = ["trade_date", "ts_code"]
 Layout = Literal["direct", "standard"]
 
 
@@ -34,13 +33,20 @@ class DailyWideWriter:
         base_root: str | Path | None = None,
         write_workers: int = 4,
         file_suffix: str = "",
+        key_columns: list[str] = KEY_COLUMNS,
     ) -> None:
         self.output_root = Path(output_root)
         self.output_id = output_id
         self.layout = layout
         self.asset = asset
         self.frequency = frequency
+        self.key_columns = list(key_columns)
         self.base_root = Path(base_root) if base_root is not None else None
+        if self.key_columns == MINUTE_KEY_COLUMNS:
+            if self.base_root is not None:
+                raise ValueError("minute output uses prediction keys for coverage")
+            if output_id in self.key_columns:
+                raise ValueError(f"invalid minute output column: {output_id}")
         if file_suffix not in {"", "_ml"}:
             raise ValueError("daily output file_suffix must be empty or _ml")
         self.file_suffix = file_suffix
@@ -54,7 +60,7 @@ class DailyWideWriter:
         if data_io.backend(self.output_root) is not None:
             self.write_workers = data_io.io_options(self.output_root)["workers"]
         self._schema_dates_seen: set[int] = set()
-        self._known_columns = set(KEY_COLUMNS) | {output_id}
+        self._known_columns = set(self.key_columns) | {output_id}
 
     def _map_writes(self, function, items):
         if data_io.backend(self.output_root) is not None:
@@ -70,7 +76,7 @@ class DailyWideWriter:
         coverage_dates: Iterable[int] | None = None,
         schema_dates: Iterable[int] | None = None,
     ) -> list[Path]:
-        required = {"trade_date", "ts_code", "score"}
+        required = {*self.key_columns, "score"}
         missing = required.difference(predictions.columns)
         if missing:
             raise ValueError(f"predictions missing columns: {sorted(missing)}")
@@ -78,7 +84,7 @@ class DailyWideWriter:
         dates = _coverage_dates(predictions, coverage_dates)
         if not dates:
             return []
-        grouped = _prediction_groups(predictions)
+        grouped = _prediction_groups(predictions, self.key_columns)
         schema_source_dates = _coverage_dates(predictions, schema_dates if schema_dates is not None else dates)
         schema_columns = self._schema_columns(schema_source_dates)
         tasks = [(date, grouped.get(date), schema_columns) for date in dates]
@@ -109,12 +115,12 @@ class DailyWideWriter:
         tasks = {}
         for output_id, frame in predictions.items():
             self._check_owner(output_id)
-            if not output_id or output_id in KEY_COLUMNS:
+            if not output_id or output_id in self.key_columns:
                 raise ValueError(f"invalid output column: {output_id}")
-            if not set([*KEY_COLUMNS, "score"]).issubset(frame.columns):
+            if not set([*self.key_columns, "score"]).issubset(frame.columns):
                 raise ValueError(f"{output_id}: missing prediction keys/score")
             coverage = None if coverage_dates is None else coverage_dates.get(output_id, [])
-            grouped = _prediction_groups(frame)
+            grouped = _prediction_groups(frame, self.key_columns)
             for date in _coverage_dates(frame, coverage):
                 tasks.setdefault(date, {})[output_id] = grouped.get(date)
         if not tasks:
@@ -152,11 +158,12 @@ class DailyWideWriter:
 
     def _write_columns_one(self, trade_date, daily_by_column, columns):
         path = self._path(trade_date)
+        keys = self.key_columns
         with daily_file_lock(path):
             daily = next((value for value in daily_by_column.values() if value is not None and not value.empty), None)
             base = self._load_base(path, trade_date, daily)
             values = [
-                _daily_values(trade_date, frame, name).set_index(KEY_COLUMNS)
+                _daily_values(trade_date, frame, name, keys).set_index(keys)
                 for name, frame in daily_by_column.items()
             ]
             joined = pd.concat(values, axis=1).reset_index()
@@ -167,14 +174,16 @@ class DailyWideWriter:
                     merged[name] = np.nan
             else:
                 joined["trade_date"] = joined["trade_date"].astype("int32")
-                merged = base.merge(joined, on=KEY_COLUMNS, how="outer", sort=False)
+                merged = base.merge(joined, on=keys, how="outer", sort=False)
             # An absent ML column may still live in a legacy mixed file. Do not
             # pad it with nulls merely because another date/model has that column.
             names = set(merged.columns) if self.file_suffix == "_ml" else set(columns) | set(merged.columns)
-            ordered = KEY_COLUMNS + sorted(names - set(KEY_COLUMNS))
-            merged = merged.reindex(columns=ordered).sort_values(KEY_COLUMNS).reset_index(drop=True)
+            value_columns = sorted(names - set(keys))
+            merged = merged.reindex(columns=keys + value_columns).sort_values(keys).reset_index(drop=True)
             merged["trade_date"] = merged["trade_date"].astype("int32")
-            merged[ordered[2:]] = merged[ordered[2:]].astype("float32")
+            merged[value_columns] = merged[value_columns].astype("float32")
+            if keys == MINUTE_KEY_COLUMNS:
+                merged[["trade_time", "ts_code"]] = merged[["trade_time", "ts_code"]].astype("string")
             self._atomic_write(path, merged)
         return path
 
@@ -197,15 +206,15 @@ class DailyWideWriter:
             if artifact_io.exists(path) and self.output_id in parquet_columns(path):
                 return None
             base = self._load_base(path, trade_date, None)
-            values = pd.DataFrame(columns=[*KEY_COLUMNS, self.output_id])
+            values = pd.DataFrame(columns=[*self.key_columns, self.output_id])
             local_columns = [*base.columns, self.output_id] if self.file_suffix == "_ml" else columns
-            merged = _merge_values(base, values, self.output_id, local_columns)
+            merged = _merge_values(base, values, self.output_id, local_columns, self.key_columns)
             self._atomic_write(path, merged)
         return path
 
     def _schema_columns(self, dates: list[int]) -> list[str]:
         if self.file_suffix == "_ml":
-            return KEY_COLUMNS + sorted(self._known_columns - set(KEY_COLUMNS))
+            return self.key_columns + sorted(self._known_columns - set(self.key_columns))
         for trade_date in dates:
             if trade_date in self._schema_dates_seen:
                 continue
@@ -213,25 +222,27 @@ class DailyWideWriter:
             if artifact_io.exists(path):
                 self._known_columns.update(parquet_columns(path))
             self._schema_dates_seen.add(trade_date)
-        value_columns = sorted(column for column in self._known_columns if column not in KEY_COLUMNS)
-        return KEY_COLUMNS + value_columns
+        value_columns = sorted(self._known_columns - set(self.key_columns))
+        return self.key_columns + value_columns
 
     def _load_base(self, path: Path, trade_date: int, daily: pd.DataFrame | None) -> pd.DataFrame:
         if artifact_io.exists(path):
             frame = artifact_io.read_parquet(path)
+            if self.key_columns == MINUTE_KEY_COLUMNS:
+                validate_minute_keys(frame, trade_date, path)
             if self.file_suffix == "_ml" and any(self._owners.get(c) == "manual" for c in frame.columns):
                 raise ValueError(f"ML output contains manual-owned columns: {path}")
             return frame
         if self.base_root is not None:
             base = read_daily(self.base_root, trade_date, [])
             if not base.empty:
-                return base[KEY_COLUMNS]
+                return base[self.key_columns]
             raise FileNotFoundError(
                 f"missing base daily pv file for {trade_date}: {daily_path(self.base_root, trade_date)}"
             )
         if daily is not None and not daily.empty:
-            return daily[KEY_COLUMNS].copy()
-        return pd.DataFrame(columns=KEY_COLUMNS)
+            return daily[self.key_columns].copy()
+        return pd.DataFrame(columns=self.key_columns)
 
     def _path(self, trade_date: int) -> Path:
         year = str(trade_date // 10000)
@@ -265,22 +276,30 @@ def _date_span(dates: list[int]) -> str:
     return f"{dates[0]}..{dates[-1]}"
 
 
-def _prediction_groups(predictions: pd.DataFrame) -> dict[int, pd.DataFrame]:
+def _prediction_groups(predictions: pd.DataFrame, key_columns=KEY_COLUMNS) -> dict[int, pd.DataFrame]:
     if predictions.empty:
         return {}
-    frame = predictions[["trade_date", "ts_code", "score"]].copy()
-    frame["trade_date"] = frame["trade_date"].astype("int32")
+    frame = predictions[[*key_columns, "score"]].copy()
+    minute = key_columns == MINUTE_KEY_COLUMNS
+    trade_dates = frame["trade_date"]
+    if minute and (trade_dates.isna().any() or not trade_dates.eq(trade_dates.astype("int32")).all()):
+        raise ValueError("invalid trade_date in minute predictions")
+    frame["trade_date"] = trade_dates.astype("int32")
     frame["score"] = frame["score"].astype("float32")
     output = {}
     for trade_date, daily in frame.groupby("trade_date", sort=False):
-        output[int(trade_date)] = daily.drop_duplicates(KEY_COLUMNS, keep="last")
+        if minute:
+            validate_minute_keys(daily, int(trade_date), "predictions")
+        else:
+            daily = daily.drop_duplicates(key_columns, keep="last")
+        output[int(trade_date)] = daily
     return output
 
 
-def _daily_values(trade_date: int, daily: pd.DataFrame | None, output_id: str) -> pd.DataFrame:
+def _daily_values(trade_date: int, daily: pd.DataFrame | None, output_id: str, key_columns=KEY_COLUMNS) -> pd.DataFrame:
     if daily is None or daily.empty:
-        return pd.DataFrame(columns=[*KEY_COLUMNS, output_id])
-    values = daily[KEY_COLUMNS + ["score"]].rename(columns={"score": output_id}).copy()
+        return pd.DataFrame(columns=[*key_columns, output_id])
+    values = daily[key_columns + ["score"]].rename(columns={"score": output_id}).copy()
     values["trade_date"] = np.int32(trade_date)
     values[output_id] = values[output_id].astype("float32")
     return values
@@ -291,9 +310,10 @@ def _merge_values(
     values: pd.DataFrame,
     output_id: str,
     columns: list[str],
+    key_columns=KEY_COLUMNS,
 ) -> pd.DataFrame:
     base = base.copy()
-    for column in KEY_COLUMNS:
+    for column in key_columns:
         if column not in base.columns:
             base[column] = pd.Series(dtype="int32" if column == "trade_date" else "object")
     if output_id in base.columns:
@@ -302,14 +322,16 @@ def _merge_values(
         merged = base.copy()
         merged[output_id] = np.nan
     else:
-        merged = base.merge(values, on=KEY_COLUMNS, how="outer", sort=False)
-    merged = merged.sort_values(KEY_COLUMNS).reset_index(drop=True)
+        merged = base.merge(values, on=key_columns, how="outer", sort=False)
+    merged = merged.sort_values(key_columns).reset_index(drop=True)
     merged["trade_date"] = merged["trade_date"].astype("int32")
-    columns = KEY_COLUMNS + sorted((set(columns) | set(merged.columns)) - set(KEY_COLUMNS))
+    if key_columns == MINUTE_KEY_COLUMNS:
+        merged[["trade_time", "ts_code"]] = merged[["trade_time", "ts_code"]].astype("string")
+    columns = key_columns + sorted((set(columns) | set(merged.columns)) - set(key_columns))
     for column in columns:
         if column not in merged.columns:
             merged[column] = np.nan
-    value_columns = [column for column in columns if column not in KEY_COLUMNS]
+    value_columns = [column for column in columns if column not in key_columns]
     for column in value_columns:
         merged[column] = merged[column].astype("float32")
     return merged[columns]

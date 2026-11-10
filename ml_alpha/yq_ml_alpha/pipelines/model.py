@@ -44,7 +44,7 @@ def materialize_only(config_path: str | Path) -> list[Path]:
 
 def run_config(config: MlAlphaConfig) -> list[Path]:
     _ensure_model_config(config)
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     dataset = DatasetBuilder(config)
     writer = _new_writer(config)
     written: list[Path] = []
@@ -84,7 +84,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
         covered_dates.update(window.predict_dates)
         del model
         _release_accelerator_memory()
-    written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates))
+    written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates, config.key_columns))
     written.extend(_aggregate_diagnostics(config))
     progress.done()
     return written
@@ -94,7 +94,7 @@ def train_config(config: MlAlphaConfig, *, window_ids=None) -> list[Path]:
     _ensure_model_config(config)
     from yq_ml_alpha.pipelines.training_tasks import training_windows, training_config_for_windows
     config = training_config_for_windows(config, window_ids)
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     paths: list[Path] = []
     windows = training_windows(config, calendar, window_ids)
     dataset = DatasetBuilder(config)
@@ -127,7 +127,7 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
     _ensure_model_config(config)
     if config.dates.predict is None:
         return []
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     dataset = DatasetBuilder(config)
     writer = _new_writer(config)
     written: list[Path] = []
@@ -157,7 +157,7 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
         covered_dates.update(window.predict_dates)
         del model
         _release_accelerator_memory()
-    written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates))
+    written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates, config.key_columns))
     progress.done()
     return written
 
@@ -170,6 +170,7 @@ def _new_writer(config: MlAlphaConfig) -> AlphaWriter:
         config.output.id,
         base_root=config.output.base_root,
         write_workers=config.output.write_workers,
+        key_columns=config.key_columns,
     )
 
 

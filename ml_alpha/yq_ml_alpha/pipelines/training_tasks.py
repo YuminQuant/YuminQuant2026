@@ -36,7 +36,7 @@ def training_config_for_windows(config, window_ids):
 
 
 def training_plan(config, window_ids=None):
-    windows = training_windows(config, TradingCalendar.load(config.data_root), window_ids)
+    windows = training_windows(config, TradingCalendar.for_config(config), window_ids)
     if not windows:
         raise ValueError("No training windows; check calendar and configured date ranges")
     def span(dates):

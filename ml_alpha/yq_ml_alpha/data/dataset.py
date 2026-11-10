@@ -13,7 +13,7 @@ import pandas as pd
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.data.filters import TradeFilters
-from yq_ml_alpha.data.stores import read_daily, daily_path
+from yq_ml_alpha.data.stores import read_daily, read_minute, daily_path, require_hdfs_input
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
@@ -21,7 +21,7 @@ from yq_ml_alpha.features.market_style_sequence import MarketStyleSequenceProvid
 from yq_ml_alpha.features.rawbar_sequence import RawBarSequenceProvider
 from yq_ml_alpha.features.derived_logsigrnn import DerivedLogsigRnnProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
-from yq_ml_alpha.features.factor_frame import FactorFrameProvider
+from yq_ml_alpha.features.factor_frame import FactorFrameProvider, MinuteFactorFrameProvider
 from yq_ml_alpha.features.graph_factor_frame import FactorSequenceProvider, GraphFactorFrameProvider
 from yq_ml_alpha.features.analyst_factor_frame import AnalystFactorFrameProvider
 from yq_ml_alpha.features.derived_analyst_gat import DerivedAnalystGATProvider
@@ -63,8 +63,16 @@ class DatasetBuilder:
     def __init__(self, config: MlAlphaConfig) -> None:
         self.config = config
         self.feature_provider = make_feature_provider(config)
+        self.minute_frame = isinstance(self.feature_provider, MinuteFactorFrameProvider)
+        if self.minute_frame:
+            if any(vars(config.filters).values()):
+                raise ValueError("minute_factor_frame requires disabling the stock filters")
+            if config.preprocess.cross_section_transform.strip().lower() not in {"", "none"}:
+                raise ValueError("minute_factor_frame requires cross_section_transform='none'")
+            if config.train_scheme.validation_unit != "dates":
+                raise ValueError("minute_factor_frame requires date-based validation")
         if hasattr(self.feature_provider, "set_calendar_dates"):
-            self.feature_provider.set_calendar_dates(TradingCalendar.load(config.data_root).dates)
+            self.feature_provider.set_calendar_dates(TradingCalendar.for_config(config).dates)
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
         self._source_st_symbol_cache: dict[int, set[str]] = {}
@@ -89,6 +97,8 @@ class DatasetBuilder:
             data_io.invalidate_parquet()
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
+        if dates and include_label and self.minute_frame and self.feature_provider.require_hdfs:
+            require_hdfs_input(self.config.label.root)
         graph_tensor = isinstance(self.feature_provider, DailySequenceProvider)
         lazy_tensor = isinstance(self.feature_provider, (DerivedChipAgeProvider, DailySequenceProvider))
         if lazy_tensor and (self.config.preprocess.cross_section_transform != "none" or self.config.materialize.cache_samples):
@@ -100,10 +110,10 @@ class DatasetBuilder:
         if isinstance(self.feature_provider, LogsigSignatureProvider):
             self.feature_provider.set_cache_days_for_target_dates(dates)
         preloaded = None
-        if type(self.feature_provider) in (FactorFrameProvider, RawPanelProvider):
+        if type(self.feature_provider) in (FactorFrameProvider, MinuteFactorFrameProvider, RawPanelProvider):
             preloaded = data_io.ordered_io_map(self.feature_provider.load, dates,
                 root=self.feature_provider.root,
-                path_for=lambda day: daily_path(self.feature_provider.root, day))
+                path_for=None if self.minute_frame else lambda day: daily_path(self.feature_provider.root, day))
         try:
             return self._load_dates(dates, include_label, split_name, graph_tensor, lazy_tensor,
                                     frames, total_dates, started, preloaded)
@@ -133,17 +143,25 @@ class DatasetBuilder:
                 features = next(preloaded)
             else:
                 features = self.feature_provider.load(trade_date)
-            if features.empty:
+            if features.empty and not (self.minute_frame and include_label):
                 log_date("done", date_idx, trade_date, 0, date_started)
                 continue
             frame = features if graph_tensor else self.filters.apply(self.universe.filter(features, trade_date), trade_date)
             if include_label:
                 labels = self._read_labels(trade_date)
-                frame = frame.merge(labels, on=["trade_date", "ts_code"], how="left")
+                if self.minute_frame:
+                    feature_rows = len(frame)
+                    frame = frame.merge(labels, on=self.config.key_columns, how="inner", validate="one_to_one")
+                    if feature_rows and frame.empty:
+                        raise ValueError(f"no matching minute factor and label keys on {trade_date}")
+                    if len(frame) < feature_rows:
+                        log_date(f"matched_label_keys_of_{feature_rows}", date_idx, trade_date, len(frame), date_started)
+                else:
+                    frame = frame.merge(labels, on=self.config.key_columns, how="left")
             if not lazy_tensor:
                 frame = self._preprocess(frame, include_label)
             if include_label and not graph_tensor:
-                keep = self._valid_label_rows(frame, finite=lazy_tensor)
+                keep = self._valid_label_rows(frame, finite=lazy_tensor or self.minute_frame)
                 frame = frame.loc[keep]
             frames.append(frame)
             total_rows += len(frame)
@@ -151,10 +169,12 @@ class DatasetBuilder:
         if frames:
             output = pd.concat(frames, ignore_index=True)
         else:
-            columns = ["trade_date", "ts_code", *self.feature_provider.feature_columns]
+            columns = [*self.config.key_columns, *self.feature_provider.feature_columns]
             if include_label:
                 columns.extend(self.config.label.columns)
             output = pd.DataFrame(columns=columns)
+        if self.minute_frame and dates and include_label and output.empty:
+            raise ValueError(f"no usable minute labels for {split_name} {dates[0]}..{dates[-1]}")
         self._maybe_cache(output, dates, include_label)
         if include_label:
             print(
@@ -399,6 +419,11 @@ class DatasetBuilder:
         return output
 
     def _read_labels(self, trade_date: int) -> pd.DataFrame:
+        if self.minute_frame:
+            return read_minute(
+                self.config.label.root, trade_date, self.config.label.columns,
+                require_hdfs=self.feature_provider.require_hdfs,
+            )
         return read_daily(self.config.label.root, trade_date, self.config.label.columns)
 
     def _valid_label_rows(self, frame: pd.DataFrame, *, finite: bool = False) -> pd.Series:
@@ -511,6 +536,13 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    if config.features.type == "minute_factor_frame":
+        if set(config.label.columns).intersection([*config.key_columns, *config.features.columns]):
+            raise ValueError("minute label columns must be separate from keys and feature columns")
+        return MinuteFactorFrameProvider(
+            config.features.root, config.features.columns,
+            require_hdfs=config.features.params.get("require_hdfs", False),
+        )
     if config.features.type == "derived_logsigrnn":
         return DerivedLogsigRnnProvider(config)
     if config.features.type == "rawbar_sequence":

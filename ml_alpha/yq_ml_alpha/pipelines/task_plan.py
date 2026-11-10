@@ -15,7 +15,7 @@ def load_configs(paths, kind):
 
 def output_group(config):
     return (str(config.output.root), config.output.kind, config.output.asset,
-            config.output.frequency, str(config.output.base_root), str(config.data_root))
+            config.output.frequency, str(config.output.base_root), str(config.data_root), config.calendar_exchange)
 
 
 def output_path(config, date):
@@ -76,7 +76,7 @@ def plan_tasks(configs, action, options):
         else:
             raise ValueError(f'Unsupported task action: {action}')
     for gi, indices in enumerate(groups.values()):
-        calendar = TradingCalendar.load(configs[indices[0]].data_root)
+        calendar = TradingCalendar.for_config(configs[indices[0]])
         dates = sorted({d for i in indices for d in _predict_dates(configs[i], calendar)})
         # Arbitrary model extensions may carry state across prediction batches.
         # Only declared replay-safe models can be independently date-sharded.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from yq_ml_alpha.output import artifact_io as data_io
+from yq_ml_alpha.data.stores import KEY_COLUMNS, MINUTE_KEY_COLUMNS
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -152,7 +153,7 @@ class OutputConfig:
     root: Path = Path("data/models")
     asset: str = "stock"
     frequency: str = "daily"
-    base_root: Path = Path("data/chn_stock_data/daily/pv")
+    base_root: Path | None = Path("data/chn_stock_data/daily/pv")
     write_workers: int = 4
     write_metadata: bool = True
 
@@ -179,6 +180,11 @@ class MlAlphaConfig:
     data_root: Path = Path("data")
     output_root: Path = Path("data/models")
     data_version: str = "unversioned"
+    calendar_exchange: str = "SSE"
+
+    @property
+    def key_columns(self) -> list[str]:
+        return MINUTE_KEY_COLUMNS if self.features.type == "minute_factor_frame" else KEY_COLUMNS
 
 
 def load_config(path: str | Path) -> MlAlphaConfig:
@@ -230,6 +236,13 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     legacy_search = model_params.pop("search", {})
     model_search = dict(model.get("search", legacy_search))
     feature_type = _required(features, "type", "features.type")
+    minute_frame = feature_type == "minute_factor_frame"
+    if minute_frame and (output_kind != "signal" or output.get("frequency") != "minute_1m"):
+        raise ValueError("minute_factor_frame requires a signal output with frequency='minute_1m'")
+    if minute_frame and "base_root" in output:
+        raise ValueError("minute_factor_frame uses prediction keys for coverage; omit output.base_root")
+    if minute_frame:
+        _required(label, "root", "label.root")
     feature_params = dict(features.get("params", {})) if isinstance(features.get("params", {}), dict) else {}
     feature_params.update(
         {key: value for key, value in features.items() if key not in {"type", "root", "columns", "params"}}
@@ -241,6 +254,7 @@ def load_config(path: str | Path) -> MlAlphaConfig:
 
     return MlAlphaConfig(
         data_version=str(raw.get("data_version", "unversioned")),
+        calendar_exchange=str(raw.get("calendar_exchange", "SHFE" if minute_frame else "SSE")).strip().upper(),
         run_id=run_id,
         alpha_id=alpha_id,
         dates=DatesConfig(
@@ -299,7 +313,9 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             root=output_root,
             asset=str(output.get("asset", "stock")).strip().lower(),
             frequency=str(output.get("frequency", "daily")).strip().lower(),
-            base_root=_project_path(output.get("base_root", data_root / "chn_stock_data" / "daily" / "pv")),
+            base_root=None if minute_frame else _project_path(
+                output.get("base_root", data_root / "chn_stock_data" / "daily" / "pv")
+            ),
             write_workers=max(1, int(output.get("write_workers", 4))),
             write_metadata=bool(output.get("write_metadata", True)),
         ),
@@ -331,11 +347,16 @@ def _validate_train_scheme(section: TrainSchemeConfig) -> None:
         value = section.validation_lookback
         if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*m", value):
             raise ValueError("validation_lookback must be positive calendar months, e.g. '3m'")
-        if (scheme != "rolling" or section.refit_frequency not in {"yearly", "yearly_end", "annual", "quarterly", "quarterly_end"}
+        calendar_refits = {
+            "yearly", "yearly_end", "annual", "semiannual", "semiannual_end",
+            "halfyear", "halfyear_end", "quarterly", "quarterly_end",
+        }
+        if (scheme != "rolling" or section.refit_frequency not in calendar_refits
                 or section.train_lookback is None or ratio is not None
                 or section.train_sample_count or section.validation_sample_count
                 or section.prediction_activation != "purge"):
-            raise ValueError("calendar validation requires annual or quarterly rolling lookback with purge and no sample-count/ratio split")
+            raise ValueError("calendar validation requires annual, semiannual or quarterly rolling lookback "
+                             "with purge and no sample-count/ratio split")
     if section.validation_unit not in {"dates", "rows"}:
         raise ValueError("validation_unit must be dates or rows")
     if section.validation_unit == "rows" and ratio is None:

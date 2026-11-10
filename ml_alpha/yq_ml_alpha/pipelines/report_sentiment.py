@@ -22,7 +22,7 @@ def execute(config, *, train, predict, resume=False, window_ids=None):
     check = getattr(model_class, "check_dependencies", None)
     if callable(check):
         check()
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     dataset = AnalystReportDataset(config, calendar)
     # Replaying prior OOS windows reconstructs both the three-month report book
     # and the previous month's held factor for a partial prediction request.

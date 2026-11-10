@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from yq_ml_alpha.data.stores import KEY_COLUMNS
 from yq_ml_alpha.output.daily_wide_writer import DailyWideWriter
 
 
@@ -15,6 +16,7 @@ class AlphaWriter:
         *,
         base_root: str | Path | None = None,
         write_workers: int = 4,
+        key_columns: list[str] = KEY_COLUMNS,
     ) -> None:
         self.alpha_id = alpha_id
         self.writer = DailyWideWriter(
@@ -23,6 +25,7 @@ class AlphaWriter:
             layout="direct",
             base_root=base_root,
             write_workers=write_workers,
+            key_columns=key_columns,
         )
 
     def write(

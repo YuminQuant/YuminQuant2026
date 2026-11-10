@@ -31,7 +31,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
         return materialize_logsignature(config)
     if not config.materialize.cache_samples:
         raise ValueError("set [materialize].cache_samples = true to write debug sample cache")
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     dataset = DatasetBuilder(config)
     outputs = []
     splits = [("train", config.dates.train, True, _train_frequency(config))]
@@ -53,7 +53,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
 
 def materialize_logsignature(config: MlAlphaConfig) -> list[Path]:
     """Persist one feature date at a time; never assemble training samples here."""
-    calendar = TradingCalendar.load(config.data_root)
+    calendar = TradingCalendar.for_config(config)
     params = dict(config.features.params, read_only=False)
     if not params.get("feature_cache_dir"):
         raise ValueError("logsignature materialization requires feature_cache_dir")

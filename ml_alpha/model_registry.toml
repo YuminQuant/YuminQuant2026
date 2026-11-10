@@ -645,3 +645,19 @@ preprocess = "rank_gauss"
 train_scheme = "rolling_60m_quarterly_57m_train_3m_valid_20d_sample"
 features = "factor_frame: metadata fundamental tag, excluding price_volume/analyst/event/model_generated tags"
 tags = ["optuna", "gpu", "rolling", "factor_frame", "fundamental"]
+
+[[models]]
+model_id = "mdl_100000"
+alpha_id = "mdl_100000"
+run_id = "mdl_100000"
+config = "models/mdl_100000.toml"
+status = "active"
+display_name = "Futures minute XGBoost factor combination"
+description = "Fixed-parameter XGBoost with five-trading-day sampling over the prior 60 months and semiannual refits."
+model_class = "yq_ml_alpha.models.xgb_model.XGBoostAlphaModel"
+model_family = "xgboost"
+label = "future_open_return_5m"
+preprocess = "none"
+train_scheme = "rolling_60m_semiannual_train_plus_valid_5d_sample"
+features = "minute_factor_frame: yq_001 through yq_119, HDFS inputs"
+tags = ["future", "minute_1m", "rolling", "factor_combination"]

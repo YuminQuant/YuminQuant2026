@@ -60,7 +60,7 @@ def _input_key(config, dates, index):
     from yq_ml_alpha.pipelines.runtime import _uses_sequence_dataset
     identity = dict(features=asdict(config.features), preprocess=asdict(config.preprocess),
         filters=asdict(config.filters), universe=asdict(config.universe), label=asdict(config.label),
-        data_root=str(config.data_root), data_version=config.data_version,
+        data_root=str(config.data_root), data_version=config.data_version, calendar_exchange=config.calendar_exchange,
         tensor_storage=config.materialize.tensor_storage, dates=dates,
         sequence=(config.model.params.get('sequence_length', 6),
                   config.model.params.get('sequence_frequency', config.sample.train_frequency))
@@ -194,7 +194,7 @@ def _predict_group(configs, options, target_dates):
             and c.model.params.get('device', 'cpu') != 'cpu' for c in configs):
         raise ValueError('Unreviewed GPU/stateful models retain the single-model workflow; '
                          'do not interleave their device sessions')
-    calendar = TradingCalendar.load(first.data_root)
+    calendar = TradingCalendar.for_config(first)
     coverage = {c.output.id: set(_predict_dates(c, calendar)) for c in configs}
     all_dates = sorted(set.union(*coverage.values()))
     owned = set(all_dates if target_dates is None else target_dates) & set(all_dates)
@@ -212,7 +212,7 @@ def _predict_group(configs, options, target_dates):
     computed = {i: {d for mi, _, dates in units if mi == i for d in dates} for i in range(len(configs))}
     for i, config in enumerate(configs):
         for date in (coverage[config.output.id] & owned) - computed[i]:
-            pending[date][config.output.id] = _empty_prediction_frame()
+            pending[date][config.output.id] = _empty_prediction_frame(config.key_columns)
     if options.model_predict_workers > 1:
         for config in configs:
             cls = _model_class(config.model.class_path)
@@ -302,13 +302,13 @@ def _predict_group(configs, options, target_dates):
                             def infer(job):
                                 mi, mw, md, model = job
                                 if model is None:
-                                    return mi, _empty_prediction_frame()
+                                    return mi, _empty_prediction_frame(configs[mi].key_columns)
                                 started = perf_counter()
                                 context = _context(configs[mi], mw.window_id, bundle.feature_columns)
                                 score = _predict_model(model, bundle, context)
                                 if len(score) != len(bundle.frame) or not score.index.equals(bundle.frame.index):
                                     raise ValueError('Prediction scores must preserve the input row index')
-                                result = _prediction_frame(bundle.frame, score)
+                                result = _prediction_frame(bundle.frame, score, configs[mi].key_columns)
                                 if getattr(model, 'prediction_replay_safe', False):
                                     model.suspend_prediction_device()
                                 print(f'grouped-predict infer model={configs[mi].output.id} '
@@ -336,7 +336,7 @@ def _predict_group(configs, options, target_dates):
                                 grouped = {int(d): frame for d, frame in prediction.groupby('trade_date', observed=True, sort=False)}
                                 for date in dates:
                                     if date in owned:
-                                        pending[date][name] = grouped.get(date, _empty_prediction_frame())
+                                        pending[date][name] = grouped.get(date, _empty_prediction_frame(configs[mi].key_columns))
                             del results, jobs
                     finally:
                         if bundle is not None:

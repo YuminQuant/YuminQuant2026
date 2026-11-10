@@ -99,6 +99,27 @@ python -m yq_ml_alpha factor-metadata
 
 `model-run` / `factor-run` combine training and inference. Materialization commands prepare feature caches separately. Do not run all example configurations blindly: some require derived inputs or labels that have not been generated.
 
+### 期货分钟模型
+
+`mdl_100000` 使用 `minute_factor_frame` 读取分日的期货因子和标签，并按
+`trade_date, trade_time, ts_code` 一对一对齐。57 个月训练段和 3 个月验证段
+均每 5 个交易日取一天，保留采样日的分钟样本。固定参数 XGBoost 合并两段
+拟合，每半年更新，逐日输出下一个半年的分钟预测。
+输出位于 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet`，可以将
+`data/models` 作为期货分钟回测的 `--factor-root`，通过 `--factors mdl_100000` 选择。
+
+部署启动器需注册 HDFS 后端并设置 `YQ_STORAGE_BACKEND=hdfs`，将逻辑
+`data/factors/future/minute_1m` 和 `data/label/future/minute_1m` 映射到 HDFS。
+`features.params.require_hdfs = true` 会在输入路径未被接管时报错。复用
+`minute_factor_frame` 的其他配置可以用同一读取接口访问本地分区。
+
+```bash
+python scripts/yq.py model-train --config ml_alpha/models/mdl_100000.toml --list-windows
+python scripts/yq.py model-train --config ml_alpha/models/mdl_100000.toml --window-id semiannual_2025_H1
+python scripts/yq.py model-train --config ml_alpha/models/mdl_100000.toml
+python scripts/yq.py model-predict --config ml_alpha/models/mdl_100000.toml
+```
+
 刷新 Rust 与 ML metadata 可使用 `factor-metadata-all`；ML 因子保留独立 metadata 来源，不应手工修改合并表来注册模型。
 Use `factor-metadata-all` to refresh Rust and ML metadata. ML factors maintain their own metadata source; do not manually register models by editing the merged table.
 

@@ -36,6 +36,8 @@ def artifact_identity(config, window, dataset) -> dict:
         "train_dates": window.train_dates,
         "valid_dates": window.valid_dates,
     }
+    if config.calendar_exchange != "SSE":
+        identity["calendar_exchange"] = config.calendar_exchange
     if getattr(window, "activation_date", None) is not None:
         identity["prediction_activation"] = {
             "policy": config.train_scheme.prediction_activation,

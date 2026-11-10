@@ -1,0 +1,87 @@
+run_id = "mdl_100000"
+alpha_id = "mdl_100000"
+data_root = "data"
+calendar_exchange = "SHFE"
+
+[dates]
+train = [20200101, 20260930]
+predict = [20250101, 20261231]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "semiannual_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_open_return_5m"
+root = "data/label/future/minute_1m"
+lookahead_days = 0
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = false
+exclude_bj = false
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "minute_factor_frame"
+root = "data/factors/future/minute_1m"
+columns = [
+    "yq_001", "yq_002", "yq_003", "yq_004", "yq_005", "yq_006", "yq_007", "yq_008", "yq_009", "yq_010",
+    "yq_011", "yq_012", "yq_013", "yq_014", "yq_015", "yq_016", "yq_017", "yq_018", "yq_019", "yq_020",
+    "yq_021", "yq_022", "yq_023", "yq_024", "yq_025", "yq_026", "yq_027", "yq_028", "yq_029", "yq_030",
+    "yq_031", "yq_032", "yq_033", "yq_034", "yq_035", "yq_036", "yq_037", "yq_038", "yq_039", "yq_040",
+    "yq_041", "yq_042", "yq_043", "yq_044", "yq_045", "yq_046", "yq_047", "yq_048", "yq_049", "yq_050",
+    "yq_051", "yq_052", "yq_053", "yq_054", "yq_055", "yq_056", "yq_057", "yq_058", "yq_059", "yq_060",
+    "yq_061", "yq_062", "yq_063", "yq_064", "yq_065", "yq_066", "yq_067", "yq_068", "yq_069", "yq_070",
+    "yq_071", "yq_072", "yq_073", "yq_074", "yq_075", "yq_076", "yq_077", "yq_078", "yq_079", "yq_080",
+    "yq_081", "yq_082", "yq_083", "yq_084", "yq_085", "yq_086", "yq_087", "yq_088", "yq_089", "yq_090",
+    "yq_091", "yq_092", "yq_093", "yq_094", "yq_095", "yq_096", "yq_097", "yq_098", "yq_099", "yq_100",
+    "yq_101", "yq_102", "yq_103", "yq_104", "yq_105", "yq_106", "yq_107", "yq_108", "yq_109", "yq_110",
+    "yq_111", "yq_112", "yq_113", "yq_114", "yq_115", "yq_116", "yq_117", "yq_118", "yq_119",
+]
+
+[features.params]
+require_hdfs = true
+
+[materialize]
+cache_samples = false
+predict_batch_size = 5
+
+[model]
+name = "xgboost_fixed"
+class = "yq_ml_alpha.models.xgb_model.XGBoostAlphaModel"
+
+[model.params]
+objective = "reg:squarederror"
+tree_method = "hist"
+device = "cuda"
+n_estimators = 600
+learning_rate = 0.001
+max_depth = 6
+min_child_weight = 10.0
+subsample = 0.8
+colsample_bytree = 0.8
+reg_alpha = 0.1
+reg_lambda = 10.0
+gamma = 0.0
+random_state = 42
+n_jobs = -1
+fit_on_validation = true
+
+[output]
+root = "data/models/future/minute_1m"
+asset = "future"
+frequency = "minute_1m"

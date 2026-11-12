@@ -91,6 +91,18 @@ python scripts/update_incremental.py --groups future_trade_param --start-date 20
 
 Select `future_trade_param` explicitly. The start date defaults to the end date, which defaults to today in Beijing time. The four endpoints use their exchange calendars and share the `api.rate_limits.fut_trade_param` ceiling of 500 requests per minute by default. Each date is published after pagination completes, with the default response columns.
 
+## 期货结算参数 / Futures settlement parameters
+
+```bash
+python scripts/update_incremental.py --groups future_settle --start-date 20260401 --end-date 20260430
+```
+
+`future_settle` 按各交易所的日历下载 `fut_settle`。省略开始日期时只处理结束日期，结束日期默认为北京时间当天。六家交易所共享 `api.rate_limits.fut_settle`，默认每分钟 480 次。请求页长由 `api.page_limits.fut_settle` 配置，默认 1600，按实际返回行数递增偏移，直到返回空页。
+
+每个非空快照校验后写入 `future_data/basic/settle/<交易所>/YYYY/YYYYMMDD.parquet`，目录由 `paths.fut_settle_dir` 配置。已有文件会跳过。以 `trade_date` 和 `ts_code` 为主键，保留结算价、交易及交割手续费、保证金率、`offset_today_fee` 和 `exchange`，费用和费率按接口原值保存，保留缺失值。
+
+`future_settle` reads each exchange calendar and writes complete daily snapshots by exchange. Request size and rate are configurable. Fee fields retain the source units and nulls.
+
 ## 财报、分红与分析师 / Financial statements, dividends and analysts
 
 三大报表的增量调度从指定区间中选出季度末报告期，按报告期请求，而非逐个公告日请求。未包含季度末的区间会跳过；`stock_financial` 只更新三大报表。

@@ -8,8 +8,7 @@ class TushareClient:
         if cls._instance is None:
             cls._instance = super(TushareClient, cls).__new__(cls)
             config = ConfigManager().config
-            ts.set_token(config['api']['tushare_token'])
-            cls._instance.pro = ts.pro_api()
+            cls._instance.pro = ts.pro_api(token=config['api']['tushare_token'])
         return cls._instance
 
     @property

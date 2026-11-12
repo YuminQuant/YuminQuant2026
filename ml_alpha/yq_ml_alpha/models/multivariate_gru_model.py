@@ -3,10 +3,10 @@ from __future__ import annotations
 import numpy as np
 
 from yq_ml_alpha.models.bar_gru_model import _negative_ic_loss
-from yq_ml_alpha.models.rawbar_model import RawBarAGRUAlphaModel, _RawBarRegressor
+from yq_ml_alpha.models.rawbar_training import RawBarRecurrentRegressor, _RawBarAlphaModel
 
 
-class MultivariateGRUAlphaModel(RawBarAGRUAlphaModel):
+class MultivariateGRUAlphaModel(_RawBarAlphaModel):
     """Daily GRU with decorrelated base factors and a fixed equal-weight output."""
 
     architecture = "gru"
@@ -62,13 +62,18 @@ class _MultivariateGRURegressor:
         class Model(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.encoder = _RawBarRegressor(nn, params, stats)
+                self.encoder = RawBarRecurrentRegressor(nn, params, nn.GRU, self._readout, stats)
+
                 self.encoder.head = nn.Identity()
                 count = params["base_factors"]
                 self.factor_head = nn.Linear(params["hidden_size"], count)
                 self.factor_norm = nn.BatchNorm1d(count)
                 # A checkpointed buffer, not an optimizer parameter or a learned head.
                 self.register_buffer("equal_weights", torch.full((count,), 1.0 / count))
+
+            @staticmethod
+            def _readout(network, output, state):
+                return state[-1]
 
             def forward_factors(self, x):
                 return self.factor_norm(self.factor_head(self.encoder.encode(x)))

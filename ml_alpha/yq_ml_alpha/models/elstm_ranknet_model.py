@@ -14,10 +14,11 @@ from yq_ml_alpha.models.base import AlphaModel, ModelContext
 
 
 # Keep legacy imports and parameter names compatible with existing checkpoints.
-from yq_ml_alpha.models.exponential_lstm import eLSTM, eLSTMCell, eLSTMLayer
+from yq_ml_alpha.models.exponential_lstm import eLSTM, eLSTMCell as eLSTMCell, eLSTMLayer as eLSTMLayer
 
 
 class eLSTMRankNetAlphaModel(AlphaModel):
+    uses_sequence_dataset = True
     def __init__(self) -> None:
         self.model = None
         self.input_size: int | None = None

@@ -62,6 +62,7 @@ def _input_key(config, dates, index):
         filters=asdict(config.filters), universe=asdict(config.universe), label=asdict(config.label),
         data_root=str(config.data_root), data_version=config.data_version, calendar_exchange=config.calendar_exchange,
         tensor_storage=config.materialize.tensor_storage, dates=dates,
+        custom_provider=index if callable(getattr(cls, 'make_feature_provider', None)) else None,
         sequence=(config.model.params.get('sequence_length', 6),
                   config.model.params.get('sequence_frequency', config.sample.train_frequency))
                   if _uses_sequence_dataset(config) else None)
@@ -187,8 +188,8 @@ def _predict_group(configs, options, target_dates):
     if len({c.output.id for c in configs}) != len(configs):
         raise ValueError('Duplicate model output in one prediction group')
     first = configs[0]
-    if any(c.features.type == 'analyst_report_events' for c in configs):
-        raise ValueError('Report events require the existing sequential replay workflow')
+    if any(callable(getattr(_model_class(c.model.class_path), "run_factor_workflow", None)) for c in configs):
+        raise ValueError("A model in this group requires its single-factor prediction workflow")
     if len(configs) > 1 and any(
             not getattr(_model_class(c.model.class_path), 'prediction_replay_safe', False)
             and c.model.params.get('device', 'cpu') != 'cpu' for c in configs):

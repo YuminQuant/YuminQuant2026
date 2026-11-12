@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from yq_ml_alpha.models.rawbar_model import RawBarAGRUAlphaModel, _normalize_panel, _register_panel_stats
+from yq_ml_alpha.models.rawbar_training import _RawBarAlphaModel, _normalize_panel, _register_panel_stats
 
 
-class RawBarRESTCNAlphaModel(RawBarAGRUAlphaModel):
+class RawBarRESTCNAlphaModel(_RawBarAlphaModel):
     """Single-output RESTCN using the shared date-wise IC training lifecycle."""
 
     architecture = "restcn"

@@ -27,6 +27,7 @@ validation_lookback = "3m"
 min_train_days = 500
 
 [label]
+# Adjusted full-day VWAP(T+11) / adjusted full-day VWAP(T+1) - 1.
 id = "future_vwap_return_10d"
 lookahead_days = 11
 
@@ -52,6 +53,7 @@ dataset = "week"
 daily_root = "data/chn_stock_data/daily"
 max_cache_sessions = 150
 include_daily_return = true
+week_preprocess = "mad5_zscore"
 
 [materialize]
 cache_samples = false
@@ -71,6 +73,7 @@ class = "yq_ml_alpha.models.cmm_model.CMMWeekAlphaModel"
 artifact_dir = "data/model_workspace/cmm_week/artifacts"
 
 [model.params]
+label_neutralize = "barra:SIZE,MOMENTUM+sector"
 sequence_length = 150
 input_size = 7
 return_lookback = 20

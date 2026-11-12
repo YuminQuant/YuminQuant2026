@@ -17,7 +17,6 @@ from yq_ml_alpha.pipelines.runtime import (
     _aggregate_diagnostics,
     _context,
     _fit_model,
-    _load_bundle,
     _load_train_valid,
     _model_class,
     _new_model,
@@ -43,8 +42,9 @@ def predict_only(config_path: str | Path) -> list[Path]:
 
 def materialize_only(config_path: str | Path) -> list[Path]:
     config = _load_factor_config(config_path)
-    if config.features.type == "analyst_report_events":
-        raise ValueError("report events are read directly; factor-materialize is not supported")
+    materialize_error = getattr(_model_class(config.model.class_path), "materialize_error", None)
+    if callable(materialize_error):
+        raise ValueError(materialize_error())
     return materialize.run_config(config)
 
 
@@ -70,9 +70,9 @@ def all_metadata(
 
 def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     _ensure_factor_config(config)
-    if config.features.type == "analyst_report_events":
-        from yq_ml_alpha.pipelines.report_sentiment import execute
-        return execute(config, train=True, predict=True, resume=resume)
+    workflow = getattr(_model_class(config.model.class_path), "run_factor_workflow", None)
+    if callable(workflow):
+        return workflow(config, train=True, predict=True, resume=resume)
     calendar = TradingCalendar.for_config(config)
     dataset = DatasetBuilder(config)
     writer = _new_writer(config)
@@ -159,9 +159,9 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False, window_ids=None
     _ensure_factor_config(config)
     from yq_ml_alpha.pipelines.training_tasks import training_windows, training_config_for_windows
     config = training_config_for_windows(config, window_ids)
-    if config.features.type == "analyst_report_events":
-        from yq_ml_alpha.pipelines.report_sentiment import execute
-        return execute(config, train=True, predict=False, resume=resume, window_ids=window_ids)
+    workflow = getattr(_model_class(config.model.class_path), "run_factor_workflow", None)
+    if callable(workflow):
+        return workflow(config, train=True, predict=False, resume=resume, window_ids=window_ids)
     calendar = TradingCalendar.for_config(config)
     paths: list[Path] = []
     windows = training_windows(config, calendar, window_ids)
@@ -197,9 +197,9 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False, window_ids=None
 
 def predict_config(config: MlAlphaConfig) -> list[Path]:
     _ensure_factor_config(config)
-    if config.features.type == "analyst_report_events":
-        from yq_ml_alpha.pipelines.report_sentiment import execute
-        return execute(config, train=False, predict=True)
+    workflow = getattr(_model_class(config.model.class_path), "run_factor_workflow", None)
+    if callable(workflow):
+        return workflow(config, train=False, predict=True)
     if config.dates.predict is None:
         return []
     calendar = TradingCalendar.for_config(config)

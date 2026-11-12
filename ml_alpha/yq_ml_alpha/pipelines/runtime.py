@@ -1,5 +1,4 @@
 from __future__ import annotations
-from yq_ml_alpha.output import artifact_io as data_io
 
 from yq_ml_alpha.output import artifact_io
 
@@ -20,8 +19,7 @@ from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.data.dataset import DatasetBuilder, DatasetBundle
 from yq_ml_alpha.data.sampler import refit_dates, sample_dates
 from yq_ml_alpha.data.stores import KEY_COLUMNS, MINUTE_KEY_COLUMNS
-from yq_ml_alpha.models.base import AlphaModel, ModelContext
-from yq_ml_alpha.output.artifacts import window_artifact_path
+from yq_ml_alpha.models.base import AlphaModel, ModelContext, load_model_class as _model_class
 
 
 @dataclass(frozen=True)
@@ -354,13 +352,7 @@ def _release_accelerator_memory() -> None:
 
 
 def _uses_sequence_dataset(config: MlAlphaConfig) -> bool:
-    return config.model.class_path in {
-        "yq_ml_alpha.models.cnn_model.CNNAlphaModel",
-        "yq_ml_alpha.models.elstm_ranknet_model.eLSTMRankNetAlphaModel",
-        "yq_ml_alpha.models.sequence_model.RNNAlphaModel",
-        "yq_ml_alpha.models.sequence_model.LSTMAlphaModel",
-        "yq_ml_alpha.models.sequence_model.GRUAlphaModel",
-    }
+    return getattr(_model_class(config.model.class_path), "uses_sequence_dataset", False)
 
 
 def _train_only_windows(
@@ -490,7 +482,6 @@ def _ratio_split_windows(
         raise ValueError(f"validation_ratio is only supported for rolling/expanding, got {scheme}")
     assert config.dates.predict is not None
     refits = _actual_refit_dates(calendar, config.dates.predict, config.train_scheme.refit_frequency)
-    ratio = float(config.train_scheme.validation_ratio)
     windows = []
     for idx, refit in enumerate(refits):
         next_refit = refits[idx + 1] if idx + 1 < len(refits) else None
@@ -781,12 +772,6 @@ def _int_to_date(value: int) -> dt.date:
 
 def _new_model(config: MlAlphaConfig) -> AlphaModel:
     return _model_class(config.model.class_path)()
-
-
-def _model_class(class_path: str):
-    module_name, class_name = class_path.rsplit(".", 1)
-    module = importlib.import_module(module_name)
-    return getattr(module, class_name)
 
 
 def _context(config: MlAlphaConfig, window_id: str, feature_columns: list[str] | None = None) -> ModelContext:

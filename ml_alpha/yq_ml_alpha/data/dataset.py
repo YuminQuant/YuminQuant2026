@@ -37,6 +37,7 @@ from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.data.tensor_storage import TensorSpool, MemoryTensorSpool
 from yq_ml_alpha.data.indexed_panel import IndexedPanelStore, IndexedPanelTensor
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
+from yq_ml_alpha.models.base import load_model_class
 
 
 @dataclass
@@ -536,6 +537,11 @@ class DatasetBuilder:
 
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
+    factory = getattr(load_model_class(config.model.class_path), "make_feature_provider", None)
+    if callable(factory):
+        provider = factory(config)
+        if provider is not None:
+            return provider
     if config.features.type == "minute_factor_frame":
         if set(config.label.columns).intersection([*config.key_columns, *config.features.columns]):
             raise ValueError("minute label columns must be separate from keys and feature columns")

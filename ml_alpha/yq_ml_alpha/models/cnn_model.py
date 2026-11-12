@@ -15,6 +15,7 @@ class CNNAlphaModel(MLPAlphaModel):
     supplies time-major flattened columns; each minibatch is reshaped here.
     Training, early stopping, diagnostics and checkpoints reuse the MLP engine.
     """
+    uses_sequence_dataset = True
 
     def _build_model(self, nn):
         if "sequence_length" not in self.params:

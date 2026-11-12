@@ -3,6 +3,7 @@ from __future__ import annotations
 from yq_ml_alpha.output import artifact_io
 
 import pickle
+from importlib import import_module
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+
+def load_model_class(class_path: str):
+    module_name, class_name = class_path.rsplit(".", 1)
+    return getattr(import_module(module_name), class_name)
 
 
 @dataclass
@@ -31,6 +37,7 @@ class AlphaModel:
     prediction_replay_safe = False
     prediction_inputs_readonly = False
     prediction_cpu_parallel = False
+    uses_sequence_dataset = False
 
     def suspend_prediction_device(self):
         """Offload known device modules without resetting a prediction session."""

@@ -4,6 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from yq_ml_alpha.calendar import TradingCalendar
+from yq_ml_alpha.models.base import load_model_class
 from yq_ml_alpha.pipelines.runtime import build_windows, _predict_dates, _chunks
 
 
@@ -47,8 +48,7 @@ def plan_tasks(configs, action, options):
         if action == 'train':
             from yq_ml_alpha.pipelines.training_tasks import training_plan
             plan = training_plan(config)
-            from yq_ml_alpha.pipelines.runtime import _model_class
-            sequential = getattr(_model_class(config.model.class_path), 'training_requires_previous_window', False)
+            sequential = getattr(load_model_class(config.model.class_path), 'training_requires_previous_window', False)
             for wi, window in enumerate(plan['windows']):
                 path = str(Path(plan['artifact_dir']) / window['window_id'])
                 if path in artifacts:
@@ -69,9 +69,8 @@ def plan_tasks(configs, action, options):
             if destination in layouts and layouts[destination] != inputs:
                 raise ValueError('Models writing the same daily files must share the calendar and base universe')
             layouts[destination] = inputs
-            if config.features.type == 'analyst_report_events':
-                raise ValueError('Report-event replay must use its existing single-model workflow; '
-                                 'it cannot be partitioned by the generic prediction planner')
+            if callable(getattr(load_model_class(config.model.class_path), "run_factor_workflow", None)):
+                raise ValueError(f"{config.output.id} requires its single-factor prediction workflow")
             groups[output_group(config)].append(index)
         else:
             raise ValueError(f'Unsupported task action: {action}')
@@ -80,8 +79,7 @@ def plan_tasks(configs, action, options):
         dates = sorted({d for i in indices for d in _predict_dates(configs[i], calendar)})
         # Arbitrary model extensions may carry state across prediction batches.
         # Only declared replay-safe models can be independently date-sharded.
-        from yq_ml_alpha.pipelines.runtime import _model_class
-        safe = all(getattr(_model_class(configs[i].model.class_path), 'prediction_replay_safe', False) for i in indices)
+        safe = all(getattr(load_model_class(configs[i].model.class_path), 'prediction_replay_safe', False) for i in indices)
         chunks = _chunks(dates, options.predict_task_days) if safe else [dates]
         for ti, target in enumerate(chunks):
             if target:

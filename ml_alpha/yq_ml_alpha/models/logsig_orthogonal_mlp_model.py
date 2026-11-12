@@ -3,7 +3,6 @@ from __future__ import annotations
 from yq_ml_alpha.output import artifact_io
 
 import json
-import importlib
 import time
 from pathlib import Path
 from typing import Any
@@ -11,6 +10,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from yq_ml_alpha.features.neutralization import apply_rust_neutralization
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
 
 
@@ -192,7 +192,7 @@ class LogsigOrthogonalMLPAlphaModel(AlphaModel):
             self.model.to("cpu")
         series = pd.Series(scores, index=data.index, dtype="float32")
         zscored = series.groupby(data["trade_date"], group_keys=False).transform(_zscore_series).astype("float32")
-        return _apply_rust_neutralization(
+        return apply_rust_neutralization(
             data,
             zscored,
             str(self.params.get("neutralize", "none")),
@@ -272,50 +272,6 @@ def _params(raw: dict[str, Any]) -> dict[str, Any]:
     if params["base_factors"] <= 0:
         raise ValueError("base_factors must be positive")
     return params
-
-
-def _apply_rust_neutralization(data: pd.DataFrame, score: pd.Series, spec: str) -> pd.Series:
-    spec = str(spec or "none").strip()
-    if not spec or spec.lower() == "none" or data.empty:
-        return score.astype("float32")
-    rust = _import_rust_neutralizer()
-    trade_dates = pd.to_numeric(data["trade_date"], errors="raise").astype("int32")
-    ts_codes = data["ts_code"].astype(str)
-    score_values = score.astype("float64").to_numpy()
-    payload = [
-        float(value) if np.isfinite(value) else None
-        for value in score_values
-    ]
-    result = rust.neutralize_daily(
-        trade_dates.tolist(),
-        ts_codes.tolist(),
-        payload,
-        spec,
-        "stock",
-        "daily",
-        int(trade_dates.min()),
-        int(trade_dates.max()),
-        None,
-    )
-    if len(result) != len(score):
-        raise ValueError(
-            f"Rust neutralize_daily returned {len(result)} rows, expected {len(score)}"
-        )
-    values = [np.nan if value is None else float(value) for value in result]
-    return pd.Series(values, index=score.index, dtype="float32")
-
-
-def _import_rust_neutralizer():
-    try:
-        return importlib.import_module("yq_factor_engine_py")
-    except ImportError as exc:
-        raise ImportError(
-            "LogsigOrthogonalMLPAlphaModel neutralize requires the factor_engine Rust "
-            "Python extension `yq_factor_engine_py`. Build it from the repository root with:\n"
-            "python -m pip install maturin\n"
-            "python -m maturin develop --manifest-path "
-            "factor_engine/python/yq_factor_engine_py/Cargo.toml"
-        ) from exc
 
 
 def _diagnostics(context: ModelContext) -> dict[str, bool]:

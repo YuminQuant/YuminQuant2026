@@ -90,12 +90,16 @@ class ResNetPanelProvider(FeatureProvider):
         symbols = symbols.sort_values()
         values = np.concatenate([data[idx.get_indexer(symbols)] for idx, data in sessions], axis=1)
         if self.dataset == "week":
-            # All 150 prices use the sample's last adjusted close, not each patch's close.
-            values[:, :, :5] /= values[:, -1:, 3:4].copy()
+            values, symbols = self._prepare_week_window(values, symbols)
         finite = np.isfinite(values).all(axis=(1, 2))
         frame = pd.DataFrame({"trade_date": trade_date, "ts_code": symbols[finite]})
         return BarTensorWindow(frame, {tensor_key: values[finite].astype("float32")},
                                {tensor_key: self.feature_columns}, skipped_nonfinite=int((~finite).sum()))
+
+    def _prepare_week_window(self, values, symbols):
+        # All 150 prices use the sample's last adjusted close, not each patch's close.
+        values[:, :, :5] /= values[:, -1:, 3:4].copy()
+        return values, symbols
 
     def _session(self, date):
         if date in self._sessions:

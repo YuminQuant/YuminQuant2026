@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from yq_ml_alpha.calendar import TradingCalendar
+from yq_ml_alpha.models.base import load_model_class
 from yq_ml_alpha.pipelines.runtime import build_windows
 
 
@@ -21,9 +22,9 @@ def select_windows(windows, window_ids=None):
 
 
 def training_windows(config, calendar, window_ids=None):
-    if config.features.type == "analyst_report_events":
-        from yq_ml_alpha.pipelines.report_sentiment import _history_config
-        config = _history_config(config)
+    planning_config = getattr(load_model_class(config.model.class_path), "planning_config", None)
+    if callable(planning_config):
+        config = planning_config(config)
     return select_windows(build_windows(config, calendar), window_ids)
 
 

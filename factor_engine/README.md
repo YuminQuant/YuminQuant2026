@@ -153,9 +153,9 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --c
 
 Backtests support configurable factor roots, labels, universes, benchmarks and neutralization. Verify that required labels, constituents, indexes and exposures exist. See [strategy configuration](../strategy_config/README.md) for simulation settings.
 
-默认 `--exclude-limit true --limit-side both`：用信号日 T 的因子、股票池和 ST 标记确定各组及目标权重。调仓时，T+1 收盘涨跌停只阻止新增仓位；已有同方向仓位最多保留至目标权重，减仓不受此规则限制。未成交权重保留为零收益现金至下次调仓，不补选、不重新归一化。没有有效收益的持仓不把权重分摊给其他股票。默认基准 `mkt_mean` 每日对通过 T 日 ST 和 T+1 涨跌停筛选且收益有效的股票求等权平均；显式指定的加权基准也按 T+1 涨跌停过滤，并按剩余有效权重归一化。`--exclude-limit false` 对组合和基准均关闭涨跌停筛选。末个信号日缺少 T+1 交易过滤表时跳过该日的限价约束；区间内缺表仍报错。这是用收盘状态近似成交约束，不是逐笔成交模拟；不改变策略模拟的执行规则。
+默认 `--exclude-limit true --limit-side both`：先用 T 日信号、股票池和 ST 标记分组并确定权重，再将 T+1 收盘涨跌停股票的目标权重置零。其余权重不变，不补选，空余仓位按零收益现金计至下次调仓。各基准每日将涨跌停股票的收益贡献置零，保留筛选前的有效收益样本作为归一化基数。末日缺少 T+1 过滤表时跳过涨跌停筛选；区间内缺表仍报错。这是事后筛选，不模拟实际成交，不改变策略执行规则。
 
-With the defaults `--exclude-limit true --limit-side both`, groups and target weights use only the T signal, universe, and ST status. At rebalance, T+1 closing limit status blocks increases in exposure; an existing same-side position can be kept up to its target, and reductions are allowed. Unfilled allocation stays in zero-return cash until the next rebalance, with no replacements or renormalization. Missing returns do not redistribute portfolio weight. The market-mean benchmark uses signal-date ST status and finite returns, not T+1 limits. If the final signal date has no T+1 trade-filter file, its limit constraint is skipped; missing files inside the range remain errors. Closing limits proxy execution constraints, not individual fills; strategy execution is unchanged.
+By default, groups and weights are formed from T-day inputs, then stocks that close at either price limit on T+1 receive zero target weight. Other weights are unchanged and unused allocation earns zero until the next rebalance. Daily benchmarks zero the contribution of limit-hit stocks without changing the pre-screen normalization over valid returns. The final signal date can skip this screen if its T+1 filter file is unavailable; interior gaps remain errors. This is an ex-post screen, not a fill simulation, and does not change strategy execution.
 
 ### 期货分钟因子评价
 

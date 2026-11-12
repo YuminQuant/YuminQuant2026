@@ -59,13 +59,7 @@ impl PortfolioState {
             if let Some(mask) = entry_mask {
                 for (i, target) in current.iter_mut().enumerate() {
                     if !mask.get(i).copied().unwrap_or(false) {
-                        let held = previous.and_then(|weights| weights.get(i)).copied().unwrap_or(0.0);
-                        // A blocked entry may keep an existing same-side position, but never increase it.
-                        *target = if target.signum() == held.signum() {
-                            target.abs().min(held.abs()).copysign(*target)
-                        } else {
-                            0.0
-                        };
+                        *target = 0.0;
                     }
                 }
             }
@@ -496,13 +490,15 @@ fn benchmark_return(
             let mut sum = 0.0;
             let mut count = 0usize;
             for (idx, value) in label.iter().enumerate() {
-                if !allows(signal_mask, idx) || !allows(entry_mask, idx) {
+                if !allows(signal_mask, idx) {
                     continue;
                 }
                 let Some(value) = value.filter(|value| value.is_finite()) else {
                     continue;
                 };
-                sum += value;
+                if allows(entry_mask, idx) {
+                    sum += value;
+                }
                 count += 1;
             }
             (count > 0).then_some(sum / count as f64)
@@ -515,16 +511,15 @@ fn benchmark_return(
             let mut numerator = 0.0;
             let mut denominator = 0.0;
             for (idx, (weight, value)) in weights.iter().zip(label).enumerate() {
-                if !allows(entry_mask, idx) {
-                    continue;
-                }
                 let (Some(weight), Some(value)) = (
                     weight.filter(|value| value.is_finite() && *value > 0.0),
                     value.filter(|value| value.is_finite()),
                 ) else {
                     continue;
                 };
-                numerator += weight * value;
+                if allows(entry_mask, idx) {
+                    numerator += weight * value;
+                }
                 denominator += weight;
             }
             (denominator > f64::EPSILON).then_some(numerator / denominator)
@@ -630,7 +625,8 @@ fn record_index_group_returns(
         let Some(factor_date) = portfolio_state.factor_date else {
             continue;
         };
-        let (benchmark_return, benchmark_count) = index_benchmark_return(index, date, label);
+        let (benchmark_return, benchmark_count) =
+            index_benchmark_return(index, date, label, input.trade_filter.entry_mask_for(date));
         for (portfolio, weights) in &portfolio_state.portfolio.weights {
             let member_count = portfolio_state
                 .member_counts
@@ -672,6 +668,7 @@ fn index_benchmark_return(
     index: &IndexGroupBatch,
     date: i32,
     label: &[Option<f64>],
+    entry_mask: Option<&[bool]>,
 ) -> (Option<f64>, i64) {
     let Some(weights) = index.weights_for(date) else {
         return (None, 0);
@@ -682,16 +679,18 @@ fn index_benchmark_return(
     let mut numerator = 0.0;
     let mut denominator = 0.0;
     let mut pair_count = 0i64;
-    for (weight, value) in weights.iter().zip(label) {
+    for (idx, (weight, value)) in weights.iter().zip(label).enumerate() {
         let (Some(weight), Some(value)) = (
             weight.filter(|value| value.is_finite() && *value > 0.0),
             value.filter(|value| value.is_finite()),
         ) else {
             continue;
         };
-        numerator += weight * value;
         denominator += weight;
-        pair_count += 1;
+        if entry_mask.is_none_or(|mask| mask.get(idx).copied().unwrap_or(false)) {
+            numerator += weight * value;
+            pair_count += 1;
+        }
     }
     (
         (denominator > f64::EPSILON).then_some(numerator / denominator),

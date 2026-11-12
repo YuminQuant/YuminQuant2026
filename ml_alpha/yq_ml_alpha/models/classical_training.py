@@ -12,7 +12,7 @@ import pandas as pd
 
 from yq_ml_alpha.data.targets import cross_section_tail_labels
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
-from yq_ml_alpha.models.tree_model import _features
+from yq_ml_alpha.features.transforms import dense_float32_features as _features
 
 
 class _ClassicalAlphaModel(AlphaModel):

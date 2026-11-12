@@ -2,13 +2,46 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from yq_ml_alpha.models.bar_panel_model import (
-    _bar_tensor_batch, _cpu_state_dict, _date_batches, _date_groups, _device,
-    _diagnostics, _release_torch_memory, _set_seed, _torch_modules,
+    BarPanelAlphaModel, _bar_tensor_batch, _date_batches, _date_groups,
+    _negative_ic_loss, normalize_bar_params,
 )
+from yq_ml_alpha.models.base import ModelContext
+from yq_ml_alpha.models.torch_support import (
+    _cpu_state_dict, _device, _diagnostics, _release_torch_memory, _set_seed, _torch_modules,
+)
+
+
+class DatewiseICBarAlphaModel(BarPanelAlphaModel):
+    """Bar panel estimator trained and selected by negative date-wise Pearson IC."""
+
+    def _normalize_params(self, raw: dict[str, Any]) -> dict[str, Any]:
+        return normalize_bar_params(raw)
+
+    def _training_loss(self, torch, inputs, target):
+        return _negative_ic_loss(torch, self.model(inputs), target)
+
+    def _fit(
+        self,
+        train_data: pd.DataFrame,
+        valid_data: pd.DataFrame,
+        context: ModelContext,
+        *,
+        train_tensor: np.ndarray | None,
+        valid_tensor: np.ndarray | None,
+    ) -> None:
+        fit_bar_panel(
+            self, train_data, valid_data, context,
+            train_tensor=train_tensor, valid_tensor=valid_tensor,
+            validation_loss=_negative_ic_loss, loss_name="negative_datewise_pearson_ic",
+            train_loss_log_key="bar_gru_train_loss",
+            missing_loss_error="Bar panel model could not compute any finite train or validation IC loss",
+        )
 
 
 def fit_bar_panel(
@@ -194,3 +227,8 @@ def evaluate_date_batches(torch, model, frame, groups, context, params, predict_
     if not losses:
         return None
     return float(np.mean(losses))
+
+
+def evaluate_datewise_ic(torch, model, frame, groups, context, params, predict_rows) -> float | None:
+    return evaluate_date_batches(torch, model, frame, groups, context, params, predict_rows,
+                                 loss_fn=_negative_ic_loss)

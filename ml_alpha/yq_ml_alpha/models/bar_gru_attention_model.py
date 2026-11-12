@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from yq_ml_alpha.models.bar_gru_model import BarGRUAlphaModel, _params as _bar_params
+from yq_ml_alpha.models.bar_training import DatewiseICBarAlphaModel
+from yq_ml_alpha.models.bar_panel_model import normalize_bar_params as _bar_params
 
 
-class BarGRUAttentionAlphaModel(BarGRUAlphaModel):
+class BarGRUAttentionAlphaModel(DatewiseICBarAlphaModel):
     """Huatai report 68: temporal attention and last-state GRU concatenation."""
 
     def _normalize_params(self, raw: dict[str, Any]) -> dict[str, Any]:

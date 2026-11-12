@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from yq_ml_alpha.models.bar_gru_model import _negative_ic_loss
+from yq_ml_alpha.models.bar_panel_model import _negative_ic_loss
+from yq_ml_alpha.models.training_losses import _correlation_penalty
 from yq_ml_alpha.models.rawbar_training import RawBarRecurrentRegressor, _RawBarAlphaModel
 
 
@@ -44,15 +45,6 @@ class MultivariateGRUAlphaModel(_RawBarAlphaModel):
             loss="negative_datewise_pearson_ic_plus_base_factor_correlation_penalty",
             validation_loss="negative_datewise_pearson_ic",
         )
-
-
-def _correlation_penalty(torch, base):
-    """RMS off-diagonal correlation, computed within the current date batch."""
-    centered = base - base.mean(dim=0, keepdim=True)
-    normalized = centered / centered.square().mean(dim=0, keepdim=True).clamp_min(1e-12).sqrt()
-    corr = normalized.T @ normalized / len(base)
-    mask = ~torch.eye(base.shape[1], device=base.device, dtype=torch.bool)
-    return (corr[mask].square().mean() + 1e-12).sqrt()
 
 
 class _MultivariateGRURegressor:

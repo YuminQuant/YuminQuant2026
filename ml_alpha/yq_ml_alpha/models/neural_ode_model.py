@@ -11,8 +11,14 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.features.transforms import _zscore_series
-from yq_ml_alpha.models.bar_gru_model import _release_torch_memory
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _cpu_state_dict, _device, _set_seed, _torch_modules
+from yq_ml_alpha.models.torch_support import _release_torch_memory
+from yq_ml_alpha.models.torch_support import (
+    TorchAlphaModel,
+    _cpu_state_dict,
+    _device,
+    _set_seed,
+    _torch_modules,
+)
 
 
 def _params(raw):
@@ -135,7 +141,7 @@ def _target(rows, column):
     return _zscore_series(raw).to_numpy(dtype=np.float32)
 
 
-class NeuralODEAlphaModel(MLPAlphaModel):
+class NeuralODEAlphaModel(TorchAlphaModel):
     def __init__(self):
         super().__init__()
         self.feature_columns = []

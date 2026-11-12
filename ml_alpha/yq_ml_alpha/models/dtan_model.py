@@ -11,7 +11,7 @@ from yq_ml_alpha.data.latent_reference import LatentReferenceBank, reference_ref
 from yq_ml_alpha.features.transforms import _mad5_zscore_series
 from yq_ml_alpha.models.adversarial import critic_objective, frozen_critics, noisy_samples
 from yq_ml_alpha.models.market_style_model import MarketStyleAlphaModel, full_date_ic_loss
-from yq_ml_alpha.models.mlp_model import _cpu_state_dict, _device, _set_seed, _torch_modules
+from yq_ml_alpha.models.torch_support import _cpu_state_dict, _device, _set_seed, _torch_modules
 from yq_ml_alpha.output import artifact_io
 
 

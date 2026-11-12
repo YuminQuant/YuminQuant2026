@@ -11,11 +11,18 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.models.base import ModelContext
-from yq_ml_alpha.models.bar_gru_model import _cpu_state_dict, _device, _release_torch_memory, _set_seed, _torch_modules
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _diagnostics, _features
+from yq_ml_alpha.models.torch_support import (
+    _cpu_state_dict,
+    _device,
+    _release_torch_memory,
+    _set_seed,
+    _torch_modules,
+)
+from yq_ml_alpha.models.torch_support import TorchAlphaModel, _diagnostics
+from yq_ml_alpha.features.transforms import dense_float32_features as _features
 
 
-class OrdinalAlphaModel(MLPAlphaModel):
+class OrdinalAlphaModel(TorchAlphaModel):
     """Huatai AI 60: one scalar NN with sample-weighted logistic ordinal loss."""
 
     def __init__(self) -> None:

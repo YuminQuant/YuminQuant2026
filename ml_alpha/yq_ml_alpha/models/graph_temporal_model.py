@@ -12,8 +12,8 @@ import pandas as pd
 from yq_ml_alpha.models.xgb_training import make_matrix
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.stock_relations import StockRelations
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _cpu_state_dict, _device, _set_seed, _torch_modules
-from yq_ml_alpha.models.multivariate_gru_model import _correlation_penalty
+from yq_ml_alpha.models.torch_support import TorchAlphaModel, _cpu_state_dict, _device, _set_seed, _torch_modules
+from yq_ml_alpha.models.training_losses import _correlation_penalty
 
 
 def standardize(values):
@@ -124,13 +124,19 @@ def _batches(count, size):
         start = stop
 
 
-class GraphTemporalAlphaModel(MLPAlphaModel):
+class GraphTemporalAlphaModel(TorchAlphaModel):
     """Full-date GNN, stock-batched GRU, frozen factors -> two Optuna rankers."""
     def __init__(self):
         super().__init__()
         self.encoders = {}
         self.rankers = {}
         self.feature_columns = []
+
+    def fit(self, train_data, valid_data, context):
+        raise ValueError("GraphTemporal requires the lazy daily sequence bundle interface")
+
+    def predict(self, data, context):
+        raise ValueError("GraphTemporal requires the lazy daily sequence bundle interface")
 
     def _check_source(self, bundle):
         source = bundle.tensor_source

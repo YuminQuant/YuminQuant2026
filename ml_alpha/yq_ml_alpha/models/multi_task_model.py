@@ -8,43 +8,18 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.features.transforms import _zscore_series
-from yq_ml_alpha.models.adaptive_gate_model import _rank_weights
-from yq_ml_alpha.models.bar_gru_model import _cpu_state_dict, _device, _release_torch_memory, _set_seed, _torch_modules
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _diagnostics, _features
+from yq_ml_alpha.models.multi_task_training import _dwa_weights, _label_columns, normalize_multi_task_params
+from yq_ml_alpha.models.training_losses import _rank_weights
+from yq_ml_alpha.models.torch_support import (
+    _cpu_state_dict,
+    _device,
+    _release_torch_memory,
+    _set_seed,
+    _torch_modules,
+)
+from yq_ml_alpha.models.torch_support import TorchAlphaModel, _diagnostics
+from yq_ml_alpha.features.transforms import dense_float32_features as _features
 from yq_ml_alpha.output import artifact_io
-
-
-def _params(raw):
-    params = dict(hidden_size=256, weighting="dwa", negative_slope=0.01,
-                  rank_weight_half_life=0.5, dwa_temperature=2.0,
-                  lr=0.0001, weight_decay=0.0, epochs=200, patience=20,
-                  batch_size=3000, seed=42, min_delta=1e-12, device="auto")
-    unknown = set(raw).difference(params)
-    if unknown:
-        raise ValueError(f"unknown multi-task parameters: {sorted(unknown)}")
-    params.update(raw)
-    for key in ("hidden_size", "epochs", "patience", "batch_size", "seed"):
-        value = params[key]
-        params[key] = int(value)
-        if isinstance(value, bool) or params[key] != value or (key != "seed" and params[key] <= 0):
-            raise ValueError(f"invalid integer multi-task parameter {key}")
-    for key in ("negative_slope", "rank_weight_half_life", "dwa_temperature", "lr", "weight_decay", "min_delta"):
-        params[key] = float(params[key])
-        if not np.isfinite(params[key]) or params[key] < 0:
-            raise ValueError(f"{key} must be finite and nonnegative")
-    if any(params[key] <= 0 for key in ("rank_weight_half_life", "dwa_temperature", "lr")):
-        raise ValueError("rank_weight_half_life, dwa_temperature and lr must be positive")
-    if params["weighting"] not in {"uw", "dwa"}:
-        raise ValueError("multi-task weighting must be uw or dwa")
-    return params
-
-
-def _label_columns(context):
-    columns = list(context.label_columns or [context.label_column])
-    if (len(columns) < 2 or len(set(columns)) != len(columns)
-            or columns[0] != context.label_column):
-        raise ValueError("multi-task training requires distinct ordered primary and auxiliary labels")
-    return columns
 
 
 def build_multi_task(nn, input_size, task_count, params):
@@ -102,16 +77,6 @@ def _prepare_data(frame, columns, label_columns, params):
     return x, target, weights, groups, skipped
 
 
-def _dwa_weights(history, task_count, temperature):
-    # Initial two EPOCHS use equal weights; ratios use unweighted per-task losses.
-    if len(history) < 2:
-        return np.ones(task_count, dtype="float32")
-    ratio = history[-1] / np.maximum(history[-2], 1e-12)
-    logits = ratio / temperature
-    scaled = np.exp(logits - logits.max())
-    return (task_count * scaled / scaled.sum()).astype("float32")
-
-
 def _evaluate(torch, model, data, params, device):
     model.eval()
     totals = []
@@ -134,7 +99,7 @@ def _evaluate(torch, model, data, params, device):
     return np.mean(totals, axis=0)
 
 
-class MultiTaskAlphaModel(MLPAlphaModel):
+class MultiTaskAlphaModel(TorchAlphaModel):
     prediction_replay_safe = True
     prediction_inputs_readonly = True
 
@@ -146,7 +111,7 @@ class MultiTaskAlphaModel(MLPAlphaModel):
     def fit(self, train_data, valid_data, context):
         if context.model_search:
             raise ValueError("multi-task MLP does not use model.search")
-        self.params = _params(context.model_params)
+        self.params = normalize_multi_task_params(context.model_params)
         self.feature_columns = list(context.feature_columns)
         self.label_columns = _label_columns(context)
         self.input_dim = len(self.feature_columns)
@@ -297,7 +262,7 @@ class MultiTaskAlphaModel(MLPAlphaModel):
         if saved.get("version") != 1 or saved.get("model_kind") != "huatai_multi_task":
             raise ValueError("unsupported multi-task checkpoint")
         model = cls()
-        model.params = _params(saved["params"])
+        model.params = normalize_multi_task_params(saved["params"])
         model.feature_columns = list(saved["feature_columns"])
         model.label_columns = list(saved["label_columns"])
         model.input_dim = len(model.feature_columns)

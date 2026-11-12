@@ -318,8 +318,8 @@ Inspect the selected provider rather than generalizing from logsignature.
 ## 5. Model Interface And Postprocessing / 模型接口与后处理
 
 每种模型在自己的 `<name>_model.py` 中定义网络、专用输入处理、损失和权重选择指标。
-共享训练器、数据读写和时间窗口通过公共接口复用。模型可声明
-`uses_sequence_dataset` 使用定长序列，或实现类方法 `make_feature_provider(config)`
+共享训练器、数据读写和时间窗口通过独立公共模块提供。模型实现和公共模块均避免依赖其他具体模型。
+模型可声明 `uses_sequence_dataset` 使用定长序列，或实现类方法 `make_feature_provider(config)`
 提供自己的输入适配器。旧的 `model.class` 路径保留导出，以兼容现有配置、manifest 和权重。
 
 Read [AlphaModel / ModelContext](../yq_ml_alpha/models/base.py),

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from yq_ml_alpha.models.bar_gru_model import BarGRUAlphaModel
+from yq_ml_alpha.models.bar_training import DatewiseICBarAlphaModel
 from yq_ml_alpha.models.gru_patch_inputs import _gru, _params, _patches
 
 
-class GRUPatch1AlphaModel(BarGRUAlphaModel):
+class GRUPatch1AlphaModel(DatewiseICBarAlphaModel):
     """Shared intraday GRU, then attention across trading-day patches."""
 
     def _normalize_params(self, raw: dict[str, Any]) -> dict[str, Any]:

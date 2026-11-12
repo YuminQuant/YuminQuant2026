@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _device, _torch_modules
+from yq_ml_alpha.models.torch_support import TorchAlphaModel, _device, _torch_modules
 
 
 def full_date_ic_loss(prediction, target, eps):
@@ -15,7 +15,7 @@ def full_date_ic_loss(prediction, target, eps):
     return 1 - (prediction * target).sum() / denominator.clamp_min(eps)
 
 
-class DailySequenceAlphaModel(MLPAlphaModel):
+class DailySequenceAlphaModel(TorchAlphaModel):
     prediction_replay_safe = True
     prediction_inputs_readonly = True
 

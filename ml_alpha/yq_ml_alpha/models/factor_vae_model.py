@@ -11,8 +11,12 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.features.transforms import _mad5_zscore_series
-from yq_ml_alpha.models.mlp_model import (
-    MLPAlphaModel, _cpu_state_dict, _device, _set_seed, _torch_modules,
+from yq_ml_alpha.models.torch_support import (
+    TorchAlphaModel,
+    _cpu_state_dict,
+    _device,
+    _set_seed,
+    _torch_modules,
 )
 
 
@@ -148,7 +152,7 @@ def _target(rows, label):
     return _mad5_zscore_series(raw).to_numpy(dtype=np.float32)
 
 
-class FactorVAEAlphaModel(MLPAlphaModel):
+class FactorVAEAlphaModel(TorchAlphaModel):
     # Inference uses the prior mean, with no label access, sampling or state
     # carried between dates. Lazy source tensors are read without modification.
     prediction_replay_safe = True

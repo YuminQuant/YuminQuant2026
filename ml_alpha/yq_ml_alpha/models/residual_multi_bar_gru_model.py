@@ -10,19 +10,17 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
-from yq_ml_alpha.models.bar_gru_model import (
+from yq_ml_alpha.models.torch_support import (
     _cpu_state_dict,
-    _date_batches,
-    _date_groups,
     _device,
-    _eval_batched_date_loss,
-    _negative_ic_loss,
     _release_torch_memory,
     _set_seed,
     _torch_modules,
 )
+from yq_ml_alpha.models.bar_panel_model import _date_batches, _date_groups, _negative_ic_loss
+from yq_ml_alpha.models.bar_training import evaluate_datewise_ic
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
-from yq_ml_alpha.models.multi_bar_gru_model import (
+from yq_ml_alpha.models.multi_bar_tensors import (
     _multi_bar_batch,
     _multi_bar_tensors,
     _optional_multi_bundle_tensors,
@@ -540,4 +538,4 @@ def _eval_stage_loss(
             torch.from_numpy(minute_np).to(device),
         )
 
-    return _eval_batched_date_loss(torch, model, frame, groups, context, params, predict_rows)
+    return evaluate_datewise_ic(torch, model, frame, groups, context, params, predict_rows)

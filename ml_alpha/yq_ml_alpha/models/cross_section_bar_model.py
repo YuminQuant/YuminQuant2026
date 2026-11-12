@@ -5,14 +5,24 @@ import time
 import numpy as np
 import pandas as pd
 
-from yq_ml_alpha.models.bar_gru_model import (
-    BarGRUAlphaModel, _bar_tensor_batch, _cpu_state_dict, _date_groups,
-    _device, _diagnostics, _negative_ic_loss, _release_torch_memory,
-    _require_bar_bundle_tensor, _set_seed, _torch_modules,
+from yq_ml_alpha.models.bar_training import DatewiseICBarAlphaModel
+from yq_ml_alpha.models.bar_panel_model import (
+    _bar_tensor_batch,
+    _date_groups,
+    _negative_ic_loss,
+    _require_bar_bundle_tensor,
+)
+from yq_ml_alpha.models.torch_support import (
+    _cpu_state_dict,
+    _device,
+    _diagnostics,
+    _release_torch_memory,
+    _set_seed,
+    _torch_modules,
 )
 
 
-class CrossSectionBarAlphaModel(BarGRUAlphaModel):
+class CrossSectionBarAlphaModel(DatewiseICBarAlphaModel):
     """Encode bars in chunks, then train/predict one complete date graph at a time.
 
     Regressors implement encode(x) and forward_encoded(h). No graph is built

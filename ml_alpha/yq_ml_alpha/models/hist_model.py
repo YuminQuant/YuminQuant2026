@@ -12,9 +12,7 @@ import pandas as pd
 
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.hist_concepts import HistConcepts
-from yq_ml_alpha.models.mlp_model import (
-    MLPAlphaModel, _cpu_state_dict, _device, _set_seed, _torch_modules,
-)
+from yq_ml_alpha.models.torch_support import TorchAlphaModel, _cpu_state_dict, _device, _set_seed, _torch_modules
 
 
 def _params(raw):
@@ -181,10 +179,16 @@ def _rank_target(rows, label):
     return target
 
 
-class HISTAlphaModel(MLPAlphaModel):
+class HISTAlphaModel(TorchAlphaModel):
     def __init__(self):
         super().__init__()
         self.feature_columns = []
+
+    def fit(self, train_data, valid_data, context):
+        raise ValueError("HIST requires the lazy daily sequence bundle interface")
+
+    def predict(self, data, context):
+        raise ValueError("HIST requires the lazy daily sequence bundle interface")
 
     def _source(self, bundle):
         source = bundle.tensor_source

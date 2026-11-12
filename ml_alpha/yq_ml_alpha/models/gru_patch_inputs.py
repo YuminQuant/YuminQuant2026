@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from yq_ml_alpha.models.bar_gru_model import _params as _bar_params
+from yq_ml_alpha.models.bar_panel_model import normalize_bar_params as _bar_params
 
 
 def _params(raw: dict[str, Any], architecture: str) -> dict[str, Any]:

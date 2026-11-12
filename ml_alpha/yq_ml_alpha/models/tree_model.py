@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
+from yq_ml_alpha.features.transforms import dense_float32_features as _features
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
 
 
@@ -42,13 +42,3 @@ def _params(raw: dict) -> dict:
     params.setdefault("n_jobs", -1)
     params.setdefault("random_state", 42)
     return params
-
-
-def _features(frame: pd.DataFrame, columns: list[str]) -> np.ndarray:
-    return (
-        frame[columns]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0.0)
-        .astype("float32")
-        .to_numpy()
-    )

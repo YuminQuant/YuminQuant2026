@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from yq_ml_alpha.models.bar_gru_model import BarGRUAlphaModel
+from yq_ml_alpha.models.bar_training import DatewiseICBarAlphaModel
 from yq_ml_alpha.models.gru_patch_inputs import _gru, _params, _patches
 
 
-class GRUPatch2AlphaModel(BarGRUAlphaModel):
+class GRUPatch2AlphaModel(DatewiseICBarAlphaModel):
     """Independent per-feature GRUs over daily patches, then concatenation."""
 
     def _normalize_params(self, raw: dict[str, Any]) -> dict[str, Any]:

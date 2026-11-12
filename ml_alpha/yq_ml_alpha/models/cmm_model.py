@@ -10,7 +10,7 @@ from yq_ml_alpha.features.resnet_panel import ResNetPanelProvider, _read_require
 from yq_ml_alpha.features.transforms import _zscore_series, apply_cross_section_transform
 from yq_ml_alpha.models.bar_panel_model import BarPanelAlphaModel, normalize_bar_params
 from yq_ml_alpha.models.bar_training import fit_bar_panel
-from yq_ml_alpha.models.resnet_gru_model import _ResNetGRURegressor
+from yq_ml_alpha.models.resnet_gru_encoder import resnet_gru_encoder_type
 
 
 class CMMWeekAlphaModel(BarPanelAlphaModel):
@@ -51,9 +51,7 @@ class CMMWeekAlphaModel(BarPanelAlphaModel):
         class Model(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.encoder = _ResNetGRURegressor(
-                    nn, {**params, "input_size": 6, "patch_width": 5}, encoder_only=True,
-                )
+                self.encoder = resnet_gru_encoder_type(nn)({**params, "input_size": 6, "patch_width": 5})
                 self.head = nn.Linear(params["hidden_size"], 3)
                 ages = torch.arange(lookback - 1, -1, -1, dtype=torch.float32)
                 self.register_buffer("decay", torch.exp2(-ages / params["half_life"]))

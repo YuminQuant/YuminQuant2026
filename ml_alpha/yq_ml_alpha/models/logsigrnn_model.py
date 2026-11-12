@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.models.daily_sequence_model import DailySequenceAlphaModel, full_date_ic_loss
-from yq_ml_alpha.models.mlp_model import _cpu_state_dict, _device, _set_seed, _torch_modules
+from yq_ml_alpha.models.torch_support import _cpu_state_dict, _device, _set_seed, _torch_modules
 from yq_ml_alpha.output import artifact_io
 
 

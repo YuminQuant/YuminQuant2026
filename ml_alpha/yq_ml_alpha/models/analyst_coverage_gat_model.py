@@ -8,8 +8,14 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.features.transforms import _zscore_series
-from yq_ml_alpha.models.bar_gru_model import _cpu_state_dict, _device, _release_torch_memory, _set_seed, _torch_modules
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _diagnostics
+from yq_ml_alpha.models.torch_support import (
+    _cpu_state_dict,
+    _device,
+    _release_torch_memory,
+    _set_seed,
+    _torch_modules,
+)
+from yq_ml_alpha.models.torch_support import TorchAlphaModel, _diagnostics
 from yq_ml_alpha.output import artifact_io
 
 
@@ -104,7 +110,7 @@ def _target(rows, label):
     return _zscore_series(raw).to_numpy(dtype="float32")
 
 
-class AnalystCoverageGATAlphaModel(MLPAlphaModel):
+class AnalystCoverageGATAlphaModel(TorchAlphaModel):
     prediction_replay_safe = True
     prediction_inputs_readonly = True
 

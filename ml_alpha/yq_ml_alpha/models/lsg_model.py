@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.models.market_style_model import MarketStyleAlphaModel, full_date_ic_loss
-from yq_ml_alpha.models.mlp_model import _cpu_state_dict, _device, _set_seed, _torch_modules
+from yq_ml_alpha.models.torch_support import _cpu_state_dict, _device, _set_seed, _torch_modules
 from yq_ml_alpha.output import artifact_io
 
 
@@ -52,7 +52,6 @@ def _params(raw):
         raise ValueError("LSG distance_normalization must be mean or none")
     if not isinstance(params["gradient_checkpointing"], bool):
         raise ValueError("LSG gradient_checkpointing must be boolean")
-    from yq_ml_alpha.models.lsg_network import fractional_difference_matrices
     fractional_difference_matrices(params["temporal_steps"], params["spectrum_orders"])
     params["spectrum_orders"] = [float(d) for d in params["spectrum_orders"]]
     return params

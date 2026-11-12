@@ -5,15 +5,15 @@ from typing import Any
 import pandas as pd
 
 from yq_ml_alpha.models.base import ModelContext
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel
+from yq_ml_alpha.models.tabular_training import TabularTorchRegressor
 
 
-class CNNAlphaModel(MLPAlphaModel):
+class CNNAlphaModel(TabularTorchRegressor):
     """Huatai factor-by-time CNN with a scalar return-regression head.
 
     Replaces the legacy single-date Conv1d model. The shared sequence loader
     supplies time-major flattened columns; each minibatch is reshaped here.
-    Training, early stopping, diagnostics and checkpoints reuse the MLP engine.
+    Training, early stopping, diagnostics and checkpoints use the tabular trainer.
     """
     uses_sequence_dataset = True
 

@@ -10,10 +10,16 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.features.transforms import _zscore_series
-from yq_ml_alpha.models.adaptive_gate_model import _rank_weights
-from yq_ml_alpha.models.bar_gru_model import _cpu_state_dict, _device, _release_torch_memory, _set_seed, _torch_modules
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _diagnostics
-from yq_ml_alpha.models.multi_task_model import _dwa_weights, _label_columns, _params as _multi_task_params
+from yq_ml_alpha.models.training_losses import _rank_weights
+from yq_ml_alpha.models.torch_support import (
+    _cpu_state_dict,
+    _device,
+    _release_torch_memory,
+    _set_seed,
+    _torch_modules,
+)
+from yq_ml_alpha.models.torch_support import TorchAlphaModel, _diagnostics
+from yq_ml_alpha.models.multi_task_training import _dwa_weights, _label_columns, normalize_multi_task_params
 from yq_ml_alpha.output import artifact_io
 
 
@@ -23,7 +29,7 @@ def _params(raw):
                    dropout=0.1, attention_chunk_size=512, gradient_checkpointing=True)
     for key in network:
         network[key] = common.pop(key, network[key])
-    params = {**_multi_task_params(common), **network}
+    params = {**normalize_multi_task_params(common), **network}
     if params["weighting"] != "dwa":
         raise ValueError("stock Transformer uses DWA task weights")
     for key in ("sequence_length", "num_layers", "attention_heads", "feedforward_size", "attention_chunk_size"):
@@ -66,7 +72,7 @@ def _supervision(bundle, labels, params):
     return groups, skipped
 
 
-class StockTransformerAlphaModel(MLPAlphaModel):
+class StockTransformerAlphaModel(TorchAlphaModel):
     prediction_replay_safe = True
     prediction_inputs_readonly = True
 

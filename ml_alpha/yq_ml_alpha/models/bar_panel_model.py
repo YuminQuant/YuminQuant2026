@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from yq_ml_alpha.output import artifact_io
 
-import gc
 import json
 from pathlib import Path
 from typing import Any
@@ -11,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.models.base import AlphaModel, ModelContext
+from yq_ml_alpha.models.torch_support import _device, _diagnostics, _release_torch_memory, _torch_modules
 
 
 class BarPanelAlphaModel(AlphaModel):
@@ -155,17 +155,6 @@ def normalize_bar_params(raw: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
-def _diagnostics(context: ModelContext) -> dict[str, bool]:
-    raw = dict(context.diagnostics or {})
-    enabled = bool(raw.get("enabled", False))
-    return {
-        "enabled": enabled,
-        "print_epoch": enabled and bool(raw.get("print_epoch", False)),
-        "write_loss_history": enabled and bool(raw.get("write_loss_history", False)),
-        "write_model_info": enabled and bool(raw.get("write_model_info", False)),
-    }
-
-
 def _date_groups(frame: pd.DataFrame) -> dict[int, np.ndarray]:
     if frame.empty:
         return {}
@@ -262,38 +251,3 @@ def _negative_ic_loss(torch, pred, target):
         return None
     ic = torch.sum(pred * target) / (pred_norm * target_norm + eps)
     return -ic
-
-
-def _torch_modules():
-    try:
-        import torch
-        from torch import nn
-    except ImportError as exc:  # pragma: no cover - depends on optional local package
-        raise ImportError("BarGRUAlphaModel requires installing the optional torch package") from exc
-    return torch, nn
-
-
-def _release_torch_memory(torch) -> None:
-    gc.collect()
-    try:
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-    except Exception:
-        return
-
-
-def _device(torch, value: str):
-    if value == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(value)
-
-
-def _set_seed(torch, seed: int) -> None:
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def _cpu_state_dict(model):
-    return {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from yq_ml_alpha.models.bar_gru_model import BarGRUAlphaModel, _bar_tensor_batch, _params as _bar_params
+from yq_ml_alpha.models.bar_training import DatewiseICBarAlphaModel
+from yq_ml_alpha.models.bar_panel_model import _bar_tensor_batch, normalize_bar_params as _bar_params
 
 
-class _RawBarAlphaModel(BarGRUAlphaModel):
+class _RawBarAlphaModel(DatewiseICBarAlphaModel):
     """Shared training and normalization for daily rawbar networks."""
 
     architecture = ""

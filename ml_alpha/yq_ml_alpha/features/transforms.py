@@ -321,3 +321,13 @@ def _polyval(coefficients: np.ndarray, x: np.ndarray) -> np.ndarray:
     for coefficient in coefficients:
         result = result * x + coefficient
     return result
+
+
+def dense_float32_features(frame: pd.DataFrame, columns: list[str]) -> np.ndarray:
+    return (
+        frame[columns]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+        .astype("float32")
+        .to_numpy()
+    )

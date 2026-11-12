@@ -13,10 +13,16 @@ import pandas as pd
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.hist_concepts import HistConcepts
 from yq_ml_alpha.features.transforms import _zscore_series
-from yq_ml_alpha.models.bar_gru_model import _release_torch_memory
+from yq_ml_alpha.models.torch_support import _release_torch_memory
 from yq_ml_alpha.models.contrastive import residual_contrastive_loss
 from yq_ml_alpha.models.hypergraph import propagate_hypergraph, subset_binary_incidence
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _cpu_state_dict, _device, _set_seed, _torch_modules
+from yq_ml_alpha.models.torch_support import (
+    TorchAlphaModel,
+    _cpu_state_dict,
+    _device,
+    _set_seed,
+    _torch_modules,
+)
 
 
 def _params(raw):
@@ -108,7 +114,7 @@ def _target(rows, label):
     return _zscore_series(raw.rank(method="average", pct=True)).to_numpy(dtype=np.float32)
 
 
-class FactorGCLAlphaModel(MLPAlphaModel):
+class FactorGCLAlphaModel(TorchAlphaModel):
     def __init__(self):
         super().__init__()
         self.feature_columns = []

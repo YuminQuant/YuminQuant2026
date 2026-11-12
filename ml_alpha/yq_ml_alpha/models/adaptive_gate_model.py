@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from yq_ml_alpha.models.training_losses import _rank_weights
 from yq_ml_alpha.output import artifact_io
 
 import math
@@ -11,11 +12,18 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.models.base import ModelContext
-from yq_ml_alpha.models.bar_gru_model import _cpu_state_dict, _device, _release_torch_memory, _set_seed, _torch_modules
-from yq_ml_alpha.models.mlp_model import MLPAlphaModel, _diagnostics, _features
+from yq_ml_alpha.models.torch_support import (
+    _cpu_state_dict,
+    _device,
+    _release_torch_memory,
+    _set_seed,
+    _torch_modules,
+)
+from yq_ml_alpha.models.torch_support import TorchAlphaModel, _diagnostics
+from yq_ml_alpha.features.transforms import dense_float32_features as _features
 
 
-class AdaptiveGateAlphaModel(MLPAlphaModel):
+class AdaptiveGateAlphaModel(TorchAlphaModel):
     """Single-gate adaptive-depth factor combination (Huatai AI 71)."""
 
     def __init__(self) -> None:
@@ -176,7 +184,6 @@ def _params(raw: dict[str, Any]) -> dict[str, Any]:
 
 class _AdaptiveGateRegressor:
     def __new__(cls, nn, input_dim: int, params: dict[str, Any]):
-        import torch
         from torch.nn import functional as F
 
         class Model(nn.Module):
@@ -210,16 +217,6 @@ class _AdaptiveGateRegressor:
                 return self.exit(hidden).reshape(-1), passed
 
         return Model()
-
-
-def _rank_weights(values: np.ndarray, params: dict[str, Any]) -> np.ndarray:
-    if params["loss"] == "mse":
-        return np.ones(len(values), dtype="float32")
-    ranks = pd.Series(values).rank(method="average", ascending=False).to_numpy()
-    percentile = (ranks - 1.0) / max(1, len(values) - 1)
-    # Subtract the best rank before exponentiation to avoid all-zero underflow.
-    weights = np.exp2(-(percentile - percentile.min()) / params["rank_weight_half_life"])
-    return (weights / weights.mean()).astype("float32")
 
 
 def _prepare_data(frame, context, params):

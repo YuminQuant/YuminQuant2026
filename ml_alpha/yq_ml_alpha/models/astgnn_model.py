@@ -3,14 +3,14 @@ from __future__ import annotations
 import numpy as np
 
 from yq_ml_alpha.models.cross_section_bar_model import CrossSectionBarAlphaModel
-from yq_ml_alpha.models.resnet_gru_model import ResNetGRUAlphaModel, _ResNetGRURegressor
+from yq_ml_alpha.models.resnet_gru_encoder import normalize_resnet_gru_params, resnet_gru_encoder_type
 
 
-class ASTGNNAlphaModel(CrossSectionBarAlphaModel, ResNetGRUAlphaModel):
+class ASTGNNAlphaModel(CrossSectionBarAlphaModel):
     """Data-driven graph over ResNet-GRU embeddings, with an equal-weight head."""
 
     def _normalize_params(self, raw):
-        params = super()._normalize_params(raw)
+        params = normalize_resnet_gru_params(raw)
         params["graph_chunk_size"] = int(params.get("graph_chunk_size", 512))
         params["gradient_checkpointing"] = params.get("gradient_checkpointing", True)
         params["grad_clip"] = float(params.get("grad_clip", 5.0))
@@ -66,7 +66,7 @@ class _ASTGNNRegressor:
         class Model(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.encoder = _ResNetGRURegressor(nn, params, encoder_only=True)
+                self.encoder = resnet_gru_encoder_type(nn)(params)
                 self.graph_projection = nn.Linear(params["hidden_size"], params["hidden_size"], bias=False)
                 self.factor_head = nn.Linear(params["hidden_size"], params["base_factors"])
                 self.factor_norm = nn.BatchNorm1d(params["base_factors"])

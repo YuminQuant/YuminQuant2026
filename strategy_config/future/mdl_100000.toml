@@ -13,6 +13,8 @@ bar_frequency = "minute_1m"
 fill_price = "next_open"
 lot_size = 1
 slippage_bps = 0.0
+spread_ticks = 1.0
+slippage_ticks = 0.1
 respect_price_limits = true
 
 [future]

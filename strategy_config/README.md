@@ -46,6 +46,8 @@ With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar o
 
 尾盘由策略根据合约交易时间进入平仓窗口，撤销该合约待开仓信号，逐分钟尝试平掉两侧。撮合使用开盘价和该分钟成交量约束，日涨跌停文件可用时检查开盘价。日终未成交的仓位按原合约和方向隔夜，下一交易日从该合约第一根行情开始优先平仓。若仍无法成交，逐分钟重试，直到仓位平掉。换主力后仍加载持仓旧合约的行情和交易参数。隔夜仓按普通平仓费用结算。用 `--detail true` 查看分钟持仓和逐笔交易方向。
 
+期货 `[execution]` 支持 `spread_ticks` 和 `slippage_ticks`，默认均为零。`mdl_100000` 每笔开仓和平仓分别计入 1 tick spread 与 0.1 tick 滑点。每手成本等于 tick 数乘以该合约的最小变动价位和乘数，再加上原有的 `slippage_bps` 成本，一并计入开仓资金校验与 `slippage` 日结。最小变动价位取自 `fut_basic.parquet` 的 `quote_unit_desc`。启用 tick 成本时，待撮合合约缺少最小变动价位会报错。成交价和交易所手续费沿用原口径。
+
 ## 输出与分析 / Outputs and analysis
 
 期货策略在 `[output]` 设置 `product_pnl = true` 后，同目录写出 `product_pnl.parquet`，按交易日和品种各一行。账户日结仍在 `holdings.parquet`。品种毛盈亏为当日已实现盈亏加未实现盈亏变动，扣除手续费与滑点得到净盈亏。另输出累计净盈亏、成交笔数、成交手数、双边成交额和成交额除以日初账户权益的换手率。日结直接使用成交和估值，不依赖分钟明细输出。

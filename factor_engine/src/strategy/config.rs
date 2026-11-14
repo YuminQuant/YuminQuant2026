@@ -91,6 +91,8 @@ pub struct FutureConfig {
     pub margin_by_product: BTreeMap<String, f64>,
     pub daily_costs: bool,
     pub product_pnl: bool,
+    pub spread_ticks: f64,
+    pub slippage_ticks: f64,
     pub settle_root: Option<PathBuf>,
     pub min_lots_by_product: BTreeMap<String, u32>,
 }
@@ -104,6 +106,8 @@ impl Default for FutureConfig {
             margin_by_product: BTreeMap::new(),
             daily_costs: false,
             product_pnl: false,
+            spread_ticks: 0.0,
+            slippage_ticks: 0.0,
             settle_root: None,
             min_lots_by_product: BTreeMap::new(),
         }
@@ -210,6 +214,11 @@ impl StrategyRunConfig {
             .unwrap_or_else(|| data_root.join("models"));
         let mut future = FutureConfig::default();
         if asset_class == StrategyAssetClass::Future {
+            future.spread_ticks = doc.nonnegative_f64("execution", "spread_ticks")?;
+            future.slippage_ticks = doc.nonnegative_f64("execution", "slippage_ticks")?;
+            if !(future.spread_ticks + future.slippage_ticks).is_finite() {
+                return Err(err("combined futures tick costs must be finite"));
+            }
             future.product_pnl = match doc.string("output", "product_pnl") {
                 Some(value) => parse_bool(Some(&value))
                     .ok_or_else(|| err("[output].product_pnl must be true or false"))?,
@@ -452,6 +461,16 @@ impl SimpleToml {
             eprintln!("[strategy warning] invalid [{section}].{key}={raw}; using existing fallback/error handling");
         }
         parsed
+    }
+
+    fn nonnegative_f64(&self, section: &str, key: &str) -> Result<f64> {
+        let Some(raw) = self.string(section, key) else {
+            return Ok(0.0);
+        };
+        raw.parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .ok_or_else(|| err(format!("[{section}].{key} must be finite and nonnegative")))
     }
 
     fn section_values(&self, section: &str) -> BTreeMap<String, String> {

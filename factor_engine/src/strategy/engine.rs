@@ -208,7 +208,8 @@ impl StrategyEngine {
                             &mut account,
                             &market,
                             std::mem::take(&mut pending_orders),
-                        );
+                            &future_meta,
+                        )?;
                         call_fills(
                             &mut *strategy,
                             &run_config,
@@ -241,7 +242,8 @@ impl StrategyEngine {
                                 &mut account,
                                 &market,
                                 open_orders,
-                            );
+                                &future_meta,
+                            )?;
                             call_fills(
                                 &mut *strategy,
                                 &run_config,
@@ -261,8 +263,9 @@ impl StrategyEngine {
                     strategy.on_bar_open(&mut ctx, &market.event)?;
                     let orders = ctx.take_orders();
                     if !orders.is_empty() {
-                        let fills =
-                            execution.fill_orders(&run_config, &mut account, &market, orders);
+                        let fills = execution.fill_orders(
+                            &run_config, &mut account, &market, orders, &future_meta,
+                        )?;
                         call_fills(
                             &mut *strategy,
                             &run_config,

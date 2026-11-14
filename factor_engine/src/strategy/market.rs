@@ -86,6 +86,7 @@ pub struct FutureContractMeta {
     pub ts_code: String,
     pub fut_code: Option<String>,
     pub multiplier: f64,
+    pub tick_size: Option<f64>,
     pub exchange: String,
     pub daily_close_minute: Option<u16>,
     pub list_date: Option<i32>,
@@ -711,6 +712,7 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
         "trade_time_desc".to_string(),
         "trade_unit".to_string(),
         "quote_unit".to_string(),
+        "quote_unit_desc".to_string(),
         "list_date".to_string(),
         "delist_date".to_string(),
     ];
@@ -728,6 +730,8 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
         .then(|| table.required_utf8("trade_unit")).transpose()?;
     let quote_units = table.columns.contains_key("quote_unit")
         .then(|| table.required_utf8("quote_unit")).transpose()?;
+    let tick_descriptions = table.columns.contains_key("quote_unit_desc")
+        .then(|| table.required_utf8("quote_unit_desc")).transpose()?;
     let list_date = table.required_i32_date_cast("list_date")?;
     let delist_date = table.required_i32_date_cast("delist_date")?;
     let mut out = BTreeMap::new();
@@ -754,6 +758,9 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
                 ts_code,
                 fut_code: fut_codes[idx].clone(),
                 multiplier,
+                tick_size: tick_descriptions
+                    .and_then(|values| values[idx].as_deref())
+                    .and_then(parse_tick_size),
                 exchange: exchanges.and_then(|values| values[idx].clone()).unwrap_or_default(),
                 daily_close_minute: hours.and_then(|values| values[idx].as_deref()).and_then(daily_close_minute),
                 list_date: list_date[idx],
@@ -762,6 +769,11 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
         );
     }
     Ok(out)
+}
+
+fn parse_tick_size(description: &str) -> Option<f64> {
+    let number = description.trim_start().split(|ch: char| !ch.is_ascii_digit() && ch != '.').next()?;
+    clean_positive(number.parse().ok()?)
 }
 
 fn read_future_daily_table(path: &Path) -> Result<crate::data::Table> {

@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
+use crate::error::{err, Result};
 use crate::strategy::account::AccountState;
 use crate::strategy::config::{StrategyAssetClass, StrategyRunConfig};
-use crate::strategy::market::MarketSnapshot;
+use crate::strategy::market::{FutureContractMeta, MarketSnapshot};
 use crate::strategy::order::{FillEvent, Order, OrderSide};
 
 #[derive(Clone, Debug)]
@@ -19,7 +22,8 @@ impl ExecutionEngine {
         account: &mut AccountState,
         market: &MarketSnapshot,
         orders: Vec<Order>,
-    ) -> Vec<FillEvent> {
+        future_meta: &BTreeMap<String, FutureContractMeta>,
+    ) -> Result<Vec<FillEvent>> {
         let mut fills = Vec::new();
         for order in orders {
             match config.asset_class {
@@ -27,12 +31,20 @@ impl ExecutionEngine {
                     self.fill_stock_order(config, account, market, order, &mut fills)
                 }
                 StrategyAssetClass::Future => {
-                    self.fill_future_order(config, account, market, order, &mut fills)
+                    let ticks = config.future.spread_ticks + config.future.slippage_ticks;
+                    let quote_cost = if ticks > 0.0 && market.bar(&order.symbol).is_some() {
+                        let tick_size = future_meta.get(&order.symbol).and_then(|meta| meta.tick_size)
+                            .ok_or_else(|| err(format!("missing tick size for {} on {}", order.symbol, market.event.trade_date)))?;
+                        ticks * tick_size
+                    } else {
+                        0.0
+                    };
+                    self.fill_future_order(config, account, market, order, quote_cost, &mut fills)
                 }
                 StrategyAssetClass::MultiAsset => {}
             }
         }
-        fills
+        Ok(fills)
     }
 
     fn fill_stock_order(
@@ -146,6 +158,7 @@ impl ExecutionEngine {
         account: &mut AccountState,
         market: &MarketSnapshot,
         order: Order,
+        quote_cost: f64,
         fills: &mut Vec<FillEvent>,
     ) {
         let Some(bar) = market.bar(&order.symbol) else {
@@ -155,10 +168,11 @@ impl ExecutionEngine {
             return;
         };
         if let Some(side) = order.future_side {
-            self.fill_explicit_future_order(config, account, market, &order, side, price, fills);
+            self.fill_explicit_future_order(config, account, market, &order, side, price, quote_cost, fills);
             return;
         }
         let multiplier = bar.multiplier.max(1.0);
+        let slippage_per_lot = future_slippage_per_lot(config, price, multiplier, quote_cost);
         let margin_ratio = config.future_margin_ratio(&order.symbol);
         let lot = config.lot_size.max(1.0);
         let mut remaining = round_down_lot(order.signed_quantity.abs(), lot);
@@ -181,6 +195,7 @@ impl ExecutionEngine {
                     price,
                     multiplier,
                     margin_ratio,
+                    slippage_per_lot,
                     fills,
                 );
                 remaining -= close_qty;
@@ -192,6 +207,7 @@ impl ExecutionEngine {
                 config,
                 multiplier,
                 margin_ratio,
+                slippage_per_lot,
             );
             if open_qty > 0.0 {
                 self.fill_future_segment(
@@ -205,6 +221,7 @@ impl ExecutionEngine {
                     price,
                     multiplier,
                     margin_ratio,
+                    slippage_per_lot,
                     fills,
                 );
             }
@@ -223,6 +240,7 @@ impl ExecutionEngine {
                     price,
                     multiplier,
                     margin_ratio,
+                    slippage_per_lot,
                     fills,
                 );
                 remaining -= close_qty;
@@ -234,6 +252,7 @@ impl ExecutionEngine {
                 config,
                 multiplier,
                 margin_ratio,
+                slippage_per_lot,
             );
             if open_qty > 0.0 {
                 self.fill_future_segment(
@@ -247,6 +266,7 @@ impl ExecutionEngine {
                     price,
                     multiplier,
                     margin_ratio,
+                    slippage_per_lot,
                     fills,
                 );
             }
@@ -262,6 +282,7 @@ impl ExecutionEngine {
         order: &Order,
         side: OrderSide,
         price: f64,
+        quote_cost: f64,
         fills: &mut Vec<FillEvent>,
     ) {
         let Some(spec) = market.future_day.as_ref().and_then(|day| day.spec(&order.symbol)) else {
@@ -279,7 +300,7 @@ impl ExecutionEngine {
         }
         let requested = order.signed_quantity.abs();
         let margin_ratio = spec.margin(side);
-        let slippage_per_lot = price * spec.multiplier * config.slippage_bps / 10_000.0;
+        let slippage_per_lot = future_slippage_per_lot(config, price, spec.multiplier, quote_cost);
         let quantity = match side {
             OrderSide::Buy | OrderSide::Short => {
                 let lots = round_down_lot(requested.min(volume), spec.min_lots);
@@ -338,6 +359,7 @@ impl ExecutionEngine {
         price: f64,
         multiplier: f64,
         margin_ratio: f64,
+        slippage_per_lot: f64,
         fills: &mut Vec<FillEvent>,
     ) {
         if quantity <= 0.0 {
@@ -346,7 +368,7 @@ impl ExecutionEngine {
         let notional = quantity * price * multiplier;
         let fee = notional * config.commission_bps_for_side(side) / 10_000.0;
         let tax = 0.0;
-        let slippage_cost = notional * config.slippage_bps / 10_000.0;
+        let slippage_cost = slippage_per_lot * quantity;
         let total_cost = fee + tax + slippage_cost;
         let realized_pnl = account.apply_derivative_trade(
             &order.symbol,
@@ -454,6 +476,7 @@ fn affordable_future_open_quantity(
     config: &StrategyRunConfig,
     multiplier: f64,
     margin_ratio: f64,
+    slippage_per_lot: f64,
 ) -> f64 {
     let lot = config.lot_size.max(1.0);
     let requested = round_down_lot(requested_qty, lot);
@@ -462,9 +485,8 @@ fn affordable_future_open_quantity(
     }
     let unit_notional = price * multiplier.max(1.0);
     let unit_need = unit_notional * margin_ratio.max(0.0)
-        + unit_notional
-            * (config.buy_commission_bps.max(config.short_commission_bps) + config.slippage_bps)
-            / 10_000.0;
+        + unit_notional * config.buy_commission_bps.max(config.short_commission_bps) / 10_000.0
+        + slippage_per_lot;
     if unit_need <= 0.0 || !unit_need.is_finite() {
         return requested;
     }
@@ -476,6 +498,10 @@ fn affordable_future_open_quantity(
         .min(available_by_cap);
     let affordable = round_down_lot(available_margin / unit_need, lot);
     requested.min(affordable).max(0.0)
+}
+
+fn future_slippage_per_lot(config: &StrategyRunConfig, price: f64, multiplier: f64, quote_cost: f64) -> f64 {
+    (price * config.slippage_bps / 10_000.0 + quote_cost) * multiplier
 }
 
 fn round_down_lot(quantity: f64, lot: f64) -> f64 {

@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
@@ -10,14 +12,16 @@ use crate::strategy::config::{BarFrequency, StrategyAssetClass, StrategyRunConfi
 use crate::strategy::context::StrategyContext;
 use crate::strategy::execution::ExecutionEngine;
 use crate::strategy::market::{
-    load_future_metadata, load_future_minute_frames, load_stock_daily_frames,
-    load_stock_minute_frames, Bar, BarEvent, FutureContractMeta, FutureDailyCache, MarketFrame,
+    load_future_metadata, load_selected_future_minute_frames, load_stock_daily_frames,
+    Bar, BarEvent, FutureContractMeta, FutureDailyCache, MarketFrame,
     MarketSnapshot, SessionOpenEvent,
 };
 use crate::strategy::order::{FillEvent, HoldingSnapshot, Order, OrderSide};
 use crate::strategy::request::StrategyRunRequest;
+use crate::strategy::session_io;
 use crate::strategy::storage::HoldingsWriter;
-use crate::strategy::strategies::future::cta_001::Cta001;
+use crate::strategy::future_market::FutureReferenceData;
+use crate::strategy::strategies::future::mdl_100000::ModelCta;
 use crate::strategy::strategies::future::sma::SmaStrategy;
 use crate::strategy::strategies::stock::strategy_001::Strategy001;
 use crate::strategy::strategy::Strategy;
@@ -51,8 +55,12 @@ impl StrategyEngine {
         if let Some(detail) = request.detail {
             run_config.detail = detail;
         }
-        let calendar =
-            TradingCalendar::load(&self.config.data_root, &self.config.stock_calendar_exchange)?;
+        let exchange = if run_config.asset_class == StrategyAssetClass::Future {
+            &self.config.future_calendar_exchange
+        } else {
+            &self.config.stock_calendar_exchange
+        };
+        let calendar = TradingCalendar::load(&self.config.data_root, exchange)?;
         let dates = calendar.open_dates_between(run_config.start_date, run_config.end_date);
         if dates.is_empty() {
             return Err(err("no trading dates in strategy range"));
@@ -73,6 +81,7 @@ impl StrategyEngine {
         let mut pending_orders = Vec::<Order>::new();
         let mut holdings = HoldingsWriter::new(&run_config.output_dir())?;
         let mut daily_cache = FutureDailyCache::default();
+        let mut future_reference = FutureReferenceData::default();
         let mut trade_count = 0_usize;
         let mut next_order_id = 0_i64;
         let progress = ProgressBar::new("strategy-run", dates.len(), true);
@@ -84,14 +93,69 @@ impl StrategyEngine {
 
         let mut started = false;
         strategy.prepare_run(&run_config, &dates)?;
-        let batch_days = strategy.input_batch_days().max(1);
+        if run_config.asset_class == StrategyAssetClass::Future {
+            strategy.prepare_future_run(&run_config, &calendar, &dates)?;
+        }
+        let batch_days = if run_config.asset_class == StrategyAssetClass::Stock
+            && run_config.bar_frequency == BarFrequency::Minute
+            && run_config.minute_open_limits
+            && run_config.session_inputs.is_empty()
+        {
+            strategy.input_batch_days().max(1)
+        } else {
+            1
+        };
         for batch in dates.chunks(batch_days) {
-            let universe = strategy.prepare_session(&run_config, &account, batch[0])?;
+            let future_universe = if run_config.asset_class == StrategyAssetClass::Future {
+                strategy.select_future_contracts(&run_config, batch[0], &future_meta)?
+            } else {
+                None
+            };
+            let universe = if run_config.asset_class == StrategyAssetClass::Future {
+                None
+            } else {
+                strategy.prepare_session(&run_config, &account, batch[0])?
+            };
+            let parallel_stock_batch = batch.len() > 1;
+            let (frames, future_day) = if !parallel_stock_batch {
+                let mut files = strategy.session_files(
+                    &run_config, batch[0], future_universe.as_ref().or(universe.as_ref()),
+                );
+                for (name, template) in &run_config.session_inputs {
+                    files.push(template.for_date(&run_config.data_root, name, batch[0]));
+                }
+                let (frames, other_inputs) = session_io::join(
+                    || load_session_frames(&run_config, batch[0], &future_meta, &mut daily_cache,
+                        future_universe.as_ref(), universe.as_ref()),
+                    || session_io::join(
+                        || if run_config.asset_class == StrategyAssetClass::Future && run_config.future.daily_costs {
+                            future_reference.load_day(&run_config, batch[0], calendar.previous_open(batch[0]),
+                                &future_meta, future_universe.as_ref()).map(|day| Some(Arc::new(day)))
+                        } else {
+                            Ok(None)
+                        },
+                        || session_io::load_files(files),
+                    ),
+                )?;
+                let (future_day, inputs) = other_inputs?;
+                let (frames, future_day, inputs) = (frames?, future_day?, inputs?);
+                strategy.on_session_inputs(batch[0], inputs)?;
+                (frames, future_day)
+            } else {
+                (Vec::new(), None)
+            };
             let mut consume = |trade_date: i32, mut frames: Vec<MarketFrame>| -> Result<()> {
+                if parallel_stock_batch {
+                    let files = strategy.session_files(&run_config, trade_date, universe.as_ref());
+                    strategy.on_session_inputs(trade_date, session_io::load_files(files)?)?;
+                }
                 corporate_actions.begin_session(&mut account, trade_date);
                 let exit_time = lifecycle.begin_session(&run_config, &mut account, trade_date, &mut frames);
                 strategy.prepare_session(&run_config, &account, trade_date)?;
                 if frames.is_empty() {
+                    if run_config.asset_class == StrategyAssetClass::Future && future_universe.as_ref().is_some_and(|codes| !codes.is_empty()) {
+                        return Err(err(format!("missing selected futures minute bars for {trade_date}")));
+                    }
                     corporate_actions.end_session(&account, trade_date);
                     eprintln!(
                         "[strategy warning] date={trade_date}: no market frames; skipping date"
@@ -102,7 +166,8 @@ impl StrategyEngine {
                 let mut daily_side_counts = SideCounts::default();
                 let frame_count = frames.len();
                 for (frame_index, frame) in frames.into_iter().enumerate() {
-                    let market = MarketSnapshot::new(frame.event.clone(), frame.bars);
+                    let mut market = MarketSnapshot::new(frame.event.clone(), frame.bars);
+                    market.future_day = future_day.clone();
                     let mut bar_fills = Vec::<FillEvent>::new();
                     if !started {
                         call_start(
@@ -199,6 +264,10 @@ impl StrategyEngine {
                         StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
                     strategy.on_bar(&mut ctx, &market.event)?;
                     pending_orders.extend(ctx.take_orders());
+                    if market.event.is_session_end {
+                        let mut ctx = StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
+                        strategy.on_session_end(&mut ctx, &market.event)?;
+                    }
                     let daily_only =
                         run_config.bar_frequency == BarFrequency::Minute && !run_config.detail;
                     if !daily_only || frame_index + 1 == frame_count {
@@ -219,11 +288,7 @@ impl StrategyEngine {
                 progress.tick(format!("date={trade_date} trades={trade_count}"));
                 Ok(())
             };
-            if batch_days > 1
-                && run_config.asset_class == StrategyAssetClass::Stock
-                && run_config.bar_frequency == BarFrequency::Minute
-                && run_config.minute_open_limits
-            {
+            if parallel_stock_batch {
                 super::market::visit_stock_minute_sessions(
                     &run_config.data_root,
                     batch,
@@ -232,19 +297,6 @@ impl StrategyEngine {
                     &mut consume,
                 )?;
             } else {
-                // Compatibility mode retains per-session exact-universe loading.
-                let frames = if run_config.asset_class == StrategyAssetClass::Stock
-                    && run_config.bar_frequency == BarFrequency::Minute
-                {
-                    super::market::load_stock_minute_frames_for_run(
-                        &run_config.data_root,
-                        batch,
-                        universe.as_ref(),
-                        run_config.minute_open_limits,
-                    )?
-                } else {
-                    load_frames(&run_config, batch[0], &future_meta, &mut daily_cache)?
-                };
                 consume(batch[0], frames)?;
             }
         }
@@ -271,11 +323,13 @@ impl StrategyEngine {
     }
 }
 
-fn load_frames(
+fn load_session_frames(
     config: &StrategyRunConfig,
     trade_date: i32,
     future_meta: &BTreeMap<String, FutureContractMeta>,
     daily_cache: &mut FutureDailyCache,
+    future_universe: Option<&BTreeSet<String>>,
+    stock_universe: Option<&BTreeSet<String>>,
 ) -> Result<Vec<MarketFrame>> {
     let dates = [trade_date];
     match (&config.asset_class, config.bar_frequency) {
@@ -283,17 +337,20 @@ fn load_frames(
             load_stock_daily_frames(&config.data_root, &dates)
         }
         (StrategyAssetClass::Stock, BarFrequency::Minute) => {
-            load_stock_minute_frames(&config.data_root, &dates)
+            super::market::load_stock_minute_frames_for_run(
+                &config.data_root, &dates, stock_universe, config.minute_open_limits,
+            )
         }
         (StrategyAssetClass::Future, BarFrequency::Daily) => {
             daily_cache.load(&config.data_root, &dates, future_meta)
         }
-        (StrategyAssetClass::Future, BarFrequency::Minute) => load_future_minute_frames(
+        (StrategyAssetClass::Future, BarFrequency::Minute) => load_selected_future_minute_frames(
             &config.data_root,
             &dates,
             future_meta,
             &config.market_products,
             &config.market_symbols,
+            future_universe,
         ),
         (StrategyAssetClass::MultiAsset, _) => {
             Err(err("multi_asset strategy execution is not implemented"))
@@ -304,7 +361,7 @@ fn load_frames(
 fn create_strategy(config: &StrategyRunConfig) -> Result<Box<dyn Strategy>> {
     match config.strategy_class.as_str() {
         "stock::strategy_001" => Ok(Box::new(Strategy001::from_config(config)?)),
-        "future::cta_001" => Ok(Box::new(Cta001::from_context_config(config))),
+        "future::mdl_100000" => Ok(Box::new(ModelCta::from_config(config)?)),
         "future::sma" => Ok(Box::new(SmaStrategy::from_context_config(config))),
         other => Err(err(format!("unknown strategy_class: {other}"))),
     }
@@ -366,7 +423,7 @@ fn holding_snapshot(
     let mut multipliers = Vec::new();
     let mut margin_ratios = Vec::new();
     let mut margin_values = Vec::new();
-    for (symbol, position) in account.positions() {
+    for (symbol, position) in account.all_positions() {
         if position.quantity.abs() <= 1e-9 {
             continue;
         }
@@ -505,6 +562,8 @@ fn mark_account_positions(
         let cash_settled = config.asset_class == StrategyAssetClass::Stock;
         let margin_ratio = if cash_settled {
             0.0
+        } else if let Some(spec) = market.future_day.as_ref().and_then(|day| day.spec(symbol)) {
+            spec.margin(if position.quantity > 0.0 { OrderSide::Buy } else { OrderSide::Short })
         } else {
             config.future_margin_ratio(symbol)
         };

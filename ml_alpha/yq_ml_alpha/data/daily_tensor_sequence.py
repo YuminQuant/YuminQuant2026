@@ -116,10 +116,7 @@ class DailyTensorSequence:
         # Resident days never enter the IO queue or trigger remote stat calls.
         frames = data_io.ordered_io_map(
             self._load_day, missing, root=self.root,
-            path_for=lambda date: daily_path(self.root, date),
             workers=getattr(self, "read_workers", None),
-            prefetch_bytes=getattr(self, "prefetch_bytes", None),
-            estimate_bytes=self._estimate_day_bytes,
         )
         try:
             for date in dates:
@@ -127,14 +124,6 @@ class DailyTensorSequence:
                 yield date, frame if frame is not None else self._remember(date, next(frames))
         finally:
             frames.close()
-
-    def _estimate_day_bytes(self, date):
-        # Observed normalized sizes avoid repeatedly estimating compressed
-        # Parquet as eight times its file size. Leave room for transient copies.
-        size = self._day_sizes.get(date)
-        if size is None and self._day_sizes:
-            size = max(self._day_sizes.values())
-        return None if size is None else max(1024**2, size * 3)
 
     def cache_info(self):
         return dict(hits=self.cache_hits, misses=self.cache_misses,

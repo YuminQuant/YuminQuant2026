@@ -30,11 +30,10 @@ pub trait AtomicWrite: Write + Send { fn commit(self: Box<Self>) -> Result<()>; 
 pub struct ReadOptions {
     pub concurrency: usize,
     pub opens_per_second: f64,
-    pub prefetch_bytes: usize,
 }
 impl Default for ReadOptions {
     fn default() -> Self {
-        Self { concurrency: 4, opens_per_second: 10.0, prefetch_bytes: 128 * 1024 * 1024 }
+        Self { concurrency: 50, opens_per_second: 1000.0 }
     }
 }
 pub trait ArtifactBackend: Send + Sync {
@@ -185,7 +184,6 @@ impl ReadAt for LocalRead {
 pub struct StorageReader(Arc<BufferedRead>);
 const READ_BLOCK_BYTES: usize = 64 * 1024;
 const READ_CACHE_BLOCKS: usize = 16;
-pub(crate) const READER_CACHE_BYTES: usize = READ_BLOCK_BYTES * READ_CACHE_BLOCKS;
 struct BufferedRead {
     source: Arc<dyn ReadAt>,
     blocks: Mutex<VecDeque<(u64, Bytes)>>,

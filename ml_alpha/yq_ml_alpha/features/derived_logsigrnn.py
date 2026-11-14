@@ -35,11 +35,10 @@ class LogsigRnnHistory(DailyTensorSequence):
                          memory_budget_mb=params.get("memory_budget_mb"))
         self.filters = TradeFilters(config.filters, config.data_root)
         self.universe = Universe(config.universe.id, config.data_root)
-        workers, prefetch = int(params["history_read_workers"]), int(params["history_prefetch_mb"])
-        if workers < 1 or prefetch < 1:
-            raise ValueError("Logsig-RNN history workers/prefetch must be positive")
+        workers = int(params["history_read_workers"])
+        if workers < 1:
+            raise ValueError("Logsig-RNN history read workers must be positive")
         self.read_workers = workers if artifact_io.remote_enabled() else 1
-        self.prefetch_bytes = prefetch * 1024**2
         self._counts = np.array([[word.count(axis) for axis in (3, 4, 5)] for word in lyndon_words()])
         if self._counts.shape != (WIDTH, 3):
             raise ValueError("Logsig-RNN basis width mismatch")

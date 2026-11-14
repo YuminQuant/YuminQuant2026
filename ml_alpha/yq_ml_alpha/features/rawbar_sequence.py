@@ -25,11 +25,10 @@ class RawBarHistory(DailyTensorSequence):
         self.adj_root = _project_path(params.get("adj_root", self.root.parent / "adj_factor"))
         self.filters = TradeFilters(config.filters, config.data_root)
         self.universe = Universe(config.universe.id, config.data_root)
-        workers, prefetch = int(params["history_read_workers"]), int(params["history_prefetch_mb"])
-        if workers < 1 or prefetch < 1:
-            raise ValueError("history workers and prefetch budget must be positive")
+        workers = int(params["history_read_workers"])
+        if workers < 1:
+            raise ValueError("history read workers must be positive")
         self.read_workers = workers if artifact_io.remote_enabled() else 1
-        self.prefetch_bytes = prefetch * 1024**2
         self._mean = self._std = None
 
     def _read(self, root, date, columns):

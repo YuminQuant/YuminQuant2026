@@ -16,11 +16,9 @@ def io_options(root):
     return options(root)
 
 
-def ordered_io_map(function, items, *, root, path_for=None, workers=None,
-                   prefetch_bytes=None, estimate_bytes=None):
+def ordered_io_map(function, items, *, root, workers=None):
     from .read_ahead import ordered_map
-    return ordered_map(function, items, root=root, path_for=path_for, workers=workers,
-                       prefetch_bytes=prefetch_bytes, estimate_bytes=estimate_bytes)
+    return ordered_map(function, items, root=root, workers=workers)
 
 def read_path(path):
     for line in os.environ.get('YQ_METADATA_SNAPSHOTS','').splitlines():

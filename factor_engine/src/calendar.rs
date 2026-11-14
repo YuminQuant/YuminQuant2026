@@ -59,6 +59,11 @@ impl TradingCalendar {
         }
     }
 
+    pub fn previous_open(&self, date: i32) -> Option<i32> {
+        let idx = self.open_dates.partition_point(|&open| open < date);
+        self.open_dates.get(idx.checked_sub(1)?).copied()
+    }
+
     pub fn warmup_start(&self, start_date: i32, trading_days: usize) -> i32 {
         if self.open_dates.is_empty() || trading_days == 0 {
             return start_date;

@@ -47,11 +47,9 @@ class MarketStyleHistory(DailyTensorSequence):
         self.universe = Universe(config.universe.id, config.data_root)
         from yq_ml_alpha.output import artifact_io
         workers = int(params["history_read_workers"])
-        prefetch_mb = int(params["history_prefetch_mb"])
-        if workers < 1 or prefetch_mb < 1:
-            raise ValueError("history read workers and prefetch budget must be positive")
+        if workers < 1:
+            raise ValueError("history read workers must be positive")
         self.read_workers = workers if artifact_io.remote_enabled() else 1
-        self.prefetch_bytes = prefetch_mb * 1024**2
         self.normalization = str(params["normalization"])
         if self.normalization not in {"window_mean", "last_value"}:
             raise ValueError("unsupported market/style normalization")

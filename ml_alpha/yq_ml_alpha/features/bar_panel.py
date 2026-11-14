@@ -399,8 +399,7 @@ class BarPanelProvider(FeatureProvider):
         resident = {d: self._session_cache.get(keys[d]) for d in history}
         def fetch(date):
             return None if resident[date] is not None else read(date)
-        with closing(data_io.ordered_io_map(fetch, history, root=self.root,
-                path_for=lambda date: self.root / str(date // 10000) / f"{date}.parquet")) as frames:
+        with closing(data_io.ordered_io_map(fetch, history, root=self.root)) as frames:
             for index, (date, frame) in enumerate(zip(history, frames)):
                 if resident[date] is not None:
                     self._cache_get(keys[date])
@@ -415,8 +414,7 @@ class BarPanelProvider(FeatureProvider):
         resident = {d: self._session_cache.get(d) for d in history}
         def read(date):
             return None if resident[date] is not None else read_daily(self.root, date, DAILY_REQUIRED_COLUMNS)
-        with closing(data_io.ordered_io_map(read, history, root=self.root,
-                path_for=lambda date: self.root / str(date // 10000) / f"{date}.parquet")) as frames:
+        with closing(data_io.ordered_io_map(read, history, root=self.root)) as frames:
             for date, frame in zip(history, frames):
                 if resident[date] is not None:
                     self._cache_get(date)

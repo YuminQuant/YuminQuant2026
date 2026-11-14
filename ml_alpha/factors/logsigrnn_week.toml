@@ -143,7 +143,6 @@ columns = [
 [features.params]
 sequence_length = 21
 history_read_workers = 30
-history_prefetch_mb = 512
 
 [materialize]
 cache_samples = false

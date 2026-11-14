@@ -70,7 +70,7 @@ def validate_minute_keys(frame: pd.DataFrame, trade_date: int, source: str | Pat
 def read_daily_range(root: str | Path, dates: Iterable[int], columns: Iterable[str]) -> pd.DataFrame:
     columns = list(columns)
     frames = list(data_io.ordered_io_map(lambda date: read_daily(root, int(date), columns), dates,
-        root=Path(root), path_for=lambda date: daily_path(root, int(date))))
+        root=Path(root)))
     frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return pd.DataFrame(columns=_dedupe([*KEY_COLUMNS, *columns]))

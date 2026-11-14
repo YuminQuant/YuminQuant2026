@@ -149,6 +149,7 @@ impl StockLifecycle {
                 symbol,
                 signed_quantity: -quantity,
                 signal_time: market.event.trade_time.clone(),
+                future_side: None,
             };
             let sales = execution.force_delisting_sale(config, account, market, order, price);
             if let Some(audit) = &mut self.audit {

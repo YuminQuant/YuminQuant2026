@@ -89,6 +89,9 @@ pub struct FutureConfig {
     pub max_margin_ratio: f64,
     pub mark_price: FutureMarkPrice,
     pub margin_by_product: BTreeMap<String, f64>,
+    pub daily_costs: bool,
+    pub settle_root: Option<PathBuf>,
+    pub min_lots_by_product: BTreeMap<String, u32>,
 }
 
 impl Default for FutureConfig {
@@ -98,6 +101,9 @@ impl Default for FutureConfig {
             max_margin_ratio: 1.0,
             mark_price: FutureMarkPrice::Close,
             margin_by_product: BTreeMap::new(),
+            daily_costs: false,
+            settle_root: None,
+            min_lots_by_product: BTreeMap::new(),
         }
     }
 }
@@ -132,6 +138,7 @@ pub struct StrategyRunConfig {
     pub market_products: Vec<String>,
     pub market_symbols: Vec<String>,
     pub strategy_params: BTreeMap<String, String>,
+    pub(crate) session_inputs: BTreeMap<String, super::session_io::InputTemplate>,
 }
 
 impl StrategyRunConfig {
@@ -200,6 +207,17 @@ impl StrategyRunConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|| data_root.join("models"));
         let mut future = FutureConfig::default();
+        future.daily_costs = match doc.string("future", "daily_costs") {
+            Some(value) => parse_bool(Some(&value))
+                .ok_or_else(|| err("[future].daily_costs must be true or false"))?,
+            None => false,
+        };
+        future.settle_root = doc.string("paths", "future_settle_root").map(PathBuf::from);
+        for (product, value) in doc.section_values("future.min_lots_by_product") {
+            let lots = value.parse::<u32>().ok().filter(|&lots| lots > 0)
+                .ok_or_else(|| err(format!("invalid minimum lots for {product}: {value}")))?;
+            future.min_lots_by_product.insert(product.to_ascii_uppercase(), lots);
+        }
         future.default_margin_ratio = doc
             .f64("future", "default_margin_ratio")
             .unwrap_or(future.default_margin_ratio)
@@ -277,6 +295,22 @@ impl StrategyRunConfig {
         if !valid_exit_time || (bar_frequency == BarFrequency::Daily && delisting_exit_time != "15:00") {
             return Err(err("delisting_exit_time must be HH:MM from 09:30 to 15:00; daily bars require 15:00"));
         }
+        let mut session_inputs = BTreeMap::new();
+        for section in doc.sections.keys() {
+            let Some(name) = section.strip_prefix("session_inputs.") else { continue; };
+            let path = doc.string(section, "path").filter(|value| !value.is_empty())
+                .ok_or_else(|| err(format!("missing [{section}].path")))?;
+            let columns = doc.string(section, "columns").unwrap_or_default()
+                .split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned).collect();
+            let optional = match doc.string(section, "optional") {
+                Some(value) => parse_bool(Some(&value))
+                    .ok_or_else(|| err(format!("invalid [{section}].optional")))?,
+                None => false,
+            };
+            session_inputs.insert(name.to_owned(), super::session_io::InputTemplate {
+                path: PathBuf::from(path), columns, optional,
+            });
+        }
         Ok(Self {
             minute_open_limits: limit_mode == "minute_open",
             force_delisting_exit,
@@ -309,6 +343,7 @@ impl StrategyRunConfig {
             market_products,
             market_symbols,
             strategy_params: doc.section_values("strategy"),
+            session_inputs,
         })
     }
 
@@ -327,6 +362,12 @@ impl StrategyRunConfig {
             .copied()
             .unwrap_or(self.future.default_margin_ratio)
             .max(0.0)
+    }
+
+    pub fn future_min_lots(&self, symbol: &str) -> f64 {
+        let product = future_product_from_symbol(symbol);
+        self.future.min_lots_by_product.get(&product)
+            .map_or(self.lot_size, |&lots| f64::from(lots))
     }
 
     pub fn commission_bps_for_side(&self, side: crate::strategy::order::OrderSide) -> f64 {

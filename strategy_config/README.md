@@ -13,6 +13,7 @@ Run from the repository root after checking paths, signals and dates. Required i
 cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --config strategy_config/stock/strategy_001.toml
 cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --config strategy_config/future/ag_sma_20.toml
 cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --config strategy_config/future/ag_sma_20.toml --detail true
+cargo run --release --manifest-path factor_engine/Cargo.toml -- strategy-run --config strategy_config/future/mdl_100000.toml
 ```
 
 股票目录提供不同持仓数量、排名筛选及成交假设的配置；期货目录提供 SMA 和 CTA 示例。选择适合研究的问题，不将示例参数视为推荐投资组合。
@@ -37,7 +38,26 @@ Stock examples vary portfolio size, rank filters and execution assumptions; futu
 
 With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar open. Consult the development guide for callback and order semantics. Disabling price limits is a hypothetical comparison, not a claim of executable trades.
 
+## `mdl_100000` 期货 CTA
+
+策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P5/P95 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P95 开多，低于 P5 开空，在该合约下一根行情开盘尝试成交。多空独立记仓，每侧最多一个最小交易单位。同向重复信号维持原仓。
+
+公共层按期货日历加载交易日和合约资料。最小下单手数由 `[future.min_lots_by_product]` 覆盖，未配置品种取 `[execution].lot_size`。开启 `[future].daily_costs` 后，公共层每天读取上一交易日的结算快照，路径可用 `[paths].future_settle_root` 覆盖。快照缺失或合约参数无效时，该合约跳过交易。郑商所使用可用的按手平今费用，其他缺失平今字段使用普通手续费。中金所股指按成交金额计费，国债按手计费。双持保证金按两侧分别计提。
+
+尾盘由策略根据合约交易时间进入平仓窗口，撤销该合约待开仓信号，逐分钟尝试平掉两侧。撮合使用开盘价和该分钟成交量约束，日涨跌停文件可用时检查开盘价。日终仍有持仓则报错。用 `--detail true` 查看分钟持仓和逐笔交易方向。
+
 ## 输出与分析 / Outputs and analysis
+
+股票和期货的单日独立输入共用 50 路读取池。HDFS 操作由部署后端按每秒 1,000 次限流。引擎收齐输入后，在回放线程按时间顺序更新账户和撮合。策略可以在 `session_files` 中声明输入，并在 `on_session_inputs` 接收按名称索引的表。
+
+策略还可在 TOML 添加任意命名的分日 Parquet 输入。相对路径从数据根目录解析，支持 `{year}` 和 `{date}`。省略列名时读全表，`optional = true` 时允许文件缺失。配置分日额外输入时，引擎逐日安排读取。
+
+```toml
+[session_inputs.indicators]
+path = "research/indicators/{year}/{date}.parquet"
+columns = "trade_date,ts_code,score"
+optional = true
+```
 
 ```text
 data/strategy/{asset_class}/{strategy_id}/holdings.parquet

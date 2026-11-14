@@ -1,7 +1,7 @@
 use super::*;
 use crate::data::parquet_io::{read_parquet, write_parquet};
 use crate::data::{ColumnData, Table};
-use crate::strategy::market::load_future_daily_frames;
+use crate::strategy::market::{load_future_daily_frames, load_future_minute_frames};
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -282,7 +282,7 @@ fn daily_output_matches_last_detailed_bar_and_full_day_counts() {
     let config = fixture.config();
     let dates = [20260105, 20260106];
     write_parquet(
-        &fixture.0.join("calendar/trade_cal_SSE.parquet"),
+        &fixture.0.join("calendar/trade_cal_SHFE.parquet"),
         &Table::new(BTreeMap::from([
             (
                 "cal_date".into(),

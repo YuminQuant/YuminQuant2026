@@ -65,7 +65,7 @@ class DailyWideWriter:
     def _map_writes(self, function, items):
         if data_io.backend(self.output_root) is not None:
             return list(data_io.ordered_io_map(function, items, root=self.output_root,
-                path_for=lambda item: self._path(item[0]), workers=self.write_workers))
+                workers=self.write_workers))
         with ThreadPoolExecutor(max_workers=min(self.write_workers, len(items))) as pool:
             return list(pool.map(function, items))
 

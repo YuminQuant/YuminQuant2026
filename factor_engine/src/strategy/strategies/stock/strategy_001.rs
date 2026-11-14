@@ -462,19 +462,22 @@ impl Strategy for Strategy001 {
                 self.active_top_n = *n;
                 self.ranked.clone_from(names);
             } else {
-                let mut ranked = load_signal(&self.signal_root, previous, &self.signal_id)?
+                let signal_root = &self.signal_root;
+                let signal_id = &self.signal_id;
+                let filter_columns = (self.exclude_st || self.exclude_limit)
+                    .then(|| self.filter_columns());
+                let (signal, excluded) = crate::strategy::session_io::join(
+                    || load_signal(signal_root, previous, signal_id),
+                    || filter_columns.as_ref().map(|columns|
+                        read_parquet(&trade_filter_path(config, date), Some(columns))
+                    ).transpose(),
+                )?;
+                let mut ranked = signal?
                     .into_iter()
                     .filter(|(s, v)| v.is_finite() && !s.ends_with(".BJ"))
                     .collect::<Vec<_>>();
                 ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                let excluded = if self.exclude_st || self.exclude_limit {
-                    let columns = self.filter_columns();
-                    Some(self.excluded_symbols(&read_parquet(
-                        &trade_filter_path(config, date), Some(&columns),
-                    )?)?)
-                } else {
-                    None
-                };
+                let excluded = excluded?.as_ref().map(|table| self.excluded_symbols(table)).transpose()?;
                 (self.active_top_n, self.ranked) =
                     self.select_ranked(ranked.into_iter().map(|(s, _)| s), excluded.as_ref());
             }

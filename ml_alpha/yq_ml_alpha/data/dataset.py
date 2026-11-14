@@ -13,7 +13,7 @@ import pandas as pd
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.data.filters import TradeFilters
-from yq_ml_alpha.data.stores import read_daily, read_minute, daily_path, require_hdfs_input
+from yq_ml_alpha.data.stores import read_daily, read_minute, require_hdfs_input
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
@@ -113,8 +113,7 @@ class DatasetBuilder:
         preloaded = None
         if type(self.feature_provider) in (FactorFrameProvider, MinuteFactorFrameProvider, RawPanelProvider):
             preloaded = data_io.ordered_io_map(self.feature_provider.load, dates,
-                root=self.feature_provider.root,
-                path_for=None if self.minute_frame else lambda day: daily_path(self.feature_provider.root, day))
+                root=self.feature_provider.root)
         try:
             return self._load_dates(dates, include_label, split_name, graph_tensor, lazy_tensor,
                                     frames, total_dates, started, preloaded)

@@ -1,3 +1,4 @@
+use super::order::OrderSide;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default)]
@@ -68,6 +69,8 @@ pub struct AccountState {
     realized_pnl_cum: f64,
     net_realized_pnl_cum: f64,
     positions: BTreeMap<String, Position>,
+    future_longs: BTreeMap<String, Position>,
+    future_shorts: BTreeMap<String, Position>,
     dividend_receivables: Vec<(i32, f64)>,
     locked_shares: Vec<(i32, String, f64)>,
     dividend_income: f64,
@@ -82,6 +85,8 @@ impl AccountState {
             realized_pnl_cum: 0.0,
             net_realized_pnl_cum: 0.0,
             positions: BTreeMap::new(),
+            future_longs: BTreeMap::new(),
+            future_shorts: BTreeMap::new(),
             dividend_receivables: Vec::new(),
             locked_shares: Vec::new(),
             dividend_income: 0.0,
@@ -117,17 +122,35 @@ impl AccountState {
         self.position(symbol).map(|pos| pos.quantity).unwrap_or(0.0)
     }
 
+    pub fn future_position(&self, symbol: &str, side: OrderSide) -> Option<&Position> {
+        match side {
+            OrderSide::Buy | OrderSide::Sell => self.future_longs.get(symbol),
+            OrderSide::Short | OrderSide::Cover => self.future_shorts.get(symbol),
+        }
+    }
+
+    pub fn futures_positions(&self) -> impl Iterator<Item = (&String, &Position)> {
+        self.future_longs.iter().chain(self.future_shorts.iter())
+    }
+
+    pub(crate) fn all_positions(&self) -> impl Iterator<Item = (&String, &Position)> {
+        self.positions.iter().chain(self.futures_positions())
+    }
+
     pub fn positions(&self) -> &BTreeMap<String, Position> {
         &self.positions
     }
 
     pub(crate) fn positions_mut(&mut self) -> impl Iterator<Item = (&String, &mut Position)> {
-        self.positions.iter_mut()
+        self.positions
+            .iter_mut()
+            .chain(self.future_longs.iter_mut())
+            .chain(self.future_shorts.iter_mut())
     }
 
     pub fn summary(&self) -> AccountSummary {
         let mut totals = AccountSummary::default();
-        for position in self.positions.values() {
+        for (_, position) in self.all_positions() {
             let market_value = position.market_value();
             let unrealized_pnl = position.unrealized_pnl();
             totals.equity += if position.cash_settled {
@@ -184,25 +207,27 @@ impl AccountState {
         self.cash
             + self.dividend_receivable()
             + self
-                .positions
-                .values()
-                .map(Position::equity_contribution)
+                .all_positions()
+                .map(|(_, position)| position.equity_contribution())
                 .sum::<f64>()
     }
 
     pub fn total_unrealized_pnl(&self) -> f64 {
-        self.positions.values().map(Position::unrealized_pnl).sum()
+        self.all_positions()
+            .map(|(_, position)| position.unrealized_pnl())
+            .sum()
     }
 
     pub fn gross_market_value(&self) -> f64 {
-        self.positions
-            .values()
-            .map(|position| position.market_value().abs())
+        self.all_positions()
+            .map(|(_, position)| position.market_value().abs())
             .sum()
     }
 
     pub fn net_market_value(&self) -> f64 {
-        self.positions.values().map(Position::market_value).sum()
+        self.all_positions()
+            .map(|(_, position)| position.market_value())
+            .sum()
     }
 
     pub fn account_pnl(&self) -> f64 {
@@ -210,7 +235,9 @@ impl AccountState {
     }
 
     pub fn margin_required(&self) -> f64 {
-        self.positions.values().map(Position::margin_value).sum()
+        self.all_positions()
+            .map(|(_, position)| position.margin_value())
+            .sum()
     }
 
     pub fn available_margin(&self) -> f64 {
@@ -262,16 +289,44 @@ impl AccountState {
         multiplier: f64,
         margin_ratio: f64,
     ) -> f64 {
+        self.apply_position_trade(
+            symbol,
+            signed_quantity,
+            price,
+            total_cost,
+            multiplier,
+            margin_ratio,
+            None,
+        )
+    }
+
+    pub(crate) fn apply_position_trade(
+        &mut self,
+        symbol: &str,
+        signed_quantity: f64,
+        price: f64,
+        total_cost: f64,
+        multiplier: f64,
+        margin_ratio: f64,
+        future_side: Option<OrderSide>,
+    ) -> f64 {
         if signed_quantity.abs() <= 1e-9 {
             return 0.0;
         }
         let multiplier = multiplier.max(1.0);
         let margin_ratio = margin_ratio.max(0.0);
-        let current_qty = self.position_quantity(symbol);
+        let positions = match future_side {
+            Some(OrderSide::Buy | OrderSide::Sell) => &mut self.future_longs,
+            Some(OrderSide::Short | OrderSide::Cover) => &mut self.future_shorts,
+            None => &mut self.positions,
+        };
+        let current_qty = positions
+            .get(symbol)
+            .map_or(0.0, |position| position.quantity);
         if current_qty.abs() <= 1e-9 || current_qty.signum() == signed_quantity.signum() {
             self.cash -= total_cost;
             self.net_realized_pnl_cum -= total_cost;
-            let position = self.positions.entry(symbol.to_string()).or_default();
+            let position = positions.entry(symbol.to_string()).or_default();
             let old_abs = position.quantity.abs();
             let add_abs = signed_quantity.abs();
             let new_abs = old_abs + add_abs;
@@ -288,7 +343,7 @@ impl AccountState {
             return 0.0;
         }
 
-        let Some(position) = self.positions.get_mut(symbol) else {
+        let Some(position) = positions.get_mut(symbol) else {
             return 0.0;
         };
         let close_qty = signed_quantity.abs().min(position.quantity.abs());
@@ -306,7 +361,7 @@ impl AccountState {
         self.realized_pnl_cum += realized;
         self.net_realized_pnl_cum += realized - total_cost;
         if position.quantity.abs() <= 1e-9 {
-            self.positions.remove(symbol);
+            positions.remove(symbol);
         }
         realized
     }

@@ -92,17 +92,9 @@ python scripts/update_incremental.py --groups future_mapping --start-date 202604
 
 ## 回测输入读取 / Backtest input reads
 
-回测在本地默认串行读文件；远程存储可通过通用 `ArtifactBackend::read_options()` 配置 IO worker、打开速率和预读预算。通用默认值为 4 个 worker、每秒启动 10 次打开、128 MiB，实际值由适配器配置决定。远程 worker 并发读取所需列的压缩数据，复用同一次打开取得的 footer/schema；解压和 Table 转换受 `--threads` 约束，结果按原日期顺序消费。完成后立即补充新文件，不再等待整波文件。文件状态和来源规划也复用 IO 并发预算；适配器若已限速，通过 `paces_read_opens()` 避免引擎重复限速。本地不启用该流水线，不创建节点磁盘数据缓存。
+回测本地串行读文件。远程的 `ArtifactBackend::read_options()` 设置读取并发和打开速率，默认分别为 50 和每秒 1,000 次。远程 worker 并发预读投影列，复用已打开的 reader 和 footer/schema，由计算线程解码，按输入顺序消费。适配器通过 `paces_read_opens()` 声明后端限速。预读按 worker 调度。
 
-预读按投影列的压缩大小、未压缩大小和行数估算内存，并在读取数据列之前预留预算；预算覆盖读取中、解压中和等待消费的结果。单个超预算文件独占推进，避免死锁；估算不是进程 RSS 的硬上限。另有最多 `worker × 1 MiB` 的准备期区间缓冲及 footer/元信息开销；回测必需的最终 panel、公共标签和已有共享缓存不计入预读预算。`--profile` 输出预留峰值、超预算文件数和结果超过估算的次数。读取失败、消费失败或可捕获 panic 会停止派发并释放待处理数据。
-
-打开速率可配置为 `0`，表示不额外限制每秒打开次数；文件并发和内存上限仍然生效。固定速率过低会使暖缓存的小文件读取变慢，不能仅凭打开次数推断提速比例。
-
-Backtests read local files serially by default. A remote adapter configures IO workers, open rate and prefetch budget through `ArtifactBackend::read_options()`. Generic defaults are four workers, ten open starts per second and 128 MiB; the adapter selects the effective settings. Remote workers fetch only projected compressed column chunks, reusing the open reader and footer/schema. Decompression and Table conversion respect `--threads`; results are consumed in original date order, with replacement work dispatched as files complete rather than at wave barriers. File status/source planning uses the IO budget too. An adapter that already paces opens declares `paces_read_opens()` to avoid double pacing. No dataset cache is written to node disk.
-
-Memory is reserved before payload reads using projected compressed/uncompressed sizes and row counts, covering fetching, decoding and queued results. A single oversized file runs exclusively to avoid deadlock; estimates are not hard process RSS limits. Preparation also uses up to `workers × 1 MiB` of range buffers plus footer/metadata overhead. Required final panels, common labels and existing shared caches are outside this budget. Profile counters report peak reservations, oversized files and results exceeding estimates. Read/consumer failures and caught panics stop dispatch and release pending data.
-
-An open rate of `0` disables the additional per-second cap, not the file-concurrency or memory limits. An overly low rate can slow warm-cache small-file reads; fewer opens alone do not establish a wall-time speedup.
+Local backtests read files serially. Remote adapters configure concurrency and open rate through `ArtifactBackend::read_options()`, which defaults to 50 workers and 1,000 opens per second. Workers prefetch projected chunks and reuse the open reader and footer/schema. The compute pool decodes the results, and the consumer receives them in input order. Adapters declare backend pacing through `paces_read_opens()`.
 
 manual/ML 因子表在同一次打开中完成 schema 获取和数据读取，列归属、按股票和日期键合并、空值及 forward-fill 规则不变。同一远程回测的多个 factor batch 可共享最多约 128 MiB 的 Barra 投影表；按文件长度和修改时间失效，预算不足则正常重读，不积累全历史缓存。`--profile` 新增同时打开句柄峰值及打开延迟 P50/P95 的直方图区间上界，仍是客户端指标，不代表 NameNode/DataNode 的全局请求数。
 

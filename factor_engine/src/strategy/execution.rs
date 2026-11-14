@@ -154,6 +154,10 @@ impl ExecutionEngine {
         let Some(price) = market.open_price(&order.symbol) else {
             return;
         };
+        if let Some(side) = order.future_side {
+            self.fill_explicit_future_order(config, account, market, &order, side, price, fills);
+            return;
+        }
         let multiplier = bar.multiplier.max(1.0);
         let margin_ratio = config.future_margin_ratio(&order.symbol);
         let lot = config.lot_size.max(1.0);
@@ -249,6 +253,73 @@ impl ExecutionEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn fill_explicit_future_order(
+        &mut self,
+        config: &StrategyRunConfig,
+        account: &mut AccountState,
+        market: &MarketSnapshot,
+        order: &Order,
+        side: OrderSide,
+        price: f64,
+        fills: &mut Vec<FillEvent>,
+    ) {
+        let Some(spec) = market.future_day.as_ref().and_then(|day| day.spec(&order.symbol)) else {
+            return;
+        };
+        let Some(bar) = market.bar(&order.symbol) else { return; };
+        let used: f64 = fills.iter().filter(|fill| fill.symbol == order.symbol)
+            .map(|fill| fill.quantity).sum();
+        let volume = bar.volume.unwrap_or(0.0) - used;
+        if volume <= 0.0 {
+            return;
+        }
+        if config.respect_price_limits && !spec.allows_price(side, price) {
+            return;
+        }
+        let requested = order.signed_quantity.abs();
+        let margin_ratio = spec.margin(side);
+        let slippage_per_lot = price * spec.multiplier * config.slippage_bps / 10_000.0;
+        let quantity = match side {
+            OrderSide::Buy | OrderSide::Short => {
+                let lots = round_down_lot(requested.min(volume), spec.min_lots);
+                let unit_margin = price * spec.multiplier * margin_ratio;
+                let unit_cost = spec.fee(side, price, 1.0) + slippage_per_lot;
+                let unit_need = unit_margin + unit_cost;
+                if unit_need <= 0.0 || !unit_need.is_finite() {
+                    return;
+                }
+                let totals = account.summary();
+                let margin_cap = totals.equity.max(0.0) * config.future.max_margin_ratio;
+                let cash_capacity = (totals.equity - totals.margin_required).max(0.0) / unit_need;
+                let margin_capacity = (margin_cap - totals.margin_required).max(0.0)
+                    / (unit_margin + unit_cost * config.future.max_margin_ratio);
+                let affordable = round_down_lot(cash_capacity.min(margin_capacity), spec.min_lots);
+                lots.min(affordable)
+            }
+            OrderSide::Sell | OrderSide::Cover => {
+                let held = account.future_position(&order.symbol, side)
+                    .map_or(0.0, |position| position.quantity.abs());
+                // Retain any unfilled balance so the strategy can retry in its close window.
+                round_down_lot(requested.min(held).min(volume), spec.min_lots)
+            }
+        };
+        if quantity <= 0.0 {
+            return;
+        }
+        let signed_quantity = order.signed_quantity.signum() * quantity;
+        let fee = spec.fee(side, price, quantity);
+        let slippage = slippage_per_lot * quantity;
+        let realized = account.apply_position_trade(
+            &order.symbol, signed_quantity, price, fee + slippage,
+            spec.multiplier, margin_ratio, Some(side),
+        );
+        self.push_fill(
+            config, account, market, order.clone(), side, quantity, signed_quantity, price,
+            price * spec.multiplier * quantity, fee, 0.0, slippage, realized, fills,
+        );
+    }
+
     fn fill_future_segment(
         &mut self,
         config: &StrategyRunConfig,
@@ -318,7 +389,10 @@ impl ExecutionEngine {
     ) {
         let total_cost = fee + tax + slippage_cost;
         self.fill_id += 1;
-        let position = account.position(&order.symbol).cloned().unwrap_or_default();
+        let position = match order.future_side {
+            Some(side) => account.future_position(&order.symbol, side),
+            None => account.position(&order.symbol),
+        }.cloned().unwrap_or_default();
         let fill_time = format!("{} {}", market.event.trade_date, market.event.trade_time);
         let totals = account.summary();
         fills.push(FillEvent {

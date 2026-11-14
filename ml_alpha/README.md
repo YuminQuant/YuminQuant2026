@@ -6,9 +6,9 @@
 
 ## 配置层次 / Configuration layers
 
-远程存储的文件并发和预读内存由部署适配器的 `io_options()` 决定，本地读取始终默认在调用线程串行执行。日频区间、普通因子/行情样本、历史张量、图因子历史及 bar 窗口通过共享有界队列读取：线程只读取独立文件，按日期顺序更新缓存和组装样本。嵌套读取退回当前 worker，避免线程池互相等待。预读预算按文件大小保守估算，不是进程 RSS 硬上限；超预算单文件独占推进，最终训练窗口不计入预读预算。缓存按文件分段锁避免同一路径并发重复打开。远程日频写出使用同一队列；本地原有写出配置不变。
+远程文件读取由部署适配器设置并发和限流，xz336 使用 50 并发和每秒 1,000 次限流。本地在调用线程串行读取。远程 worker 读取独立文件，调用线程按日期顺序更新缓存和组装样本。嵌套读取在当前 worker 内执行，远程日频写出使用同一队列。
 
-Remote file concurrency and prefetch memory come from the deployment adapter's `io_options()`. Local reads stay serial on the caller thread. Daily ranges, ordinary factor/price samples, historical tensors, graph history and bar windows use a shared bounded queue. Workers read independent files; cache updates and sample assembly retain date order. Nested reads run inline to avoid pool deadlocks. Reservations conservatively estimate file expansion, not a hard process RSS limit; oversized files run exclusively, and final training windows are outside the prefetch budget. Striped file locks avoid concurrent duplicate payload opens. Remote daily output uses the same queue; local output settings are unchanged.
+The deployment adapter controls remote concurrency and pacing. On xz336 the settings are 50 workers and 1,000 filesystem operations per second. Local reads run serially on the caller thread. Remote workers read independent files, and the caller updates caches and assembles samples in date order. Nested reads run inline. Remote daily output shares the worker queue.
 
 公共日截面缓存按需载入 RAM，默认跨训练、验证和 epoch 保留预处理结果。可通过 `features.params.memory_budget_mb` 显式设置 MiB 上限，超预算时按 LRU 淘汰并保护当前历史窗口。缓存命中的日期直接从内存读取。缓存与当前张量、标签和运行时共同占用任务内存。
 

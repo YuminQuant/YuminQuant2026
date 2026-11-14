@@ -31,6 +31,7 @@ pub struct Order {
     pub symbol: String,
     pub signed_quantity: f64,
     pub signal_time: String,
+    pub future_side: Option<OrderSide>,
 }
 
 #[derive(Clone, Debug)]

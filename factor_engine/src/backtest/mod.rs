@@ -135,7 +135,7 @@ impl BacktestEngine {
         }
         progress.finish();
         if std::env::args().any(|arg| arg == "--profile") {
-            eprintln!("backtest_io prepare_ms={prepare_ms} input_ms={input_ms} compute_ms={compute_ms} output_ms={output_ms} {} {}", input_cache.profile(), crate::data::read_ahead::profile());
+            eprintln!("backtest_io prepare_ms={prepare_ms} input_ms={input_ms} compute_ms={compute_ms} output_ms={output_ms} {}", input_cache.profile());
         }
         Ok(BacktestRunReport {
             factor_count: selected_factor_ids.len(),

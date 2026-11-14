@@ -48,7 +48,6 @@ pub(crate) struct PreparedProjection {
     columns: Vec<String>,
     ranges: Vec<(u64, usize)>,
     symbols: Option<BTreeSet<String>>,
-    pub(crate) reserved_bytes: usize,
 }
 
 impl PreparedProjection {
@@ -66,7 +65,6 @@ impl PreparedProjection {
             .cloned()
             .collect::<Vec<_>>();
         let mut ranges = Vec::<(u64, usize)>::new();
-        let mut decoded = 0usize;
         for group in builder.metadata().row_groups() {
             for column in group.columns() {
                 if !columns
@@ -78,8 +76,6 @@ impl PreparedProjection {
                 let (offset, length) = column.byte_range();
                 let length = usize::try_from(length)?;
                 ranges.push((offset, length));
-                decoded =
-                    decoded.saturating_add(usize::try_from(column.uncompressed_size().max(0))?);
             }
         }
         ranges.sort_unstable_by_key(|range| range.0);
@@ -102,54 +98,17 @@ impl PreparedProjection {
             }
             merged.push((offset, length));
         }
-        // Table stores Option values and owned strings, not Arrow's compact buffers.
-        // Include compressed chunks, conversion temporaries and conservative row overhead.
-        let rows = usize::try_from(builder.metadata().file_metadata().num_rows().max(0))?;
-        let cells = rows.saturating_mul(columns.len());
-        let compressed = merged
-            .iter()
-            .fold(0usize, |sum, (_, n)| sum.saturating_add(*n));
-        let reserved_bytes = compressed
-            .saturating_add(decoded.saturating_mul(4))
-            .saturating_add(cells.saturating_mul(128))
-            .saturating_add(crate::storage_io::READER_CACHE_BYTES);
         Ok(Self {
             file,
             builder,
             columns,
             ranges: merged,
-            reserved_bytes,
             symbols: None,
         })
     }
 
-    /// Preserve row predicates through projected prefetch. The optional row estimate
-    /// is a reservation estimate, never a truncation or a hard RSS guarantee.
-    pub(crate) fn with_symbols(
-        mut self,
-        symbols: BTreeSet<String>,
-        estimated_rows: Option<usize>,
-    ) -> Self {
-        if let Some(rows) = estimated_rows {
-            let compressed = self.ranges.iter().map(|(_, n)| *n).sum::<usize>();
-            let code_bytes = self
-                .builder
-                .metadata()
-                .row_groups()
-                .iter()
-                .flat_map(|g| g.columns())
-                .filter(|c| c.column_path().parts()[0] == "ts_code")
-                .map(|c| c.uncompressed_size().max(0) as usize)
-                .sum::<usize>();
-            self.reserved_bytes = compressed
-                .saturating_add(code_bytes.saturating_mul(4))
-                .saturating_add(
-                    (rows + 65_536)
-                        .saturating_mul(self.columns.len())
-                        .saturating_mul(128),
-                )
-                .saturating_add(crate::storage_io::READER_CACHE_BYTES);
-        }
+    /// Preserve row predicates through projected prefetch.
+    pub(crate) fn with_symbols(mut self, symbols: BTreeSet<String>) -> Self {
         self.symbols = Some(symbols);
         self
     }

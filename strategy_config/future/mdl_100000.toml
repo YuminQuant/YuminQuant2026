@@ -1,0 +1,23 @@
+asset_class = "future"
+strategy_id = "mdl_100000"
+strategy_class = "future::mdl_100000"
+
+start_date = 20260408
+end_date = 20260424
+initial_cash = 1000000.0
+
+[clock]
+bar_frequency = "minute_1m"
+
+[execution]
+fill_price = "next_open"
+lot_size = 1
+slippage_bps = 0.0
+respect_price_limits = true
+
+[future]
+daily_costs = true
+mark_price = "close"
+
+# Product-specific overrides in lots, e.g. IF = 1
+[future.min_lots_by_product]

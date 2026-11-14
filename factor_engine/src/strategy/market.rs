@@ -49,12 +49,14 @@ pub struct SessionOpenEvent {
 pub struct MarketSnapshot {
     pub event: BarEvent,
     bars: BTreeMap<String, Bar>,
+    pub future_day: Option<std::sync::Arc<super::future_market::FutureMarketDay>>,
 }
 
 impl MarketSnapshot {
     pub fn new(event: BarEvent, bars: Vec<Bar>) -> Self {
         Self {
             event,
+            future_day: None,
             bars: bars
                 .into_iter()
                 .map(|bar| (bar.symbol.clone(), bar))
@@ -84,8 +86,36 @@ pub struct FutureContractMeta {
     pub ts_code: String,
     pub fut_code: Option<String>,
     pub multiplier: f64,
+    pub exchange: String,
+    pub daily_close_minute: Option<u16>,
     pub list_date: Option<i32>,
     pub delist_date: Option<i32>,
+}
+
+pub(crate) fn clock_minute(time: &str) -> Option<u16> {
+    let time = time.rsplit_once([' ', 'T']).map_or(time, |(_, time)| time);
+    let mut parts = time.split(':');
+    let hour = parts.next()?.parse::<u16>().ok()?;
+    let minute = parts.next()?.parse::<u16>().ok()?;
+    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
+}
+
+fn daily_close_minute(description: &str) -> Option<u16> {
+    let mut hours = description;
+    let mut values = Vec::new();
+    while let Some(start) = hours.find("下午") {
+        hours = &hours[start + "下午".len()..];
+        let range = hours.split(|ch: char| !ch.is_ascii()).next().unwrap_or("");
+        values.extend(range.split(|ch: char| !(ch.is_ascii_digit() || ch == ':'))
+            .filter_map(clock_minute)
+            .filter(|minute| (60..=5 * 60).contains(minute))
+            .map(|minute| minute + 12 * 60));
+    }
+    values.into_iter().chain(
+        description.split(|ch: char| !(ch.is_ascii_digit() || ch == ':')).filter_map(clock_minute)
+    )
+        .filter(|minute| (13 * 60..=17 * 60).contains(minute))
+        .max()
 }
 
 #[derive(Clone, Debug)]
@@ -111,7 +141,11 @@ pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<Ma
             "vol".to_string(),
             "amount".to_string(),
         ];
-        let table = read_parquet(&path, Some(&columns))?;
+        let (table, limits) = super::session_io::join(
+            || read_parquet(&path, Some(&columns)),
+            || load_trade_filter_or_warn(data_root, *trade_date),
+        )?;
+        let table = table?;
         let trade_dates = table.required_i32_date_cast("trade_date")?;
         let codes = table.required_utf8("ts_code")?;
         let open = numeric_column(&table, "open")?;
@@ -120,7 +154,6 @@ pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<Ma
         let close = numeric_column(&table, "close")?;
         let volume = numeric_column(&table, "vol")?;
         let amount = numeric_column(&table, "amount")?;
-        let limits = load_trade_filter_or_warn(data_root, *trade_date);
         let mut bars = Vec::new();
         for idx in 0..table.len {
             if trade_dates[idx] != Some(*trade_date) {
@@ -206,34 +239,33 @@ pub fn load_stock_minute_frames_for_run(
             "vol".to_string(),
             "amount".to_string(),
         ];
-        let table = if let Some(symbols) = symbols {
+        let (table, (price_bands, limits)) = super::session_io::join(|| if let Some(symbols) = symbols {
             let selected = symbols.clone();
-            read_parquet_symbols(&path, &columns, move |s| selected.contains(s))?
+            read_parquet_symbols(&path, &columns, move |s| selected.contains(s))
         } else {
-            read_parquet(&path, Some(&columns))?
-        };
-        let price_bands = if minute_limits {
-            load_price_bands(data_root, *trade_date)?
+            read_parquet(&path, Some(&columns))
+        }, || if minute_limits {
+            (load_price_bands(data_root, *trade_date), BTreeMap::new())
         } else {
-            BTreeMap::new()
-        };
+            (Ok(BTreeMap::new()), load_trade_filter_or_warn(data_root, *trade_date))
+        })?;
         frames.extend(stock_minute_frames(
-            data_root,
             *trade_date,
-            table,
+            table?,
             minute_limits,
-            price_bands,
+            price_bands?,
+            limits,
         )?);
     }
     Ok(frames)
 }
 
 fn stock_minute_frames(
-    data_root: &Path,
     date: i32,
     table: Table,
     minute_limits: bool,
     price_bands: BTreeMap<String, PriceBand>,
+    limits: BTreeMap<String, (bool, bool)>,
 ) -> Result<Vec<MarketFrame>> {
     let mut frames = Vec::new();
     let trade_date = &date;
@@ -245,11 +277,6 @@ fn stock_minute_frames(
     let close = numeric_column(&table, "close")?;
     let volume = numeric_column(&table, "vol")?;
     let amount = numeric_column(&table, "amount")?;
-    let limits = if minute_limits {
-        BTreeMap::new()
-    } else {
-        load_trade_filter_or_warn(data_root, *trade_date)
-    };
 
     let mut grouped = BTreeMap::<String, Vec<Bar>>::new();
     if minute_limits {
@@ -390,10 +417,7 @@ pub(crate) fn visit_stock_minute_sessions(
                 &BTreeSet::new(),
             )?;
             Ok(if let Some(symbols) = symbols {
-                let rows = symbols
-                    .len()
-                    .saturating_mul(if i % 3 == 0 { 241 } else { 1 });
-                prepared.with_symbols(symbols.clone(), Some(rows))
+                prepared.with_symbols(symbols.clone())
             } else {
                 prepared
             })
@@ -414,11 +438,11 @@ pub(crate) fn visit_stock_minute_sessions(
             let bands = price_bands_from_tables(&pending_bands.take().expect("preceding band table"), &table)?;
             let date = dates[i / 3];
             let frames = stock_minute_frames(
-                data_root,
                 date,
                 pending_minute.take().expect("preceding minute table"),
                 minute_limits,
                 bands,
+                BTreeMap::new(),
             )?;
             consume(date, frames)
         },
@@ -551,6 +575,17 @@ pub fn load_future_minute_frames(
     products: &[String],
     symbols: &[String],
 ) -> Result<Vec<MarketFrame>> {
+    load_selected_future_minute_frames(data_root, dates, meta, products, symbols, None)
+}
+
+pub(crate) fn load_selected_future_minute_frames(
+    data_root: &Path,
+    dates: &[i32],
+    meta: &BTreeMap<String, FutureContractMeta>,
+    products: &[String],
+    symbols: &[String],
+    universe: Option<&BTreeSet<String>>,
+) -> Result<Vec<MarketFrame>> {
     let mut frames = Vec::new();
     for trade_date in dates {
         let path = future_minute_path(data_root, *trade_date);
@@ -568,13 +603,17 @@ pub fn load_future_minute_frames(
             "vol".to_string(),
             "amount".to_string(),
         ];
-        let table = if products.is_empty() && symbols.is_empty() {
+        let table = if products.is_empty() && symbols.is_empty() && universe.is_none() {
             read_parquet(&path, Some(&columns))?
         } else {
             let products = products.to_vec();
             let symbols = symbols.to_vec();
+            let universe = universe.cloned();
             read_parquet_symbols(&path, &columns, move |symbol| {
-                future_symbol_allowed(symbol, &products, &symbols)
+                universe.as_ref().map_or_else(
+                    || future_symbol_allowed(symbol, &products, &symbols),
+                    |selected| selected.contains(symbol),
+                )
             })?
         };
         let trade_dates = table.required_i32_date_cast("trade_date")?;
@@ -611,7 +650,11 @@ pub fn load_future_minute_frames(
                 continue;
             };
             let multiplier = contract_multiplier(meta, &symbol, &mut missing_meta);
-            grouped.entry(trade_time.clone()).or_default().push(Bar {
+            let bars = grouped.entry(trade_time.clone()).or_default();
+            if bars.iter().any(|bar| bar.symbol == symbol) {
+                return Err(crate::error::err(format!("duplicate futures minute {symbol} {trade_time}")));
+            }
+            bars.push(Bar {
                 symbol,
                 trade_date: *trade_date,
                 trade_time,
@@ -663,6 +706,11 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
         "ts_code".to_string(),
         "fut_code".to_string(),
         "multiplier".to_string(),
+        "per_unit".to_string(),
+        "exchange".to_string(),
+        "trade_time_desc".to_string(),
+        "trade_unit".to_string(),
+        "quote_unit".to_string(),
         "list_date".to_string(),
         "delist_date".to_string(),
     ];
@@ -670,6 +718,16 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
     let codes = table.required_utf8("ts_code")?;
     let fut_codes = table.required_utf8("fut_code")?;
     let multiplier = numeric_column(&table, "multiplier")?;
+    let per_unit = table.columns.contains_key("per_unit")
+        .then(|| numeric_column(&table, "per_unit")).transpose()?;
+    let exchanges = table.columns.contains_key("exchange")
+        .then(|| table.required_utf8("exchange")).transpose()?;
+    let hours = table.columns.contains_key("trade_time_desc")
+        .then(|| table.required_utf8("trade_time_desc")).transpose()?;
+    let trade_units = table.columns.contains_key("trade_unit")
+        .then(|| table.required_utf8("trade_unit")).transpose()?;
+    let quote_units = table.columns.contains_key("quote_unit")
+        .then(|| table.required_utf8("quote_unit")).transpose()?;
     let list_date = table.required_i32_date_cast("list_date")?;
     let delist_date = table.required_i32_date_cast("delist_date")?;
     let mut out = BTreeMap::new();
@@ -677,18 +735,23 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
         let Some(ts_code) = codes[idx].clone() else {
             continue;
         };
-        if !multiplier[idx].is_some_and(|value| value.is_finite() && value > 0.0) {
-            eprintln!("[strategy warning] invalid multiplier for {ts_code}; using 1");
-        }
-        let multiplier = multiplier[idx]
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .unwrap_or(1.0);
+        let multiplier = clean_positive_opt(multiplier[idx])
+            .or_else(|| {
+                let unit = trade_units?.get(idx)?.as_deref()?;
+                let quote = quote_units?.get(idx)?.as_deref()?;
+                (quote.strip_prefix("元/") == Some(unit))
+                    .then(|| clean_positive_opt(per_unit.as_ref().and_then(|values| values[idx])))
+                    .flatten()
+            })
+            .unwrap_or(0.0);
         out.insert(
             ts_code.clone(),
             FutureContractMeta {
                 ts_code,
                 fut_code: fut_codes[idx].clone(),
                 multiplier,
+                exchange: exchanges.and_then(|values| values[idx].clone()).unwrap_or_default(),
+                daily_close_minute: hours.and_then(|values| values[idx].as_deref()).and_then(daily_close_minute),
                 list_date: list_date[idx],
                 delist_date: delist_date[idx],
             },
@@ -867,9 +930,11 @@ fn load_price_bands(
         .join((date / 10000).to_string())
         .join(format!("{date}.parquet"));
     let cols = ["ts_code", "up_limit", "down_limit"].map(str::to_string);
-    let table = read_parquet(&path, Some(&cols))?;
-    let previous = read_parquet(&daily_pv_path(root, date), Some(&["ts_code".into(), "pre_close".into()]))?;
-    price_bands_from_tables(&table, &previous)
+    let (table, previous) = super::session_io::join(
+        || read_parquet(&path, Some(&cols)),
+        || read_parquet(&daily_pv_path(root, date), Some(&["ts_code".into(), "pre_close".into()])),
+    )?;
+    price_bands_from_tables(&table?, &previous?)
 }
 
 #[derive(Default)]

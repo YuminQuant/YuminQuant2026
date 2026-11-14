@@ -26,10 +26,6 @@ class FactorHistory(DailyTensorSequence):
             raise ValueError("history_read_workers must be positive")
         # Parallel history IO is for remote storage; local reads stay serial.
         self.read_workers = read_workers if data_io.remote_enabled() else 1
-        prefetch_mb = params.get("history_prefetch_mb")
-        if prefetch_mb is not None and (type(prefetch_mb) is not int or prefetch_mb < 1):
-            raise ValueError("history_prefetch_mb must be a positive integer")
-        self.prefetch_bytes = None if prefetch_mb is None else prefetch_mb * 1024**2
         self.config = config
         self.provider = provider
         self.universe = Universe(config.universe.id, config.data_root)

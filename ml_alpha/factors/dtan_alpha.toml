@@ -58,7 +58,6 @@ turnover_column = "turnover_rate_f"
 sequence_length = 40
 normalization = "window_mean"
 history_read_workers = 30
-history_prefetch_mb = 128
 
 [materialize]
 cache_samples = false

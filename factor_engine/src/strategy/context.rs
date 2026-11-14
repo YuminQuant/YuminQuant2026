@@ -1,7 +1,7 @@
 use crate::strategy::account::{AccountState, Position};
 use crate::strategy::config::StrategyRunConfig;
 use crate::strategy::market::MarketSnapshot;
-use crate::strategy::order::Order;
+use crate::strategy::order::{Order, OrderSide};
 
 pub struct StrategyContext<'a> {
     config: &'a StrategyRunConfig,
@@ -44,18 +44,51 @@ impl<'a> StrategyContext<'a> {
     }
 
     pub fn order_quantity(&mut self, symbol: impl Into<String>, signed_quantity: f64) {
+        self.submit(symbol.into(), signed_quantity, None, self.signal_time());
+    }
+
+    pub fn order_future_side(
+        &mut self,
+        symbol: &str,
+        side: OrderSide,
+        quantity: f64,
+        signal_time: String,
+    ) {
+        if !quantity.is_finite() || quantity <= 0.0 {
+            return;
+        }
+        let signed = if matches!(side, OrderSide::Buy | OrderSide::Cover) {
+            quantity
+        } else {
+            -quantity
+        };
+        self.submit(symbol.to_owned(), signed, Some(side), signal_time);
+    }
+
+    pub fn signal_time(&self) -> String {
+        format!(
+            "{} {}",
+            self.market.event.trade_date, self.market.event.trade_time
+        )
+    }
+
+    fn submit(
+        &mut self,
+        symbol: String,
+        signed_quantity: f64,
+        future_side: Option<OrderSide>,
+        signal_time: String,
+    ) {
         if !signed_quantity.is_finite() || signed_quantity.abs() <= 1e-9 {
             return;
         }
         *self.next_order_id += 1;
         self.orders.push(Order {
             order_id: *self.next_order_id,
-            symbol: symbol.into(),
+            symbol,
             signed_quantity,
-            signal_time: format!(
-                "{} {}",
-                self.market.event.trade_date, self.market.event.trade_time
-            ),
+            signal_time,
+            future_side,
         });
     }
 

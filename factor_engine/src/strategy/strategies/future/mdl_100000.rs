@@ -367,8 +367,8 @@ fn daily_quantiles(signals: &Signals) -> Thresholds {
         .filter_map(|(symbol, scores)| {
             let key = product(symbol)?;
             let mut values: Vec<_> = scores.values().copied().collect();
-            let low = quantile_linear(&mut values, 0.05)?;
-            let high = quantile_linear(&mut values, 0.95)?;
+            let low = quantile_linear(&mut values, 0.01)?;
+            let high = quantile_linear(&mut values, 0.99)?;
             Some((key, (low, high)))
         })
         .collect()

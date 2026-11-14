@@ -40,7 +40,7 @@ With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar o
 
 ## `mdl_100000` 期货 CTA
 
-策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P5/P95 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P95 开多，低于 P5 开空，在该合约下一根行情开盘尝试成交。多空独立记仓，每侧最多一个最小交易单位。同向重复信号维持原仓。
+策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P1/P99 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P99 开多，低于 P1 开空，在该合约下一根行情开盘尝试成交。多空独立记仓，每侧最多一个最小交易单位。同向重复信号维持原仓。
 
 公共层按期货日历加载交易日和合约资料。最小下单手数由 `[future.min_lots_by_product]` 覆盖，未配置品种取 `[execution].lot_size`。开启 `[future].daily_costs` 后，公共层每天读取上一交易日的结算快照，路径可用 `[paths].future_settle_root` 覆盖。快照缺失或合约参数无效时，该合约跳过交易。郑商所使用可用的按手平今费用，其他缺失平今字段使用普通手续费。中金所股指按成交金额计费，国债按手计费。双持保证金按两侧分别计提。
 

@@ -224,7 +224,8 @@ fn nonnegative(value: Option<f64>) -> Option<f64> {
 
 fn margin(value: Option<f64>, exchange: &str) -> Option<f64> {
     let value = nonnegative(value)?;
-    let ratio = if exchange == "CFFEX" {
+    // Historical CZCE snapshots may contain percentage points (e.g. 10 for 10%).
+    let ratio = if exchange == "CFFEX" || (exchange == "CZCE" && value > 1.0) {
         value / 100.0
     } else {
         value

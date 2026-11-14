@@ -21,3 +21,6 @@ mark_price = "close"
 
 # Product-specific overrides in lots, e.g. IF = 1
 [future.min_lots_by_product]
+
+[output]
+product_pnl = true

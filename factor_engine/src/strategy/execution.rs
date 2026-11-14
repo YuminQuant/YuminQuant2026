@@ -284,7 +284,7 @@ impl ExecutionEngine {
             OrderSide::Buy | OrderSide::Short => {
                 let lots = round_down_lot(requested.min(volume), spec.min_lots);
                 let unit_margin = price * spec.multiplier * margin_ratio;
-                let unit_cost = spec.fee(side, price, 1.0) + slippage_per_lot;
+                let unit_cost = spec.fee(price, 1.0, 0.0) + slippage_per_lot;
                 let unit_need = unit_margin + unit_cost;
                 if unit_need <= 0.0 || !unit_need.is_finite() {
                     return;
@@ -308,11 +308,17 @@ impl ExecutionEngine {
             return;
         }
         let signed_quantity = order.signed_quantity.signum() * quantity;
-        let fee = spec.fee(side, price, quantity);
+        let date = market.event.trade_date;
+        let close_today_lots = match side {
+            OrderSide::Sell | OrderSide::Cover => account.future_position(&order.symbol, side)
+                .map_or(0.0, |position| position.close_today_quantity(date, quantity)),
+            OrderSide::Buy | OrderSide::Short => 0.0,
+        };
+        let fee = spec.fee(price, quantity, close_today_lots);
         let slippage = slippage_per_lot * quantity;
         let realized = account.apply_position_trade(
             &order.symbol, signed_quantity, price, fee + slippage,
-            spec.multiplier, margin_ratio, Some(side),
+            spec.multiplier, margin_ratio, Some((side, date)),
         );
         self.push_fill(
             config, account, market, order.clone(), side, quantity, signed_quantity, price,

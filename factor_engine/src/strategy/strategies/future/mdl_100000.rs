@@ -10,7 +10,7 @@ use crate::strategy::config::{
 };
 use crate::strategy::context::StrategyContext;
 use crate::strategy::market::{clock_minute, BarEvent, FutureContractMeta};
-use crate::strategy::order::OrderSide;
+use crate::strategy::order::{FillEvent, OrderSide};
 use crate::strategy::session_io::{SessionFile, SessionInputs};
 use crate::strategy::strategy::Strategy;
 
@@ -25,6 +25,7 @@ pub struct ModelCta {
     thresholds: Thresholds,
     signals: Signals,
     entries: BTreeMap<String, (OrderSide, String)>,
+    overnight: BTreeSet<String>,
 }
 
 impl ModelCta {
@@ -47,6 +48,7 @@ impl ModelCta {
             thresholds: BTreeMap::new(),
             signals: BTreeMap::new(),
             entries: BTreeMap::new(),
+            overnight: BTreeSet::new(),
         })
     }
 
@@ -197,36 +199,40 @@ impl Strategy for ModelCta {
             ))
         })?;
         let symbols: Vec<_> = ctx.market().symbols().cloned().collect();
+        for symbol in &symbols {
+            if !self.overnight.contains(symbol)
+                && !self.close_minutes.get(symbol).is_some_and(|&close| liquidation_window(minute, close))
+            {
+                continue;
+            }
+            for side in [OrderSide::Sell, OrderSide::Cover] {
+                if let Some(quantity) = ctx
+                    .account()
+                    .future_position(symbol, side)
+                    .map(|p| p.quantity.abs())
+                {
+                    ctx.order_future_side(symbol, side, quantity, ctx.signal_time());
+                }
+            }
+        }
         for symbol in symbols {
-            let Some(&close) = self.close_minutes.get(&symbol) else {
+            let Some((side, signal_time)) = self.entries.remove(&symbol) else {
                 continue;
             };
-            let entry = self.entries.remove(&symbol);
-            if liquidation_window(minute, close) {
-                for side in [OrderSide::Sell, OrderSide::Cover] {
-                    if let Some(quantity) = ctx
-                        .account()
-                        .future_position(&symbol, side)
-                        .map(|p| p.quantity.abs())
-                    {
-                        ctx.order_future_side(&symbol, side, quantity, ctx.signal_time());
-                    }
-                }
-            } else if !after_liquidation_cutoff(minute, close) {
-                let Some((side, signal_time)) = entry else {
-                    continue;
-                };
-                if let Some(lots) = ctx
-                    .market()
-                    .future_day
-                    .as_ref()
-                    .and_then(|day| day.spec(&symbol))
-                    .map(|spec| spec.min_lots)
-                {
-                    if ctx.account().future_position(&symbol, side).is_none() {
-                        ctx.order_future_side(&symbol, side, lots, signal_time);
-                    }
-                }
+            if self.overnight.contains(&symbol)
+                || self.close_minutes.get(&symbol).is_none_or(|&close| after_liquidation_cutoff(minute, close))
+                || ctx.account().future_position(&symbol, side).is_some()
+            {
+                continue;
+            }
+            if let Some(lots) = ctx
+                .market()
+                .future_day
+                .as_ref()
+                .and_then(|day| day.spec(&symbol))
+                .map(|spec| spec.min_lots)
+            {
+                ctx.order_future_side(&symbol, side, lots, signal_time);
             }
         }
         Ok(())
@@ -237,6 +243,9 @@ impl Strategy for ModelCta {
             return Ok(());
         };
         for symbol in ctx.market().symbols() {
+            if self.overnight.contains(symbol) {
+                continue;
+            }
             let Some(&close) = self.close_minutes.get(symbol) else {
                 continue;
             };
@@ -269,19 +278,26 @@ impl Strategy for ModelCta {
         Ok(())
     }
 
+    fn on_fill(&mut self, ctx: &mut StrategyContext, fill: &FillEvent) -> Result<()> {
+        if self.overnight.contains(&fill.symbol)
+            && [OrderSide::Sell, OrderSide::Cover].into_iter()
+                .all(|side| ctx.account().future_position(&fill.symbol, side).is_none())
+        {
+            self.overnight.remove(&fill.symbol);
+        }
+        Ok(())
+    }
+
     fn on_session_end(&mut self, ctx: &mut StrategyContext, event: &BarEvent) -> Result<()> {
         self.entries.clear();
-        let remaining: Vec<_> = ctx
+        self.overnight = ctx
             .account()
             .futures_positions()
-            .map(|(symbol, position)| format!("{symbol}={}", position.quantity))
+            .map(|(symbol, _)| symbol.clone())
             .collect();
-        if !remaining.is_empty() {
-            return Err(err(format!(
-                "{} could not flatten CTA positions: {}",
-                event.trade_date,
-                remaining.join(", ")
-            )));
+        if !self.overnight.is_empty() {
+            eprintln!("[strategy warning] {} deferred close to next trading day: {:?}",
+                event.trade_date, self.overnight);
         }
         Ok(())
     }

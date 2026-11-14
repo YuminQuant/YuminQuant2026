@@ -17,6 +17,7 @@ use crate::strategy::market::{
     MarketSnapshot, SessionOpenEvent,
 };
 use crate::strategy::order::{FillEvent, HoldingSnapshot, Order, OrderSide};
+use crate::strategy::product_pnl::ProductPnl;
 use crate::strategy::request::StrategyRunRequest;
 use crate::strategy::session_io;
 use crate::strategy::storage::HoldingsWriter;
@@ -80,6 +81,9 @@ impl StrategyEngine {
         let mut lifecycle = super::lifecycle::StockLifecycle::load(&run_config)?;
         let mut pending_orders = Vec::<Order>::new();
         let mut holdings = HoldingsWriter::new(&run_config.output_dir())?;
+        let mut product_pnl = run_config.future.product_pnl
+            .then(|| ProductPnl::new(&run_config.output_dir().join("product_pnl.parquet"), run_config.initial_cash))
+            .transpose()?;
         let mut daily_cache = FutureDailyCache::default();
         let mut future_reference = FutureReferenceData::default();
         let mut trade_count = 0_usize;
@@ -111,6 +115,11 @@ impl StrategyEngine {
             } else {
                 None
             };
+            let future_market_universe = future_universe.as_ref().map(|selected| {
+                let mut symbols = selected.clone();
+                symbols.extend(account.futures_positions().map(|(symbol, _)| symbol.clone()));
+                symbols
+            });
             let universe = if run_config.asset_class == StrategyAssetClass::Future {
                 None
             } else {
@@ -126,11 +135,11 @@ impl StrategyEngine {
                 }
                 let (frames, other_inputs) = session_io::join(
                     || load_session_frames(&run_config, batch[0], &future_meta, &mut daily_cache,
-                        future_universe.as_ref(), universe.as_ref()),
+                        future_market_universe.as_ref(), universe.as_ref()),
                     || session_io::join(
                         || if run_config.asset_class == StrategyAssetClass::Future && run_config.future.daily_costs {
                             future_reference.load_day(&run_config, batch[0], calendar.previous_open(batch[0]),
-                                &future_meta, future_universe.as_ref()).map(|day| Some(Arc::new(day)))
+                                &future_meta, future_market_universe.as_ref()).map(|day| Some(Arc::new(day)))
                         } else {
                             Ok(None)
                         },
@@ -152,11 +161,25 @@ impl StrategyEngine {
                 corporate_actions.begin_session(&mut account, trade_date);
                 let exit_time = lifecycle.begin_session(&run_config, &mut account, trade_date, &mut frames);
                 strategy.prepare_session(&run_config, &account, trade_date)?;
+                if let Some(report) = &mut product_pnl {
+                    if let Some(symbols) = &future_universe {
+                        for symbol in symbols {
+                            report.observe(symbol);
+                        }
+                    } else {
+                        for bar in frames.iter().flat_map(|frame| &frame.bars) {
+                            report.observe(&bar.symbol);
+                        }
+                    }
+                }
                 if frames.is_empty() {
                     if run_config.asset_class == StrategyAssetClass::Future && future_universe.as_ref().is_some_and(|codes| !codes.is_empty()) {
                         return Err(err(format!("missing selected futures minute bars for {trade_date}")));
                     }
                     corporate_actions.end_session(&account, trade_date);
+                    if let Some(report) = &mut product_pnl {
+                        report.close_day(trade_date, &account)?;
+                    }
                     eprintln!(
                         "[strategy warning] date={trade_date}: no market frames; skipping date"
                     );
@@ -268,6 +291,9 @@ impl StrategyEngine {
                         let mut ctx = StrategyContext::new(&run_config, &account, &market, &mut next_order_id);
                         strategy.on_session_end(&mut ctx, &market.event)?;
                     }
+                    if let Some(report) = &mut product_pnl {
+                        report.record(&bar_fills);
+                    }
                     let daily_only =
                         run_config.bar_frequency == BarFrequency::Minute && !run_config.detail;
                     if !daily_only || frame_index + 1 == frame_count {
@@ -285,6 +311,9 @@ impl StrategyEngine {
                     }
                 }
                 corporate_actions.end_session(&account, trade_date);
+                if let Some(report) = &mut product_pnl {
+                    report.close_day(trade_date, &account)?;
+                }
                 progress.tick(format!("date={trade_date} trades={trade_count}"));
                 Ok(())
             };
@@ -309,7 +338,10 @@ impl StrategyEngine {
         }
         progress.finish();
         lifecycle.finish()?;
-        let output = holdings.finish()?;
+        let mut output_files = vec![holdings.finish()?];
+        if let Some(report) = product_pnl {
+            output_files.push(report.finish()?);
+        }
         crate::artifact_io::write(
             run_config.output_dir().join("run_config.toml"),
             std::fs::read(&request.config_path)?,
@@ -318,7 +350,7 @@ impl StrategyEngine {
             strategy_id: run_config.strategy_id,
             asset_class: run_config.asset_class.as_str().to_string(),
             trade_count,
-            output_files: vec![output],
+            output_files,
         })
     }
 }

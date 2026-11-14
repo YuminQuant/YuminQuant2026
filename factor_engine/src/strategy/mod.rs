@@ -8,6 +8,7 @@ pub mod execution;
 pub mod future_market;
 pub mod market;
 pub mod order;
+mod product_pnl;
 pub mod request;
 pub mod session_io;
 pub mod storage;

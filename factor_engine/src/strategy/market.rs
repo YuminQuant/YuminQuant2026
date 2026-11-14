@@ -739,9 +739,13 @@ pub fn load_future_metadata(data_root: &Path) -> Result<BTreeMap<String, FutureC
             .or_else(|| {
                 let unit = trade_units?.get(idx)?.as_deref()?;
                 let quote = quote_units?.get(idx)?.as_deref()?;
-                (quote.strip_prefix("元/") == Some(unit))
-                    .then(|| clean_positive_opt(per_unit.as_ref().and_then(|values| values[idx])))
-                    .flatten()
+                let quoted_unit = quote.strip_prefix("元/").or_else(|| quote.strip_prefix("人民币元/"))?;
+                let per_lot = clean_positive_opt(per_unit.as_ref().and_then(|values| values[idx]))?;
+                match (unit, quoted_unit) {
+                    (unit, quoted) if unit == quoted => Some(per_lot),
+                    ("吨", "500千克") => Some(per_lot * 2.0),
+                    _ => None,
+                }
             })
             .unwrap_or(0.0);
         out.insert(

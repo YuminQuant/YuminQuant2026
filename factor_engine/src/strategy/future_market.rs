@@ -37,13 +37,10 @@ impl FutureTradingSpec {
         }
     }
 
-    pub fn fee(&self, side: OrderSide, price: f64, lots: f64) -> f64 {
-        if matches!(side, OrderSide::Sell | OrderSide::Cover) {
-            if let Some(fee) = self.close_today_fee {
-                return lots * fee;
-            }
-        }
-        lots * (self.fee_per_lot + price * self.multiplier * self.fee_rate)
+    pub fn fee(&self, price: f64, lots: f64, close_today_lots: f64) -> f64 {
+        let ordinary_fee = self.fee_per_lot + price * self.multiplier * self.fee_rate;
+        (lots - close_today_lots) * ordinary_fee
+            + close_today_lots * self.close_today_fee.unwrap_or(ordinary_fee)
     }
 
     pub fn allows_price(&self, side: OrderSide, price: f64) -> bool {

@@ -90,6 +90,7 @@ pub struct FutureConfig {
     pub mark_price: FutureMarkPrice,
     pub margin_by_product: BTreeMap<String, f64>,
     pub daily_costs: bool,
+    pub product_pnl: bool,
     pub settle_root: Option<PathBuf>,
     pub min_lots_by_product: BTreeMap<String, u32>,
 }
@@ -102,6 +103,7 @@ impl Default for FutureConfig {
             mark_price: FutureMarkPrice::Close,
             margin_by_product: BTreeMap::new(),
             daily_costs: false,
+            product_pnl: false,
             settle_root: None,
             min_lots_by_product: BTreeMap::new(),
         }
@@ -207,6 +209,13 @@ impl StrategyRunConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|| data_root.join("models"));
         let mut future = FutureConfig::default();
+        if asset_class == StrategyAssetClass::Future {
+            future.product_pnl = match doc.string("output", "product_pnl") {
+                Some(value) => parse_bool(Some(&value))
+                    .ok_or_else(|| err("[output].product_pnl must be true or false"))?,
+                None => false,
+            };
+        }
         future.daily_costs = match doc.string("future", "daily_costs") {
             Some(value) => parse_bool(Some(&value))
                 .ok_or_else(|| err("[future].daily_costs must be true or false"))?,

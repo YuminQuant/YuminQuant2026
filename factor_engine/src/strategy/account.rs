@@ -9,6 +9,8 @@ pub struct Position {
     pub multiplier: f64,
     pub margin_ratio: f64,
     pub cash_settled: bool,
+    last_open_date: Option<i32>,
+    opened_today: f64,
 }
 
 impl Position {
@@ -22,6 +24,14 @@ impl Position {
 
     pub fn mark_price(&self) -> f64 {
         self.last_price.unwrap_or(self.avg_cost)
+    }
+
+    pub(super) fn close_today_quantity(&self, trade_date: i32, quantity: f64) -> f64 {
+        if self.last_open_date == Some(trade_date) {
+            (quantity - (self.quantity.abs() - self.opened_today)).clamp(0.0, self.opened_today)
+        } else {
+            0.0
+        }
     }
 
     pub fn market_value(&self) -> f64 {
@@ -308,14 +318,14 @@ impl AccountState {
         total_cost: f64,
         multiplier: f64,
         margin_ratio: f64,
-        future_side: Option<OrderSide>,
+        future_order: Option<(OrderSide, i32)>,
     ) -> f64 {
         if signed_quantity.abs() <= 1e-9 {
             return 0.0;
         }
         let multiplier = multiplier.max(1.0);
         let margin_ratio = margin_ratio.max(0.0);
-        let positions = match future_side {
+        let positions = match future_order.map(|(side, _)| side) {
             Some(OrderSide::Buy | OrderSide::Sell) => &mut self.future_longs,
             Some(OrderSide::Short | OrderSide::Cover) => &mut self.future_shorts,
             None => &mut self.positions,
@@ -329,6 +339,13 @@ impl AccountState {
             let position = positions.entry(symbol.to_string()).or_default();
             let old_abs = position.quantity.abs();
             let add_abs = signed_quantity.abs();
+            if let Some((_, date)) = future_order {
+                if position.last_open_date != Some(date) {
+                    position.last_open_date = Some(date);
+                    position.opened_today = 0.0;
+                }
+                position.opened_today += add_abs;
+            }
             let new_abs = old_abs + add_abs;
             position.avg_cost = if old_abs > 0.0 {
                 (position.avg_cost * old_abs + price * add_abs) / new_abs
@@ -347,6 +364,9 @@ impl AccountState {
             return 0.0;
         };
         let close_qty = signed_quantity.abs().min(position.quantity.abs());
+        if let Some((_, date)) = future_order {
+            position.opened_today -= position.close_today_quantity(date, close_qty);
+        }
         let realized = if position.quantity > 0.0 {
             (price - position.avg_cost) * close_qty * position.multiplier.max(1.0)
         } else {

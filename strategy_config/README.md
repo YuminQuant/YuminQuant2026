@@ -46,7 +46,7 @@ With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar o
 
 尾盘由策略根据合约交易时间进入平仓窗口，撤销该合约待开仓信号，逐分钟尝试平掉两侧。撮合使用开盘价和该分钟成交量约束，日涨跌停文件可用时检查开盘价。日终未成交的仓位按原合约和方向隔夜，下一交易日从该合约第一根行情开始优先平仓。若仍无法成交，逐分钟重试，直到仓位平掉。换主力后仍加载持仓旧合约的行情和交易参数。隔夜仓按普通平仓费用结算。用 `--detail true` 导出逐笔成交。
 
-期货 `[execution]` 支持 `spread_ticks` 和 `slippage_ticks`，默认均为零。`mdl_100000` 每笔开仓和平仓分别计入 1 tick spread 与 0.1 tick 滑点。每手成本等于 tick 数乘以该合约的最小变动价位和乘数，再加上原有的 `slippage_bps` 成本，一并计入开仓资金校验与 `slippage` 日结。最小变动价位取自 `fut_basic.parquet` 的 `quote_unit_desc`。启用 tick 成本时，待撮合合约缺少最小变动价位会报错。成交价和交易所手续费沿用原口径。
+期货 `[execution]` 支持 `spread_ticks` 和 `slippage_ticks`，默认均为零。`mdl_100000` 每笔开仓和平仓各计入 0.5 tick spread 与 0.1 tick 滑点，每边合计 0.6 tick。每手成本等于 tick 数乘以该合约的最小变动价位和乘数，再加上原有的 `slippage_bps` 成本，一并计入开仓资金校验与 `slippage` 日结。最小变动价位取自 `fut_basic.parquet` 的 `quote_unit_desc`。启用 tick 成本时，待撮合合约缺少最小变动价位会报错。成交价和交易所手续费沿用原口径。
 
 ## 输出与分析 / Outputs and analysis
 

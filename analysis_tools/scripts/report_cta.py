@@ -30,6 +30,14 @@ def _product_labels(products, sectors):
     return labels
 
 
+def _encode_pnl(curves):
+    data = {}
+    for code, series in curves.items():
+        start = int(curves.index.get_loc(series.first_valid_index()))
+        data[code] = {"start": start, "values": series.iloc[start:].round(6).tolist()}
+    return data
+
+
 def generate_report(signal, *, root, market_root, output):
     portfolio, product_tables, curves = load_cta_report_views(signal, root=root, market_root=market_root)
     sectors = load_future_sectors(ROOT / "factor_engine/docs/FUTURE_SECTORS.md")
@@ -41,7 +49,7 @@ def generate_report(signal, *, root, market_root, output):
         "product_tables": {str(period): _rows(table) for period, table in product_tables.items()},
         "product_columns": list(product_tables["All"].reset_index().columns),
         "portfolio_columns": list(portfolio.reset_index().columns),
-        "pnl": {code: series.round(6).tolist() for code, series in curves.items()},
+        "pnl": _encode_pnl(curves),
     }
     embedded = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
     template = (ANALYSIS / "templates/cta_report.html").read_text(encoding="utf-8")

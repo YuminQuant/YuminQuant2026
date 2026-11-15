@@ -51,6 +51,7 @@
     figcaption { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
     figcaption strong { font-size: 14px; }
     figcaption output { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+    figcaption .chart-range { flex-basis: 100%; color: var(--muted); font-size: 12px; }
     canvas { display: block; width: 100%; height: 150px; margin-top: 8px; }
     .charts[data-single="true"] canvas { height: clamp(240px, 38vw, 370px); }
     @media (max-width: 600px) {
@@ -83,7 +84,7 @@
     </section>
     <section aria-labelledby="pnl-title">
       <h2 id="pnl-title">品种累计净 PnL</h2>
-      <p class="note">所选区间从零起算，单位为人民币。各品种使用独立纵轴。</p>
+      <p class="note">各品种在所选区间内首个纳入交易日的前一天标零。单位为人民币，各品种使用独立坐标轴。</p>
       <div id="charts" class="charts"></div>
     </section>
   </main>
@@ -188,7 +189,8 @@
       const max = Math.max(0, ...values);
       const padding = Math.max(1, (max - min) * 0.05);
       const low = min - padding, high = max + padding;
-      const x = i => left + (times[i] - times[0]) / (times.at(-1) - times[0]) * (right - left);
+      const span = times.at(-1) - times[0];
+      const x = i => left + (times[i] - times[0]) / span * (right - left);
       const y = value => bottom - (value - low) / (high - low) * (bottom - top);
       ctx.font = "11px system-ui, sans-serif";
       ctx.fillStyle = "#4d626c";
@@ -207,23 +209,26 @@
       ctx.beginPath();
       values.forEach((value, i) => i ? ctx.lineTo(x(i), y(value)) : ctx.moveTo(x(i), y(value)));
       ctx.stroke();
-      const longRange = new Date(times[1]).getUTCFullYear() !== new Date(times.at(-1)).getUTCFullYear();
+      const longRange = new Date(times[0]).getUTCFullYear() !== new Date(times.at(-1)).getUTCFullYear();
       const labels = Math.min(times.length, Math.max(2, Math.min(5, Math.floor((right - left) / 68))));
       ctx.textBaseline = "top";
       for (let tick = 0; tick < labels; tick++) {
-        const time = times[0] + (times.at(-1) - times[0]) * tick / (labels - 1);
+        const fraction = tick / (labels - 1);
+        const time = times[0] + span * fraction;
         const label = new Date(time).toISOString().slice(longRange ? 0 : 5, longRange ? 7 : 10);
-        ctx.textAlign = tick === 0 ? "left" : tick === labels - 1 ? "right" : "center";
-        ctx.fillText(label, left + (right - left) * tick / (labels - 1), bottom + 6);
+        ctx.textAlign = fraction === 0 ? "left" : fraction === 1 ? "right" : "center";
+        ctx.fillText(label, left + (right - left) * fraction, bottom + 6);
       }
       return {left, right};
     }
 
     function addChart(code, start, end) {
-      const values = data.pnl[code];
-      const base = start ? values[start - 1] : 0;
-      const path = [0, ...values.slice(start, end).map(value => value - base)];
-      const times = [dates[start] - 86400000, ...dates.slice(start, end)];
+      const series = data.pnl[code];
+      const first = Math.max(start, series.start);
+      const offset = first - series.start;
+      const base = offset ? series.values[offset - 1] : 0;
+      const path = [0, ...series.values.slice(offset, end - series.start).map(value => value - base)];
+      const times = [dates[first] - 86400000, ...dates.slice(first, end)];
       const figure = document.createElement("figure");
       figure.dataset.product = code;
       const caption = document.createElement("figcaption");
@@ -232,7 +237,10 @@
       const readout = document.createElement("output");
       const total = amount.format(path.at(-1)) + " 元";
       readout.textContent = total;
-      caption.append(name, readout);
+      const range = document.createElement("span");
+      range.className = "chart-range";
+      range.textContent = new Date(times[0]).toISOString().slice(0, 10) + " 至 " + data.dates[end - 1];
+      caption.append(name, readout, range);
       const canvas = document.createElement("canvas");
       canvas.setAttribute("role", "img");
       canvas.setAttribute("aria-label", code + " 累计净盈亏 " + total);

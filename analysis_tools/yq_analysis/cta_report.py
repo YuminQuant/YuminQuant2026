@@ -197,9 +197,12 @@ def _product_table(products, holding, missing, periods_per_year, *, year=None):
     return table
 
 
-def _pnl_curves(daily, products):
-    pnl = products.pivot(index="trade_date", columns="product", values="net_pnl")
-    return pnl.reindex(daily.index).fillna(0.0).cumsum()
+def _pnl_curves(daily, products, *, keep_leading_gaps=False):
+    pnl = products.pivot(index="trade_date", columns="product", values="net_pnl").reindex(daily.index)
+    curves = pnl.fillna(0.0).cumsum()
+    if keep_leading_gaps:
+        curves = curves.where(pnl.notna().cummax())
+    return curves
 
 
 def load_cta_report(signal, *, root="data/strategy/future", year=None, market_root=None, periods_per_year=240):
@@ -213,12 +216,13 @@ def load_cta_report(signal, *, root="data/strategy/future", year=None, market_ro
 
 
 def load_cta_report_views(signal, *, root="data/strategy/future", market_root=None, periods_per_year=240):
-    """Build all-time and annual report tables with one read of the fills and market data."""
+    """Build report tables and curves with gaps before each product's first day."""
     daily, products, holding, missing = _load_report_data(signal, root, market_root)
     tables = {"All": _product_table(products, holding, missing, periods_per_year)}
     for year, group in products.groupby(products.trade_date // 10000):
         tables[int(year)] = _product_table(group, holding, missing, periods_per_year, year=year)
-    return _portfolio_table(daily, periods_per_year, include_total=True), tables, _pnl_curves(daily, products)
+    curves = _pnl_curves(daily, products, keep_leading_gaps=True)
+    return _portfolio_table(daily, periods_per_year, include_total=True), tables, curves
 
 
 def plot_product_pnl(curves, *, columns=5, rows=4):

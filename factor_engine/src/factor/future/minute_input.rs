@@ -375,7 +375,10 @@ pub fn compute_future_minute_many(
         .ok_or_else(|| err("missing futures minute input configuration"))?;
     let price_columns = fields
         .iter()
-        .map(|field| matches!(field, FutureMinuteField::Raw("open" | "high" | "low" | "close") | FutureMinuteField::VwapNotional))
+        .map(|field| matches!(field,
+            FutureMinuteField::Raw("open" | "high" | "low" | "close")
+            | FutureMinuteField::ContractLevel("open" | "high" | "low" | "close")
+            | FutureMinuteField::VwapNotional))
         .collect::<Vec<_>>();
     let force_same_contract = fields.iter().any(|field| matches!(field, FutureMinuteField::ContractLevel(_)));
     let same_contract = force_same_contract || input.options.warmup_source == FutureWarmupSource::SameContract;

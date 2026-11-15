@@ -182,7 +182,7 @@ fn weighted_least_squares(
     solve_linear_system(xtwx, xtwy)
 }
 
-fn solve_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+pub(crate) fn solve_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     for col in 0..n {
         let pivot =

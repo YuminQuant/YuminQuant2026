@@ -75,6 +75,18 @@ pub(crate) fn plan_files<T: Send>(paths: &[PathBuf], plan: impl Fn(&Path) -> Res
     paths.iter().map(|path| plan(path)).collect()
 }
 
+/// Read independently filtered files with the remote IO pool, without staging compressed chunks.
+pub(crate) fn read_filtered_inputs<I: Sync, T: Send>(
+    root: &Path,
+    inputs: &[I],
+    read: impl Fn(&I) -> Result<T> + Sync + Send,
+) -> Result<Vec<T>> {
+    if let Some(reader) = remote(root)? {
+        return reader.io.install(|| inputs.par_iter().map(read).collect());
+    }
+    inputs.iter().map(read).collect()
+}
+
 pub(crate) fn visit_projected_files(
     paths: &[PathBuf], columns: &[String],
     mut consume: impl FnMut(&Path, Table) -> Result<()>,

@@ -798,6 +798,10 @@ impl MarketDataLoader {
         Ok(tables)
     }
 
+    pub(crate) fn future_minute_root(&self) -> PathBuf {
+        self.catalog.data_root().join("future_data/minute")
+    }
+
     pub(crate) fn load_future_minute_day(
         &self,
         date: i32,

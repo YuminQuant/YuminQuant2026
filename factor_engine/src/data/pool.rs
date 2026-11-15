@@ -289,11 +289,10 @@ impl DataPool {
                 Some(codes)
             })
             .collect::<Vec<_>>();
-        let mut day_indexes = HashMap::new();
-        for (index, &date) in context.load_dates.iter().enumerate() {
-            if !dates.contains(&date) {
-                continue;
-            }
+        let jobs = context.load_dates.iter().copied().enumerate()
+            .filter(|(_, date)| dates.contains(date)).collect::<Vec<_>>();
+        let days = crate::data::read_ahead::read_filtered_inputs(
+            &loader.future_minute_root(), &jobs, |&(index, date)| {
             let diff_columns = if context.load_dates.get(index + 1).is_some_and(|next| dates.contains(next)) {
                 diff_columns.as_slice()
             } else {
@@ -307,9 +306,15 @@ impl DataPool {
                 diff_columns,
             )? {
                 let day_index = FutureMinuteDayIndex::build(date, &table, diff_columns, day_tails)?;
-                day_indexes.insert(date, day_index);
-                self.minute.insert((DatasetId::FutureMinute1m, None, date), Arc::new(table));
+                Ok(Some((date, table, day_index)))
+            } else {
+                Ok(None)
             }
+        })?;
+        let mut day_indexes = HashMap::new();
+        for (date, table, day_index) in days.into_iter().flatten() {
+            day_indexes.insert(date, day_index);
+            self.minute.insert((DatasetId::FutureMinute1m, None, date), Arc::new(table));
         }
         self.future_minute_input = Some(input);
         self.future_minute_coverage = Some(Arc::new((dates, columns)));

@@ -1,2 +1,2 @@
-pub mod mdl_100000;
+pub mod cta_strategy001;
 pub mod sma;

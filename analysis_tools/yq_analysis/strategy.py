@@ -117,14 +117,16 @@ def _futures_trading_clock(minute_bars: pd.DataFrame) -> pd.DataFrame:
     # The source includes some exact open labels alongside minute-end bars.
     # The opening label itself contributes zero elapsed trading minutes.
     time_of_day = timestamp.dt.hour * 60 + timestamp.dt.minute
-    opening = gap & time_of_day.isin([540, 570, 630, 780, 810, 1260])
+    opening = gap & time_of_day.isin([540, 555, 570, 630, 780, 810, 1260])
     clock["trading_minute"] = (~opening).groupby(clock.symbol, sort=False).cumsum()
     return clock
 
 
-def futures_holding_duration(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> dict:
-    """Pair fills FIFO by contract and side, counting the contract's trading minutes."""
+def _futures_holding_by_contract(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> pd.DataFrame:
     ordered = fills[["fill_id", "symbol", "side", "quantity", "fill_time"]].sort_values("fill_id")
+    columns = ["symbol", "lot_minutes", "closed_lots", "open_lots"]
+    if ordered.empty:
+        return pd.DataFrame(columns=columns).set_index("symbol")
     if ordered.fill_id.duplicated().any():
         raise ValueError("Expected fills from a single backtest run")
     timestamps = ordered.fill_time.astype("string")
@@ -137,7 +139,8 @@ def futures_holding_duration(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> 
         missing = ordered.loc[ordered.trading_minute.isna(), ["symbol", "fill_time"]].iloc[0]
         raise ValueError(f"No market minute for {missing.symbol} at {missing.fill_time}")
     positions = defaultdict(deque)
-    closed_quantity = lot_minutes = 0.0
+    lot_minutes = defaultdict(float)
+    closed_lots = defaultdict(float)
     for row in ordered[["symbol", "side", "quantity", "trading_minute"]].itertuples(index=False):
         quantity = row.quantity
         if not np.isfinite(quantity) or quantity <= 0:
@@ -155,16 +158,43 @@ def futures_holding_duration(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> 
             elapsed = row.trading_minute - started
             if elapsed < 0:
                 raise ValueError(f"Closing fill precedes open for {row.symbol}")
-            lot_minutes += matched * elapsed
-            closed_quantity += matched
+            lot_minutes[row.symbol] += matched * elapsed
+            closed_lots[row.symbol] += matched
             quantity -= matched
             if held - matched > 1e-9:
                 queue.appendleft((started, held - matched))
+    open_lots = defaultdict(float)
+    for (symbol, _), queue in positions.items():
+        open_lots[symbol] += sum(quantity for _, quantity in queue)
+    return pd.DataFrame(
+        [(symbol, lot_minutes[symbol], closed_lots[symbol], open_lots[symbol])
+         for symbol in ordered.symbol.unique()],
+        columns=columns,
+    ).set_index("symbol")
+
+
+def futures_holding_duration(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> dict:
+    """Pair fills FIFO by contract and side, counting the contract's trading minutes."""
+    totals = _futures_holding_by_contract(fills, minute_bars).sum()
     return {
-        "avg_holding_minutes": lot_minutes / closed_quantity if closed_quantity else np.nan,
-        "closed_lots": closed_quantity,
-        "open_lots": sum(quantity for queue in positions.values() for _, quantity in queue),
+        "avg_holding_minutes": totals.lot_minutes / totals.closed_lots if totals.closed_lots else np.nan,
+        "closed_lots": totals.closed_lots,
+        "open_lots": totals.open_lots,
     }
+
+
+def futures_holding_totals_by_product(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> pd.DataFrame:
+    """Return lot-minutes and quantities for combining independent runs by product."""
+    contracts = _futures_holding_by_contract(fills, minute_bars)
+    products = futures_products(contracts.index)
+    return contracts.groupby(products).sum().rename_axis("product")
+
+
+def futures_products(symbols: pd.Index) -> pd.Index:
+    """Map contract symbols to product codes using the backtest convention."""
+    head = symbols.str.split(".", n=1).str[0]
+    letters = head.str.extract(r"^([A-Za-z]+)", expand=False)
+    return letters.where(letters.notna(), head).str.upper()
 
 
 def _drawdown_episodes(daily: pd.DataFrame) -> pd.DataFrame:

@@ -221,17 +221,27 @@ impl Strategy for ModelCta {
             };
             if self.overnight.contains(&symbol)
                 || self.close_minutes.get(&symbol).is_none_or(|&close| after_liquidation_cutoff(minute, close))
-                || ctx.account().future_position(&symbol, side).is_some()
             {
                 continue;
             }
-            if let Some(lots) = ctx
+            let Some(lots) = ctx
                 .market()
                 .future_day
                 .as_ref()
                 .and_then(|day| day.spec(&symbol))
                 .map(|spec| spec.min_lots)
+            else {
+                continue;
+            };
+            let close_side = if side == OrderSide::Buy { OrderSide::Cover } else { OrderSide::Sell };
+            if let Some(quantity) = ctx.account().future_position(&symbol, close_side)
+                .map(|position| position.quantity.abs())
             {
+                // The matcher deducts the filled close quantity from this bar's volume
+                // and releases its margin before processing the entry below.
+                ctx.order_future_side(&symbol, close_side, quantity, signal_time.clone());
+            }
+            if ctx.account().future_position(&symbol, side).is_none() {
                 ctx.order_future_side(&symbol, side, lots, signal_time);
             }
         }
@@ -270,10 +280,8 @@ impl Strategy for ModelCta {
             } else {
                 continue;
             };
-            if ctx.account().future_position(symbol, side).is_none() {
-                self.entries
-                    .insert(symbol.clone(), (side, ctx.signal_time()));
-            }
+            self.entries
+                .insert(symbol.clone(), (side, ctx.signal_time()));
         }
         Ok(())
     }

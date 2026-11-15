@@ -23,7 +23,7 @@ use crate::strategy::request::StrategyRunRequest;
 use crate::strategy::session_io;
 use crate::strategy::storage::{HoldingsWriter, TradesWriter};
 use crate::strategy::future_market::FutureReferenceData;
-use crate::strategy::strategies::future::mdl_100000::ModelCta;
+use crate::strategy::strategies::future::cta_strategy001::ModelCta;
 use crate::strategy::strategies::future::sma::SmaStrategy;
 use crate::strategy::strategies::stock::strategy_001::Strategy001;
 use crate::strategy::strategy::Strategy;

@@ -40,7 +40,7 @@ With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar o
 
 ## `mdl_100000` 期货 CTA
 
-策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P1/P99 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P99 开多，低于 P1 开空，在该合约下一根行情开盘尝试成交。多空独立记仓，每侧最多一个最小交易单位。同向重复信号维持原仓。
+策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P1/P99 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P99 时尝试开多，低于 P1 时尝试开空，成交时点为该合约下一根分钟行情的开盘。有反向旧仓时，先提交平仓，再用该分钟剩余的可成交量和可用保证金开新仓。成交量只够平仓时只平旧仓，无法平仓时保留旧仓。同向持仓不加仓，每侧开仓量为一个最小交易单位。
 
 公共层按期货日历加载交易日和合约资料。最小下单手数由 `[future.min_lots_by_product]` 覆盖，未配置品种取 `[execution].lot_size`。开启 `[future].daily_costs` 后，公共层每天读取上一交易日的结算快照，路径可用 `[paths].future_settle_root` 覆盖。快照缺失或合约参数无效时，该合约跳过交易。郑商所使用可用的按手平今费用，其他缺失平今字段使用普通手续费。中金所股指按成交金额计费，国债按手计费。双持保证金按两侧分别计提。
 
@@ -49,6 +49,8 @@ With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar o
 期货 `[execution]` 支持 `spread_ticks` 和 `slippage_ticks`，默认均为零。`mdl_100000` 每笔开仓和平仓分别计入 1 tick spread 与 0.1 tick 滑点。每手成本等于 tick 数乘以该合约的最小变动价位和乘数，再加上原有的 `slippage_bps` 成本，一并计入开仓资金校验与 `slippage` 日结。最小变动价位取自 `fut_basic.parquet` 的 `quote_unit_desc`。启用 tick 成本时，待撮合合约缺少最小变动价位会报错。成交价和交易所手续费沿用原口径。
 
 ## 输出与分析 / Outputs and analysis
+
+分析端使用 `yq_analysis.cta_report.load_cta_report` 读取单次或分年度回测产物，生成组合绩效、品种绩效和累计净 PnL 序列。品种的 `avg_holding_minutes` 使用逐笔成交和合约分钟行情，按合约和方向 FIFO 配对。计算时累计每段已平仓手数乘以开仓至平仓的实际交易分钟，再除以总已平仓手数。跨合约和年度直接汇总手数与持仓分钟，盘间及隔夜休市时段从计时中扣除。
 
 期货策略在 `[output]` 设置 `product_pnl = true` 后，同目录写出 `product_pnl.parquet`，按交易日和品种各一行。账户日结仍在 `holdings.parquet`。品种毛盈亏为当日已实现盈亏加未实现盈亏变动，扣除手续费与滑点得到净盈亏。另输出累计净盈亏、成交笔数、成交手数、双边成交额和成交额除以日初账户权益的换手率。日结直接使用成交和估值，不依赖分钟明细输出。
 

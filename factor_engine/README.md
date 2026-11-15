@@ -118,6 +118,16 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- derive-logsig --
 
 Standard 5m factors can prefer derived bars and lazily load a daily 1m fallback; anchored, staggered and rolling definitions are not interchangeable. Consensus uses replaceable equal weighting rather than undisclosed institution weights. Logsignature uses a fixed 5m/20-day/order-10 definition with 226 features and complete windows; do not mix current float32 and older precision datasets.
 
+### 期货流动性主力池 / Futures liquidity pool
+
+```bash
+cargo run --release --manifest-path factor_engine/Cargo.toml -- derive-future-main-pool --start-date 20260105 --end-date 20260109
+```
+
+日期参数指定要产出的交易日。程序以目标年份上一年的最后一个交易日为窗口终点，向前取 240 个交易日（含终点），通过 `future_data/basic/mapping` 逐日匹配实际主力合约及其期货日线 `vol`。仅纳入有完整 240 日有效记录、日均成交量至少 10,000 手的品种，按日均成交量取前 50 名，同量时按品种代码排序。有效的零成交量计入均值。
+
+次年沿用入池品种，每日从原主力映射取实际合约代码。结果写入 `data/future_data/basic/mapping_pool/YYYY.parquet`，字段为 `ts_code`、`trade_date` 和 `mapping_ts_code`，沿用原主力映射的编码。目标日缺原主力映射时跳过并报告该日。分次运行只替换本次覆盖的日期。若上一年用于排名的数据有修订，应重算受影响的完整年份。
+
 ## 标签与风险暴露 / Labels and risk exposures
 
 先生成回测或中性化所依赖的数据；标签需要未来行情，数据末尾可能无法生成有效值。

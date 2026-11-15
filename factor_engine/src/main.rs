@@ -508,6 +508,28 @@ fn run_cli() -> Result<()> {
             )?;
             println!("derived futures open-interest mapping files: {files}");
         }
+        "derive-future-main-pool" => {
+            let flags = parse_flags(&args[1..])?;
+            for key in flags.keys() {
+                if !["start-date", "end-date", "config", "date-batch-size"].contains(&key.as_str()) {
+                    return Err(yq_factor_engine::error::err(format!("unsupported derive-future-main-pool flag: --{key}")));
+                }
+            }
+            let date = |key: &str| -> Result<i32> {
+                let value = flags.get(key).ok_or_else(|| yq_factor_engine::error::err(format!("missing --{key}")))?;
+                parse_yyyymmdd(value, key)
+            };
+            let config = EngineConfig::discover(flags.get("config").map(PathBuf::from))?;
+            let batch_size = flags.get("date-batch-size").map(|value| value.parse()).transpose()?
+                .unwrap_or(DEFAULT_RUN_DATE_BATCH_SIZE);
+            let report = yq_factor_engine::derive::future_main_pool::derive(
+                &config, date("start-date")?, date("end-date")?, batch_size,
+            )?;
+            println!(
+                "derive-future-main-pool complete: files={} rows={} members_per_year={:?} missing_target_dates={:?}",
+                report.files_written, report.rows_written, report.members_per_year, report.missing_target_dates,
+            );
+        }
         "derive-bar" => {
             let request = parse_derive_bar_request(&args[1..])?;
             let engine = DeriveEngine::from_request(&request)?;
@@ -1698,6 +1720,7 @@ fn print_help() {
     );
     println!("    derive-bar stock minute allowed N: divisors of 240 with 1 < N <= 120");
     println!("  derive-future-main-oi --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size N] [--include-next-trading-day true]");
+    println!("  derive-future-main-pool --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size N] [--config path]");
     println!(
         "  derive-consensus --start-date YYYYMMDD --end-date YYYYMMDD [--columns column1,column2]"
     );

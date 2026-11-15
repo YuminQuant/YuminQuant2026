@@ -1767,7 +1767,7 @@ fn print_help() {
     println!("  --refresh-label-cache");
     println!("  --config D:/path/to/config.toml");
     println!("  --project-config D:/path/to/config.toml (project config)");
-    println!("  --detail true|false (strategy-run minute detail output; default false)");
+    println!("  --detail true|false (strategy-run per-fill Parquet output; default false)");
     println!("  --overwrite true|false (derive-bar default true)");
     println!("  --columns volume,amount,... (derive-bar: project minute inputs and replace output with selected fields; keys always included)");
 }

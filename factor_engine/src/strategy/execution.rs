@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::error::{err, Result};
 use crate::strategy::account::AccountState;
-use crate::strategy::config::{StrategyAssetClass, StrategyRunConfig};
+use crate::strategy::config::{BarFrequency, StrategyAssetClass, StrategyRunConfig};
 use crate::strategy::market::{FutureContractMeta, MarketSnapshot};
 use crate::strategy::order::{FillEvent, Order, OrderSide};
 
@@ -98,6 +98,9 @@ impl ExecutionEngine {
         let mut fills = Vec::new();
         account.clear_share_locks(&order.symbol);
         self.settle_stock_fill(config, account, market, order, OrderSide::Sell, quantity, price, &mut fills);
+        for fill in &mut fills {
+            fill.execution_phase = "forced_delisting";
+        }
         fills
     }
 
@@ -421,7 +424,8 @@ impl ExecutionEngine {
             Some(side) => account.future_position(&order.symbol, side),
             None => account.position(&order.symbol),
         }.cloned().unwrap_or_default();
-        let fill_time = format!("{} {}", market.event.trade_date, market.event.trade_time);
+        let fill_time = (market.event.bar_frequency == BarFrequency::Minute)
+            .then(|| market.event.trade_time.clone());
         let totals = account.summary();
         fills.push(FillEvent {
             strategy_id: config.strategy_id.clone(),
@@ -449,6 +453,7 @@ impl ExecutionEngine {
             account_pnl_after: totals.equity - account.initial_cash(),
             signal_time: order.signal_time,
             fill_time,
+            execution_phase: "open",
         });
     }
 }

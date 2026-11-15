@@ -60,7 +60,8 @@ pub struct FillEvent {
     pub unrealized_pnl_after: f64,
     pub account_pnl_after: f64,
     pub signal_time: String,
-    pub fill_time: String,
+    pub fill_time: Option<String>,
+    pub execution_phase: &'static str,
 }
 
 #[derive(Clone, Debug)]

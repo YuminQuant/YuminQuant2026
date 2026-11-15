@@ -44,7 +44,7 @@ With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar o
 
 公共层按期货日历加载交易日和合约资料。最小下单手数由 `[future.min_lots_by_product]` 覆盖，未配置品种取 `[execution].lot_size`。开启 `[future].daily_costs` 后，公共层每天读取上一交易日的结算快照，路径可用 `[paths].future_settle_root` 覆盖。快照缺失或合约参数无效时，该合约跳过交易。郑商所使用可用的按手平今费用，其他缺失平今字段使用普通手续费。中金所股指按成交金额计费，国债按手计费。双持保证金按两侧分别计提。
 
-尾盘由策略根据合约交易时间进入平仓窗口，撤销该合约待开仓信号，逐分钟尝试平掉两侧。撮合使用开盘价和该分钟成交量约束，日涨跌停文件可用时检查开盘价。日终未成交的仓位按原合约和方向隔夜，下一交易日从该合约第一根行情开始优先平仓。若仍无法成交，逐分钟重试，直到仓位平掉。换主力后仍加载持仓旧合约的行情和交易参数。隔夜仓按普通平仓费用结算。用 `--detail true` 查看分钟持仓和逐笔交易方向。
+尾盘由策略根据合约交易时间进入平仓窗口，撤销该合约待开仓信号，逐分钟尝试平掉两侧。撮合使用开盘价和该分钟成交量约束，日涨跌停文件可用时检查开盘价。日终未成交的仓位按原合约和方向隔夜，下一交易日从该合约第一根行情开始优先平仓。若仍无法成交，逐分钟重试，直到仓位平掉。换主力后仍加载持仓旧合约的行情和交易参数。隔夜仓按普通平仓费用结算。用 `--detail true` 导出逐笔成交。
 
 期货 `[execution]` 支持 `spread_ticks` 和 `slippage_ticks`，默认均为零。`mdl_100000` 每笔开仓和平仓分别计入 1 tick spread 与 0.1 tick 滑点。每手成本等于 tick 数乘以该合约的最小变动价位和乘数，再加上原有的 `slippage_bps` 成本，一并计入开仓资金校验与 `slippage` 日结。最小变动价位取自 `fut_basic.parquet` 的 `quote_unit_desc`。启用 tick 成本时，待撮合合约缺少最小变动价位会报错。成交价和交易所手续费沿用原口径。
 
@@ -67,9 +67,9 @@ optional = true
 data/strategy/{asset_class}/{strategy_id}/holdings.parquet
 ```
 
-根目录可由配置调整。分钟策略默认输出日终快照；`--detail true` 覆盖配置并输出分钟明细，不改变逐 bar 执行频率。相同策略 ID 的重跑可能替换既有结果。
+根目录可由配置调整。分钟、日频策略的 `holdings.parquet` 均按交易日输出账户快照。`--detail true` 或 `[output].detail = true` 另外写出 `trades.parquet`，一笔实际成交一行。明细保留成交所属交易日、时间、方向、数量、价格及成本。仅有日频行情时，`fill_time` 为空，撮合阶段记在 `execution_phase`。同一个策略 ID 重跑时，关闭 detail 会清理上次的成交明细。
 
-The root is configurable. Minute strategies default to daily snapshots; `--detail true` overrides configuration to write minute details without changing per-bar execution. Reusing an ID may replace earlier results.
+The root is configurable. Daily and minute strategies write end-of-day snapshots. Enabling detail also writes one row per execution in `trades.parquet`. Daily bars retain a trade date and execution phase, with a null `fill_time`.
 
 分析时使用与回测相同的初始资金。资金不足、整手、缺行情及成交限制会影响实际持仓，不保证信号选中的股票全部成交。
 

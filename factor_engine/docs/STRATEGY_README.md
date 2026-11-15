@@ -18,9 +18,9 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --c
 data/strategy/{asset_class}/{strategy_id}/holdings.parquet
 ```
 
-`holdings.parquet` 每行是一个结算 bar。日频策略每天一行；分钟策略默认 `detail=false`，每个交易日一行日终 snapshot；`detail=true` 时每分钟一行。
+`holdings.parquet` 按交易日写账户日结。`detail=true` 额外写出 `trades.parquet`，每笔实际成交一行，股票和期货共用结构。
 
-`holdings.parquet` has one row per settlement bar. Daily strategies write one row per day. Minute strategies default to one end-of-day snapshot per trading day; `detail=true` writes one row per minute.
+`holdings.parquet` holds one end-of-day snapshot per trading session. `detail=true` enables a separate `trades.parquet` with one row per fill across stocks and futures.
 
 ## 事件循环 / Event Loop
 
@@ -32,7 +32,7 @@ load current bar
 -> update account and mark to market at current bar close
 -> call strategy.on_bar()
 -> queue new orders for next bar open
--> write holding snapshot
+-> write fills when detail is enabled and the account snapshot at session end
 ```
 
 `on_session_open()` 用于每天第一根 bar 前的信号，适合集合竞价或开盘前逻辑；该事件里的订单可在当天第一根 bar open 成交。普通 `on_bar()` 的订单默认下一根 bar open 成交。

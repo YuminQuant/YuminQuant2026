@@ -1,18 +1,16 @@
-use crate::artifact_io::StoragePathExt;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::data::parquet_io::ParquetStreamWriter;
 use crate::data::{ColumnData, Table};
 use crate::error::Result;
-use crate::strategy::order::HoldingSnapshot;
+use crate::strategy::order::{FillEvent, HoldingSnapshot};
 
 /// Bound snapshot buffering by both row count and approximate string bytes.
 pub struct HoldingsWriter {
     writer: ParquetStreamWriter,
     rows: Vec<HoldingSnapshot>,
     bytes: usize,
-    legacy: PathBuf,
 }
 
 impl HoldingsWriter {
@@ -24,7 +22,6 @@ impl HoldingsWriter {
             )?,
             rows: Vec::new(),
             bytes: 0,
-            legacy: output_dir.join("trades.parquet"),
         })
     }
 
@@ -48,12 +45,79 @@ impl HoldingsWriter {
 
     pub fn finish(mut self) -> Result<PathBuf> {
         self.flush()?;
-        let path = self.writer.finish()?;
-        if self.legacy.storage_exists() {
-            crate::artifact_io::remove_file(self.legacy)?;
-        }
-        Ok(path)
+        self.writer.finish()
     }
+}
+
+pub(super) struct TradesWriter {
+    writer: ParquetStreamWriter,
+    rows: Vec<FillEvent>,
+}
+
+impl TradesWriter {
+    pub fn new(path: &Path) -> Result<Self> {
+        Ok(Self {
+            writer: ParquetStreamWriter::new(path, &trades_table(&[])?)?,
+            rows: Vec::with_capacity(4096),
+        })
+    }
+
+    pub fn record(&mut self, fills: Vec<FillEvent>) -> Result<()> {
+        for fill in fills {
+            self.rows.push(fill);
+            if self.rows.len() == 4096 {
+                self.flush()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if !self.rows.is_empty() {
+            self.writer.write(&trades_table(&self.rows)?)?;
+            self.rows.clear();
+        }
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<PathBuf> {
+        self.flush()?;
+        self.writer.finish()
+    }
+}
+
+fn trades_table(rows: &[FillEvent]) -> Result<Table> {
+    let strings = |value: fn(&FillEvent) -> &str| {
+        utf8(rows.iter().map(|fill| Some(value(fill).to_owned())))
+    };
+    let numbers = |value: fn(&FillEvent) -> f64| {
+        f64_col(rows.iter().map(|fill| Some(value(fill))))
+    };
+    Table::new(BTreeMap::from([
+        ("strategy_id".into(), strings(|f| &f.strategy_id)),
+        ("asset_class".into(), strings(|f| &f.asset_class)),
+        ("bar_frequency".into(), strings(|f| &f.bar_frequency)),
+        ("trade_date".into(), i32_col(rows.iter().map(|f| Some(f.trade_date)))),
+        ("trade_time".into(), strings(|f| &f.trade_time)),
+        ("signal_time".into(), strings(|f| &f.signal_time)),
+        ("fill_time".into(), utf8(rows.iter().map(|f| f.fill_time.clone()))),
+        ("execution_phase".into(), strings(|f| f.execution_phase)),
+        ("symbol".into(), strings(|f| &f.symbol)),
+        ("order_id".into(), i64_col(rows.iter().map(|f| Some(f.order_id)))),
+        ("fill_id".into(), i64_col(rows.iter().map(|f| Some(f.fill_id)))),
+        ("side".into(), strings(|f| f.side.as_str())),
+        ("quantity".into(), numbers(|f| f.quantity)),
+        ("signed_quantity".into(), numbers(|f| f.signed_quantity)),
+        ("price".into(), numbers(|f| f.fill_price)),
+        ("notional".into(), numbers(|f| f.notional)),
+        ("fee".into(), numbers(|f| f.fee)),
+        ("tax".into(), numbers(|f| f.tax)),
+        ("slippage_cost".into(), numbers(|f| f.slippage_cost)),
+        ("realized_pnl".into(), numbers(|f| f.realized_pnl)),
+        ("net_realized_pnl".into(), numbers(|f| f.net_realized_pnl)),
+        ("cash_after".into(), numbers(|f| f.cash_after)),
+        ("position_qty_after".into(), numbers(|f| f.position_qty_after)),
+    ]))
 }
 
 pub fn write_holdings(output_dir: &Path, rows: &[HoldingSnapshot]) -> Result<PathBuf> {

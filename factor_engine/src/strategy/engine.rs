@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::artifact_io::StoragePathExt;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::error::{err, Result};
@@ -20,7 +21,7 @@ use crate::strategy::order::{FillEvent, HoldingSnapshot, Order, OrderSide};
 use crate::strategy::product_pnl::ProductPnl;
 use crate::strategy::request::StrategyRunRequest;
 use crate::strategy::session_io;
-use crate::strategy::storage::HoldingsWriter;
+use crate::strategy::storage::{HoldingsWriter, TradesWriter};
 use crate::strategy::future_market::FutureReferenceData;
 use crate::strategy::strategies::future::mdl_100000::ModelCta;
 use crate::strategy::strategies::future::sma::SmaStrategy;
@@ -81,6 +82,8 @@ impl StrategyEngine {
         let mut lifecycle = super::lifecycle::StockLifecycle::load(&run_config)?;
         let mut pending_orders = Vec::<Order>::new();
         let mut holdings = HoldingsWriter::new(&run_config.output_dir())?;
+        let trades_path = run_config.output_dir().join("trades.parquet");
+        let mut trades = run_config.detail.then(|| TradesWriter::new(&trades_path)).transpose()?;
         let mut product_pnl = run_config.future.product_pnl
             .then(|| ProductPnl::new(&run_config.output_dir().join("product_pnl.parquet"), run_config.initial_cash))
             .transpose()?;
@@ -297,8 +300,7 @@ impl StrategyEngine {
                     if let Some(report) = &mut product_pnl {
                         report.record(&bar_fills);
                     }
-                    let daily_only =
-                        run_config.bar_frequency == BarFrequency::Minute && !run_config.detail;
+                    let daily_only = run_config.bar_frequency == BarFrequency::Minute;
                     if !daily_only || frame_index + 1 == frame_count {
                         // Daily mode never serializes the discarded intraday snapshots/trades.
                         let mut snapshot = holding_snapshot(
@@ -311,6 +313,9 @@ impl StrategyEngine {
                             daily_side_counts.apply_to_snapshot(&mut snapshot);
                         }
                         holdings.push(snapshot)?;
+                    }
+                    if let Some(writer) = &mut trades {
+                        writer.record(bar_fills)?;
                     }
                 }
                 corporate_actions.end_session(&account, trade_date);
@@ -344,6 +349,11 @@ impl StrategyEngine {
         let mut output_files = vec![holdings.finish()?];
         if let Some(report) = product_pnl {
             output_files.push(report.finish()?);
+        }
+        if let Some(writer) = trades {
+            output_files.push(writer.finish()?);
+        } else if trades_path.storage_exists() {
+            crate::artifact_io::remove_file(&trades_path)?;
         }
         crate::artifact_io::write(
             run_config.output_dir().join("run_config.toml"),

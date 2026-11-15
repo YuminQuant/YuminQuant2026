@@ -277,7 +277,7 @@ fn parquet_symbol_filter_preserves_union_and_empty_schema() {
 }
 
 #[test]
-fn daily_output_matches_last_detailed_bar_and_full_day_counts() {
+fn trade_detail_preserves_daily_output_and_records_every_fill() {
     let fixture = Fixture::new();
     let config = fixture.config();
     let dates = [20260105, 20260106];
@@ -320,38 +320,57 @@ fn daily_output_matches_last_detailed_bar_and_full_day_counts() {
         detail: Some(true),
     };
     let detail_report = engine.run(&request).unwrap();
-    let detail = read_parquet(&detail_report.output_files[0], None).unwrap();
-    assert_eq!(detail.len, 600); // Cross multiple streamed row groups.
-    assert!(detail_report.trade_count > 0);
-    let pnl = detail.required_f64_cast("unrealized_pnl").unwrap();
-    assert!(pnl.windows(2).any(|pair| pair[0] != pair[1]));
+    let holdings = read_parquet(&detail_report.output_files[0], None).unwrap();
+    let trades_path = config.output_dir().join("trades.parquet");
+    assert!(detail_report.output_files.contains(&trades_path));
+    let fills = read_parquet(&trades_path, None).unwrap();
+    assert_eq!(holdings.len, 2);
+    assert_eq!(fills.len, detail_report.trade_count);
+    assert!(fills.len > 0);
+    let days = fills.required_i32("trade_date").unwrap();
+    let sides = fills.required_utf8("side").unwrap();
+    for (column, side) in [
+        ("buy_count", "buy"), ("sell_count", "sell"),
+        ("short_count", "short"), ("cover_count", "cover"),
+    ] {
+        let expected: Vec<_> = dates.iter().map(|date| {
+            Some(days.iter().zip(sides).filter(|(day, direction)| {
+                **day == Some(*date) && direction.as_deref() == Some(side)
+            }).count() as i64)
+        }).collect();
+        assert_eq!(holdings.required_i64_cast(column).unwrap(), expected);
+    }
     request.detail = Some(false);
     let daily_report = engine.run(&request).unwrap();
     assert_eq!(daily_report.trade_count, detail_report.trade_count);
-    let daily = read_parquet(&config.output_dir().join("holdings.parquet"), None).unwrap();
-    assert_eq!(daily.len, 2);
-    for (name, column) in &daily.columns {
-        if name.starts_with("trade_") && name.ends_with("_json") {
-            assert_eq!(
-                format!("{:?}", column),
-                format!("{:?}", ColumnData::Utf8(vec![Some("[]".into()); 2]))
-            );
-        } else if ["buy_count", "sell_count", "short_count", "cover_count"].contains(&name.as_str())
-        {
-            let counts = detail.required_i64_cast(name).unwrap();
-            let expected = counts
-                .chunks(300)
-                .map(|chunk| Some(chunk.iter().flatten().sum::<i64>()))
-                .collect::<Vec<_>>();
-            assert_eq!(daily.required_i64_cast(name).unwrap(), expected);
-        } else {
-            assert_eq!(
-                format!("{:?}", column),
-                format!("{:?}", detail.columns[name].take(&[299, 599])),
-                "column {name}"
-            );
-        }
-    }
+    assert!(!trades_path.exists());
+    let daily = read_parquet(&daily_report.output_files[0], None).unwrap();
+    assert_eq!(format!("{:?}", holdings.columns), format!("{:?}", daily.columns));
+
+    let daily_dates = [20260105, 20260106, 20260107];
+    write_parquet(
+        &fixture.0.join("calendar/trade_cal_SHFE.parquet"),
+        &Table::new(BTreeMap::from([
+            ("cal_date".into(), ColumnData::I32(daily_dates.map(Some).to_vec())),
+            ("is_open".into(), ColumnData::I64(vec![Some(1); 3])),
+        ])).unwrap(),
+    ).unwrap();
+    write_market(
+        &fixture.0.join("future_data/daily/2026.parquet"),
+        &daily_dates,
+        &[100.0, 110.0, 120.0],
+    );
+    let settings = std::fs::read_to_string(&request.config_path).unwrap()
+        .replace("20260106", "20260107").replace("\"minute\"", "\"daily\"");
+    std::fs::write(&request.config_path, settings).unwrap();
+    request.detail = Some(true);
+    let daily_detail = engine.run(&request).unwrap();
+    let daily_fills = read_parquet(&trades_path, None).unwrap();
+    assert_eq!(daily_fills.len, daily_detail.trade_count);
+    assert!(daily_fills.len > 0);
+    assert!(daily_fills.required_utf8("fill_time").unwrap().iter().all(Option::is_none));
+    assert!(daily_fills.required_utf8("execution_phase").unwrap().iter()
+        .all(|value| value.as_deref() == Some("open")));
 }
 
 #[test]

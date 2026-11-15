@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import warnings
+from collections import defaultdict, deque
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,7 @@ import pandas as pd
 from yq_analysis.metrics import annual_return, annual_volatility, sharpe
 
 SIDES = ["buy_count", "sell_count", "short_count", "cover_count"]
+SIDE_CODES = {"buy": 1, "sell": -2, "short": -1, "cover": 2}
 POSITION_FIELDS = {
     "symbols_json": "symbol", "signed_quantities_json": "quantity",
     "avg_costs_json": "avg_cost", "market_values_json": "market_value",
@@ -105,6 +107,66 @@ def _performance(values: pd.Series, periods_per_year: int) -> dict:
     }
 
 
+def _futures_trading_clock(minute_bars: pd.DataFrame) -> pd.DataFrame:
+    """Count completed market minutes separately for each contract."""
+    clock = minute_bars[["symbol", "trade_time"]].rename(columns={"trade_time": "fill_time"})
+    clock["fill_time"] = pd.to_datetime(clock.fill_time, errors="raise")
+    clock = clock.drop_duplicates().sort_values(["symbol", "fill_time"])
+    timestamp = clock.fill_time
+    gap = clock.groupby("symbol", sort=False).fill_time.diff().ne(pd.Timedelta(minutes=1))
+    # The source includes some exact open labels alongside minute-end bars.
+    # The opening label itself contributes zero elapsed trading minutes.
+    time_of_day = timestamp.dt.hour * 60 + timestamp.dt.minute
+    opening = gap & time_of_day.isin([540, 570, 630, 780, 810, 1260])
+    clock["trading_minute"] = (~opening).groupby(clock.symbol, sort=False).cumsum()
+    return clock
+
+
+def futures_holding_duration(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> dict:
+    """Pair fills FIFO by contract and side, counting the contract's trading minutes."""
+    ordered = fills[["fill_id", "symbol", "side", "quantity", "fill_time"]].sort_values("fill_id")
+    if ordered.fill_id.duplicated().any():
+        raise ValueError("Expected fills from a single backtest run")
+    timestamps = ordered.fill_time.astype("string")
+    if not timestamps.str.match(r"^\d{4}-?\d{2}-?\d{2}[ T]").fillna(False).all():
+        raise ValueError("Holding duration requires dated execution timestamps")
+    ordered = ordered.assign(fill_time=pd.to_datetime(timestamps, errors="raise")).merge(
+        _futures_trading_clock(minute_bars), on=["symbol", "fill_time"], how="left", validate="many_to_one",
+    )
+    if ordered.trading_minute.isna().any():
+        missing = ordered.loc[ordered.trading_minute.isna(), ["symbol", "fill_time"]].iloc[0]
+        raise ValueError(f"No market minute for {missing.symbol} at {missing.fill_time}")
+    positions = defaultdict(deque)
+    closed_quantity = lot_minutes = 0.0
+    for row in ordered[["symbol", "side", "quantity", "trading_minute"]].itertuples(index=False):
+        quantity = row.quantity
+        if not np.isfinite(quantity) or quantity <= 0:
+            raise ValueError(f"Invalid fill quantity for {row.symbol}")
+        if row.side in ("buy", "short"):
+            positions[row.symbol, row.side].append((row.trading_minute, quantity))
+            continue
+        opening_side = {"sell": "buy", "cover": "short"}.get(row.side)
+        queue = positions[row.symbol, opening_side]
+        while quantity > 1e-9:
+            if not queue:
+                raise ValueError(f"Unmatched closing fill for {row.symbol}")
+            started, held = queue.popleft()
+            matched = min(quantity, held)
+            elapsed = row.trading_minute - started
+            if elapsed < 0:
+                raise ValueError(f"Closing fill precedes open for {row.symbol}")
+            lot_minutes += matched * elapsed
+            closed_quantity += matched
+            quantity -= matched
+            if held - matched > 1e-9:
+                queue.appendleft((started, held - matched))
+    return {
+        "avg_holding_minutes": lot_minutes / closed_quantity if closed_quantity else np.nan,
+        "closed_lots": closed_quantity,
+        "open_lots": sum(quantity for queue in positions.values() for _, quantity in queue),
+    }
+
+
 def _drawdown_episodes(daily: pd.DataFrame) -> pd.DataFrame:
     records, active = [], None
     peak, peak_date = 1.0, "period start"
@@ -132,14 +194,14 @@ def make_strategy_report(
     holdings: pd.DataFrame, *, initial_cash: float, periods_per_year: int = 240,
     start_date: int | None = None, end_date: int | None = None,
     benchmark: pd.DataFrame | None = None, benchmark_name: str = "Benchmark",
-    expected_dates=None,
+    expected_dates=None, fills: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Daily metrics from account equity, with first-day return vs initial cash.
 
     Minute snapshots collapse to the last bar; fill counts sum across the day.
     Return calculation precedes date slicing so the first selected day's PnL is
     retained. Gross turnover counts both buy and sell notional / prior equity.
-    Futures turnover is unavailable without per-fill contract specifications.
+    Standalone fills supply traded notional for stocks and futures.
     """
     if not np.isfinite(initial_cash) or initial_cash <= 0 or periods_per_year <= 0:
         raise ValueError("initial_cash and periods_per_year must be positive")
@@ -183,9 +245,16 @@ def make_strategy_report(
     if daily.empty:
         raise ValueError("No strategy observations in selected dates")
     selected = frame.loc[frame.trade_date.between(lo, hi)]
-    trades = _expand(selected, TRADE_FIELDS)
-    if not trades.empty:
-        trades["side"] = trades.side_code.map({1: "buy", -2: "sell", -1: "short", 2: "cover"})
+    if fills is None:
+        trades = _expand(selected, TRADE_FIELDS)
+        trades["side"] = trades.side_code.map({code: side for side, code in SIDE_CODES.items()})
+    else:
+        trades = fills.copy()
+        trades["trade_date"] = pd.to_numeric(trades.trade_date, errors="raise").astype(int)
+        trades = trades.loc[trades.trade_date.between(lo, hi)].copy()
+        trades["side_code"] = trades.side.map(SIDE_CODES)
+        if trades.side_code.isna().any():
+            raise ValueError("Unsupported fill side")
     detail_counts = trades.groupby("trade_date").size().reindex(daily.index, fill_value=0)
     complete = detail_counts.eq(daily.fill_count)
     if not trades.empty:
@@ -197,8 +266,10 @@ def make_strategy_report(
         complete &= ~daily.index.isin(invalid_dates)
     daily["trade_detail_complete"] = complete
     daily["turnover"] = np.nan
-    if asset == "stock":
-        trades["notional"] = pd.to_numeric(trades.quantity) * pd.to_numeric(trades.price)
+    if "notional" in trades or asset == "stock":
+        if "notional" not in trades:
+            trades["notional"] = pd.to_numeric(trades.quantity) * pd.to_numeric(trades.price)
+        trades["notional"] = pd.to_numeric(trades.notional, errors="raise")
         notional = trades.groupby("trade_date").notional.sum().reindex(daily.index, fill_value=0)
         daily["turnover"] = (notional / daily.previous_equity).where(complete)
     daily["cash_ratio"] = daily.cash / daily.equity

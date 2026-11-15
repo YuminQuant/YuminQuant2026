@@ -102,20 +102,18 @@ fig = plot_future_return_summary(
 ## 策略分析 / Strategy analysis
 
 ```python
-from yq_analysis.io import load_strategy_result
-from yq_analysis.report import make_strategy_report
+from yq_analysis.strategy_io import load_strategy_run
 from yq_analysis.plots import plot_strategy_summary
 
-holdings = load_strategy_result("data/strategy/stock", "strategy_001")
-report = make_strategy_report(
-    holdings, initial_cash=100000, periods_per_year=240
-)
+report, fills, config = load_strategy_run("data/strategy/stock", "strategy_001")
 print(report["portfolio_total"])
 print(report["diagnostics"])
 fig = plot_strategy_summary(report, save=True)
 ```
 
 `initial_cash` 必须匹配策略配置。先用完整账户历史计算收益与对账，再截取展示区间。多策略比较使用 `plot_strategy_comparison`，各报告应具有相同观察日期。
+
+`load_strategy_run` 优先读 `trades.parquet`，也支持旧版 `fills.csv` 和 `holdings.parquet` 的成交数组。期货分析可用 `yq_analysis.strategy.futures_holding_duration(fills, minute_bars)` 计算按已平仓手数加权的平均持仓分钟数。传入覆盖整个回测期间的合约分钟行情（`symbol`、`trade_time`），按对应合约完成的交易分钟计时，剔除休盘和隔夜间隔。
 
 Match `initial_cash` to the strategy configuration. Calculate returns and reconciliation on the full account history before slicing the display interval. Use `plot_strategy_comparison` for reports with matching observation dates.
 

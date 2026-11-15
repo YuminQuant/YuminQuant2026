@@ -526,8 +526,9 @@ fn run_cli() -> Result<()> {
                 &config, date("start-date")?, date("end-date")?, batch_size,
             )?;
             println!(
-                "derive-future-main-pool complete: files={} rows={} members_per_year={:?} missing_target_dates={:?}",
-                report.files_written, report.rows_written, report.members_per_year, report.missing_target_dates,
+                "derive-future-main-pool complete: pool_id={} files={} rows={} members_per_year={:?} missing_target_dates={:?}",
+                yq_factor_engine::derive::future_main_pool::POOL_ID, report.files_written, report.rows_written,
+                report.members_per_year, report.missing_target_dates,
             );
         }
         "derive-bar" => {

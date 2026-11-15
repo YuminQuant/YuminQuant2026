@@ -11,6 +11,8 @@ use crate::error::{err, Result};
 use crate::factor::future::minute_input::{product, FutureMinuteInput, FutureMinuteOptions};
 
 const DIRECTORY: &str = "future_data/basic/mapping_pool";
+pub const POOL_ID: &str = "liquidity_001";
+const POOL_README: &str = include_str!("../../docs/FUTURE_MAPPING_POOL_LIQUIDITY_001.md");
 const LOOKBACK_DAYS: usize = 240;
 const MIN_AVG_VOLUME: f64 = 10_000.0;
 const TOP_PRODUCTS: usize = 50;
@@ -37,7 +39,7 @@ pub fn derive(
     let calendar = TradingCalendar::load(&config.data_root, &config.future_calendar_exchange)?;
     let requested = calendar.open_dates_between(start_date, end_date);
     let loader = MarketDataLoader::new(DataCatalog::new(config.data_root.clone()));
-    let output = config.data_root.join(DIRECTORY);
+    let output = config.data_root.join(DIRECTORY).join(POOL_ID);
     let mut report = FutureMainPoolReport::default();
 
     for target in requested.chunk_by(|left, right| left / 10_000 == right / 10_000) {
@@ -77,6 +79,9 @@ pub fn derive(
         write_year(&output.join(format!("{year}.parquet")), &table, &covered)?;
         report.files_written += 1;
         report.rows_written += table.len;
+    }
+    if report.files_written > 0 {
+        crate::artifact_io::write(output.join("README.md"), POOL_README)?;
     }
     Ok(report)
 }

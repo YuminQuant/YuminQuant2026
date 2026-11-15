@@ -126,7 +126,7 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- derive-future-ma
 
 日期参数指定要产出的交易日。程序以目标年份上一年的最后一个交易日为窗口终点，向前取 240 个交易日（含终点），通过 `future_data/basic/mapping` 逐日匹配实际主力合约及其期货日线 `vol`。仅纳入有完整 240 日有效记录、日均成交量至少 10,000 手的品种，按日均成交量取前 50 名，同量时按品种代码排序。有效的零成交量计入均值。
 
-次年沿用入池品种，每日从原主力映射取实际合约代码。结果写入 `data/future_data/basic/mapping_pool/YYYY.parquet`，字段为 `ts_code`、`trade_date` 和 `mapping_ts_code`，沿用原主力映射的编码。目标日缺原主力映射时跳过并报告该日。分次运行只替换本次覆盖的日期。若上一年用于排名的数据有修订，应重算受影响的完整年份。
+次年沿用入池品种，每日从原主力映射取实际合约代码。池 ID 为 `liquidity_001`，年度表写入 `data/future_data/basic/mapping_pool/liquidity_001/YYYY.parquet`。同目录自动写入中英文 `README.md`。字段及补跑口径见[池说明](docs/FUTURE_MAPPING_POOL_LIQUIDITY_001.md)。
 
 ## 标签与风险暴露 / Labels and risk exposures
 

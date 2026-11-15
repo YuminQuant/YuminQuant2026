@@ -122,11 +122,15 @@ def _futures_trading_clock(minute_bars: pd.DataFrame) -> pd.DataFrame:
     return clock
 
 
-def _futures_holding_by_contract(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> pd.DataFrame:
-    ordered = fills[["fill_id", "symbol", "side", "quantity", "fill_time"]].sort_values("fill_id")
-    columns = ["symbol", "lot_minutes", "closed_lots", "open_lots"]
+def _match_futures_holding(fills, minute_bars, *, by_year=False):
+    fields = ["fill_id", "symbol", "side", "quantity", "fill_time"]
+    if by_year:
+        fields.append("trade_date")
+    ordered = fills[fields].sort_values("fill_id")
+    ordered["year"] = ordered.trade_date // 10000 if by_year else 0
+    closing = pd.DataFrame(columns=["symbol", "year", "lot_minutes", "closed_lots"])
     if ordered.empty:
-        return pd.DataFrame(columns=columns).set_index("symbol")
+        return closing, {}
     if ordered.fill_id.duplicated().any():
         raise ValueError("Expected fills from a single backtest run")
     timestamps = ordered.fill_time.astype("string")
@@ -141,7 +145,7 @@ def _futures_holding_by_contract(fills: pd.DataFrame, minute_bars: pd.DataFrame)
     positions = defaultdict(deque)
     lot_minutes = defaultdict(float)
     closed_lots = defaultdict(float)
-    for row in ordered[["symbol", "side", "quantity", "trading_minute"]].itertuples(index=False):
+    for row in ordered[["symbol", "side", "quantity", "trading_minute", "year"]].itertuples(index=False):
         quantity = row.quantity
         if not np.isfinite(quantity) or quantity <= 0:
             raise ValueError(f"Invalid fill quantity for {row.symbol}")
@@ -150,6 +154,7 @@ def _futures_holding_by_contract(fills: pd.DataFrame, minute_bars: pd.DataFrame)
             continue
         opening_side = {"sell": "buy", "cover": "short"}.get(row.side)
         queue = positions[row.symbol, opening_side]
+        key = (row.symbol, row.year)
         while quantity > 1e-9:
             if not queue:
                 raise ValueError(f"Unmatched closing fill for {row.symbol}")
@@ -158,36 +163,47 @@ def _futures_holding_by_contract(fills: pd.DataFrame, minute_bars: pd.DataFrame)
             elapsed = row.trading_minute - started
             if elapsed < 0:
                 raise ValueError(f"Closing fill precedes open for {row.symbol}")
-            lot_minutes[row.symbol] += matched * elapsed
-            closed_lots[row.symbol] += matched
+            lot_minutes[key] += matched * elapsed
+            closed_lots[key] += matched
             quantity -= matched
             if held - matched > 1e-9:
                 queue.appendleft((started, held - matched))
     open_lots = defaultdict(float)
     for (symbol, _), queue in positions.items():
         open_lots[symbol] += sum(quantity for _, quantity in queue)
-    return pd.DataFrame(
-        [(symbol, lot_minutes[symbol], closed_lots[symbol], open_lots[symbol])
-         for symbol in ordered.symbol.unique()],
-        columns=columns,
-    ).set_index("symbol")
+    closing = pd.DataFrame(
+        [(symbol, year, lot_minutes[symbol, year], lots) for (symbol, year), lots in closed_lots.items()],
+        columns=closing.columns,
+    )
+    return closing, open_lots
 
 
 def futures_holding_duration(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> dict:
     """Pair fills FIFO by contract and side, counting the contract's trading minutes."""
-    totals = _futures_holding_by_contract(fills, minute_bars).sum()
+    closing, open_lots = _match_futures_holding(fills, minute_bars)
+    totals = closing[["lot_minutes", "closed_lots"]].sum()
     return {
         "avg_holding_minutes": totals.lot_minutes / totals.closed_lots if totals.closed_lots else np.nan,
         "closed_lots": totals.closed_lots,
-        "open_lots": totals.open_lots,
+        "open_lots": sum(open_lots.values()),
     }
 
 
-def futures_holding_totals_by_product(fills: pd.DataFrame, minute_bars: pd.DataFrame) -> pd.DataFrame:
+def futures_holding_totals_by_product(
+    fills: pd.DataFrame, minute_bars: pd.DataFrame, *, by_year: bool = False,
+) -> pd.DataFrame:
     """Return lot-minutes and quantities for combining independent runs by product."""
-    contracts = _futures_holding_by_contract(fills, minute_bars)
-    products = futures_products(contracts.index)
-    return contracts.groupby(products).sum().rename_axis("product")
+    closing, open_lots = _match_futures_holding(fills, minute_bars, by_year=by_year)
+    closing["product"] = futures_products(pd.Index(closing.symbol))
+    quantities = ["lot_minutes", "closed_lots"]
+    if by_year:
+        return closing.groupby(["year", "product"])[quantities].sum()
+    totals = closing.groupby("product")[quantities].sum()
+    if open_lots:
+        holdings = pd.Series(open_lots, dtype=float)
+        holdings = holdings.groupby(futures_products(holdings.index)).sum().rename("open_lots").rename_axis("product")
+        return totals.join(holdings, how="outer").fillna(0.0)
+    return totals.assign(open_lots=0.0)
 
 
 def futures_products(symbols: pd.Index) -> pd.Index:

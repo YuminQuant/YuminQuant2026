@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTA 策略报告</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, "Microsoft YaHei UI", system-ui, sans-serif;
+      color: #18272f;
+      background: #f1f5f5;
+      --ink: #18272f;
+      --muted: #4d626c;
+      --line: #dce6e7;
+      --accent: #08756f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { padding: 36px 0 84px; background: #16323a; color: #fff; }
+    .wrap { width: min(1500px, calc(100% - 48px)); margin-inline: auto; }
+    h1 { margin: 0 0 10px; font-size: clamp(28px, 4vw, 42px); }
+    h2 { margin: 0 0 14px; font-size: 20px; }
+    p { margin: 0; }
+    #signal { color: #bce1dc; font-size: 16px; }
+    main { position: relative; margin-top: -48px; padding-bottom: 32px; }
+    section { margin-bottom: 24px; }
+    .panel { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+    .filters { display: grid; grid-template-columns: repeat(2, minmax(0, 280px)); gap: 15px 22px; }
+    label { font-size: 14px; font-weight: 650; }
+    select {
+      display: block; width: 100%; margin-top: 7px; min-height: 42px; padding: 4px 10px;
+      font: inherit; background: #f8fbfb; color: var(--ink);
+      border: 1px solid #adc3c5; border-radius: 6px;
+    }
+    select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    #selection { grid-column: 1 / -1; }
+    .note { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .scroll { margin-top: 12px; overflow: auto; }
+    #products { max-height: 390px; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+    th, td { padding: 9px 12px; white-space: nowrap; text-align: right; border-bottom: 1px solid var(--line); }
+    thead th { position: sticky; top: 0; z-index: 1; background: #ecf4f3; color: #233f49; font-weight: 650; }
+    th:first-child { position: sticky; left: 0; text-align: left; }
+    thead th:first-child { z-index: 2; }
+    tbody th { background: #fff; }
+    tbody tr:nth-child(even) > * { background: #f6f9fa; }
+    tbody tr:hover > * { background: #edf5f4; }
+    .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 295px), 1fr)); gap: 14px; margin-top: 12px; }
+    figure { min-width: 0; margin: 0; padding: 12px; background: #fff; border: 1px solid var(--line); border-radius: 9px; }
+    figcaption { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+    figcaption strong { font-size: 14px; }
+    figcaption output { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+    canvas { display: block; width: 100%; height: 150px; margin-top: 8px; }
+    .charts[data-single="true"] canvas { height: clamp(240px, 38vw, 370px); }
+    @media (max-width: 600px) {
+      .wrap { width: calc(100% - 24px); }
+      .panel { padding: 14px; }
+      .filters { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header><div class="wrap">
+    <h1>CTA 策略报告</h1>
+    <p id="signal"></p>
+  </div></header>
+  <main class="wrap">
+    <section class="panel filters" aria-label="报告筛选">
+      <label>品种范围 <select id="universe"></select></label>
+      <label>日期范围 <select id="period"></select></label>
+      <p id="selection" class="note" aria-live="polite"></p>
+    </section>
+    <section class="panel" aria-labelledby="portfolio-title">
+      <h2 id="portfolio-title">组合绩效</h2>
+      <p class="note">账户绩效按所选日期展示。金额为人民币，年化按 240 个交易日。</p>
+      <div id="portfolio" class="scroll"></div>
+    </section>
+    <section class="panel" aria-labelledby="products-title">
+      <h2 id="products-title">品种绩效</h2>
+      <p class="note">收益率以初始账户资金加品种累计净盈亏构成的参考权益计算。持仓时间按已平仓手数加权，只计实际交易分钟。</p>
+      <div id="products" class="scroll"></div>
+    </section>
+    <section aria-labelledby="pnl-title">
+      <h2 id="pnl-title">品种累计净 PnL</h2>
+      <p class="note">所选区间从零起算，单位为人民币。各品种使用独立纵轴。</p>
+      <div id="charts" class="charts"></div>
+    </section>
+  </main>
+  <script type="application/json" id="cta-data">__CTA_DATA__</script>
+  <script>
+    "use strict";
+    const data = JSON.parse(document.getElementById("cta-data").textContent);
+    const universe = document.getElementById("universe");
+    const period = document.getElementById("period");
+    const charts = document.getElementById("charts");
+    const products = Object.keys(data.products);
+    const dates = data.dates.map(date => Date.parse(date));
+    const yearRanges = new Map();
+    data.dates.forEach((date, index) => {
+      const year = date.slice(0, 4);
+      if (!yearRanges.has(year)) yearRanges.set(year, [index, index + 1]);
+      yearRanges.get(year)[1] = index + 1;
+    });
+    const percentColumns = new Set([
+      "total_return", "annual_return", "annual_volatility", "max_drawdown",
+      "annual_pnl_contribution", "win_rate", "avg_daily_turnover"
+    ]);
+    const countColumns = new Set(["sessions", "fill_count"]);
+    const amount = new Intl.NumberFormat("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const integer = new Intl.NumberFormat("en-US");
+    const compact = new Intl.NumberFormat("en-US", {notation: "compact", maximumFractionDigits: 1});
+    const observer = new ResizeObserver(entries => entries.forEach(({target}) => target.redraw()));
+
+    function option(parent, label, value) {
+      parent.append(new Option(label, value));
+    }
+
+    function addOptions() {
+      document.getElementById("signal").textContent = data.signal;
+      document.title = data.signal + " · CTA 策略报告";
+      option(universe, "全品种", "All");
+      const sectors = new Map(products.map(code => {
+        const item = data.products[code];
+        return [item.sector, item.sector_name];
+      }));
+      const sectorGroup = document.createElement("optgroup");
+      sectorGroup.label = "板块";
+      for (const [abbr, name] of sectors) option(sectorGroup, abbr + " · " + name, "sector:" + abbr);
+      const productGroup = document.createElement("optgroup");
+      productGroup.label = "品种";
+      for (const code of products) option(productGroup, productName(code), "product:" + code);
+      universe.append(sectorGroup, productGroup);
+      option(period, "全日期范围", "All");
+      for (const year of yearRanges.keys()) option(period, year + " 年", year);
+    }
+
+    function productName(code) {
+      const name = data.products[code].name;
+      return name ? code + " · " + name : code;
+    }
+
+    function formatCell(value, column) {
+      if (value === null || value === undefined) return "—";
+      if (typeof value !== "number" || column === "period") return String(value);
+      if (countColumns.has(column)) return integer.format(value);
+      if (percentColumns.has(column)) return amount.format(value * 100) + "%";
+      return amount.format(value);
+    }
+
+    function renderTable(id, columns, rows) {
+      const panel = document.getElementById(id);
+      if (!rows.length) {
+        panel.textContent = "所选范围没有品种日结。";
+        return;
+      }
+      const table = document.createElement("table");
+      const head = table.createTHead().insertRow();
+      for (const column of columns) {
+        const cell = document.createElement("th");
+        cell.scope = "col";
+        cell.textContent = column;
+        head.append(cell);
+      }
+      const body = table.createTBody();
+      for (const values of rows) {
+        const row = body.insertRow();
+        for (const [index, column] of columns.entries()) {
+          const cell = document.createElement(index === 0 ? "th" : "td");
+          if (index === 0) cell.scope = "row";
+          cell.textContent = formatCell(values[column], column);
+          row.append(cell);
+        }
+      }
+      panel.replaceChildren(table);
+    }
+
+    function drawChart(canvas, times, values) {
+      const {width, height} = canvas.getBoundingClientRect();
+      if (!width || !height) return;
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      const ctx = canvas.getContext("2d");
+      ctx.scale(ratio, ratio);
+      const left = 50, right = width - 13, top = 8, bottom = height - 24;
+      const min = Math.min(0, ...values);
+      const max = Math.max(0, ...values);
+      const padding = Math.max(1, (max - min) * 0.05);
+      const low = min - padding, high = max + padding;
+      const x = i => left + (times[i] - times[0]) / (times.at(-1) - times[0]) * (right - left);
+      const y = value => bottom - (value - low) / (high - low) * (bottom - top);
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.fillStyle = "#4d626c";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      for (const value of [low, (low + high) / 2, high]) {
+        ctx.fillText(compact.format(value), left - 6, y(value));
+      }
+      ctx.strokeStyle = "#dce6e7";
+      ctx.beginPath();
+      ctx.moveTo(left, y(0));
+      ctx.lineTo(right, y(0));
+      ctx.stroke();
+      ctx.strokeStyle = "#08756f";
+      ctx.lineWidth = 1.7;
+      ctx.beginPath();
+      values.forEach((value, i) => i ? ctx.lineTo(x(i), y(value)) : ctx.moveTo(x(i), y(value)));
+      ctx.stroke();
+      const longRange = new Date(times[1]).getUTCFullYear() !== new Date(times.at(-1)).getUTCFullYear();
+      const labels = Math.min(times.length, Math.max(2, Math.min(5, Math.floor((right - left) / 68))));
+      ctx.textBaseline = "top";
+      for (let tick = 0; tick < labels; tick++) {
+        const time = times[0] + (times.at(-1) - times[0]) * tick / (labels - 1);
+        const label = new Date(time).toISOString().slice(longRange ? 0 : 5, longRange ? 7 : 10);
+        ctx.textAlign = tick === 0 ? "left" : tick === labels - 1 ? "right" : "center";
+        ctx.fillText(label, left + (right - left) * tick / (labels - 1), bottom + 6);
+      }
+      return {left, right};
+    }
+
+    function addChart(code, start, end) {
+      const values = data.pnl[code];
+      const base = start ? values[start - 1] : 0;
+      const path = [0, ...values.slice(start, end).map(value => value - base)];
+      const times = [dates[start] - 86400000, ...dates.slice(start, end)];
+      const figure = document.createElement("figure");
+      figure.dataset.product = code;
+      const caption = document.createElement("figcaption");
+      const name = document.createElement("strong");
+      name.textContent = productName(code);
+      const readout = document.createElement("output");
+      const total = amount.format(path.at(-1)) + " 元";
+      readout.textContent = total;
+      caption.append(name, readout);
+      const canvas = document.createElement("canvas");
+      canvas.setAttribute("role", "img");
+      canvas.setAttribute("aria-label", code + " 累计净盈亏 " + total);
+      let area;
+      canvas.redraw = () => { area = drawChart(canvas, times, path); };
+      canvas.addEventListener("pointermove", event => {
+        if (!area) return;
+        const fraction = Math.max(0, Math.min(1, (event.offsetX - area.left) / (area.right - area.left)));
+        const target = times[0] + fraction * (times.at(-1) - times[0]);
+        const next = times.findIndex(time => time >= target);
+        const index = next > 0 && target - times[next - 1] < times[next] - target ? next - 1 : Math.max(0, next);
+        readout.textContent = new Date(times[index]).toISOString().slice(0, 10) + "  " + amount.format(path[index]) + " 元";
+      });
+      canvas.addEventListener("pointerleave", () => { readout.textContent = total; });
+      figure.append(caption, canvas);
+      charts.append(figure);
+      observer.observe(canvas);
+    }
+
+    function render() {
+      const selected = universe.value;
+      const view = period.value;
+      const [start, end] = yearRanges.get(view) || [0, dates.length];
+      const rows = data.product_tables[view].filter(({product}) =>
+        selected === "All" || selected === "sector:" + data.products[product].sector || selected === "product:" + product
+      );
+      const portfolio = data.portfolio.filter(row => view === "All" || String(row.period) === view);
+      document.getElementById("selection").textContent =
+        data.dates[start] + " 至 " + data.dates[end - 1] + " · " + rows.length + " 个品种";
+      renderTable("portfolio", data.portfolio_columns, portfolio);
+      renderTable("products", data.product_columns, rows);
+      observer.disconnect();
+      charts.replaceChildren();
+      charts.dataset.single = String(rows.length === 1);
+      for (const {product} of rows) addChart(product, start, end);
+      if (!rows.length) charts.textContent = "所选范围没有品种 PnL。";
+    }
+
+    addOptions();
+    universe.addEventListener("change", render);
+    period.addEventListener("change", render);
+    render();
+  </script>
+</body>
+</html>

@@ -1,7 +1,11 @@
 """Performance and product attribution for futures strategy day-end outputs."""
 
 from pathlib import Path
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 import numpy as np
 import pandas as pd
@@ -121,7 +125,8 @@ def _load_holding_totals(path, market_root, dates, products):
     trade_path = path / "trades.parquet"
     expected = products.set_index(["trade_date", "product"]).trade_count
     if not trade_path.is_file():
-        return None, set(expected[expected.gt(0)].index.get_level_values("product"))
+        missing = expected[expected.gt(0)].index
+        return None, {(date // 10000, product) for date, product in missing}
     fills = pd.read_parquet(trade_path, columns=["trade_date", "fill_id", "symbol", "side", "quantity", "fill_time"])
     traded_products = futures_products(pd.Index(fills.symbol))
     counts = fills.groupby([fills.trade_date, traded_products]).size().rename_axis(["trade_date", "product"])
@@ -130,25 +135,20 @@ def _load_holding_totals(path, market_root, dates, products):
     if fills.empty:
         return None, set()
     market = _load_traded_market_minutes(market_root, dates, fills)
-    return futures_holding_totals_by_product(fills, market), set()
+    return futures_holding_totals_by_product(fills, market, by_year=True), set()
 
 
-def _average_product_holding(runs, output, market_root, product_index):
+def _collect_holding_totals(runs, output, market_root):
     totals, missing = [], set()
     for path, (account, products) in zip(runs, output):
         by_product, unavailable = _load_holding_totals(path, market_root, account.index, products)
         if by_product is not None:
-            totals.append(by_product[["lot_minutes", "closed_lots"]])
+            totals.append(by_product)
         missing.update(unavailable)
-    if not totals:
-        return pd.Series(np.nan, index=product_index)
-    combined = pd.concat(totals).groupby(level="product").sum().reindex(product_index)
-    duration = combined.lot_minutes / combined.closed_lots.where(combined.closed_lots.gt(0))
-    return duration.mask(duration.index.isin(missing))
+    return pd.concat(totals) if totals else None, missing
 
 
-def load_cta_report(signal, *, root="data/strategy/future", year=None, market_root=None, periods_per_year=240):
-    """Read one strategy, optionally selecting an independent annual run."""
+def _load_report_data(signal, root, market_root, year=None):
     root = Path(root)
     folder = root / signal
     if market_root is None:
@@ -167,21 +167,58 @@ def load_cta_report(signal, *, root="data/strategy/future", year=None, market_ro
     if year is not None and not (daily.index // 10000 == year).all():
         raise ValueError(f"Selected run must be wholly within {year}: {folder}")
     products = pd.concat([b for _, b in output], ignore_index=True).sort_values(["trade_date", "product"])
-    metrics = {"All": _portfolio_metrics(daily, periods_per_year)} if year is None else {}
+    holding, missing = _collect_holding_totals(runs, output, Path(market_root))
+    return daily, products, holding, missing
+
+
+def _portfolio_table(daily, periods_per_year, *, include_total):
+    metrics = {"All": _portfolio_metrics(daily, periods_per_year)} if include_total else {}
     metrics.update({
         int(year): _portfolio_metrics(group, periods_per_year)
         for year, group in daily.groupby(daily.index // 10000)
     })
-    portfolio_table = pd.DataFrame.from_dict(metrics, orient="index").rename_axis("period")
-    product_table = pd.DataFrame.from_dict({
+    return pd.DataFrame.from_dict(metrics, orient="index").rename_axis("period")
+
+
+def _product_table(products, holding, missing, periods_per_year, *, year=None):
+    table = pd.DataFrame.from_dict({
         product: _product_metrics(group, periods_per_year)
         for product, group in products.groupby("product", sort=True)
     }, orient="index").rename_axis("product")
-    product_table["avg_holding_minutes"] = _average_product_holding(
-        runs, output, Path(market_root), product_table.index,
-    )
+    if holding is None:
+        table["avg_holding_minutes"] = np.nan
+        return table
+    if year is not None:
+        holding = holding.loc[holding.index.get_level_values("year") == year]
+    combined = holding.groupby(level="product").sum().reindex(table.index)
+    unavailable = {product for close_year, product in missing if year is None or close_year == year}
+    duration = combined.lot_minutes / combined.closed_lots.where(combined.closed_lots.gt(0))
+    table["avg_holding_minutes"] = duration.mask(duration.index.isin(unavailable))
+    return table
+
+
+def _pnl_curves(daily, products):
     pnl = products.pivot(index="trade_date", columns="product", values="net_pnl")
-    return portfolio_table, product_table, pnl.reindex(daily.index).fillna(0.0).cumsum()
+    return pnl.reindex(daily.index).fillna(0.0).cumsum()
+
+
+def load_cta_report(signal, *, root="data/strategy/future", year=None, market_root=None, periods_per_year=240):
+    """Read one strategy, optionally selecting an independent annual run."""
+    daily, products, holding, missing = _load_report_data(signal, root, market_root, year)
+    return (
+        _portfolio_table(daily, periods_per_year, include_total=year is None),
+        _product_table(products, holding, missing, periods_per_year, year=year),
+        _pnl_curves(daily, products),
+    )
+
+
+def load_cta_report_views(signal, *, root="data/strategy/future", market_root=None, periods_per_year=240):
+    """Build all-time and annual report tables with one read of the fills and market data."""
+    daily, products, holding, missing = _load_report_data(signal, root, market_root)
+    tables = {"All": _product_table(products, holding, missing, periods_per_year)}
+    for year, group in products.groupby(products.trade_date // 10000):
+        tables[int(year)] = _product_table(group, holding, missing, periods_per_year, year=year)
+    return _portfolio_table(daily, periods_per_year, include_total=True), tables, _pnl_curves(daily, products)
 
 
 def plot_product_pnl(curves, *, columns=5, rows=4):

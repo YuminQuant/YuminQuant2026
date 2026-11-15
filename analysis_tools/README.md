@@ -117,6 +117,18 @@ fig = plot_strategy_summary(report, save=True)
 
 Match `initial_cash` to the strategy configuration. Calculate returns and reconciliation on the full account history before slicing the display interval. Use `plot_strategy_comparison` for reports with matching observation dates.
 
+### CTA HTML 报告
+
+从仓库根目录运行以下命令，为指定信号生成独立的本地 HTML 文件。
+
+```powershell
+python analysis_tools/scripts/report_cta.py --signal mdl_100000
+```
+
+默认输出到 `data/reports/cta/mdl_100000.html`，可用 `--output` 指定路径。报告读取 `data/strategy/future/<signal>/` 下的单次或年度回测结果，也支持 `--root` 和 `--market-root` 指定本地回测及期货分钟行情目录。用浏览器打开文件即可离线使用。
+
+两个筛选器可以组合使用。品种范围支持全品种、按 [期货板块](../factor_engine/docs/FUTURE_SECTORS.md) 筛选或选择单个品种。日期范围支持全期和单个年度。品种绩效及累计净 PnL 同时响应两个筛选器，累计净 PnL 从所选区间起点归零。组合表显示真实账户在所选日期范围的绩效。年度持仓时间按平仓所属交易年度归集，已平仓手数为权重。
+
 ## 输入与输出 / Inputs and outputs
 
 默认因子输入位于 `data/backtest/stock/daily/{factor_id}/`，包括 `returns.parquet`、`ic.parquet`、`factor_stats.parquet` 及可选持仓、行业、Barra、指数内收益表。策略输入为对应目录的 `holdings.parquet`。

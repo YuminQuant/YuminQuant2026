@@ -10,6 +10,8 @@ use crate::core::{
 use crate::data::{parquet_io::read_parquet, DataPool, Table};
 use crate::error::{err, Result};
 
+type MainMapping = BTreeMap<i32, BTreeMap<String, String>>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FutureMainSource {
     OpenInterest,
@@ -51,7 +53,7 @@ impl Default for FutureMinuteOptions {
 #[derive(Clone, Debug)]
 pub(crate) struct FutureMinuteInput {
     options: FutureMinuteOptions,
-    main: BTreeMap<i32, BTreeMap<String, String>>,
+    main: MainMapping,
     multipliers: BTreeMap<String, f64>,
 }
 
@@ -74,27 +76,15 @@ impl FutureMinuteInput {
                 } else {
                     crate::derive::future_main_oi::DIRECTORY
                 };
-                let columns = ["trade_date", "ts_code", "mapping_ts_code"].map(str::to_string);
+                let directory = root.join(directory);
+                let columns = mapping_columns();
                 let wanted = dates.iter().copied().collect::<BTreeSet<_>>();
-                let years = dates
-                    .iter()
-                    .map(|date| date / 10_000)
-                    .collect::<BTreeSet<_>>();
-                for year in years {
-                    let path = root.join(directory).join(format!("{year}.parquet"));
-                    if path.storage_exists() {
-                        main.extend(read_mapping(
-                            &read_parquet(&path, Some(&columns))?,
-                            &wanted,
-                        )?);
-                    }
-                }
+                main = load_annual_mappings(&directory, &wanted, &columns)?;
                 for &date in dates {
                     if main.contains_key(&date) {
                         continue;
                     }
-                    let path = root
-                        .join(directory)
+                    let path = directory
                         .join((date / 10_000).to_string())
                         .join(format!("{date}.parquet"));
                     if path.storage_exists() {
@@ -108,6 +98,18 @@ impl FutureMinuteInput {
             }
         }
         Ok(Self { options, main, multipliers: BTreeMap::new() })
+    }
+
+    pub(crate) fn load_pool(root: &Path, pool_id: &str, dates: &[i32]) -> Result<Self> {
+        let directory = root
+            .join(crate::derive::future_main_pool::DIRECTORY)
+            .join(pool_id);
+        let wanted = dates.iter().copied().collect();
+        Ok(Self {
+            options: FutureMinuteOptions::default(),
+            main: load_annual_mappings(&directory, &wanted, &mapping_columns())?,
+            multipliers: BTreeMap::new(),
+        })
     }
 
     pub(crate) fn load_multipliers(&mut self, root: &Path) -> Result<()> {
@@ -178,10 +180,27 @@ pub(crate) fn product(code: &str) -> Option<String> {
     Some(format!("{}.{exchange}", &symbol[..start]))
 }
 
-fn read_mapping(
-    table: &Table,
-    wanted: &BTreeSet<i32>,
-) -> Result<BTreeMap<i32, BTreeMap<String, String>>> {
+fn mapping_columns() -> [String; 3] {
+    ["trade_date", "ts_code", "mapping_ts_code"].map(str::to_string)
+}
+
+fn load_annual_mappings(
+    directory: &Path,
+    dates: &BTreeSet<i32>,
+    columns: &[String],
+) -> Result<MainMapping> {
+    let mut mapping = MainMapping::new();
+    let years = dates.iter().map(|date| date / 10_000).collect::<BTreeSet<_>>();
+    for year in years {
+        let path = directory.join(format!("{year}.parquet"));
+        if path.storage_exists() {
+            mapping.extend(read_mapping(&read_parquet(&path, Some(columns))?, dates)?);
+        }
+    }
+    Ok(mapping)
+}
+
+fn read_mapping(table: &Table, wanted: &BTreeSet<i32>) -> Result<MainMapping> {
     let dates = table.required_i32_date_cast("trade_date")?;
     let keys = table.required_utf8("ts_code")?;
     let codes = table.required_utf8("mapping_ts_code")?;

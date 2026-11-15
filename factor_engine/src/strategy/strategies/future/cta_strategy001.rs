@@ -16,9 +16,11 @@ use crate::strategy::strategy::Strategy;
 
 type Signals = BTreeMap<String, BTreeMap<String, f64>>;
 type Thresholds = BTreeMap<String, (f64, f64)>;
+type DailyMapping = BTreeMap<String, String>;
 
 pub struct ModelCta {
     mappings: Option<FutureMinuteInput>,
+    entry_pool: Option<FutureMinuteInput>,
     dates: Vec<i32>,
     history: BTreeMap<i32, Thresholds>,
     close_minutes: BTreeMap<String, u16>,
@@ -42,6 +44,7 @@ impl ModelCta {
         }
         Ok(Self {
             mappings: None,
+            entry_pool: None,
             dates: Vec::new(),
             history: BTreeMap::new(),
             close_minutes: BTreeMap::new(),
@@ -52,10 +55,14 @@ impl ModelCta {
         })
     }
 
-    fn selected(&self, config: &StrategyRunConfig, date: i32) -> BTreeSet<String> {
+    fn main_mapping(&self, date: i32) -> Option<&DailyMapping> {
         self.mappings
             .as_ref()
-            .and_then(|map| map.selection(date))
+            .and_then(|mapping| mapping.selection(date))
+    }
+
+    fn selected(config: &StrategyRunConfig, mapping: Option<&DailyMapping>) -> BTreeSet<String> {
+        mapping
             .into_iter()
             .flat_map(|map| map.values())
             .filter(|symbol| !future_product_from_symbol(symbol).ends_with("TAS"))
@@ -114,6 +121,12 @@ impl Strategy for ModelCta {
             &config.data_root,
             &self.dates,
         )?);
+        self.entry_pool = config
+            .future
+            .pool_id
+            .as_deref()
+            .map(|pool_id| FutureMinuteInput::load_pool(&config.data_root, pool_id, dates))
+            .transpose()?;
         Ok(())
     }
 
@@ -125,14 +138,15 @@ impl Strategy for ModelCta {
     ) -> Result<Option<BTreeSet<String>>> {
         self.entries.clear();
         self.close_minutes.clear();
-        let selected = self.selected(config, date);
-        if self
-            .mappings
+        let opening_mapping = self
+            .entry_pool
             .as_ref()
-            .and_then(|map| map.selection(date))
-            .is_none()
-        {
-            eprintln!("[strategy warning] {date}: missing CTA main-contract mapping");
+            .or(self.mappings.as_ref())
+            .and_then(|mapping| mapping.selection(date));
+        let selected = Self::selected(config, opening_mapping);
+        if opening_mapping.is_none() {
+            let source = config.future.pool_id.as_deref().unwrap_or("fut_mapping");
+            eprintln!("[strategy warning] {date}: missing CTA entry mapping ({source})");
         }
         for symbol in &selected {
             let meta = contracts
@@ -159,12 +173,15 @@ impl Strategy for ModelCta {
         selected: Option<&BTreeSet<String>>,
     ) -> Vec<SessionFile> {
         let mut files = Vec::new();
-        if let Some(selected) = selected.filter(|symbols| !symbols.is_empty()) {
-            files.push(signal_file(config, date, selected.clone()));
+        // The entry pool controls orders. Threshold history stays on the ordinary main sequence.
+        let mut todays_signals = Self::selected(config, self.main_mapping(date));
+        todays_signals.extend(selected.into_iter().flatten().cloned());
+        if !todays_signals.is_empty() {
+            files.push(signal_file(config, date, todays_signals));
         }
         for &day in self.prior_dates(date) {
             if !self.history.contains_key(&day) {
-                let selected = self.selected(config, day);
+                let selected = Self::selected(config, self.main_mapping(day));
                 if !selected.is_empty() {
                     files.push(signal_file(config, day, selected));
                 }
@@ -177,17 +194,21 @@ impl Strategy for ModelCta {
         for day in self.prior_dates(date).to_vec() {
             if !self.history.contains_key(&day) {
                 let samples = parse_signals(day, inputs.remove(&signal_name(day)).flatten())?;
-                self.history.insert(day, daily_quantiles(&samples));
+                let quantiles = daily_quantiles(self.main_mapping(day), &samples);
+                self.history.insert(day, quantiles);
             }
         }
         self.refresh_thresholds(date);
         self.signals = parse_signals(date, inputs.remove(&signal_name(date)).flatten())?;
-        if !self.close_minutes.is_empty() && self.signals.is_empty() {
+        if !self.close_minutes.is_empty()
+            && !self.close_minutes.keys().any(|symbol| self.signals.contains_key(symbol))
+        {
             eprintln!(
                 "[strategy warning] {date}: no usable mdl_100000 signals for selected contracts"
             );
         }
-        self.history.insert(date, daily_quantiles(&self.signals));
+        let quantiles = daily_quantiles(self.main_mapping(date), &self.signals);
+        self.history.insert(date, quantiles);
         Ok(())
     }
 
@@ -369,15 +390,15 @@ fn parse_signals(date: i32, table: Option<Table>) -> Result<Signals> {
     Ok(signals)
 }
 
-fn daily_quantiles(signals: &Signals) -> Thresholds {
-    signals
-        .iter()
-        .filter_map(|(symbol, scores)| {
-            let key = product(symbol)?;
-            let mut values: Vec<_> = scores.values().copied().collect();
+fn daily_quantiles(mapping: Option<&DailyMapping>, signals: &Signals) -> Thresholds {
+    mapping
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, symbol)| {
+            let mut values: Vec<_> = signals.get(symbol)?.values().copied().collect();
             let low = quantile_linear(&mut values, 0.01)?;
             let high = quantile_linear(&mut values, 0.99)?;
-            Some((key, (low, high)))
+            Some((key.clone(), (low, high)))
         })
         .collect()
 }

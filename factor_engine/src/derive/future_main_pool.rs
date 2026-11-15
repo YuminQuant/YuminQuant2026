@@ -10,7 +10,7 @@ use crate::derive::storage::write_derived_parquet;
 use crate::error::{err, Result};
 use crate::factor::future::minute_input::{product, FutureMinuteInput, FutureMinuteOptions};
 
-const DIRECTORY: &str = "future_data/basic/mapping_pool";
+pub(crate) const DIRECTORY: &str = "future_data/basic/mapping_pool";
 pub const POOL_ID: &str = "liquidity_001";
 const POOL_README: &str = include_str!("../../docs/FUTURE_MAPPING_POOL_LIQUIDITY_001.md");
 const LOOKBACK_DAYS: usize = 240;

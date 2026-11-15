@@ -90,6 +90,7 @@ pub struct FutureConfig {
     pub mark_price: FutureMarkPrice,
     pub margin_by_product: BTreeMap<String, f64>,
     pub daily_costs: bool,
+    pub pool_id: Option<String>,
     pub product_pnl: bool,
     pub spread_ticks: f64,
     pub slippage_ticks: f64,
@@ -105,6 +106,7 @@ impl Default for FutureConfig {
             mark_price: FutureMarkPrice::Close,
             margin_by_product: BTreeMap::new(),
             daily_costs: false,
+            pool_id: None,
             product_pnl: false,
             spread_ticks: 0.0,
             slippage_ticks: 0.0,
@@ -214,6 +216,17 @@ impl StrategyRunConfig {
             .unwrap_or_else(|| data_root.join("models"));
         let mut future = FutureConfig::default();
         if asset_class == StrategyAssetClass::Future {
+            future.pool_id = doc.string("future", "pool_id");
+            if future.pool_id.as_ref().is_some_and(|pool| {
+                pool.is_empty()
+                    || !pool.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+                    })
+            }) {
+                return Err(err(
+                    "[future].pool_id must contain only letters, digits, underscores or hyphens",
+                ));
+            }
             future.spread_ticks = doc.nonnegative_f64("execution", "spread_ticks")?;
             future.slippage_ticks = doc.nonnegative_f64("execution", "slippage_ticks")?;
             if !(future.spread_ticks + future.slippage_ticks).is_finite() {

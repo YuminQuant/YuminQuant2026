@@ -20,6 +20,7 @@ respect_price_limits = true
 [future]
 daily_costs = true
 mark_price = "close"
+pool_id = "liquidity_001"
 
 # Product-specific overrides in lots, e.g. IF = 1
 [future.min_lots_by_product]

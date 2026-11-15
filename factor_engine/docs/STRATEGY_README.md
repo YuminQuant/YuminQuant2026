@@ -120,6 +120,12 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --c
 cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\future\ag_sma_20.toml --detail true
 ```
 
+## CTA 开仓池 / CTA entry pool
+
+`mdl_100000.toml` 在 `[future]` 下设置 `pool_id = "liquidity_001"`。CTA 从 `future_data/basic/mapping_pool/<pool_id>/YYYY.parquet` 读取当天允许开仓的实际主力合约，并与 `[market]` 品种或合约筛选同时生效。当天缺池映射时不开新仓。已有持仓仍加载其合约的行情和结算参数，可以按原规则平仓，包括换年出池或主力换月后的隔夜强平。P99/P1 继续使用过去五个交易日的普通主力信号。省略 `pool_id` 时，开仓使用原主力映射。
+
+Set `pool_id = "liquidity_001"` under `[future]` in `mdl_100000.toml`. New entries require the exact contract in that day's pool and must pass any `[market]` filter. A missing pool session disables entries. Held contracts remain eligible for standard exits, including overnight liquidation after a pool change or contract roll. P99/P1 still use the ordinary main-contract signals from the previous five sessions. Omitting `pool_id` selects the ordinary main-contract mapping for entries.
+
 ## holdings.parquet 字段 / holdings.parquet Columns
 
 核心字段 / Core columns:

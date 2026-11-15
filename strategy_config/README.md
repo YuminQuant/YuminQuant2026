@@ -50,7 +50,7 @@ With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar o
 
 ## 输出与分析 / Outputs and analysis
 
-分析端使用 `yq_analysis.cta_report.load_cta_report` 读取单次或分年度回测产物，生成组合绩效、品种绩效和累计净 PnL 序列。品种的 `avg_holding_minutes` 使用逐笔成交和合约分钟行情，按合约和方向 FIFO 配对。计算时累计每段已平仓手数乘以开仓至平仓的实际交易分钟，再除以总已平仓手数。跨合约和年度直接汇总手数与持仓分钟，盘间及隔夜休市时段从计时中扣除。
+分析端使用 `yq_analysis.cta_report.load_cta_report` 读取单次或分年度回测产物，生成组合绩效、品种绩效和累计净 PnL 序列。品种的 `avg_holding_minutes` 使用逐笔成交和合约分钟行情，按合约和方向 FIFO 配对。先按平仓交易日汇总同品种各合约，以当日已平仓手数加权计算当日均值，再对所选区间内有平仓的交易日等权平均。盘间及隔夜休市时段从持仓计时中扣除。
 
 期货策略在 `[output]` 设置 `product_pnl = true` 后，同目录写出 `product_pnl.parquet`，按交易日和品种各一行。账户日结仍在 `holdings.parquet`。品种毛盈亏为当日已实现盈亏加未实现盈亏变动，扣除手续费与滑点得到净盈亏。另输出累计净盈亏、成交笔数、成交手数、双边成交额和成交额除以日初账户权益的换手率。日结直接使用成交和估值，不依赖分钟明细输出。
 

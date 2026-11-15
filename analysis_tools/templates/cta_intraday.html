@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CTA 日内复盘</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, "Microsoft YaHei UI", system-ui, sans-serif;
+      color: #192b33;
+      background: #f2f6f6;
+      --muted: #51666c;
+      --line: #dce7e8;
+      --accent: #146d65;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    .wrap { width: min(1360px, calc(100% - 40px)); margin-inline: auto; }
+    header { padding: 36px 0 78px; background: #15343b; color: #fff; }
+    h1 { margin: 0 0 8px; font-size: clamp(30px, 4vw, 46px); }
+    header p { margin: 0; color: #c9e4df; font-size: 14px; }
+    main { position: relative; margin-top: -46px; padding-bottom: 32px; }
+    .panel, .chart-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; }
+    .picker { padding: 14px 18px; }
+    .date-picker { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    label { font-size: 14px; font-weight: 650; }
+    button, select { font: inherit; cursor: pointer; }
+    button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .arrow, select {
+      min-height: 38px; padding: 8px 11px; border-radius: 6px;
+      border: 1px solid var(--line); color: #29434a; background: #f7faf9; white-space: nowrap;
+    }
+    select { min-width: 145px; }
+    .arrow:disabled { opacity: .36; cursor: default; }
+    .detail { margin-top: 18px; }
+    .summary { padding: 18px; }
+    .summary > .note { margin-top: 8px; }
+    h2 { margin: 0 0 11px; font-size: 20px; }
+    h3 { margin: 0; font-size: 16px; }
+    p { margin: 0; }
+    .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); }
+    dl { margin: 0; padding: 8px 13px; border-left: 1px solid var(--line); }
+    dl:first-child { border-left: 0; padding-left: 0; }
+    dt, .note { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    dd { margin: 3px 0 0; font-size: clamp(18px, 2.4vw, 26px); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .chart-card { margin-top: 15px; padding: 15px 18px 7px; }
+    .chart-card .note { margin-top: 5px; }
+    .chart { width: 100%; height: 790px; }
+    .table-panel { margin-top: 15px; padding: 18px; }
+    .scroll { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+    th, td { text-align: right; padding: 9px 10px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+    thead th { color: #29434a; background: #eaf4f3; }
+    th:first-child, td:first-child, td:last-child { text-align: left; }
+    tbody tr:nth-child(even) { background: #f7faf9; }
+    @media(max-width: 660px) {
+      .wrap { width: calc(100% - 20px); }
+      .picker, .chart-card, .table-panel, .summary { padding-inline: 11px; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      dl { border: 0; padding-inline: 0; }
+      .chart { height: 700px; }
+    }
+  </style>
+  <script>__PLOTLY_JS__</script>
+</head>
+<body>
+  <header><div class="wrap">
+    <h1 id="title"></h1>
+    <p id="subtitle"></p>
+  </div></header>
+  <main class="wrap">
+    <section class="panel picker" aria-label="选择交易日">
+      <div class="date-picker">
+        <label for="trade-date">交易日</label>
+        <button class="arrow" id="previous" type="button" aria-label="上一个交易日">‹</button>
+        <select id="trade-date"></select>
+        <button class="arrow" id="next" type="button" aria-label="下一个交易日">›</button>
+      </div>
+    </section>
+    <section class="detail" id="day" aria-labelledby="selected-date">
+      <section class="panel summary">
+        <h2 id="selected-date" aria-live="polite"></h2>
+        <div id="metrics" class="summary-grid"></div>
+        <p class="note">当日平均持仓按已平仓手数加权，只计实际交易分钟。年度平均对有平仓的交易日等权。</p>
+      </section>
+      <div id="charts"></div>
+      <section class="panel table-panel">
+        <h2>当日平仓明细</h2>
+        <div id="intervals" class="scroll"></div>
+      </section>
+    </section>
+  </main>
+  <script type="application/json" id="daily-data">__DASHBOARD_DATA__</script>
+  <script>
+    "use strict";
+    const report = JSON.parse(document.getElementById("daily-data").textContent);
+    const dateSelect = document.getElementById("trade-date");
+    const charts = document.getElementById("charts");
+    const previous = document.getElementById("previous");
+    const next = document.getElementById("next");
+    const number = new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 2});
+    const quoteNumber = new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 6});
+    const money = new Intl.NumberFormat("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const sides = {
+      sell: ["平多", "#aa4a39", "circle-open"],
+      cover: ["平空", "#067065", "circle-open"],
+      buy: ["开多", "#aa4a39", "triangle-up"],
+      short: ["开空", "#067065", "triangle-down"]
+    };
+    let active = report.days.length - 1;
+    document.getElementById("title").textContent = report.product + " 日内复盘";
+    document.title = report.strategy + " · " + report.product + " 日内复盘";
+    document.getElementById("subtitle").textContent =
+      report.strategy + " · " + report.days[0].date + " 至 " + report.days.at(-1).date +
+      " · " + report.days.length + " 个交易日" +
+      (report.mean === null ? "" : " · 区间日均持仓 " + number.format(report.mean) + " 分钟");
+
+    function element(tag, text, className) {
+      const node = document.createElement(tag);
+      if (text !== undefined) node.textContent = text;
+      if (className) node.className = className;
+      return node;
+    }
+
+    function renderSummary(day) {
+      document.getElementById("selected-date").textContent = day.date + " 交易日";
+      const measures = [
+        ["当日平均持仓", day.avg === null ? "—" : number.format(day.avg) + " 分钟"],
+        ["开仓成交", number.format(day.open_fills) + " 笔"],
+        ["已平仓", number.format(day.close_lots) + " 手"],
+        ["当日净 PnL", money.format(day.pnl) + " 元"]
+      ];
+      document.getElementById("metrics").replaceChildren(...measures.map(([label, value]) => {
+        const item = element("dl");
+        item.append(element("dt", label), element("dd", value));
+        return item;
+      }));
+    }
+
+    function plot(day, chart, holder) {
+      const timeline = day.time;
+      const index = timeline.map((_, i) => i);
+      const tickCount = Math.max(3, Math.min(7, Math.floor(holder.clientWidth / 115)));
+      const xlabels = [...new Set(Array.from({length: tickCount}, (_, i) => (
+        Math.round((index.length - 1) * i / (tickCount - 1))
+      )))];
+      const label = time => time.slice(5, 16);
+      const line = {
+        x: index, y: chart.price, name: "分钟收盘价", type: "scatter", mode: "lines",
+        customdata: timeline, hovertemplate: "%{customdata}<br>收盘价 %{y:,.3f}<extra></extra>",
+        line: {color: "#173f5f", width: 1.8}
+      };
+      const markers = Object.entries(sides).map(([key, [name, color, symbol]]) => {
+        const subset = chart.fills.filter(fill => fill.side === key);
+        return {
+          x: subset.map(fill => fill.index), y: subset.map(fill => fill.price), name,
+          type: "scatter", mode: "markers", showlegend: subset.length > 0,
+          customdata: subset.map(fill => [fill.time, fill.lots, fill.after, fill.id]),
+          hovertemplate: "%{customdata[0]}<br>" + name + " %{y:,.3f} · %{customdata[1]} 手" +
+            "<br>成交后该侧 %{customdata[2]} 手 · 成交号 %{customdata[3]}<extra></extra>",
+          marker: {size: symbol === "circle-open" ? 12 : 10, color, symbol, line: {width: 1.7}}
+        };
+      });
+      const inventory = [
+        ["多仓", chart.long, "#aa4a39", "rgba(170,74,57,.17)"],
+        ["空仓", chart.short, "#067065", "rgba(6,112,101,.17)"]
+      ].map(([name, values, color, fillcolor]) => ({
+        x: index, y: values, yaxis: "y2", name, type: "scatter", mode: "lines",
+        customdata: timeline, fill: "tozeroy", fillcolor,
+        hovertemplate: "%{customdata}<br>" + name + " %{y} 手<extra></extra>",
+        line: {color, width: 1.5, shape: "hv"}
+      }));
+      const signal = {
+        x: index, y: chart.signal, yaxis: "y3", name: "原始信号", type: "scatter", mode: "lines",
+        customdata: timeline, hovertemplate: "%{customdata}<br>信号 %{y:.6f}<extra></extra>",
+        connectgaps: false, line: {color: "#795280", width: 1.65}
+      };
+      const thresholds = chart.main && day.thresholds ? [
+        ["P99", day.thresholds.p99, "#aa4a39"],
+        ["P1", day.thresholds.p1, "#067065"]
+      ].map(([label, value, color]) => ({
+        x: [index[0], index.at(-1)], y: [value, value], yaxis: "y3",
+        name: label, type: "scatter", mode: "lines",
+        hovertemplate: label + " %{y:.6f}<extra></extra>",
+        line: {color, width: 1.4, dash: "dash"}
+      })) : [];
+      const pnl = {
+        x: index, y: day.pnl_curve, yaxis: "y4", name: "品种日内净 PnL", type: "scatter", mode: "lines",
+        customdata: timeline, hovertemplate: "%{customdata}<br>净 PnL %{y:,.2f} 元<extra></extra>",
+        fill: "tozeroy", fillcolor: "rgba(20,109,101,.11)", line: {color: "#146d65", width: 1.7}
+      };
+      const split = [];
+      const stamp = time => Date.parse(time.replace(" ", "T") + "Z");
+      for (let i = 1; i < index.length; i++) {
+        if (stamp(timeline[i]) - stamp(timeline[i - 1]) > 60000) {
+          split.push({type: "line", xref: "x", yref: "paper", x0: i - .5, x1: i - .5, y0: 0, y1: 1,
+                      layer: "below", line: {color: "#9eb0b3", width: 1, dash: "dot"}});
+        }
+      }
+      const lots = Math.max(1, ...chart.long, ...chart.short.map(x => -x));
+      return Plotly.newPlot(holder, [line, ...markers, ...inventory, signal, ...thresholds, pnl], {
+        margin: {l: 76, r: 22, t: holder.clientWidth < 520 ? 98 : 52, b: 66},
+        paper_bgcolor: "#fff", plot_bgcolor: "#fff",
+        font: {family: 'Inter, "Microsoft YaHei UI", sans-serif', color: "#203c45"},
+        hovermode: "closest", dragmode: "zoom", showlegend: true,
+        legend: {orientation: "h", x: 0, y: 1.06, yanchor: "bottom", font: {size: 11}},
+        xaxis: {anchor: "y4", showgrid: true, gridcolor: "#eef3f3",
+                tickvals: xlabels, ticktext: xlabels.map(i => label(timeline[i])),
+                rangeslider: {visible: false},
+                title: {text: "交易分钟 · 休市间隔压缩", font: {size: 12}}},
+        yaxis: {domain: [.66, 1], title: {text: "价格", font: {size: 12}}, gridcolor: "#e9f0f1"},
+        yaxis2: {domain: [.44, .605], title: {text: "持仓（手）", font: {size: 12}}, range: [-1.18 * lots, 1.18 * lots],
+                 tickvals: [-lots, 0, lots], ticktext: ["空 " + lots, "0", "多 " + lots], zerolinecolor: "#82999e"},
+        yaxis3: {domain: [.225, .385], title: {text: "原始信号", font: {size: 12}}, gridcolor: "#e9f0f1"},
+        yaxis4: {domain: [0, .166], title: {text: "净 PnL（元）", font: {size: 12}}, gridcolor: "#e9f0f1", zerolinecolor: "#82999e"},
+        shapes: split
+      }, {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["lasso2d", "select2d"]});
+    }
+
+    function renderPositions(day) {
+      const panel = document.getElementById("intervals");
+      if (!day.positions.length) {
+        panel.replaceChildren(element("p", "当日没有已平仓持仓。", "note"));
+        return;
+      }
+      const table = element("table");
+      const head = table.createTHead().insertRow();
+      for (const name of ["合约", "方向", "手数", "开仓成交", "开仓价", "平仓成交", "平仓价", "持仓交易分钟", "平仓指令时刻"]) {
+        const cell = element("th", name);
+        cell.scope = "col";
+        head.append(cell);
+      }
+      const body = table.createTBody();
+      for (const p of day.positions) {
+        const row = body.insertRow();
+        const minutes = element("td", number.format(p.minutes));
+        minutes.title = "自然时间 " + p.wall_minutes + " 分钟";
+        row.append(
+          element("td", p.contract), element("td", p.direction === "long" ? "多" : "空"),
+          element("td", number.format(p.quantity)), element("td", p.opened.slice(5, 16)),
+          element("td", quoteNumber.format(p.entry)), element("td", p.closed.slice(5, 16)),
+          element("td", quoteNumber.format(p.exit)), minutes, element("td", p.close_signal_time.slice(5, 16) || "—")
+        );
+      }
+      panel.replaceChildren(table);
+    }
+
+    function show(index) {
+      active = Math.max(0, Math.min(report.days.length - 1, index));
+      previous.disabled = active === 0;
+      next.disabled = active === report.days.length - 1;
+      dateSelect.selectedIndex = active;
+      const day = report.days[active];
+      renderSummary(day);
+      for (const holder of charts.querySelectorAll(".chart")) Plotly.purge(holder);
+      charts.replaceChildren();
+      for (const chart of day.charts) {
+        const card = element("section", undefined, "chart-card");
+        const header = element("h3", chart.code + (chart.main ? " · 主力合约" : ""));
+        const noSignal = chart.signal.every(value => value === null) ? " 当日无可用信号数据。" : "";
+        const noThresholds = chart.main && !day.thresholds ? " 当日没有可用的 P99/P1 阈值。" : "";
+        const note = element("p", "成交点使用实际成交价，信号按原始时间戳对齐。净 PnL 按日初归零，含手续费、价差和滑点。"
+                             + noSignal + noThresholds, "note");
+        const holder = element("div", undefined, "chart");
+        holder.dataset.contract = chart.code;
+        card.append(header, note, holder);
+        charts.append(card);
+        plot(day, chart, holder);
+      }
+      if (!day.charts.length) charts.replaceChildren(element("p", "当日没有可用的合约分钟行情。", "note"));
+      renderPositions(day);
+    }
+
+    for (const day of report.days) dateSelect.add(new Option(day.date, day.date));
+    dateSelect.addEventListener("change", () => show(dateSelect.selectedIndex));
+    previous.addEventListener("click", () => show(active - 1));
+    next.addEventListener("click", () => show(active + 1));
+    show(active);
+  </script>
+</body>
+</html>

@@ -127,7 +127,20 @@ python analysis_tools/scripts/report_cta.py --signal mdl_100000
 
 默认输出到 `data/reports/cta/mdl_100000.html`，可用 `--output` 指定路径。报告读取 `data/strategy/future/<signal>/` 下的单次或年度回测结果，也支持 `--root` 和 `--market-root` 指定本地回测及期货分钟行情目录。用浏览器打开文件即可离线使用。
 
-两个筛选器可以组合使用。品种范围支持全品种、按 [期货板块](../factor_engine/docs/FUTURE_SECTORS.md) 筛选或选择单个品种。日期范围支持全期和单个年度。品种绩效及累计净 PnL 同时响应两个筛选器。各品种的累计净 PnL 在所选区间内首个纳入交易日的前一个自然日标零，随后绘制日结曲线。组合表显示真实账户在所选日期范围的绩效。年度持仓时间按平仓所属交易年度归集，已平仓手数为权重。
+两个筛选器可以组合使用。品种范围支持全品种、按 [期货板块](../factor_engine/docs/FUTURE_SECTORS.md) 筛选或选择单个品种。日期范围支持全期和单个年度。品种绩效及累计净 PnL 同时响应两个筛选器。各品种的累计净 PnL 在所选区间内首个纳入交易日的前一个自然日标零，随后绘制日结曲线。组合表显示真实账户在所选日期范围的绩效。品种持仓时间按平仓交易日先用已平仓手数加权，再对所选区间内有平仓的交易日等权平均。
+
+### CTA 品种日内复盘
+
+```powershell
+python -m pip install -e "./analysis_tools[intraday]"
+python analysis_tools/scripts/report_cta_intraday.py --signal mdl_100000 --product AG --start-date 20260105 --end-date 20260424
+```
+
+报告在交易日下拉框里一次展示一天，同轴对齐分钟价格、实际成交点、持仓、原始信号和品种日内净 PnL。净 PnL 按日初归零，用实际成交成本和分钟收盘估值重建，逐日与 `product_pnl.parquet` 核对。夜盘按回测交易日归属，休市间隔在横轴上压缩。
+
+主力合约的信号图显示 P99 和 P1。以回测交易日历取前五个交易日，先计算每天对应主力合约信号的 P99 和 P1，再分别取五日均值。任一天缺少有效信号或主力映射时，该日阈值留空。默认交易日历为上期所，可用 `--calendar` 指定。
+
+默认输出为 `data/reports/cta/<signal>_<product>_<start>_<end>_intraday.html`，可以离线打开。回测需要本地逐笔成交、品种日结和分钟行情。原始预测与主力映射优先读本地，缺失的日期通过已有的 `xz336` 部署读取 HDFS，可用 `--hdfs-host` 修改主机，也可用 `--local-only` 只读本地。其他路径通过 `--root`、`--market-root`、`--signal-root`、`--mapping-root` 和 `--output` 设置。
 
 ## 输入与输出 / Inputs and outputs
 

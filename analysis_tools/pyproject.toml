@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 plot = ["matplotlib"]
+intraday = ["plotly"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from yq_analysis.metrics import annual_return, annual_volatility, sharpe
-from yq_analysis.strategy import SIDES, futures_holding_totals_by_product, futures_products
+from yq_analysis.strategy import SIDES, futures_daily_holding_totals_by_product, futures_products
 
 
 def _load_run(path):
@@ -135,7 +135,7 @@ def _load_holding_totals(path, market_root, dates, products):
     if fills.empty:
         return None, set()
     market = _load_traded_market_minutes(market_root, dates, fills)
-    return futures_holding_totals_by_product(fills, market, by_year=True), set()
+    return futures_daily_holding_totals_by_product(fills, market), set()
 
 
 def _collect_holding_totals(runs, output, market_root):
@@ -189,10 +189,11 @@ def _product_table(products, holding, missing, periods_per_year, *, year=None):
         table["avg_holding_minutes"] = np.nan
         return table
     if year is not None:
-        holding = holding.loc[holding.index.get_level_values("year") == year]
-    combined = holding.groupby(level="product").sum().reindex(table.index)
+        dates = holding.index.get_level_values("trade_date")
+        holding = holding.loc[dates // 10000 == year]
     unavailable = {product for close_year, product in missing if year is None or close_year == year}
-    duration = combined.lot_minutes / combined.closed_lots.where(combined.closed_lots.gt(0))
+    daily_duration = holding.lot_minutes / holding.closed_lots.where(holding.closed_lots.gt(0))
+    duration = daily_duration.groupby(level="product").mean().reindex(table.index)
     table["avg_holding_minutes"] = duration.mask(duration.index.isin(unavailable))
     return table
 

@@ -4,7 +4,7 @@ strategy_class = "future::mdl_100000"
 
 start_date = 20260408
 end_date = 20260424
-initial_cash = 1000000.0
+initial_cash = 100000000.0
 
 [clock]
 bar_frequency = "minute_1m"

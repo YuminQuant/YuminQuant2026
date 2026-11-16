@@ -172,7 +172,7 @@ fn previous_mean(values: &Values, n: usize) -> Series {
     ts_delay(&ts_mean(values, n, n), 1)
 }
 
-fn relative_volume(volume: &Values) -> Series {
+pub(super) fn relative_volume(volume: &Values) -> Series {
     let volume = volume
         .iter()
         .map(|v| v.filter(|x| *x >= 0.0))

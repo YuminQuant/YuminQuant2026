@@ -22,6 +22,7 @@ const W: usize = 30;
 const EPS: f64 = 1e-8;
 const SIGMA_FLOOR: f64 = 1e-6;
 const OI_FLOOR: f64 = 1.0;
+const SEASONAL_LOOKBACK_DAYS: usize = 5;
 const MIN_SEASONAL_DAYS: usize = 5;
 type Values = [Option<f64>];
 type Series = Vec<Option<f64>>;
@@ -47,7 +48,7 @@ const DESCRIPTIONS: [&str; 40] = [
     "Continuous price trend weighted by the 15-bar mean of bounded relative volume.",
     "Signed volume flow discounted by the normalized concentration of volume across 15 bars.",
     "Normalized Herfindahl concentration of traded volume across 15 bars.",
-    "Current log-one-plus volume standardized against the same clock time in the prior 30 trading days. At least five valid observations are required.",
+    "Current log-one-plus volume standardized against the same clock time in the prior five trading days. All five historical observations are required.",
     "Continuous price trend weighted by positive net open interest change, scaled by its lagged rolling median magnitude.",
     "Continuous price trend weighted by negative net open interest change, scaled by its lagged rolling median magnitude.",
     "Continuous price trend times the tanh of signed net open interest change over its lagged rolling median magnitude.",
@@ -128,7 +129,7 @@ impl Factor for FlowFactor {
             dependencies: vec![future_minute_request(fields(self.0))],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback {
-                trading_days: if self.0 == 9 { W } else { 3 },
+                trading_days: if self.0 == 9 { SEASONAL_LOOKBACK_DAYS } else { 3 },
             },
         }
     }
@@ -648,7 +649,7 @@ fn volume_surprise(
             }
         }
         prior.push_back((date, slots));
-        if prior.len() > W {
+        if prior.len() > SEASONAL_LOOKBACK_DAYS {
             prior.pop_front();
         }
     }

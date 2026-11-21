@@ -696,7 +696,7 @@ fn minute(time: &str) -> Option<u16> {
     Some(time.get(11..13)?.parse::<u16>().ok()? * 60 + time.get(14..16)?.parse::<u16>().ok()?)
 }
 
-fn adjacent_minute(previous: &str, current: &str) -> bool {
+pub(crate) fn adjacent_minute(previous: &str, current: &str) -> bool {
     let (Some(a), Some(b)) = (minute(previous), minute(current)) else {
         return false;
     };

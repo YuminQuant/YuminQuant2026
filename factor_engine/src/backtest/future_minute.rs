@@ -19,7 +19,9 @@ use crate::data::parquet_io::{read_parquet_with_null_types, write_parquet_batch}
 use crate::data::Table;
 use crate::error::{err, Result};
 use crate::factor::common::intraday_raw::quantile_linear;
-use crate::factor::future::minute_input::{product, FutureMinuteInput, FutureMinuteOptions};
+use crate::factor::future::minute_input::{
+    adjacent_minute, product, FutureMinuteInput, FutureMinuteOptions,
+};
 use crate::operators::time_series::pearson_corr_finite;
 use crate::storage::FactorMetadata;
 
@@ -153,7 +155,7 @@ struct Metrics {
     trigger_count: Option<u64>,
     eligible_contract_count: Option<u64>,
     holding_rtn: Mean,
-    holding_minutes: Option<u64>,
+    holding_duration: HoldingDuration,
 }
 
 impl Metrics {
@@ -219,51 +221,73 @@ impl Metrics {
         }
     }
 
-    fn add_holding(&mut self, result: Option<(f64, u64)>) {
-        if let Some((return_bp, minutes)) = result {
-            self.holding_rtn.push(Some(return_bp));
-            *self.holding_minutes.get_or_insert(0) += minutes;
-        }
+    fn add_holding(&mut self, return_bp: Option<f64>, duration: HoldingDuration) {
+        self.holding_rtn.push(return_bp);
+        self.holding_duration.minutes += duration.minutes;
+        self.holding_duration.positions += duration.positions;
     }
+}
 
-    fn holding(&self) -> Option<(f64, u64)> {
-        self.holding_rtn.value().zip(self.holding_minutes)
+#[derive(Clone, Copy, Default)]
+struct HoldingDuration {
+    minutes: u64,
+    positions: u64,
+}
+
+impl HoldingDuration {
+    fn average(self) -> Option<f64> {
+        (self.positions > 0).then(|| self.minutes as f64 / self.positions as f64)
     }
 }
 
 struct HoldingMinute {
     signal_row: Option<usize>,
     return_bp: Option<f64>,
+    continuous: bool,
 }
 
-fn holding_return(
+fn evaluate_holding(
     timeline: &[HoldingMinute],
     factor: &[Option<f64>],
     thresholds: TailThresholds,
-) -> Option<(f64, u64)> {
+) -> (Option<f64>, HoldingDuration) {
     let mut direction = 0.0;
     let mut return_bp = 0.0;
-    let mut held_minutes = 0;
+    let mut duration = HoldingDuration::default();
     let mut has_signal = false;
     let mut has_return = false;
+    let mut missing_held_return = false;
     // A signal on bar i controls the interval from open i+1 to open i+2.
     // Close at the final bar's open and discard signals with no remaining interval.
     for minute in timeline.iter().take(timeline.len().saturating_sub(2)) {
         if let Some(value) = minute.signal_row.and_then(|row| factor[row]) {
             has_signal = true;
-            if value > thresholds.upper {
-                direction = 1.0;
+            let next_direction = if value > thresholds.upper {
+                1.0
             } else if value < thresholds.lower {
-                direction = -1.0;
+                -1.0
+            } else {
+                direction
+            };
+            if next_direction != direction {
+                duration.positions += 1;
+                direction = next_direction;
             }
         }
         has_return |= minute.return_bp.is_some();
         if direction != 0.0 {
-            return_bp += direction * minute.return_bp?;
-            held_minutes += 1;
+            duration.minutes += u64::from(minute.continuous);
+            if let Some(value) = minute.return_bp {
+                return_bp += direction * value;
+            } else {
+                missing_held_return = true;
+            }
         }
     }
-    (has_signal && has_return).then_some((return_bp, held_minutes))
+    (
+        (has_signal && has_return && !missing_held_return).then_some(return_bp),
+        duration,
+    )
 }
 
 fn cosine_similarity(x: &[f64], y: &[f64]) -> Option<f64> {
@@ -366,17 +390,19 @@ impl FactorSummary {
                 }
                 for contract in group.contracts.keys() {
                     if let Some(timeline) = returns.holding.get(contract) {
-                        local.add_holding(holding_return(timeline, factor, thresholds));
+                        let (return_bp, duration) = evaluate_holding(timeline, factor, thresholds);
+                        local.add_holding(return_bp, duration);
                     }
                 }
             }
             all.average_tails(&local);
-            all.add_holding(local.holding());
+            let holding_rtn = local.holding_rtn.value();
+            all.add_holding(holding_rtn, local.holding_duration);
             if let Some(sector) = group.sector {
                 sector_holdings
                     .entry(sector)
                     .or_default()
-                    .add_holding(local.holding());
+                    .add_holding(holding_rtn, local.holding_duration);
             }
             self.rows.push(Observation {
                 date,
@@ -920,6 +946,7 @@ fn holding_timelines(
                 HoldingMinute {
                     signal_row: signals.get(&(time, code)).copied(),
                     return_bp,
+                    continuous: false,
                 },
             ));
         }
@@ -928,12 +955,29 @@ fn holding_timelines(
         .into_iter()
         .map(|(code, mut rows)| {
             rows.sort_unstable_by_key(|(time, _)| *time);
+            for index in 0..rows.len().saturating_sub(2) {
+                // The one-minute label at index starts at the next bar's open.
+                rows[index].1.continuous =
+                    continuous_holding_interval(rows[index + 1].0, rows[index + 2].0);
+            }
             (
                 code.to_string(),
                 rows.into_iter().map(|(_, minute)| minute).collect(),
             )
         })
         .collect()
+}
+
+fn continuous_holding_interval(start: &str, end: &str) -> bool {
+    if start.len() == 8 && end.len() == 8 {
+        use crate::strategy::market::clock_minute;
+        return clock_minute(start)
+            .zip(clock_minute(end))
+            .is_some_and(|(from, to)| {
+                from + 1 == to && start.as_bytes()[6..] == end.as_bytes()[6..]
+            });
+    }
+    adjacent_minute(start, end)
 }
 
 fn selected_columns<'a>(columns: &'a [String], kind: &str) -> Result<Vec<&'a str>> {
@@ -1077,8 +1121,9 @@ fn observations_batch(rows: &[Observation]) -> Result<RecordBatch> {
         ),
         (
             "holding_minutes",
-            Arc::new(UInt64Array::from_iter(
-                rows.iter().map(|row| row.metrics.holding_minutes),
+            Arc::new(Float64Array::from_iter(
+                rows.iter()
+                    .map(|row| row.metrics.holding_duration.average()),
             )),
         ),
     ];

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
+from time import perf_counter
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -11,6 +14,12 @@ from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarTensorWindow, _feature_columns
 from yq_ml_alpha.features.transforms import _zscore_series
 from yq_ml_alpha.output.artifact_io import ordered_io_map
+
+
+class _Session(NamedTuple):
+    symbols: pd.Index
+    values: np.ndarray
+    rows: np.ndarray
 
 
 class ResNetPanelProvider(FeatureProvider):
@@ -47,6 +56,8 @@ class ResNetPanelProvider(FeatureProvider):
         if self.max_cache_sessions < 0:
             raise ValueError("max_cache_sessions must be nonnegative")
         self._sessions = OrderedDict()
+        self._symbol_ids = {}
+        self._prefetched = None
 
     def load(self, trade_date):
         raise NotImplementedError("resnet_panel requires calendar-aware load_window_tensor")
@@ -72,31 +83,57 @@ class ResNetPanelProvider(FeatureProvider):
         history = self.required_history_dates([d for d in history_dates if d <= trade_date])
         if len(history) < self.lookback_sessions or history[-1] != trade_date:
             return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
-        sessions = []
-        symbols = None
-        for index, (date, (session_symbols, values)) in enumerate(
-            zip(history, self._history_sessions(history))
-        ):
-            eligible = session_symbols
-            if exclude_bj:
-                eligible = eligible[~eligible.str.endswith(".BJ")]
-            excluded = (st_symbols_by_date or {}).get(date, set())
-            if excluded:
-                eligible = eligible[~eligible.isin(excluded)]
-            symbols = eligible if symbols is None else symbols.intersection(eligible, sort=False)
-            sessions.append((session_symbols, values))
-            if progress is not None:
-                progress(f"source {index + 1}/{len(history)} date={date} rows={len(session_symbols)} dataset={self.dataset}")
+        started = perf_counter()
+        cached = sum(date in self._sessions for date in history)
+        sessions = list(self._history_sessions(history))
+        loaded = perf_counter()
+        symbols, ids = self._align_symbols(sessions, history, exclude_bj, st_symbols_by_date)
+        aligned = perf_counter()
+        if progress is not None:
+            progress(f"source sessions={len(history)} cache_hits={cached} "
+                     f"session_load_s={loaded - started:.3f} align_s={aligned - loaded:.3f} "
+                     f"aligned_rows={len(symbols)} dataset={self.dataset}")
         if symbols.empty:
             return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
-        symbols = symbols.sort_values()
-        values = np.concatenate([data[idx.get_indexer(symbols)] for idx, data in sessions], axis=1)
+        values = np.empty((len(symbols), self.total_steps, len(self.output_features)), dtype="float64")
+        width = self.steps_per_session
+        for step, session in enumerate(sessions):
+            values[:, step * width:(step + 1) * width] = session.values[session.rows[ids]]
+        assembled = perf_counter()
         if self.dataset == "week":
             values, symbols = self._prepare_week_window(values, symbols)
         finite = np.isfinite(values).all(axis=(1, 2))
+        if not finite.all():
+            values = values[finite]
         frame = pd.DataFrame({"trade_date": trade_date, "ts_code": symbols[finite]})
-        return BarTensorWindow(frame, {tensor_key: values[finite].astype("float32")},
+        values = values.astype("float32")
+        if progress is not None:
+            progress(f"panel assemble_s={assembled - aligned:.3f} "
+                     f"normalize_s={perf_counter() - assembled:.3f} rows={len(frame)}")
+        return BarTensorWindow(frame, {tensor_key: values},
                                {tensor_key: self.feature_columns}, skipped_nonfinite=int((~finite).sum()))
+
+    def _align_symbols(self, sessions, history, exclude_bj, st_symbols_by_date):
+        # IDs created after an older session cannot be present in that session.
+        limit = min(len(session.rows) for session in sessions)
+        common = np.ones(limit, dtype=bool)
+        for session in sessions:
+            common &= session.rows[:limit] >= 0
+        if st_symbols_by_date:
+            # Any historical ST flag removes the stock from the whole window.
+            for date in history:
+                for symbol in st_symbols_by_date.get(date, ()):
+                    symbol_id = self._symbol_ids.get(symbol)
+                    if symbol_id is not None and symbol_id < limit:
+                        common[symbol_id] = False
+        ids = np.flatnonzero(common)
+        first = sessions[0]
+        symbols = first.symbols.take(first.rows[ids])
+        if exclude_bj and len(symbols):
+            eligible = ~symbols.str.endswith(".BJ")
+            symbols, ids = symbols[eligible], ids[eligible]
+        order = symbols.argsort()
+        return symbols.take(order), ids[order]
 
     def _prepare_week_window(self, values, symbols):
         # All 150 prices use the sample's last adjusted close, not each patch's close.
@@ -113,13 +150,47 @@ class ResNetPanelProvider(FeatureProvider):
             self._sessions.popitem(last=False)
         return session
 
+    def _index_session(self, raw):
+        symbols, values = raw
+        ids = np.fromiter((self._symbol_ids.setdefault(symbol, len(self._symbol_ids)) for symbol in symbols),
+                          dtype=np.intp, count=len(symbols))
+        rows = np.full(len(self._symbol_ids), -1, dtype=np.int32)
+        rows[ids] = np.arange(len(symbols), dtype=np.int32)
+        return _Session(symbols, values, rows)
+
+    @contextmanager
+    def prefetch_sessions(self, dates):
+        """Keep the remote read pool fed across the windows of one prediction batch."""
+        cached = {date: self._sessions[date] for date in dates if date in self._sessions}
+        missing = [date for date in dates if date not in cached]
+        reads = ordered_io_map(lambda date: (date, self._read_session(date)), missing, root=self.root)
+        self._prefetched = cached, reads
+        try:
+            yield
+        finally:
+            self._prefetched = None
+            reads.close()
+
     def _history_sessions(self, history):
         cached = {date: self._sessions[date] for date in history if date in self._sessions}
+        if self._prefetched is not None:
+            batch_cache, reads = self._prefetched
+            for date in history:
+                session = batch_cache.pop(date, None)
+                if session is None:
+                    session = cached.get(date)
+                if session is None:
+                    loaded_date, raw = next(reads)
+                    if loaded_date != date:
+                        raise RuntimeError(f"out-of-order bar-panel prefetch: expected {date}, got {loaded_date}")
+                    session = self._index_session(raw)
+                yield self._remember_session(date, session)
+            return
         missing = (date for date in history if date not in cached)
         reads = ordered_io_map(self._read_session, missing, root=self.root)
         try:
             for date in history:
-                session = cached[date] if date in cached else next(reads)
+                session = cached[date] if date in cached else self._index_session(next(reads))
                 yield self._remember_session(date, session)
         finally:
             reads.close()

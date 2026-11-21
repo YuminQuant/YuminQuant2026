@@ -1,6 +1,8 @@
 from __future__ import annotations
 from yq_ml_alpha.output import artifact_io as data_io
 
+from bisect import bisect_right
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import json
@@ -13,7 +15,7 @@ import pandas as pd
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.data.filters import TradeFilters
-from yq_ml_alpha.data.stores import read_daily, read_minute, require_hdfs_input
+from yq_ml_alpha.data.stores import daily_path, read_daily, read_minute, require_hdfs_input
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
@@ -286,13 +288,37 @@ class DatasetBuilder:
     ) -> DatasetBundle:
         self._building_storage = None
         try:
-            return self._load_bar_panel(dates, include_label, calendar)
+            with self._prefetch_bar_panel(dates, include_label, calendar):
+                return self._load_bar_panel(dates, include_label, calendar)
         except BaseException:
             if self._building_storage is not None:
                 self._building_storage.close()
             raise
         finally:
             self._building_storage = None
+
+    @contextmanager
+    def _prefetch_bar_panel(self, dates, include_label, calendar):
+        provider = self.feature_provider
+        if (not dates or include_label or not isinstance(provider, ResNetPanelProvider)
+                or provider.max_cache_sessions < provider.lookback_sessions
+                or not data_io.remote_enabled() or dates != sorted(dates)):
+            yield
+            return
+        histories = {date: _resnet_history(calendar, date, provider.lookback_sessions) for date in dates}
+        started = perf_counter()
+        if self.config.filters.exclude_st:
+            st_dates = sorted({source for history in histories.values() for source in history if source >= 20160101})
+            missing = self._load_source_st_symbols(st_dates)
+            print(f"bar-panel predict st_preload sessions={len(st_dates)} reads={missing} "
+                  f"elapsed_s={perf_counter() - started:.3f}", flush=True)
+        source_dates = sorted({
+            source for date, history in histories.items()
+            if len(history) == provider.lookback_sessions and history[-1] == date
+            for source in history
+        })
+        with provider.prefetch_sessions(source_dates):
+            yield
 
     def _load_bar_panel(
         self,
@@ -330,12 +356,19 @@ class DatasetBuilder:
         ) if storage_mode == "indexed" and include_label else None
         self._building_storage = indexed if indexed is not None else spool
         provider = indexed.provider if indexed is not None else self.feature_provider
+        resnet_panel = isinstance(provider, ResNetPanelProvider)
         shapes = {}
         for date_idx, trade_date in enumerate(dates, start=1):
-            history_dates = calendar.between(calendar.dates[0], trade_date)
-            source_dates = self.feature_provider.required_history_dates(history_dates)
+            if resnet_panel:
+                history_dates = source_dates = _resnet_history(calendar, trade_date, provider.lookback_sessions)
+            else:
+                history_dates = calendar.between(calendar.dates[0], trade_date)
+                source_dates = self.feature_provider.required_history_dates(history_dates)
             progress = _bar_panel_progress(split_name, date_idx, total_dates, trade_date)
+            started = perf_counter()
             source_st = self._source_st_symbols_by_date(source_dates)
+            if resnet_panel:
+                progress(f"st_lookup_s={perf_counter() - started:.3f}")
             window = provider.load_window_tensor(
                 trade_date,
                 history_dates,
@@ -346,6 +379,7 @@ class DatasetBuilder:
             progress(f"target_done feature_rows={len(window.frame)}")
             if window.frame.empty:
                 continue
+            prepared = perf_counter()
             frame = self.universe.filter(window.frame, trade_date)
             frame = self.filters.apply(frame, trade_date)
             frame = frame[["trade_date", "ts_code"]].reset_index(drop=True)
@@ -380,6 +414,9 @@ class DatasetBuilder:
             else:
                 tensor_chunks.append(tensors)
             tensor_columns = window.tensor_columns
+            if resnet_panel:
+                progress(f"target_prepare_s={perf_counter() - prepared:.3f} dataset_rows={len(frame)}")
+        joined = perf_counter()
         if frames:
             output = pd.concat(frames, ignore_index=True)
             output_tensors = (indexed.finish(output, shapes) if indexed is not None else
@@ -390,6 +427,9 @@ class DatasetBuilder:
                 columns.extend(self.config.label.columns)
             output = pd.DataFrame(columns=columns)
             output_tensors, tensor_columns = _empty_provider_tensors(self.feature_provider)
+        if resnet_panel:
+            print(f"bar-panel {split_name} batch rows={len(output)} "
+                  f"finalize_s={perf_counter() - joined:.3f}", flush=True)
         self._maybe_cache(output, dates, include_label)
         return DatasetBundle(
             output,
@@ -404,28 +444,31 @@ class DatasetBuilder:
     def _source_st_symbols_by_date(self, dates: list[int]) -> dict[int, set[str]]:
         if not self.config.filters.exclude_st:
             return {}
-        output: dict[int, set[str]] = {}
-        for trade_date in dates:
-            if trade_date < 20160101:
-                continue
-            path = (
-                Path(self.config.data_root)
-                / "chn_stock_data"
-                / "daily"
-                / "trade_filter"
-                / str(trade_date // 10000)
-                / f"{trade_date}.parquet"
-            )
+        self._load_source_st_symbols(dates)
+        return {date: self._source_st_symbol_cache[date] for date in dates
+                if self._source_st_symbol_cache.get(date)}
+
+    def _load_source_st_symbols(self, dates: list[int]) -> int:
+        cache = self._source_st_symbol_cache
+        missing = sorted({date for date in dates if date >= 20160101 and date not in cache})
+        if not missing:
+            return 0
+        root = Path(self.config.data_root) / "chn_stock_data" / "daily" / "trade_filter"
+
+        def read_mask(date):
+            path = daily_path(root, date)
             if not data_io.exists(path):
-                raise FileNotFoundError(f"missing trade_filter for {trade_date}: {path}")
-            if trade_date not in self._source_st_symbol_cache:
-                mask = data_io.read_parquet(path, columns=["ts_code", "is_st"])
-                st_mask = mask["is_st"].fillna(False).astype(bool)
-                self._source_st_symbol_cache[trade_date] = set(mask.loc[st_mask, "ts_code"].astype(str))
-            symbols = self._source_st_symbol_cache[trade_date]
-            if symbols:
-                output[trade_date] = symbols
-        return output
+                raise FileNotFoundError(f"missing trade_filter for {date}: {path}")
+            mask = data_io.read_parquet(path, columns=["ts_code", "is_st"])
+            st_mask = mask["is_st"].fillna(False).astype(bool)
+            return date, set(mask.loc[st_mask, "ts_code"].astype(str))
+
+        reads = data_io.ordered_io_map(read_mask, missing, root=root)
+        try:
+            cache.update(reads)
+        finally:
+            reads.close()
+        return len(missing)
 
     def _read_labels(self, trade_date: int) -> pd.DataFrame:
         if self.minute_frame:
@@ -646,6 +689,11 @@ def _bar_panel_progress(split_name: str, current: int, total: int, trade_date: i
     return emit
 
 
+def _resnet_history(calendar: TradingCalendar, date: int, lookback: int) -> list[int]:
+    end = bisect_right(calendar.dates, date)
+    return calendar.dates[max(0, end - lookback):end]
+
+
 def _logsig_signature_progress(split_name: str, current: int, total: int, trade_date: int):
     def emit(message: str) -> None:
         print(
@@ -671,6 +719,8 @@ def _select_tensors_by_symbols(
     source_symbols: list[str],
     target_symbols: list[str],
 ) -> dict[str, np.ndarray]:
+    if target_symbols == source_symbols:
+        return tensors
     source_pos = {symbol: idx for idx, symbol in enumerate(source_symbols)}
     source_indices = [source_pos[symbol] for symbol in target_symbols]
     return {key: value[np.asarray(source_indices, dtype=np.int64)] for key, value in tensors.items()}
@@ -695,6 +745,8 @@ def _empty_provider_tensors(provider) -> tuple[dict[str, np.ndarray], dict[str, 
 
 
 def _fill_tensor_features(values: np.ndarray, fill_value: float) -> np.ndarray:
+    if values.dtype == np.float32 and np.isfinite(values).all():
+        return values
     data = np.asarray(values, dtype="float64")
     data = np.where(np.isfinite(data), data, float(fill_value))
     return data.astype("float32", copy=False)

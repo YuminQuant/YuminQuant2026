@@ -436,14 +436,11 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
     let pool =
         crate::resources::thread_pool(Some(request.threads.unwrap_or(DEFAULT_BACKTEST_THREADS)))?;
     let output_dir = request.output_dir.clone().unwrap_or_else(|| {
-        let mut root = config
+        let root = config
             .data_root
             .join("backtest")
             .join("future")
             .join("minute_1m");
-        if let Some(id) = &request.pool_id {
-            root = root.join("pools").join(id);
-        }
         match request.quantile_mode {
             QuantileMode::Daily => root.join("daily"),
             QuantileMode::Trailing5 => root,

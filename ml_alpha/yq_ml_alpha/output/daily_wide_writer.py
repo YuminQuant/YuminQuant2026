@@ -9,7 +9,6 @@ from typing import Iterable, Literal
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
 from yq_ml_alpha.data.stores import KEY_COLUMNS, MINUTE_KEY_COLUMNS, daily_path, read_daily, validate_minute_keys
 from yq_ml_alpha.output.file_lock import daily_file_lock
@@ -65,7 +64,7 @@ class DailyWideWriter:
     def _map_writes(self, function, items):
         if data_io.backend(self.output_root) is not None:
             return list(data_io.ordered_io_map(function, items, root=self.output_root,
-                workers=self.write_workers))
+                workers=self.write_workers, write=True))
         with ThreadPoolExecutor(max_workers=min(self.write_workers, len(items))) as pool:
             return list(pool.map(function, items))
 

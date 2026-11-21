@@ -10,6 +10,7 @@ from yq_ml_alpha.data.stores import daily_path, read_daily
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.bar_panel import BarTensorWindow, _feature_columns
 from yq_ml_alpha.features.transforms import _zscore_series
+from yq_ml_alpha.output.artifact_io import ordered_io_map
 
 
 class ResNetPanelProvider(FeatureProvider):
@@ -73,8 +74,9 @@ class ResNetPanelProvider(FeatureProvider):
             return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
         sessions = []
         symbols = None
-        for index, date in enumerate(history):
-            session_symbols, values = self._session(date)
+        for index, (date, (session_symbols, values)) in enumerate(
+            zip(history, self._history_sessions(history))
+        ):
             eligible = session_symbols
             if exclude_bj:
                 eligible = eligible[~eligible.str.endswith(".BJ")]
@@ -101,15 +103,26 @@ class ResNetPanelProvider(FeatureProvider):
         values[:, :, :5] /= values[:, -1:, 3:4].copy()
         return values, symbols
 
-    def _session(self, date):
-        if date in self._sessions:
-            self._sessions.move_to_end(date)
-            return self._sessions[date]
-        session = self._week_session(date) if self.dataset == "week" else self._minute_session(date)
+    def _read_session(self, date):
+        return self._week_session(date) if self.dataset == "week" else self._minute_session(date)
+
+    def _remember_session(self, date, session):
         self._sessions[date] = session
+        self._sessions.move_to_end(date)
         while len(self._sessions) > self.max_cache_sessions:
             self._sessions.popitem(last=False)
         return session
+
+    def _history_sessions(self, history):
+        cached = {date: self._sessions[date] for date in history if date in self._sessions}
+        missing = (date for date in history if date not in cached)
+        reads = ordered_io_map(self._read_session, missing, root=self.root)
+        try:
+            for date in history:
+                session = cached[date] if date in cached else next(reads)
+                yield self._remember_session(date, session)
+        finally:
+            reads.close()
 
     def _week_session(self, date):
         columns = ["open", "high", "low", "close", "vol", "amount"]

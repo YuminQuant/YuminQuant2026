@@ -24,7 +24,7 @@ def options(root):
     return {"workers": workers, "fixed": values.get("fixed", False)}
 
 
-def ordered_map(function, items, *, root, workers=None):
+def ordered_map(function, items, *, root, workers=None, write=False):
     settings = options(root)
     fixed = settings.get("fixed", False)
     width = settings["workers"]
@@ -36,10 +36,12 @@ def ordered_map(function, items, *, root, workers=None):
             yield function(item)
         return
     with _lock:
-        pool = _pools.get(settings["workers"])
+        key = (write, settings["workers"])
+        pool = _pools.get(key)
         if pool is None:
-            pool = ThreadPoolExecutor(max_workers=settings["workers"], thread_name_prefix="remote-io")
-            _pools[settings["workers"]] = pool
+            prefix = "remote-write" if write else "remote-read"
+            pool = ThreadPoolExecutor(max_workers=settings["workers"], thread_name_prefix=prefix)
+            _pools[key] = pool
     def run(item):
         _worker.active = True
         try:

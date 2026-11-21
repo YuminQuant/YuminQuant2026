@@ -31,6 +31,7 @@ impl Factor for StockDailyRet20 {
                 "reversal",
                 "general",
                 "daily",
+                "deprecated",
             ]
             .iter()
             .map(|value| value.to_string())

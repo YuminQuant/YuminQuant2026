@@ -31,6 +31,7 @@ impl Factor for StockDailyStd20 {
                 "volatility",
                 "general",
                 "daily",
+                "deprecated",
             ]
             .iter()
             .map(|value| value.to_string())

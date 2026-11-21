@@ -467,6 +467,7 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
             pool.current_num_threads(),
             started.elapsed().as_millis(),
         );
+        eprintln!("{}", crate::artifact_io::profile());
     }
     Ok(paths)
 }
@@ -613,20 +614,18 @@ fn evaluate_batch(
         .collect::<Vec<_>>();
     let mut seen_products = BTreeSet::new();
     for date_batch in dates.chunks(request.date_batch_size) {
-        // Limit resident minute tables to the thread budget, even for long date batches.
-        for wave in date_batch.chunks(rayon::current_num_threads()) {
-            let days = wave
-                .par_iter()
-                .map(|&date| inputs.read_day(date, factors))
-                .collect::<Result<Vec<_>>>()?;
-            for day in days {
+        crate::data::read_ahead::visit_filtered_inputs(
+            inputs.factor_root,
+            date_batch,
+            |&date| inputs.read_day(date, factors),
+            |day| {
                 let Some(day) = day else {
                     for summary in &mut summaries {
                         if let Some(history) = &mut summary.history {
                             history.advance(DailyThresholds::new());
                         }
                     }
-                    continue;
+                    return Ok(());
                 };
                 if day.returns.is_some() {
                     seen_products.extend(day.groups.by_product.keys().cloned());
@@ -645,9 +644,9 @@ fn evaluate_batch(
                             day.returns.as_deref(),
                         );
                         Ok(())
-                    })?;
-            }
-        }
+                    })
+            },
+        )?;
     }
     for code in inputs.products {
         if !seen_products

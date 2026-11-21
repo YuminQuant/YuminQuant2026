@@ -87,6 +87,21 @@ pub(crate) fn read_filtered_inputs<I: Sync, T: Send>(
     inputs.iter().map(read).collect()
 }
 
+pub(crate) fn visit_filtered_inputs<I: Sync, T: Send>(
+    root: &Path,
+    inputs: &[I],
+    read: impl Fn(&I) -> Result<T> + Sync,
+    mut consume: impl FnMut(T) -> Result<()>,
+) -> Result<()> {
+    if inputs.is_empty() { return Ok(()); }
+    if let Some(reader) = remote(root)? {
+        return visit_ordered(inputs.len(), reader.width,
+            |index| read(&inputs[index]), |_, result| consume(result));
+    }
+    for input in inputs { consume(read(input)?)?; }
+    Ok(())
+}
+
 pub(crate) fn visit_projected_files(
     paths: &[PathBuf], columns: &[String],
     mut consume: impl FnMut(&Path, Table) -> Result<()>,
@@ -113,22 +128,31 @@ pub(crate) fn visit_tables(
         }
         return Ok(());
     };
-    let width = reader.width.min(paths.len());
+    visit_ordered(paths.len(), reader.width, |index| {
+        let path = &paths[index];
+        let prepared = prepare(index, reader.open(path)?)?;
+        prepared.prefetch()?;
+        reader.compute.install(|| finish(index, prepared.read(path)?))
+    }, consume)
+}
+
+fn visit_ordered<T: Send>(
+    len: usize,
+    concurrency: usize,
+    read: impl Fn(usize) -> Result<T> + Sync,
+    mut consume: impl FnMut(usize, T) -> Result<()>,
+) -> Result<()> {
+    let width = concurrency.min(len);
     std::thread::scope(|scope| {
         let mut receivers = Vec::with_capacity(width);
         for lane in 0..width {
             let (tx, rx) = mpsc::sync_channel(0);
             receivers.push(rx);
-            let (prepare, finish) = (&prepare, &finish);
+            let read = &read;
             scope.spawn(move || {
-                for index in (lane..paths.len()).step_by(width) {
-                    let path = &paths[index];
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let prepared = prepare(index, reader.open(path)?)?;
-                        prepared.prefetch()?;
-                        reader.compute.install(|| finish(index, prepared.read(path)?))
-                    }))
-                    .unwrap_or_else(|_| Err(err(format!("projected read panicked: {}", path.display()))));
+                for index in (lane..len).step_by(width) {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(index)))
+                        .unwrap_or_else(|_| Err(err(format!("ordered read panicked at input {index}"))));
                     if tx.send(result).is_err() {
                         break;
                     }
@@ -136,7 +160,7 @@ pub(crate) fn visit_tables(
             });
         }
         // Dropping the receivers on error also releases workers waiting to hand off a table.
-        for index in 0..paths.len() {
+        for index in 0..len {
             let table = receivers[index % width].recv()
                 .map_err(|_| err("projected read workers stopped early"))??;
             consume(index, table)?;

@@ -1,4 +1,5 @@
 mod aroon;
+mod cci;
 mod flow;
 mod ljung_box;
 mod long_memory;

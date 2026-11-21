@@ -7,6 +7,7 @@ mod moving_average;
 pub mod rolling;
 mod rsi;
 mod skewness;
+mod snr;
 mod trend;
 mod variance_amplitude;
 mod variance_timing;

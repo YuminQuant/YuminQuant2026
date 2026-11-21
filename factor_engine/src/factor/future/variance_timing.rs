@@ -150,7 +150,7 @@ impl Factor for VarianceTiming {
     }
 }
 
-fn close_returns(close: &Values, links: &Values) -> Series {
+pub(super) fn close_returns(close: &Values, links: &Values) -> Series {
     (0..close.len())
         .map(|i| {
             (links[i] == Some(1.0)).then_some(())?;
@@ -167,19 +167,19 @@ fn bounded_ratio(vr: f64) -> f64 {
     (vr - 1.0) / (vr + 1.0)
 }
 
-fn enough(valid: usize, expected: usize) -> bool {
+pub(super) fn enough(valid: usize, expected: usize) -> bool {
     valid * 5 >= expected * 4
 }
 
-struct ReturnWindow<'a> {
+pub(super) struct ReturnWindow<'a> {
     returns: &'a Values,
-    count: usize,
-    mean: f64,
-    centered_squares: f64,
+    pub(super) count: usize,
+    pub(super) mean: f64,
+    pub(super) centered_squares: f64,
 }
 
 impl<'a> ReturnWindow<'a> {
-    fn new(returns: &'a Values) -> Option<Self> {
+    pub(super) fn new(returns: &'a Values) -> Option<Self> {
         let count = returns.iter().flatten().count();
         if count < 2 || !enough(count, returns.len()) {
             return None;
@@ -201,11 +201,11 @@ impl<'a> ReturnWindow<'a> {
         })
     }
 
-    fn std(&self) -> f64 {
+    pub(super) fn std(&self) -> f64 {
         (self.centered_squares / self.count as f64).sqrt()
     }
 
-    fn lag_pairs(&self, lag: usize) -> impl Iterator<Item = (usize, f64, f64)> + '_ {
+    pub(super) fn lag_pairs(&self, lag: usize) -> impl Iterator<Item = (usize, f64, f64)> + '_ {
         self.returns
             .windows(lag + 1)
             .enumerate()

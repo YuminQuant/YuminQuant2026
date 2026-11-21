@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>期货分钟因子回测总报告 · YuminQuant</title>
+<style>
+:root{--ink:#14243a;--muted:#506077;--line:#dce5ef;--panel:#f2f6fa;--blue:#174d85;--up:#9b302b;--down:#226044;--amber:#8a5416}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:65px}
+body{margin:0;background:#fff;color:var(--ink);font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif}
+nav{position:sticky;top:0;z-index:2;background:#fff;border-bottom:1px solid var(--line)}
+nav div{max-width:1370px;margin:auto;display:flex;align-items:center;gap:25px;padding:12px 27px;flex-wrap:wrap}
+nav strong{color:var(--ink);margin-right:12px}a,.link{color:var(--blue);text-decoration:none}a:hover,.link:hover{text-decoration:underline}
+.page{max-width:1370px;margin:auto;padding:30px 27px 54px}.hero{padding:24px 0 26px;border-bottom:1px solid var(--line)}
+h1,h2,h3,p{margin:0}h1{font-size:clamp(27px,4vw,41px);line-height:1.2;margin-bottom:10px}h2{font-size:21px;line-height:1.3}
+h3{font-size:15px}.muted{color:var(--muted)}.small{font-size:12px}.meta{margin-top:9px;color:var(--muted)}
+section{padding:27px 0;border-bottom:1px solid var(--line)}.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.controls,.pager,.tabs{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.controls{margin:15px 0}.controls label{display:flex;align-items:center;gap:6px}
+input,select,button{font:inherit;color:inherit}input,select,.pager button,.tabs button{border:1px solid #bfd0df;background:#fff;border-radius:4px;padding:6px 9px}
+input[type=search]{width:min(285px,100%)}select{max-width:min(100%,450px)}
+button,.sortable{cursor:pointer}button:disabled{cursor:default;opacity:.45}
+button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #457db4;outline-offset:2px}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;white-space:nowrap}
+th{color:#38516c;background:var(--panel);font-weight:600}th,td{text-align:right;padding:8px 10px;border-bottom:1px solid var(--line)}
+td:first-child,th:first-child{text-align:left}th[data-key]{padding:0}
+th button{display:block;width:100%;text-align:inherit;border:0;background:transparent;padding:8px 10px}
+#overview-table :is([data-key="id"],[data-key="family"]){width:1%}
+#overview-table :is(th,td):nth-child(2){text-align:left}
+#overview-table td:nth-child(2),#overview-table [data-key="family"] button{padding-inline:6px}
+th[aria-sort=ascending] button::after{content:" ↑"}th[aria-sort=descending] button::after{content:" ↓"}
+tbody tr:hover{background:#f6f9fc}.table-wrap{overflow:auto}.detail-table{max-height:510px;overflow:auto}.pager{justify-content:flex-end;margin:10px 0}
+.pager span:first-child{margin-right:auto}.link{border:0;background:transparent;padding:0;font-weight:600}.pos{color:var(--up)}.neg{color:var(--down)}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px}.two-col>div{min-width:0}
+figure{margin:15px 0 0}figcaption{margin:0 0 6px}figure img{width:100%;height:auto;border:1px solid var(--line);display:block}
+.tabs{margin:16px 0 12px;border-bottom:1px solid var(--line);padding-bottom:8px}
+.tabs button[aria-selected=true]{background:var(--blue);border-color:var(--blue);color:#fff}
+.detail-header{margin-top:12px}.detail-header p{margin-top:3px}
+.empty{padding:13px 0;color:var(--muted)}[hidden]{display:none!important}
+ul{padding-left:22px}li+li{margin-top:6px}footer{margin-top:22px}
+@media(max-width:900px){.two-col{grid-template-columns:1fr;gap:16px}.page,nav div{padding-left:16px;padding-right:16px}}
+@media(max-width:585px){nav div{gap:10px}.controls label{width:100%}.controls select{max-width:calc(100% - 80px)}th,td{padding:6px 8px}}
+</style>
+</head>
+<body>
+<nav aria-label="报告导航"><div><strong>YuminQuant · 期货研究</strong><a href="#overview">总览</a><a href="#families">分类与相关</a><a href="#detail">逐因子</a><a href="#method">结算口径</a></div></nav>
+<main class="page">
+<header class="hero">
+<h1>期货分钟因子回测总报告</h1>
+<p>先在每个品种的分钟时间序列上检验择时信号，再汇总各品种的表现。可按回测配置与因子类别筛选，逐因子查看收益、IC 和触发覆盖。</p>
+<p id="updated" class="meta small"></p>
+</header>
+<section id="overview">
+<div class="section-head"><h2>全库指标总表</h2><span id="group-range" class="muted small"></span></div>
+<div class="controls">
+<label>回测配置 <select id="group"></select></label>
+<label>因子类别 <select id="family"></select></label>
+<input type="search" id="search" aria-label="搜索因子" placeholder="搜索编号、标签或描述">
+</div>
+<div id="overview-table"></div>
+<div class="pager"><span id="results" class="small muted" aria-live="polite"></span><button id="prev" type="button">上一页</button><button id="next" type="button">下一页</button></div>
+</section>
+<section id="families">
+<div class="section-head"><h2>类别表现与信号相关</h2></div>
+<div class="two-col">
+<div><h3>因子类别</h3><div id="family-table"></div></div>
+<div><h3>日度择时收益的高相关因子对</h3><p class="muted small" id="correlation-info"></p><div id="correlations" class="detail-table"></div></div>
+</div>
+</section>
+<section id="detail">
+<div class="section-head"><h2>逐因子诊断</h2><label>选择因子 <select id="factor"></select></label></div>
+<div id="factor-info" class="detail-header"></div>
+<div class="tabs" aria-label="诊断视图">
+<button type="button" data-view="curves" aria-selected="true">回测图</button>
+<button type="button" data-view="sectors" aria-selected="false">板块</button>
+<button type="button" data-view="products" aria-selected="false">品种</button>
+</div>
+<div id="detail-content"></div>
+</section>
+<section id="method">
+<div class="section-head"><h2>结算口径与数据覆盖</h2></div>
+<ul>
+<li>自动查找本地配置路径下的 <code>yq_*/summary.parquet</code>。按标签、分位数模式、分位门槛和品种池区分回测配置。</li>
+<li>因子类别来自元数据的 tags，以简短名称显示。未映射的专门标签归入「其他」。</li>
+<li>历史五日模式使用每个品种、每个因子过去五个交易日的上下分位数均值触发分钟信号。当日分位模式按同品种当日数据取分位数，配置单独列示。</li>
+<li>总表的 IC 和 CosIC 取摘要中 All 行的日度均值。absIC 为全体 IC 的绝对值。</li>
+<li>收益统计使用按全体 IC 方向调整后的日收益序列。年化收益为日均收益 × 240，Sharpe 按 240 日年化。最大回撤用逐日累加的净值计算，初始净值为 1。</li>
+<li>有效日包括有有效日收益的零收益日。总回测日为摘要中 All 行的交易日总数。覆盖率为有效日除以总回测日。</li>
+<li>每合约日均触发数为每日触发上、下阈值的分钟总数，除以当日有阈值且有有效数据的合约数，再对交易日平均。</li>
+<li>收益明细沿用回测图的定向结果。累计图按日加总 bp。因子相关性使用同配置下共同有效交易日的全体日收益。</li>
+<li>摘要文件路径、大小和更新时间用于识别新增和更新。摘要和图分别保存在项目目录中，HTML 通过相对路径打开图。</li>
+</ul>
+<details id="issues"><summary>摘要读取或结算问题</summary><div id="issue-table"></div></details>
+</section>
+<footer class="muted small">表格和筛选逻辑嵌入 HTML，浏览器可离线打开。</footer>
+</main>
+<script type="application/json" id="report-data">__REPORT_PAYLOAD__</script>
+<script>
+'use strict';
+const doc = JSON.parse(document.getElementById('report-data').textContent);
+const byId = id => document.getElementById(id);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const format = (x, digits = 2) => Number.isFinite(x) ? x.toLocaleString('en-US', {minimumFractionDigits:digits,maximumFractionDigits:digits}) : '—';
+const date = x => String(x ?? '').replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3') || '—';
+const signed = (x, digits) => `<span class="${x>0?'pos':x<0?'neg':''}">${format(x,digits)}</span>`;
+const metric = (key,title,digits=2) => [key,title,x=>signed(x,digits)];
+const quantity = (key,title,digits=0) => [key,title,x=>format(x,digits)];
+const factorLink = x => `<button type="button" class="link" data-factor="${esc(x)}">${esc(x)}</button>`;
+const OVERVIEW_DIGITS = 3;
+const COLUMNS = [
+ ['id','因子',factorLink],['family','类别'],quantity('abs_ic','absIC',OVERVIEW_DIGITS),
+ metric('ic','IC',OVERVIEW_DIGITS),metric('cosic','CosIC',OVERVIEW_DIGITS),
+ metric('annual_return','年化收益 %',OVERVIEW_DIGITS),metric('sharpe','Sharpe',OVERVIEW_DIGITS),
+ metric('max_drawdown','最大回撤 %',OVERVIEW_DIGITS),
+ ['coverage','有效日 / 总回测日 / 覆盖率',(x,row)=>`${format(row.days,0)} / ${format(row.total_days,0)} / ${format(x,2)}%`]
+];
+const RETURN_COLUMNS = [
+ metric('long','多头 bp'),metric('short','空头 bp'),metric('net','合计 bp'),
+ quantity('trade_num','每合约日均触发数',1)
+];
+const state = {group:doc.groups[0].name,family:'',search:'',key:'abs_ic',desc:true,page:0,view:'curves',selected:''};
+const LOOKUP = new Map(doc.factors.map(entry=>[entry.id,entry]));
+const PAGE = 30;
+
+function table(rows, columns, sortable=false) {
+ if (!rows.length) return '<p class="empty">没有匹配的记录。</p>';
+ const head=columns.map(([key,title])=>{
+   const order=state.key===key?(state.desc?'descending':'ascending'):'none';
+   return sortable?`<th scope="col" data-key="${esc(key)}" aria-sort="${order}"><button type="button" data-sort="${esc(key)}">${esc(title)}</button></th>`:`<th scope="col">${esc(title)}</th>`;
+ }).join('');
+ const body=rows.map(row=>`<tr>${columns.map(([key,_,render])=>`<td>${(render||esc)(row[key],row)}</td>`).join('')}</tr>`).join('');
+ return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function groupEntries(){return doc.factors.filter(x=>x.group===state.group);}
+function isMatch(f) {
+ if(state.family && f.family!==state.family)return false;
+ return [f.id,f.family,f.description,...f.aliases,...f.tags].join(' ').toLowerCase().includes(state.search);
+}
+function sorter(a,b){
+ const x=a[state.key],y=b[state.key];
+ if(x==null)return y==null?a.id.localeCompare(b.id):1;
+ if(y==null)return -1;
+ const order=typeof x==='number'?x-y:String(x).localeCompare(String(y),'zh-CN',{numeric:true});
+ return (state.desc?-order:order)||a.id.localeCompare(b.id);
+}
+function drawOverview(){
+ const rows=groupEntries();
+ const first=Math.min(...rows.map(f=>f.first)),last=Math.max(...rows.map(f=>f.last));
+ byId('group-range').textContent=`${date(first)} 至 ${date(last)} · ${rows.length} 个因子`;
+ const filtered=rows.filter(isMatch).sort(sorter);
+ const count=filtered.length;
+ const pages=Math.ceil(count/PAGE);
+ state.page=Math.max(0,Math.min(state.page,pages-1));
+ byId('overview-table').innerHTML=table(filtered.slice(state.page*PAGE,(state.page+1)*PAGE),COLUMNS,true);
+ byId('results').textContent=count?`共 ${count} 项 · 第 ${state.page+1} / ${pages} 页`:'共 0 项';
+ byId('prev').disabled=state.page===0;
+ byId('next').disabled=state.page+1>=pages;
+}
+function drawClassification(){
+ const counts=new Map();
+ for(const f of groupEntries()){
+   counts.set(f.family,(counts.get(f.family)??0)+1);
+ }
+ const rows=[...counts].map(([name,count])=>({name,count}));
+ byId('family-table').innerHTML=table(rows,[['name','类别'],quantity('count','因子数')]);
+ const group=doc.groups.find(x=>x.name===state.group);
+ byId('correlation-info').textContent=`共同有效日 ≥ ${doc.min_common}，|ρ| ≥ ${format(doc.min_correlation)}。共 ${group.count} 对，显示前 ${group.pairs.length} 对。`;
+ byId('correlations').innerHTML=table(group.pairs,[['left','因子 A',factorLink],['right','因子 B',factorLink],
+                                                     metric('correlation','Pearson ρ',3),quantity('days','共同日')]);
+}
+function drawDetail(){
+ const f=LOOKUP.get(state.selected);
+ byId('factor-info').innerHTML=`<h3>${esc(f.id)} · ${esc(f.family)}</h3><p class="muted small">${date(f.first)} 至 ${date(f.last)} · ${esc(f.group)}${f.aliases.length?' · '+esc(f.aliases.join(', ')):''}</p>${f.description?`<p>${esc(f.description)}</p>`:''}`;
+ const tabs={
+  curves:()=>`<figure><figcaption>期货择时回测图 <span class="muted small">含板块池化 IC 与按品种定向的收益</span></figcaption><img src="${esc(f.plot)}" loading="lazy" alt="${esc(f.id)} 的板块 IC、累计收益和品种收益图"></figure>`,
+  sectors:()=>table(f.sectors,[['sector','板块'],...RETURN_COLUMNS]),
+  products:()=>table(f.products,[['ts_code','品种'],...RETURN_COLUMNS])
+ };
+ byId('detail-content').innerHTML=tabs[state.view]();
+}
+function showFactor(id,focus=false){
+ const f=LOOKUP.get(id);
+ if(!f)return;
+ if(state.group!==f.group){state.group=f.group;byId('group').value=f.group;refreshGroup();}
+ state.selected=id;
+ byId('factor').value=id;
+ drawDetail();
+ if(focus)byId('detail').scrollIntoView({block:'start'});
+}
+function refreshGroup(){
+ state.page=0;state.family='';
+ const items=groupEntries();
+ byId('family').innerHTML='<option value="">全部类别</option>'+[...new Set(items.map(f=>f.family))].map(name=>`<option>${esc(name)}</option>`).join('');
+ byId('factor').innerHTML=items.map(f=>`<option value="${esc(f.id)}">${esc(f.id)} · ${esc(f.family)}</option>`).join('');
+ state.selected=items[0].id;
+ drawOverview();drawClassification();drawDetail();
+}
+byId('updated').textContent=`已收录 ${doc.factors.length} 个因子 · ${doc.groups.length} 种回测配置 · 更新于 ${doc.generated}（北京时间）`;
+byId('group').innerHTML=doc.groups.map(g=>`<option value="${esc(g.name)}">${esc(g.name)} · ${g.size} 项</option>`).join('');
+byId('issues').hidden=!doc.failed.length;
+byId('issue-table').innerHTML=table(doc.failed,[['id','因子'],['reason','原因']]);
+byId('group').addEventListener('change',e=>{state.group=e.target.value;refreshGroup();});
+byId('family').addEventListener('change',e=>{state.family=e.target.value;state.page=0;drawOverview();});
+byId('search').addEventListener('input',e=>{state.search=e.target.value.trim().toLowerCase();state.page=0;drawOverview();});
+byId('prev').addEventListener('click',()=>{state.page--;drawOverview();});
+byId('next').addEventListener('click',()=>{state.page++;drawOverview();});
+byId('factor').addEventListener('change',e=>showFactor(e.target.value));
+document.querySelector('.tabs').addEventListener('click',e=>{
+ const button=e.target.closest('[data-view]');if(!button)return;
+ state.view=button.dataset.view;
+ for(const tab of document.querySelectorAll('[data-view]'))tab.setAttribute('aria-selected',tab===button);
+ drawDetail();
+});
+document.body.addEventListener('click',e=>{
+ const button=e.target.closest('[data-factor],[data-sort]');if(!button)return;
+ if(button.dataset.factor){showFactor(button.dataset.factor,true);return;}
+ const next=button.dataset.sort;state.desc=next===state.key?!state.desc:next!=='id'&&next!=='family';
+ state.key=next;state.page=0;drawOverview();
+});
+refreshGroup();
+</script>
+</body>
+</html>

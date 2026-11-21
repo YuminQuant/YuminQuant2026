@@ -69,18 +69,24 @@ def _sector_daily(
     return result
 
 
+def _triggers_per_contract(frame: pd.DataFrame) -> pd.Series:
+    eligible = frame[ELIGIBLE_CONTRACT_COUNT]
+    return frame[TRIGGER_COUNT] / eligible.where(eligible.gt(0))
+
+
 def _mean_daily_triggers(
     products: pd.DataFrame, market: pd.DataFrame, sectors: pd.DataFrame,
-) -> pd.Series:
+) -> tuple[pd.Series, pd.Series]:
     columns = [TRIGGER_COUNT, ELIGIBLE_CONTRACT_COUNT]
     if not set(columns).issubset(products.columns):
-        return pd.Series(dtype=float, name="trade_num")
+        empty = pd.Series(dtype=float, name="trade_num")
+        return empty.rename_axis("sector"), empty.rename_axis("ts_code")
     groups = products[columns].join(sectors["abbr"], on="ts_code")
     daily = groups.groupby(["trade_date", "abbr"], observed=True)[columns].sum(min_count=1)
-    per_contract = daily[TRIGGER_COUNT] / daily[ELIGIBLE_CONTRACT_COUNT]
-    means = per_contract.groupby("abbr", observed=True).mean().astype(float)
-    means.loc["All"] = (market[TRIGGER_COUNT] / market[ELIGIBLE_CONTRACT_COUNT]).mean()
-    return means.rename("trade_num").rename_axis("sector")
+    sector_means = _triggers_per_contract(daily).groupby("abbr", observed=True).mean().astype(float)
+    sector_means.loc["All"] = _triggers_per_contract(market).mean()
+    product_means = _triggers_per_contract(products).groupby("ts_code").mean()
+    return sector_means.rename("trade_num").rename_axis("sector"), product_means.rename("trade_num")
 
 
 def make_future_backtest_report(
@@ -104,6 +110,7 @@ def make_future_backtest_report(
     daily_sector = _sector_daily(daily_product.to_frame(), sectors, market.index)["net"]
     market_direction = pd.Series(np.sign(market["ic"].mean()), index=market.index)
     market_net = orient_future_returns(market, market_direction).sum(axis=1, min_count=2)
+    sector_trade_num, product_trade_num = _mean_daily_triggers(products, market, sectors)
     return {
         "market": market,
         "market_net": market_net,
@@ -112,7 +119,8 @@ def make_future_backtest_report(
         "directed": directed,
         "sector": sector_returns,
         "sector_ic": _mean_sector_ic(summary, market, sectors),
-        "trade_num": _mean_daily_triggers(products, market, sectors),
+        "trade_num": sector_trade_num,
+        "product_trade_num": product_trade_num,
         "daily_product": daily_product,
         "product_ic": products[["ic", "cosic"]],
         "daily_sector": daily_sector,

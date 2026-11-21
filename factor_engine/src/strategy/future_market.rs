@@ -106,13 +106,14 @@ impl FutureReferenceData {
         .map(str::to_owned);
         let needs_limits = self.limit_year.as_ref().is_none_or(|(old, _)| *old != year);
         let (limits, settlements) = super::session_io::join(
+            &root,
             || {
                 needs_limits
                     .then(|| load_limits(&config.data_root, year))
                     .transpose()
             },
             || {
-                super::session_io::map(exchanges.into_iter().collect(), |exchange| {
+                super::session_io::map(crate::artifact_io::backend(&root).is_some(), exchanges.into_iter().collect(), |exchange| {
                     let path = settlement_path(&root, exchange, cost_date);
                     let table = path
                         .storage_exists()

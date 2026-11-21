@@ -93,7 +93,7 @@ class ParquetReadCache:
         from . import artifact_io as io
         version = version or self.identity(path)
         metadata = self.get(self.metadata, version)
-        # Keep HDFS IO semaphore and NativeFile alive for the whole operation.
+        # Keep the stream alive for the parser; the adapter limits native calls.
         with io.open_file(path, "rb") as stream:
             self.opens += 1
             with pq.ParquetFile(stream, metadata=metadata, pre_buffer=False) as reader:

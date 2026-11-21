@@ -24,13 +24,16 @@ def options(root):
     return {"workers": workers, "fixed": values.get("fixed", False)}
 
 
-def ordered_map(function, items, *, root, workers=None, write=False):
+def ordered_map(function, items, *, root, workers=None, write=False, window=None):
     settings = options(root)
     fixed = settings.get("fixed", False)
     width = settings["workers"]
     if not fixed and workers is not None:
         if int(workers) < 1: raise ValueError("IO workers must be positive")
         width = min(width, int(workers))
+    if window is not None:
+        if window < 1: raise ValueError("IO window must be positive")
+        width = min(width, window)
     if width == 1 or getattr(_worker, "active", False):
         for item in items:
             yield function(item)

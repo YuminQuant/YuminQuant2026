@@ -3,8 +3,6 @@ use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use rayon::prelude::*;
-
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::data::parquet_io::read_parquet;
@@ -254,7 +252,7 @@ pub fn derive_stock_relations(
         }
     }
     let root = config.data_root.join("derived/stock/relations");
-    let pool = crate::resources::thread_pool(request.threads)?;
+    crate::resources::compute_threads(request.threads)?;
     let mut processed = 0;
     for year in first_year..=last_year {
         let events = fund_events(&fund_files[&year])?;
@@ -298,18 +296,13 @@ pub fn derive_stock_relations(
                 }
                 outputs.push((date, membership_table(date, rows)?));
             }
-            let outcomes = pool.install(|| {
-                outputs
-                    .par_iter()
-                    .map(|(date, table)| -> Result<_> {
-                        let path = root.join(year.to_string()).join(format!("{date}.parquet"));
-                        write_derived_parquet(&path, table)?;
-                        Ok((*date, table.len))
-                    })
-                    .collect::<Vec<_>>()
-            });
+            let outcomes = crate::data::read_ahead::write_files(&root, outputs, |(date, table)| {
+                let path = root.join(year.to_string()).join(format!("{date}.parquet"));
+                write_derived_parquet(&path, &table)?;
+                Ok((date, table.len))
+            })?;
             for outcome in outcomes {
-                let (date, rows) = outcome?;
+                let (date, rows) = outcome;
                 processed += 1;
                 println!(
                     "derive-stock-relations [{processed}/{}] date={date} membership_rows={rows}",

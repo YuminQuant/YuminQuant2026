@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::time::Instant;
 
-use rayon::prelude::*;
 use serde_json::{json, Value};
 
 use crate::artifact_io::StoragePathExt;
@@ -451,7 +450,7 @@ pub fn derive_stock_events(config: &EngineConfig, request: &StockEventsRequest) 
     persist_identity(&root, &derived_manifest(&source))?;
     let catalog = DataCatalog::new(config.data_root.clone());
     let loader = MarketDataLoader::new(catalog.clone());
-    let pool = crate::resources::thread_pool(request.threads)?;
+    crate::resources::compute_threads(request.threads)?;
     let mut years: BTreeMap<i32, YearEvents> = BTreeMap::new();
     let mut seen = SeenEvents::new();
     let mut active: VecDeque<Event> = VecDeque::new();
@@ -514,20 +513,14 @@ pub fn derive_stock_events(config: &EngineConfig, request: &StockEventsRequest) 
             }
             outputs.push((date, feature_table(date, &prices[&date], &states)?));
         }
-        let results = pool.install(|| {
-            outputs
-                .par_iter()
-                .map(|(date, table)| -> Result<usize> {
-                    let path = root
-                        .join((date / 10000).to_string())
-                        .join(format!("{date}.parquet"));
-                    write_derived_parquet(&path, table)?;
-                    Ok(table.len)
-                })
-                .collect::<Vec<_>>()
-        });
-        for ((date, _), result) in outputs.iter().zip(results) {
-            let rows = result?;
+        let results = crate::data::read_ahead::write_files(&root, outputs, |(date, table)| {
+            let path = root
+                .join((date / 10000).to_string())
+                .join(format!("{date}.parquet"));
+            write_derived_parquet(&path, &table)?;
+            Ok((date, table.len))
+        })?;
+        for (date, rows) in results {
             processed += 1;
             println!(
                 "derive-stock-events [{processed}/{}] date={date} rows={rows} elapsed_s={:.1}",

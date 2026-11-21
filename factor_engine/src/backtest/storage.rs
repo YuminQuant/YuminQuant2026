@@ -23,55 +23,69 @@ pub fn write_backtest_outputs(
 ) -> Result<Vec<PathBuf>> {
     crate::artifact_io::create_dir_all(output_dir)?;
     remove_legacy_outputs(output_dir)?;
-    let mut written = Vec::new();
+    let mut jobs: Vec<Box<dyn FnOnce() -> Result<PathBuf> + Send>> = Vec::new();
 
-    for (factor_id, rows) in group_returns_by_factor(returns) {
-        let path = factor_metric_path(output_dir, &factor_id, "returns.parquet")?;
-        write_parquet(&path, &returns_table(&rows)?)?;
-        written.push(path);
+    for (factor_id, rows) in group_by_factor(returns, |row| &row.factor_id) {
+        jobs.push(Box::new(move || {
+            let path = factor_metric_path(output_dir, &factor_id, "returns.parquet")?;
+            write_parquet(&path, &returns_table(&rows)?)?;
+            Ok(path)
+        }));
     }
 
-    for (factor_id, rows) in group_index_group_returns_by_factor(index_group_returns) {
-        let path = factor_metric_path(output_dir, &factor_id, "index_group_returns.parquet")?;
-        write_parquet(&path, &index_group_returns_table(&rows)?)?;
-        written.push(path);
+    for (factor_id, rows) in group_by_factor(index_group_returns, |row| &row.factor_id) {
+        jobs.push(Box::new(move || {
+            let path = factor_metric_path(output_dir, &factor_id, "index_group_returns.parquet")?;
+            write_parquet(&path, &index_group_returns_table(&rows)?)?;
+            Ok(path)
+        }));
     }
 
-    for (factor_id, rows) in group_ic_by_factor(daily_ic) {
-        let path = factor_metric_path(output_dir, &factor_id, "ic.parquet")?;
-        write_parquet(&path, &ic_observation_table(&rows)?)?;
-        written.push(path);
+    for (factor_id, rows) in group_by_factor(daily_ic, |row| &row.factor_id) {
+        jobs.push(Box::new(move || {
+            let path = factor_metric_path(output_dir, &factor_id, "ic.parquet")?;
+            write_parquet(&path, &ic_observation_table(&rows)?)?;
+            Ok(path)
+        }));
     }
 
-    for (factor_id, rows) in group_factor_stats_by_factor(factor_stats) {
-        let path = factor_metric_path(output_dir, &factor_id, "factor_stats.parquet")?;
-        write_parquet(&path, &factor_stats_table(&rows)?)?;
-        written.push(path);
+    for (factor_id, rows) in group_by_factor(factor_stats, |row| &row.factor_id) {
+        jobs.push(Box::new(move || {
+            let path = factor_metric_path(output_dir, &factor_id, "factor_stats.parquet")?;
+            write_parquet(&path, &factor_stats_table(&rows)?)?;
+            Ok(path)
+        }));
     }
 
     if !holdings.is_empty() {
-        for (factor_id, rows) in group_holdings_by_factor(holdings) {
-            let path = factor_metric_path(output_dir, &factor_id, "holdings.parquet")?;
-            write_parquet(&path, &holdings_table(&rows)?)?;
-            written.push(path);
+        for (factor_id, rows) in group_by_factor(holdings, |row| &row.factor_id) {
+            jobs.push(Box::new(move || {
+                let path = factor_metric_path(output_dir, &factor_id, "holdings.parquet")?;
+                write_parquet(&path, &holdings_table(&rows)?)?;
+                Ok(path)
+            }));
         }
     }
 
     if !industry_weights.is_empty() {
-        for (factor_id, rows) in group_industry_weights_by_factor(industry_weights) {
-            let path = factor_metric_path(output_dir, &factor_id, "industry_weights.parquet")?;
-            write_parquet(&path, &industry_weights_table(&rows)?)?;
-            written.push(path);
+        for (factor_id, rows) in group_by_factor(industry_weights, |row| &row.factor_id) {
+            jobs.push(Box::new(move || {
+                let path = factor_metric_path(output_dir, &factor_id, "industry_weights.parquet")?;
+                write_parquet(&path, &industry_weights_table(&rows)?)?;
+                Ok(path)
+            }));
         }
     }
     if !barra_exposure.is_empty() {
-        for (factor_id, rows) in group_barra_exposure_by_factor(barra_exposure) {
-            let path = factor_metric_path(output_dir, &factor_id, "barra_exposure.parquet")?;
-            write_parquet(&path, &barra_exposure_table(&rows)?)?;
-            written.push(path);
+        for (factor_id, rows) in group_by_factor(barra_exposure, |row| &row.factor_id) {
+            jobs.push(Box::new(move || {
+                let path = factor_metric_path(output_dir, &factor_id, "barra_exposure.parquet")?;
+                write_parquet(&path, &barra_exposure_table(&rows)?)?;
+                Ok(path)
+            }));
         }
     }
-    Ok(written)
+    crate::data::read_ahead::write_files(output_dir, jobs, |job| job())
 }
 
 fn factor_metric_path(output_dir: &Path, factor_id: &str, metric_file: &str) -> Result<PathBuf> {
@@ -107,87 +121,13 @@ fn remove_legacy_outputs(output_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn group_returns_by_factor(rows: &[PerformancePoint]) -> BTreeMap<String, Vec<PerformancePoint>> {
-    let mut grouped = BTreeMap::<String, Vec<PerformancePoint>>::new();
+fn group_by_factor<T>(
+    rows: &[T],
+    factor_id: impl Fn(&T) -> &str,
+) -> BTreeMap<&str, Vec<&T>> {
+    let mut grouped = BTreeMap::<&str, Vec<&T>>::new();
     for row in rows {
-        grouped
-            .entry(row.factor_id.clone())
-            .or_default()
-            .push(row.clone());
-    }
-    grouped
-}
-
-fn group_index_group_returns_by_factor(
-    rows: &[IndexGroupReturnPoint],
-) -> BTreeMap<String, Vec<IndexGroupReturnPoint>> {
-    let mut grouped = BTreeMap::<String, Vec<IndexGroupReturnPoint>>::new();
-    for row in rows {
-        grouped
-            .entry(row.factor_id.clone())
-            .or_default()
-            .push(row.clone());
-    }
-    grouped
-}
-
-fn group_ic_by_factor(rows: &[IcObservation]) -> BTreeMap<String, Vec<IcObservation>> {
-    let mut grouped = BTreeMap::<String, Vec<IcObservation>>::new();
-    for row in rows {
-        grouped
-            .entry(row.factor_id.clone())
-            .or_default()
-            .push(row.clone());
-    }
-    grouped
-}
-
-fn group_factor_stats_by_factor(
-    rows: &[FactorStatsDaily],
-) -> BTreeMap<String, Vec<FactorStatsDaily>> {
-    let mut grouped = BTreeMap::<String, Vec<FactorStatsDaily>>::new();
-    for row in rows {
-        grouped
-            .entry(row.factor_id.clone())
-            .or_default()
-            .push(row.clone());
-    }
-    grouped
-}
-
-fn group_holdings_by_factor(rows: &[HoldingWeight]) -> BTreeMap<String, Vec<HoldingWeight>> {
-    let mut grouped = BTreeMap::<String, Vec<HoldingWeight>>::new();
-    for row in rows {
-        grouped
-            .entry(row.factor_id.clone())
-            .or_default()
-            .push(row.clone());
-    }
-    grouped
-}
-
-fn group_industry_weights_by_factor(
-    rows: &[IndustryWeight],
-) -> BTreeMap<String, Vec<IndustryWeight>> {
-    let mut grouped = BTreeMap::<String, Vec<IndustryWeight>>::new();
-    for row in rows {
-        grouped
-            .entry(row.factor_id.clone())
-            .or_default()
-            .push(row.clone());
-    }
-    grouped
-}
-
-fn group_barra_exposure_by_factor(
-    rows: &[BarraExposureRecord],
-) -> BTreeMap<String, Vec<BarraExposureRecord>> {
-    let mut grouped = BTreeMap::<String, Vec<BarraExposureRecord>>::new();
-    for row in rows {
-        grouped
-            .entry(row.factor_id.clone())
-            .or_default()
-            .push(row.clone());
+        grouped.entry(factor_id(row)).or_default().push(row);
     }
     grouped
 }
@@ -202,7 +142,7 @@ fn safe_file_stem(value: &str) -> String {
         .collect()
 }
 
-fn factor_stats_table(rows: &[FactorStatsDaily]) -> Result<Table> {
+fn factor_stats_table(rows: &[&FactorStatsDaily]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",
@@ -234,7 +174,7 @@ fn factor_stats_table(rows: &[FactorStatsDaily]) -> Result<Table> {
     ]))
 }
 
-fn returns_table(rows: &[PerformancePoint]) -> Result<Table> {
+fn returns_table(rows: &[&PerformancePoint]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",
@@ -266,7 +206,7 @@ fn returns_table(rows: &[PerformancePoint]) -> Result<Table> {
     ]))
 }
 
-fn index_group_returns_table(rows: &[IndexGroupReturnPoint]) -> Result<Table> {
+fn index_group_returns_table(rows: &[&IndexGroupReturnPoint]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",
@@ -310,7 +250,7 @@ fn index_group_returns_table(rows: &[IndexGroupReturnPoint]) -> Result<Table> {
     ]))
 }
 
-fn ic_observation_table(rows: &[IcObservation]) -> Result<Table> {
+fn ic_observation_table(rows: &[&IcObservation]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",
@@ -349,7 +289,7 @@ fn ic_observation_table(rows: &[IcObservation]) -> Result<Table> {
     ]))
 }
 
-fn holdings_table(rows: &[HoldingWeight]) -> Result<Table> {
+fn holdings_table(rows: &[&HoldingWeight]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",
@@ -375,7 +315,7 @@ fn holdings_table(rows: &[HoldingWeight]) -> Result<Table> {
     ]))
 }
 
-fn industry_weights_table(rows: &[IndustryWeight]) -> Result<Table> {
+fn industry_weights_table(rows: &[&IndustryWeight]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",
@@ -409,7 +349,7 @@ fn industry_weights_table(rows: &[IndustryWeight]) -> Result<Table> {
     ]))
 }
 
-fn barra_exposure_table(rows: &[BarraExposureRecord]) -> Result<Table> {
+fn barra_exposure_table(rows: &[&BarraExposureRecord]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",

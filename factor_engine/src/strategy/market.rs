@@ -143,6 +143,7 @@ pub fn load_stock_daily_frames(data_root: &Path, dates: &[i32]) -> Result<Vec<Ma
             "amount".to_string(),
         ];
         let (table, limits) = super::session_io::join(
+            data_root,
             || read_parquet(&path, Some(&columns)),
             || load_trade_filter_or_warn(data_root, *trade_date),
         )?;
@@ -240,7 +241,7 @@ pub fn load_stock_minute_frames_for_run(
             "vol".to_string(),
             "amount".to_string(),
         ];
-        let (table, (price_bands, limits)) = super::session_io::join(|| if let Some(symbols) = symbols {
+        let (table, (price_bands, limits)) = super::session_io::join(data_root, || if let Some(symbols) = symbols {
             let selected = symbols.clone();
             read_parquet_symbols(&path, &columns, move |s| selected.contains(s))
         } else {
@@ -947,6 +948,7 @@ fn load_price_bands(
         .join(format!("{date}.parquet"));
     let cols = ["ts_code", "up_limit", "down_limit"].map(str::to_string);
     let (table, previous) = super::session_io::join(
+        root,
         || read_parquet(&path, Some(&cols)),
         || read_parquet(&daily_pv_path(root, date), Some(&["ts_code".into(), "pre_close".into()])),
     )?;

@@ -4,8 +4,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
-use rayon::prelude::*;
-
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::data::parquet_io::read_parquet;
@@ -195,7 +193,7 @@ pub fn derive_hist_concepts(config: &EngineConfig, request: &HistConceptRequest)
             ));
         }
     }
-    let pool = crate::resources::thread_pool(request.threads)?;
+    crate::resources::compute_threads(request.threads)?;
     let mut state = BTreeMap::new();
     let mut cursor = 0;
     let mut processed = 0;
@@ -215,20 +213,14 @@ pub fn derive_hist_concepts(config: &EngineConfig, request: &HistConceptRequest)
             }
             outputs.push((date, table));
         }
-        let results = pool.install(|| {
-            outputs
-                .par_iter()
-                .map(|(date, table)| -> Result<usize> {
-                    let path = root
-                        .join((date / 10000).to_string())
-                        .join(format!("{date}.parquet"));
-                    write_derived_parquet(&path, table)?;
-                    Ok(table.len)
-                })
-                .collect::<Vec<_>>()
-        });
-        for ((date, _), result) in outputs.iter().zip(results) {
-            let rows = result?;
+        let results = crate::data::read_ahead::write_files(&root, outputs, |(date, table)| {
+            let path = root
+                .join((date / 10000).to_string())
+                .join(format!("{date}.parquet"));
+            write_derived_parquet(&path, &table)?;
+            Ok((date, table.len))
+        })?;
+        for (date, rows) in results {
             processed += 1;
             println!(
                 "derive-hist-concepts [{processed}/{}] date={date} rows={rows} elapsed_s={:.1}",

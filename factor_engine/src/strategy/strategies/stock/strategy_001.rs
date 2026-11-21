@@ -467,6 +467,7 @@ impl Strategy for Strategy001 {
                 let filter_columns = (self.exclude_st || self.exclude_limit)
                     .then(|| self.filter_columns());
                 let (signal, excluded) = crate::strategy::session_io::join(
+                    signal_root,
                     || load_signal(signal_root, previous, signal_id),
                     || filter_columns.as_ref().map(|columns|
                         read_parquet(&trade_filter_path(config, date), Some(columns))

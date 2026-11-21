@@ -1,8 +1,6 @@
 use crate::artifact_io::StoragePathExt;
 use std::path::PathBuf;
 
-use rayon::prelude::*;
-
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{AssetClass, DatasetId};
@@ -73,24 +71,23 @@ impl DeriveEngine {
         let selected = selected_bar_columns(request.columns.as_deref())?;
         let columns = bar_source_columns(&selected);
         let mut report = DeriveBarReport::default();
-        let thread_pool = crate::resources::thread_pool(request.threads)?;
-        for date_batch in dates.chunks(request.date_batch_size) {
-            let outcomes = thread_pool.install(|| {
-                date_batch
-                    .par_iter()
-                    .map(|trade_date| {
-                        derive_one_stock_minute_bar_date(
-                            *trade_date,
-                            request,
-                            &self.config.data_root,
-                            &catalog,
-                            &columns,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            });
+        let threads = crate::resources::compute_threads(request.threads)?;
+        // Each minute file expands to a full day's table and intermediate rows.
+        let date_width = request.date_batch_size.min(threads).min(4);
+        for date_batch in dates.chunks(date_width) {
+            let outcomes = crate::data::read_ahead::write_files(
+                &self.config.data_root, date_batch.to_vec(), |trade_date| {
+                    derive_one_stock_minute_bar_date(
+                        trade_date,
+                        request,
+                        &self.config.data_root,
+                        &catalog,
+                        &columns,
+                    )
+                },
+            )?;
             for outcome in outcomes {
-                match outcome? {
+                match outcome {
                     DeriveDateOutcome::Written {
                         trade_date,
                         output_path,

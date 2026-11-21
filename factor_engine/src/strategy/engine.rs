@@ -137,9 +137,11 @@ impl StrategyEngine {
                     files.push(template.for_date(&run_config.data_root, name, batch[0]));
                 }
                 let (frames, other_inputs) = session_io::join(
+                    &run_config.data_root,
                     || load_session_frames(&run_config, batch[0], &future_meta, &mut daily_cache,
                         future_market_universe.as_ref(), universe.as_ref()),
                     || session_io::join(
+                        &run_config.data_root,
                         || if run_config.asset_class == StrategyAssetClass::Future && run_config.future.daily_costs {
                             future_reference.load_day(&run_config, batch[0], calendar.previous_open(batch[0]),
                                 &future_meta, future_market_universe.as_ref()).map(|day| Some(Arc::new(day)))

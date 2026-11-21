@@ -3,7 +3,6 @@ from yq_ml_alpha.output import artifact_io as data_io
 
 import os
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterable, Literal
 
@@ -64,9 +63,8 @@ class DailyWideWriter:
     def _map_writes(self, function, items):
         if data_io.backend(self.output_root) is not None:
             return list(data_io.ordered_io_map(function, items, root=self.output_root,
-                workers=self.write_workers, write=True))
-        with ThreadPoolExecutor(max_workers=min(self.write_workers, len(items))) as pool:
-            return list(pool.map(function, items))
+                workers=self.write_workers, write=True, window=4 if self.key_columns == MINUTE_KEY_COLUMNS else None))
+        return [function(item) for item in items]
 
     def write(
         self,
@@ -93,15 +91,14 @@ class DailyWideWriter:
 
     def dates_missing_output_column(self, coverage_dates: Iterable[int]) -> list[int]:
         dates = sorted({int(date) for date in coverage_dates})
-        missing = []
-        for trade_date in dates:
+        return [trade_date for trade_date, columns in zip(dates, self._read_schemas(dates))
+                if self.output_id not in columns]
+
+    def _read_schemas(self, dates):
+        def columns(trade_date):
             path = self._path(trade_date)
-            if not artifact_io.exists(path):
-                missing.append(trade_date)
-                continue
-            if self.output_id not in parquet_columns(path):
-                missing.append(trade_date)
-        return missing
+            return parquet_columns(path) if artifact_io.exists(path) else ()
+        return data_io.ordered_io_map(columns, dates, root=self.output_root)
 
     def write_many(self, predictions: dict[str, pd.DataFrame], *,
                    coverage_dates: dict[str, Iterable[int]] | None = None,
@@ -214,12 +211,9 @@ class DailyWideWriter:
     def _schema_columns(self, dates: list[int]) -> list[str]:
         if self.file_suffix == "_ml":
             return self.key_columns + sorted(self._known_columns - set(self.key_columns))
-        for trade_date in dates:
-            if trade_date in self._schema_dates_seen:
-                continue
-            path = self._path(trade_date)
-            if artifact_io.exists(path):
-                self._known_columns.update(parquet_columns(path))
+        pending = list(dict.fromkeys(date for date in dates if date not in self._schema_dates_seen))
+        for trade_date, columns in zip(pending, self._read_schemas(pending)):
+            self._known_columns.update(columns)
             self._schema_dates_seen.add(trade_date)
         value_columns = sorted(self._known_columns - set(self.key_columns))
         return self.key_columns + value_columns

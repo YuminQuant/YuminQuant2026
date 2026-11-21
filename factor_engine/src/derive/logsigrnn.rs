@@ -2,7 +2,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rayon::prelude::*;
 
 use crate::artifact_io::StoragePathExt;
 use crate::calendar::TradingCalendar;
@@ -311,13 +310,11 @@ pub fn derive(config: &EngineConfig, request: &LogsigRnnRequest) -> Result<()> {
     if kernel.log_width() != WIDTH {
         return Err(err("Logsig-RNN Lyndon width mismatch"));
     }
-    let pool = crate::resources::thread_pool(Some(request.threads))?;
+    let threads = crate::resources::compute_threads(Some(request.threads))?;
     let progress = ProgressBar::new("derive-logsigrnn", dates.len(), true);
-    for batch in dates.chunks(request.date_batch_size) {
-        let results = pool.install(|| {
-            batch
-                .par_iter()
-                .map(|&date| {
+    for batch in dates.chunks(request.date_batch_size.min(threads).min(4)) {
+        let results = crate::data::read_ahead::write_files(
+            &config.data_root, batch.to_vec(), |date| {
                     let previous = calendar.warmup_start(date, 1);
                     one_date(
                         config,
@@ -327,11 +324,9 @@ pub fn derive(config: &EngineConfig, request: &LogsigRnnRequest) -> Result<()> {
                         request.overwrite,
                     )
                     .map(|rows| (date, rows))
-                })
-                .collect::<Vec<_>>()
-        });
-        for result in results {
-            let (date, rows) = result?;
+            },
+        )?;
+        for (date, rows) in results {
             progress.tick(match rows {
                 Some(n) => format!("date={date} rows={n}"),
                 None => format!("date={date} skipped existing"),

@@ -113,9 +113,17 @@ impl OutputBatch {
     }
 
     fn write(&mut self, path: impl Fn(AssetClass, Frequency, i32) -> PathBuf) -> Result<Vec<PathBuf>> {
-        let mut written = Vec::new();
-        for ((asset, frequency, date), frame) in std::mem::take(&mut self.frames) {
-            let destination = path(asset, frequency, date);
+        let jobs = std::mem::take(&mut self.frames).into_iter()
+            .map(|((asset, frequency, date), frame)| (path(asset, frequency, date), asset, frequency, date, frame))
+            .collect::<Vec<_>>();
+        let Some((first, ..)) = jobs.first() else { return Ok(Vec::new()); };
+        let root = first.clone();
+        let window = output_file_window(jobs.iter().map(|job| job.2)).min(
+            merge_file_window(jobs.iter().map(|job| {
+                job.4.keys.len().saturating_mul(job.4.columns.len().max(1))
+            })),
+        );
+        crate::data::read_ahead::write_files_windowed(&root, jobs, window, |(destination, asset, frequency, date, frame)| {
             let _guard = crate::artifact_io::lock(&destination)?;
             let mut updates = BTreeMap::new();
             for (name, (data, changed)) in frame.columns {
@@ -132,10 +140,19 @@ impl OutputBatch {
             let refs = updates.iter().map(|(name, values)| (name.clone(), values.iter().collect())).collect();
             let table = merge_factor_columns(&destination, asset, frequency, date, &refs)?;
             write_parquet(&destination, &table)?;
-            written.push(destination);
-        }
-        Ok(written)
+            Ok(destination)
+        })
     }
+}
+
+fn output_file_window(frequencies: impl Iterator<Item = Frequency>) -> usize {
+    if frequencies.into_iter().any(|frequency| frequency != Frequency::Daily) { 4 } else { 50 }
+}
+
+fn merge_file_window(cells: impl Iterator<Item = usize>) -> usize {
+    // Bound temporary keys, pending updates and column buffers for wide merges.
+    let largest = cells.max().unwrap_or(0).saturating_mul(160).max(1);
+    (256 * 1024 * 1024 / largest).max(1)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -335,6 +352,27 @@ impl FactorStorage {
         }
 
         let total = grouped.len();
+        if crate::artifact_io::backend(&self.factor_root).is_some() {
+            let window = output_file_window(grouped.keys().map(|key| key.1)).min(
+                merge_file_window(grouped.values().map(|columns| {
+                    columns.values().map(Vec::len).sum()
+                })),
+            );
+            let written = crate::data::read_ahead::write_files_windowed(
+                &self.factor_root, grouped.into_iter().collect(), window,
+                |((asset, frequency, date), columns)| {
+                    let path = self.output_path(asset, frequency, date);
+                    let _guard = crate::artifact_io::lock(&path)?;
+                    let table = merge_factor_columns(&path, asset, frequency, date, &columns)?;
+                    write_parquet(&path, &table)?;
+                    Ok((date, path))
+                },
+            )?;
+            return Ok(written.into_iter().enumerate().map(|(index, (date, path))| {
+                progress(index + 1, total, date, "complete");
+                path
+            }).collect());
+        }
         let mut written = Vec::new();
         for ((asset_class, frequency, trade_date), columns) in grouped {
             let path = self.output_path(asset_class, frequency, trade_date);
@@ -606,17 +644,16 @@ impl LabelStorage {
             }
         }
 
-        let mut written = Vec::new();
-        for ((asset_class, frequency, trade_date), mut frame) in grouped {
+        let window = output_file_window(grouped.keys().map(|key| key.1));
+        crate::data::read_ahead::write_files_windowed(&self.label_root, grouped.into_iter().collect(), window, |((asset_class, frequency, trade_date), mut frame)| {
             let path = self.output_path(asset_class, frequency, trade_date);
             let _guard = crate::artifact_io::lock(&path)?;
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
             let table =
                 pending_frame_to_table(frequency, trade_date, &frame, OutputValueDtype::F32)?;
             write_parquet(&path, &table)?;
-            written.push(path);
-        }
-        Ok(written)
+            Ok(path)
+        })
     }
 
     pub fn write_metadata(&self, specs: &[LabelSpec]) -> Result<()> {
@@ -705,17 +742,16 @@ impl BarraStorage {
             }
         }
 
-        let mut written = Vec::new();
-        for ((asset_class, frequency, trade_date), mut frame) in grouped {
+        let window = output_file_window(grouped.keys().map(|key| key.1));
+        crate::data::read_ahead::write_files_windowed(&self.barra_root, grouped.into_iter().collect(), window, |((asset_class, frequency, trade_date), mut frame)| {
             let path = self.output_path(asset_class, frequency, trade_date);
             let _guard = crate::artifact_io::lock(&path)?;
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
             let table =
                 pending_frame_to_table(frequency, trade_date, &frame, OutputValueDtype::F32)?;
             write_parquet(&path, &table)?;
-            written.push(path);
-        }
-        Ok(written)
+            Ok(path)
+        })
     }
 
     pub fn write_metadata(&self, specs: &[BarraSpec]) -> Result<()> {
@@ -877,8 +913,7 @@ impl IntradayDailyRawStorage {
             }
         }
 
-        let mut written = Vec::new();
-        for ((asset_class, trade_date), mut frame) in grouped {
+        crate::data::read_ahead::write_files(&self.cache_root, grouped.into_iter().collect(), |((asset_class, trade_date), mut frame)| {
             let path = self.output_path(asset_class, trade_date);
             let _guard = crate::artifact_io::lock(&path)?;
             merge_existing_output(&path, Frequency::Daily, trade_date, &mut frame)?;
@@ -889,9 +924,8 @@ impl IntradayDailyRawStorage {
                 OutputValueDtype::F64,
             )?;
             write_parquet(&path, &table)?;
-            written.push(path);
-        }
-        Ok(written)
+            Ok(path)
+        })
     }
 
     pub fn load_raw_by_dates(

@@ -58,7 +58,7 @@ class AnalystReportDataset:
         columns = TEXT_COLUMNS + (["quarter", "np"] if include_label else [])
         parts = []
         rows = 0
-        for year in range(max(read_lower.year, min(self.files)), max(dates) // 10000 + 1):
+        def read_year(year):
             if year not in self.files:
                 raise FileNotFoundError(f"missing analyst report year: {year}")
             table = data_io.read_parquet(self.files[year], columns=columns)
@@ -66,6 +66,10 @@ class AnalystReportDataset:
                 (table.report_date >= int(read_lower.strftime("%Y%m%d")))
                 & (table.report_date < max(dates))
             ].copy()
+            return year, table
+
+        years = range(max(read_lower.year, min(self.files)), max(dates) // 10000 + 1)
+        for year, table in data_io.ordered_io_map(read_year, years, root=self.config.features.root):
             parts.append(table)
             rows += len(table)
             print(f"ml-alpha reports {split_name} year={year} rows={len(table)} "

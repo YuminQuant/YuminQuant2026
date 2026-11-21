@@ -6,7 +6,9 @@
 
 ## 配置层次 / Configuration layers
 
-远程文件读取由部署适配器设置并发和限流，xz336 使用 50 并发和每秒 1,000 次限流。本地在调用线程串行读取。远程 worker 读取独立文件，调用线程按日期顺序更新缓存和组装样本。嵌套读取在当前 worker 内执行，远程日频写出使用同一队列。
+本地文件读写串行。HDFS 读写各最多 50 并发，共用每进程每秒 1,000 次客户端文件操作的限流。远程按有界队列读写独立文件，按日期顺序更新状态和组装样本；日频宽表同一目标仍使用文件锁和原子发布。
+
+Local file I/O is serial. HDFS allows up to 50 reads and 50 writes, sharing a per-process rate of 1,000 client file operations per second. Bounded queues handle independent remote files while state updates and sample assembly remain date ordered. Daily wide tables retain per-file locks and atomic publication.
 
 The deployment adapter controls remote concurrency and pacing. On xz336 the settings are 50 workers and 1,000 filesystem operations per second. Local reads run serially on the caller thread. Remote workers read independent files, and the caller updates caches and assembles samples in date order. Nested reads run inline. Remote daily output shares the worker queue.
 

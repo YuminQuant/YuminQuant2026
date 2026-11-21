@@ -25,17 +25,20 @@ fn pool() -> Result<&'static rayon::ThreadPool> {
 
 /// Run independent input tasks on the shared pool. Consumers apply results in order.
 pub(crate) fn join<A: Send, B: Send>(
+    root: &Path,
     left: impl FnOnce() -> A + Send,
     right: impl FnOnce() -> B + Send,
 ) -> Result<(A, B)> {
+    if crate::artifact_io::backend(root).is_none() { return Ok((left(), right())); }
     Ok(pool()?.install(|| rayon::join(left, right)))
 }
 
 pub(crate) fn map<I: Send, T: Send>(
+    remote: bool,
     items: Vec<I>,
     read: impl Fn(I) -> Result<T> + Send + Sync,
 ) -> Result<Vec<T>> {
-    if items.len() < 2 {
+    if !remote || items.len() < 2 {
         return items.into_iter().map(read).collect();
     }
     pool()?
@@ -73,7 +76,8 @@ pub type SessionInputs = BTreeMap<String, Option<Table>>;
 
 pub(crate) fn load_files(files: Vec<SessionFile>) -> Result<SessionInputs> {
     let mut inputs = SessionInputs::new();
-    for (name, table) in map(files, SessionFile::load)? {
+    let remote = files.iter().all(|file| crate::artifact_io::backend(&file.path).is_some());
+    for (name, table) in map(remote, files, SessionFile::load)? {
         if inputs.insert(name.clone(), table).is_some() {
             return Err(err(format!("duplicate strategy session input {name}")));
         }

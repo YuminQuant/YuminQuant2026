@@ -175,6 +175,46 @@ impl DisclosureTableCache {
             .ok_or_else(|| err("disclosure cache entry disappeared unexpectedly"))
     }
 
+    fn load_year_sources(
+        &mut self,
+        dataset: DatasetId,
+        files: Vec<PathBuf>,
+        columns: &[String],
+    ) -> Result<Vec<Arc<Table>>> {
+        let Some(root) = files.first() else { return Ok(Vec::new()); };
+        if crate::artifact_io::backend(root).is_none() {
+            return files.into_iter().map(|file| self.load_year_source(dataset, file, columns)).collect();
+        }
+        let requested = columns.iter().cloned().collect::<BTreeSet<_>>();
+        let keys = files.iter().map(|file| DisclosureCacheKey { dataset, file: file.clone() }).collect::<Vec<_>>();
+        let stamps = crate::data::read_ahead::plan_files(&files, |file| {
+            let info = crate::artifact_io::metadata(file)?;
+            Ok((info.len(), info.modified()?))
+        })?;
+        let jobs = keys.iter().zip(stamps).filter_map(|(key, stamp)| {
+            let entry = self.yearly_tables.get(key);
+            if entry.is_some_and(|entry| entry.file_stamp == stamp && requested.is_subset(&entry.loaded_columns)) {
+                return None;
+            }
+            let mut merged = requested.clone();
+            if let Some(entry) = entry { merged.extend(entry.loaded_columns.iter().cloned()); }
+            Some((key.clone(), stamp, merged))
+        }).collect::<Vec<_>>();
+        crate::data::read_ahead::visit_filtered_inputs(root, &jobs, |(key, stamp, merged)| {
+            let columns = merged.iter().cloned().collect::<Vec<_>>();
+            let table = read_parquet(&key.file, Some(&columns))?;
+            Ok((key.clone(), DisclosureCacheEntry {
+                table: Arc::new(table), loaded_columns: merged.clone(), file_stamp: *stamp,
+                pit_index: None, fund_index: None,
+            }))
+        }, |(key, entry)| {
+            self.yearly_tables.insert(key, entry);
+            Ok(())
+        })?;
+        keys.iter().map(|key| self.yearly_tables.get(key).map(|entry| Arc::clone(&entry.table))
+            .ok_or_else(|| err("disclosure cache entry disappeared unexpectedly"))).collect()
+    }
+
     pub fn financial_index_for_source(
         &mut self,
         source: &Arc<Table>,
@@ -225,8 +265,8 @@ impl MarketDataLoader {
         cache: &mut DisclosureTableCache,
     ) -> Result<Vec<Arc<Table>>> {
         let columns = with_required_columns(requested_columns, crate::data::FUND_PORTFOLIO_COLUMNS);
-        self.catalog.daily_year_files(DatasetId::FundPortfolio, start_date, end_date)
-            .into_iter().map(|file| cache.load_year_source(DatasetId::FundPortfolio, file, &columns)).collect()
+        cache.load_year_sources(DatasetId::FundPortfolio,
+            self.catalog.daily_year_files(DatasetId::FundPortfolio, start_date, end_date), &columns)
     }
 
     pub fn fund_portfolio_history_files_before(&self, year: i32) -> Result<Vec<PathBuf>> {
@@ -270,6 +310,22 @@ impl MarketDataLoader {
         let columns = with_required_columns(requested_columns, &["trade_date", "ts_code"]);
         let mut table = Table::empty();
         let mut yearly_cache = HashMap::<i32, Table>::new();
+
+        let root = self.catalog.data_root();
+        if crate::artifact_io::backend(root).is_some() {
+            let files = crate::data::read_ahead::read_filtered_inputs(root, trade_dates, |date| {
+                Ok(self.catalog.daily_date_file(dataset, *date))
+            })?;
+            if files.iter().all(Option::is_some) {
+                let inputs = trade_dates.iter().copied().zip(files.into_iter().flatten()).collect::<Vec<_>>();
+                crate::data::read_ahead::visit_filtered_inputs(root, &inputs, |(date, path)| {
+                    let mut daily = Table::empty();
+                    append_file_filtered_by_dates(&mut daily, path.clone(), &columns, &[*date])?;
+                    Ok(daily)
+                }, |daily| table.append(&daily))?;
+                return if table.columns.is_empty() { empty_daily_keyed_table(&columns) } else { Ok(table) };
+            }
+        }
 
         for trade_date in trade_dates {
             if let Some(file) = self.catalog.daily_date_file(dataset, *trade_date) {
@@ -541,10 +597,7 @@ impl MarketDataLoader {
             file_start_year * 10_000 + 101,
             end_year * 10_000 + 12_31,
         );
-        files
-            .into_iter()
-            .map(|file| cache.load_year_source(dataset, file, &columns))
-            .collect()
+        cache.load_year_sources(dataset, files, &columns)
     }
 
     pub fn load_stock_dividend(
@@ -572,10 +625,10 @@ impl MarketDataLoader {
             end_date,
         );
         let mut table = Table::empty();
-        for file in files {
-            let yearly = read_parquet(&file, Some(&columns))?;
-            let filtered = filter_dividend_range(&yearly, end_date)?;
-            table.append(&filtered)?;
+        if let Some(root) = files.first() {
+            crate::data::read_ahead::visit_filtered_inputs(root, &files, |file| {
+                filter_dividend_range(&read_parquet(file, Some(&columns))?, end_date)
+            }, |filtered| table.append(&filtered))?;
         }
         if table.columns.is_empty() {
             return empty_disclosure_table(&columns);
@@ -614,10 +667,7 @@ impl MarketDataLoader {
             file_start_year * 10_000 + 101,
             end_year * 10_000 + 12_31,
         );
-        files
-            .into_iter()
-            .map(|file| cache.load_year_source(DatasetId::StockMainBusiness, file, &columns))
-            .collect()
+        cache.load_year_sources(DatasetId::StockMainBusiness, files, &columns)
     }
 
     pub fn load_stock_analyst_sources_cached(
@@ -636,10 +686,7 @@ impl MarketDataLoader {
             prior_year_start(start_date),
             end_date,
         );
-        files
-            .into_iter()
-            .map(|file| cache.load_year_source(DatasetId::StockAnalystReport, file, &columns))
-            .collect()
+        cache.load_year_sources(DatasetId::StockAnalystReport, files, &columns)
     }
 
     pub fn load_stock_main_business_cached(
@@ -674,8 +721,7 @@ impl MarketDataLoader {
             end_year * 10_000 + 12_31,
         );
         let mut table = Table::empty();
-        for file in files {
-            let yearly = cache.load_year_source(DatasetId::StockMainBusiness, file, &columns)?;
+        for yearly in cache.load_year_sources(DatasetId::StockMainBusiness, files, &columns)? {
             append_disclosure_range(
                 &mut table,
                 &yearly,
@@ -718,8 +764,7 @@ impl MarketDataLoader {
             end_date,
         );
         let mut table = Table::empty();
-        for file in files {
-            let yearly = cache.load_year_source(DatasetId::StockAnalystReport, file, &columns)?;
+        for yearly in cache.load_year_sources(DatasetId::StockAnalystReport, files, &columns)? {
             append_disclosure_range(
                 &mut table,
                 &yearly,
@@ -750,8 +795,7 @@ impl MarketDataLoader {
             self.catalog
                 .daily_year_files(DatasetId::StockAnalystReport, start_date, end_date);
         let mut table = Table::empty();
-        for file in files {
-            let yearly = cache.load_year_source(DatasetId::StockAnalystReport, file, &columns)?;
+        for yearly in cache.load_year_sources(DatasetId::StockAnalystReport, files, &columns)? {
             append_disclosure_range(
                 &mut table,
                 &yearly,

@@ -92,9 +92,9 @@ python scripts/update_incremental.py --groups future_mapping --start-date 202604
 
 ## 回测输入读取 / Backtest input reads
 
-回测本地串行读文件。远程的 `ArtifactBackend::read_options()` 设置读取并发和打开速率，默认分别为 50 和每秒 1,000 次。远程 worker 并发预读投影列，复用已打开的 reader 和 footer/schema，由计算线程解码，按输入顺序消费。适配器通过 `paces_read_opens()` 声明后端限速。预读按 worker 调度。
+本地文件读写串行，计算线程独立配置。远程可并发读独立文件及写独立目标文件，保留日期批次、缓存窗口和同文件写锁。HDFS 部署的进程内读、写并发上限各为 50，两者共用每秒 1,000 次客户端文件操作的限流；这不是集群级 RPC 上限。远程预读复用 reader 和 footer/schema，投影结果按输入顺序消费；PIT 和依赖前序状态的计算顺序不变。
 
-Local backtests read files serially. Remote adapters configure concurrency and open rate through `ArtifactBackend::read_options()`, which defaults to 50 workers and 1,000 opens per second. Workers prefetch projected chunks and reuse the open reader and footer/schema. The compute pool decodes the results, and the consumer receives them in input order. Adapters declare backend pacing through `paces_read_opens()`.
+Local file I/O is serial; compute threads are configured independently. Remote I/O can read independent files and write independent destinations concurrently within the existing batches and cache windows, with per-file write locks. The HDFS deployment allows up to 50 reads and 50 writes per process, sharing a budget of 1,000 client file operations per second, not a cluster-wide RPC limit. Prefetch reuses the reader and footer/schema and delivers projections in input order, preserving PIT and sequential state updates.
 
 manual/ML 因子表在同一次打开中完成 schema 获取和数据读取，列归属、按股票和日期键合并、空值及 forward-fill 规则不变。同一远程回测的多个 factor batch 可共享最多约 128 MiB 的 Barra 投影表；按文件长度和修改时间失效，预算不足则正常重读，不积累全历史缓存。`--profile` 新增同时打开句柄峰值及打开延迟 P50/P95 的直方图区间上界，仍是客户端指标，不代表 NameNode/DataNode 的全局请求数。
 
@@ -168,7 +168,7 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- backtest --asset
 - 因子和标签分别从配置的 `factor_root` 和 `label_root` 读取，可用 `--factor-root` 和 `--label-root` 覆盖。两边均使用根目录下的 `future/minute_1m/{year}/{trade_date}.parquet`，按 `trade_date + trade_time + ts_code` 对齐。每个请求的交易日都需要有对应的两张表。每次运行选择一列标签，默认为 `future_open_return_5m`，可用 `--label` 切换。输出的 Parquet 元数据记录标签列名。使用同一输出目录重跑会替换该因子的摘要。
 - 因子选择支持 `--factors`、`--tags`、`--all-factors` 三选一。标签按全部匹配筛选，`--tags pv,yq` 选择这批 YQ 期货分钟因子。标签读取当前期货分钟因子注册表。与股票入口一致，指定外部 `--factor-root` 时用 `--factors` 或 `--all-factors`。
 - 支持 `--factor-batch-size`、`--date-batch-size`、`--threads` 和 `--profile`。日历在启动时读取一次，五日窗口跨日期批次延续。股票专用选项如 `--benchmark`、`--barra`、`--neutralize` 和 `--detail` 可传入，在期货分钟回测中不参与计算。
-- 远端数据按存储后端的读取并发预取，期货分钟评价按交易日顺序消费结果。计算线程数只控制指标计算，HDFS 默认允许 50 个并发读取和每秒 1,000 次文件打开。
+- 远端数据按存储后端的读取并发预取，期货分钟评价按交易日顺序消费结果。计算线程数独立于 HDFS I/O 上限。
 - `--future-pool-id` 默认为 `liquidity_001`，按 `future_data/basic/mapping_pool/<pool_id>/YYYY.parquet` 中每个交易日的实际主力合约筛选 All、板块和品种样本。任一评价日缺池映射时报告日期并终止。`--products` 可传 `RB` 或 `RB.SHF`，与池筛选取交集。`--future-pool-id none` 使用全市场口径，同品种若有多个期限，合并分钟样本。
 - 默认模式 `--quantile-mode trailing-5` 使用每个品种、因子在 T−5 至 T−1 的每日上下分位数的等权均值。启用池筛选时，每天的历史分位数用当日普通主力合约的因子值计算，跨年新入池品种可以使用入池前的数据。`--quantile-mode daily` 使用评价日有效样本的当日分位数。默认双端为 P05/P95，`--quantile 90` 可切换到 P10/P90。
 - 默认结果写入 `data/backtest/future/minute_1m/{factor_name}/summary.parquet`，当日分位模式在 `minute_1m` 下增加 `daily/`。`--output-dir` 可覆盖因子目录的上一级。列顺序为 `trade_date, ts_code, ic, cosic, long_rtn, short_rtn, trigger_count, eligible_contract_count`。Parquet 元数据记录池 ID、标签、模式和分位参数。

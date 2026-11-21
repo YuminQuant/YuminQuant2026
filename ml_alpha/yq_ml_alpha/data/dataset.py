@@ -112,8 +112,15 @@ class DatasetBuilder:
             self.feature_provider.set_cache_days_for_target_dates(dates)
         preloaded = None
         if type(self.feature_provider) in (FactorFrameProvider, MinuteFactorFrameProvider, RawPanelProvider):
-            preloaded = data_io.ordered_io_map(self.feature_provider.load, dates,
-                root=self.feature_provider.root)
+            root = self.feature_provider.root
+            if data_io.backend(root) is not None:
+                def load_input(date):
+                    features = self.feature_provider.load(date)
+                    labels = (self._read_labels(date)
+                              if include_label and (self.minute_frame or not features.empty) else None)
+                    return features, labels
+                preloaded = data_io.ordered_io_map(load_input, dates, root=root,
+                                                  window=4 if self.minute_frame else None)
         try:
             return self._load_dates(dates, include_label, split_name, graph_tensor, lazy_tensor,
                                     frames, total_dates, started, preloaded)
@@ -134,13 +141,14 @@ class DatasetBuilder:
                 )
         for date_idx, trade_date in enumerate(dates, start=1):
             date_started = perf_counter()
+            labels = None
             log_date("start", date_idx, trade_date, 0, date_started)
             if isinstance(self.feature_provider, LogsigSignatureProvider):
                 progress = _logsig_signature_progress(split_name, date_idx, total_dates, trade_date)
                 features = self.feature_provider.load(trade_date, progress=progress)
                 progress(f"target_done feature_rows={len(features)}")
             elif preloaded is not None:
-                features = next(preloaded)
+                features, labels = next(preloaded)
             else:
                 features = self.feature_provider.load(trade_date)
             if features.empty and not (self.minute_frame and include_label):
@@ -148,7 +156,8 @@ class DatasetBuilder:
                 continue
             frame = features if graph_tensor else self.filters.apply(self.universe.filter(features, trade_date), trade_date)
             if include_label:
-                labels = self._read_labels(trade_date)
+                if labels is None:
+                    labels = self._read_labels(trade_date)
                 if self.minute_frame:
                     feature_rows = len(frame)
                     frame = frame.merge(labels, on=self.config.key_columns, how="inner", validate="one_to_one")

@@ -15,3 +15,4 @@ mod snr;
 mod trend;
 mod variance_amplitude;
 mod variance_timing;
+mod wait_and_see;

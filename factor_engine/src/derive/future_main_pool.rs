@@ -15,7 +15,6 @@ pub const POOL_ID: &str = "liquidity_001";
 const POOL_README: &str = include_str!("../../docs/FUTURE_MAPPING_POOL_LIQUIDITY_001.md");
 const LOOKBACK_DAYS: usize = 240;
 const MIN_AVG_VOLUME: f64 = 10_000.0;
-const TOP_PRODUCTS: usize = 50;
 
 #[derive(Debug, Default)]
 pub struct FutureMainPoolReport {
@@ -125,22 +124,15 @@ fn choose_members(
             }
         }
     }
-    let mut ranked = totals
+    Ok(totals
         .into_iter()
         // A complete main-contract sequence also establishes 240 sessions of listing history.
-        .filter(|(_, (count, total))| {
-            *count == LOOKBACK_DAYS
+        .filter_map(|(code, (count, total))| {
+            (count == LOOKBACK_DAYS
                 && total.is_finite()
-                && *total / LOOKBACK_DAYS as f64 >= MIN_AVG_VOLUME
+                && total / LOOKBACK_DAYS as f64 >= MIN_AVG_VOLUME)
+                .then_some(code)
         })
-        .collect::<Vec<_>>();
-    ranked.sort_unstable_by(|(left, (_, left_vol)), (right, (_, right_vol))| {
-        right_vol.total_cmp(left_vol).then_with(|| left.cmp(right))
-    });
-    Ok(ranked
-        .into_iter()
-        .take(TOP_PRODUCTS)
-        .map(|(code, _)| code)
         .collect())
 }
 

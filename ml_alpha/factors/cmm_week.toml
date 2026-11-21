@@ -1,5 +1,5 @@
 factor_id = "cmm_week"
-tags = ["HYZQ", "cmm", "week", "momentum", "reversal", "mse_loss"]
+tags = ["HYZQ", "cmm", "week", "momentum", "reversal", "ic_loss"]
 data_root = "data"
 
 [output]
@@ -73,6 +73,7 @@ class = "yq_ml_alpha.models.cmm_model.CMMWeekAlphaModel"
 artifact_dir = "data/model_workspace/cmm_week/artifacts"
 
 [model.params]
+loss = "negative_pearson_ic"
 label_neutralize = "barra:SIZE,MOMENTUM+sector"
 sequence_length = 150
 input_size = 7

@@ -8,7 +8,7 @@ import numpy as np
 from yq_ml_alpha.features.neutralization import apply_rust_neutralization
 from yq_ml_alpha.features.resnet_panel import ResNetPanelProvider, _read_required
 from yq_ml_alpha.features.transforms import _zscore_series, apply_cross_section_transform
-from yq_ml_alpha.models.bar_panel_model import BarPanelAlphaModel, normalize_bar_params
+from yq_ml_alpha.models.bar_panel_model import BarPanelAlphaModel, _negative_ic_loss, normalize_bar_params
 from yq_ml_alpha.models.bar_training import fit_bar_panel
 from yq_ml_alpha.models.resnet_gru_encoder import resnet_gru_encoder_type
 
@@ -28,6 +28,8 @@ class CMMWeekAlphaModel(BarPanelAlphaModel):
 
     def _normalize_params(self, raw):
         params = normalize_bar_params(raw)
+        if params.get("loss", "negative_pearson_ic") != "negative_pearson_ic":
+            raise ValueError("CMM loss must be negative_pearson_ic")
         if (params["sequence_length"], params["input_size"]) != (150, 7):
             raise ValueError("CMM week requires 150 sessions, six bar features and one daily return")
         params["return_lookback"] = int(params["return_lookback"])
@@ -70,23 +72,13 @@ class CMMWeekAlphaModel(BarPanelAlphaModel):
 
         return Model()
 
-    @staticmethod
-    def _mse_loss(torch, prediction, target):
-        valid = torch.isfinite(target)
-        if int(valid.sum()) < 2:
-            return None
-        loss = (prediction[valid] - target[valid]).square().mean()
-        if not torch.isfinite(loss):
-            raise ValueError("CMM produced a nonfinite MSE")
-        return loss
-
     def _training_loss(self, torch, inputs, target):
-        return self._mse_loss(torch, self.model(inputs), target)
+        return _negative_ic_loss(torch, self.model(inputs), target)
 
     def _fit(self, train_data, valid_data, context, *, train_tensor, valid_tensor):
         spec = str(context.model_params.get("label_neutralize", "none"))
         if valid_data.empty:
-            raise ValueError("CMM requires validation data for MSE weight selection")
+            raise ValueError("CMM requires validation data for IC weight selection")
 
         def prepare(frame):
             frame = frame.copy()
@@ -100,11 +92,11 @@ class CMMWeekAlphaModel(BarPanelAlphaModel):
             raise ValueError("CMM requires a validation date with at least two usable labels")
         fit_bar_panel(
             self, train_data, valid_data, context,
-            train_tensor=train_tensor, valid_tensor=valid_tensor, validation_loss=self._mse_loss,
-            loss_name="cross_section_standardized_label_mse", train_loss_log_key="cmm_train_mse",
-            missing_loss_error="CMM could not compute finite MSE",
+            train_tensor=train_tensor, valid_tensor=valid_tensor, validation_loss=_negative_ic_loss,
+            loss_name="negative_datewise_pearson_ic", train_loss_log_key="cmm_train_negative_ic",
+            missing_loss_error="CMM could not compute finite IC loss",
         )
-        self.model_info.update(validation_loss="datewise_mse",
+        self.model_info.update(validation_loss="negative_datewise_pearson_ic",
                                label_neutralize=spec,
                                return_lookback=self.params["return_lookback"],
                                half_life=self.params["half_life"])

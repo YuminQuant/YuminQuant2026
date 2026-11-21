@@ -74,6 +74,7 @@ impl QuantileMode {
 }
 
 const TRAILING_DAYS: usize = 5;
+const HOLDING_LABEL: &str = "future_open_return_1m";
 pub const DEFAULT_TAIL_QUANTILE: u8 = 95;
 
 #[derive(Clone, Copy)]
@@ -151,6 +152,8 @@ struct Metrics {
     lower: Mean,
     trigger_count: Option<u64>,
     eligible_contract_count: Option<u64>,
+    holding_rtn: Mean,
+    holding_minutes: Option<u64>,
 }
 
 impl Metrics {
@@ -215,6 +218,52 @@ impl Metrics {
             *self.eligible_contract_count.get_or_insert(0) += count;
         }
     }
+
+    fn add_holding(&mut self, result: Option<(f64, u64)>) {
+        if let Some((return_bp, minutes)) = result {
+            self.holding_rtn.push(Some(return_bp));
+            *self.holding_minutes.get_or_insert(0) += minutes;
+        }
+    }
+
+    fn holding(&self) -> Option<(f64, u64)> {
+        self.holding_rtn.value().zip(self.holding_minutes)
+    }
+}
+
+struct HoldingMinute {
+    signal_row: Option<usize>,
+    return_bp: Option<f64>,
+}
+
+fn holding_return(
+    timeline: &[HoldingMinute],
+    factor: &[Option<f64>],
+    thresholds: TailThresholds,
+) -> Option<(f64, u64)> {
+    let mut direction = 0.0;
+    let mut return_bp = 0.0;
+    let mut held_minutes = 0;
+    let mut has_signal = false;
+    let mut has_return = false;
+    // A signal on bar i controls the interval from open i+1 to open i+2.
+    // Close at the final bar's open and discard signals with no remaining interval.
+    for minute in timeline.iter().take(timeline.len().saturating_sub(2)) {
+        if let Some(value) = minute.signal_row.and_then(|row| factor[row]) {
+            has_signal = true;
+            if value > thresholds.upper {
+                direction = 1.0;
+            } else if value < thresholds.lower {
+                direction = -1.0;
+            }
+        }
+        has_return |= minute.return_bp.is_some();
+        if direction != 0.0 {
+            return_bp += direction * minute.return_bp?;
+            held_minutes += 1;
+        }
+    }
+    (has_signal && has_return).then_some((return_bp, held_minutes))
 }
 
 fn cosine_similarity(x: &[f64], y: &[f64]) -> Option<f64> {
@@ -252,13 +301,14 @@ struct DayGroups {
 #[derive(Default)]
 struct ProductRows {
     pooled: Vec<usize>,
-    contracts: Vec<Vec<usize>>,
+    contracts: BTreeMap<String, Vec<usize>>,
+    sector: Option<&'static str>,
 }
 
 impl ProductRows {
     fn eligible_contracts(&self, factor: &[Option<f64>], returns: &[Option<f64>]) -> u64 {
         self.contracts
-            .iter()
+            .values()
             .filter(|rows| {
                 rows.iter()
                     .any(|&row| factor[row].is_some() && returns[row].is_some())
@@ -288,9 +338,10 @@ impl FactorSummary {
         groups: &DayGroups,
         history_groups: Option<&DayGroups>,
         factor: &[Option<f64>],
-        returns: Option<&[Option<f64>]>,
+        returns: Option<&DayReturns>,
     ) {
         let mut all = Metrics::default();
+        let mut sector_holdings = BTreeMap::<&str, Metrics>::new();
         for (code, group) in &groups.by_product {
             let rows = &group.pooled;
             let Some(returns) = returns else { continue };
@@ -299,21 +350,34 @@ impl FactorSummary {
                 None => TailThresholds::for_day(rows, factor, self.quantile),
             };
             let mut local = Metrics::default();
-            local.add_pair_metrics(rows, factor, returns);
+            local.add_pair_metrics(rows, factor, &returns.tails);
             if let Some(thresholds) = thresholds {
                 local.add_tails(
                     rows,
                     factor,
-                    returns,
+                    &returns.tails,
                     thresholds,
                     self.quantile == 50,
                     self.history.is_some(),
                 );
                 if local.trigger_count.is_some() {
-                    local.eligible_contract_count = Some(group.eligible_contracts(factor, returns));
+                    local.eligible_contract_count =
+                        Some(group.eligible_contracts(factor, &returns.tails));
+                }
+                for contract in group.contracts.keys() {
+                    if let Some(timeline) = returns.holding.get(contract) {
+                        local.add_holding(holding_return(timeline, factor, thresholds));
+                    }
                 }
             }
             all.average_tails(&local);
+            all.add_holding(local.holding());
+            if let Some(sector) = group.sector {
+                sector_holdings
+                    .entry(sector)
+                    .or_default()
+                    .add_holding(local.holding());
+            }
             self.rows.push(Observation {
                 date,
                 code: code.clone(),
@@ -321,15 +385,15 @@ impl FactorSummary {
             });
         }
         if let Some(returns) = returns {
-            all.add_pair_metrics(&groups.all, factor, returns);
+            all.add_pair_metrics(&groups.all, factor, &returns.tails);
             self.rows.push(Observation {
                 date,
                 code: "all".to_string(),
                 metrics: all,
             });
             for (sector, rows) in &groups.by_sector {
-                let mut metrics = Metrics::default();
-                metrics.add_pair_metrics(rows, factor, returns);
+                let mut metrics = sector_holdings.remove(sector).unwrap_or_default();
+                metrics.add_pair_metrics(rows, factor, &returns.tails);
                 self.rows.push(Observation {
                     date,
                     code: format!("sector:{sector}"),
@@ -544,7 +608,12 @@ struct EvaluationDay {
     table: Table,
     groups: DayGroups,
     history_groups: Option<DayGroups>,
-    returns: Option<Vec<Option<f64>>>,
+    returns: Option<DayReturns>,
+}
+
+struct DayReturns {
+    tails: Vec<Option<f64>>,
+    holding: HashMap<String, Vec<HoldingMinute>>,
 }
 
 impl EvaluationInputs<'_> {
@@ -554,7 +623,7 @@ impl EvaluationInputs<'_> {
         if !evaluate && !crate::artifact_io::exists(&path)? {
             return Ok(None);
         }
-        let table = read_day(&path, factors)?;
+        let table = read_day(&path, factors, None)?;
         let keys = minute_keys(&table, date)?;
         let pool_mapping = self.liquidity_pool.filter(|_| evaluate).map(|pool| {
             pool.selection(date)
@@ -586,6 +655,7 @@ impl EvaluationInputs<'_> {
                     date,
                     &keys,
                     pool_mapping.map(|_| groups.all.as_slice()),
+                    &groups.all,
                 )
             })
             .transpose()?;
@@ -638,7 +708,7 @@ fn evaluate_batch(
                             &day.groups,
                             day.history_groups.as_ref(),
                             &values,
-                            day.returns.as_deref(),
+                            day.returns.as_ref(),
                         );
                         Ok(())
                     })
@@ -668,6 +738,7 @@ fn write_summary(
         .set_compression(Compression::SNAPPY)
         .set_key_value_metadata(Some(vec![
             KeyValue::new("label_id".to_string(), label.to_string()),
+            KeyValue::new("holding_label_id".to_string(), HOLDING_LABEL.to_string()),
             KeyValue::new(
                 "quantile_mode".to_string(),
                 request.quantile_mode.as_str().to_string(),
@@ -721,9 +792,11 @@ fn group_rows(
             continue;
         };
         groups.all.push(row);
-        product_rows.entry(code).or_default().pooled.push(row);
+        let product_rows = product_rows.entry(code).or_default();
+        product_rows.pooled.push(row);
         contract_rows.entry(contract).or_default().push(row);
         if let Some(sector) = sectors.and_then(|mapping| mapping.get(code)) {
+            product_rows.sector = Some(*sector);
             groups.by_sector.entry(*sector).or_default().push(row);
         }
     }
@@ -733,7 +806,7 @@ fn group_rows(
             .get_mut(code)
             .expect("selected product")
             .contracts
-            .push(rows);
+            .insert(contract.to_string(), rows);
     }
     groups.by_product = product_rows
         .into_iter()
@@ -787,10 +860,13 @@ fn aligned_returns(
     date: i32,
     factor_keys: &[(&str, &str)],
     selected_rows: Option<&[usize]>,
-) -> Result<Vec<Option<f64>>> {
-    let label_table = read_day(&minute_path(root, date), &[label])?;
-    let label_index: HashMap<_, _> = minute_keys(&label_table, date)?
-        .into_iter()
+    holding_rows: &[usize],
+) -> Result<DayReturns> {
+    let label_table = read_day(&minute_path(root, date), &[label], Some(HOLDING_LABEL))?;
+    let label_keys = minute_keys(&label_table, date)?;
+    let label_index: HashMap<_, _> = label_keys
+        .iter()
+        .copied()
         .enumerate()
         .map(|(i, key)| (key, i))
         .collect();
@@ -813,7 +889,51 @@ fn aligned_returns(
             "no matching futures factor and label minute keys on {date}"
         )));
     }
-    Ok(returns)
+    let holding = if label_table.columns.contains_key(HOLDING_LABEL) {
+        let minute_returns = finite_column(&label_table, HOLDING_LABEL)?;
+        holding_timelines(factor_keys, holding_rows, &label_keys, minute_returns)
+    } else {
+        HashMap::new()
+    };
+    Ok(DayReturns {
+        tails: returns,
+        holding,
+    })
+}
+
+fn holding_timelines(
+    factor_keys: &[(&str, &str)],
+    holding_rows: &[usize],
+    label_keys: &[(&str, &str)],
+    returns: Vec<Option<f64>>,
+) -> HashMap<String, Vec<HoldingMinute>> {
+    let signals: HashMap<_, _> = holding_rows
+        .iter()
+        .map(|&row| (factor_keys[row], row))
+        .collect();
+    let contracts: BTreeSet<_> = holding_rows.iter().map(|&row| factor_keys[row].1).collect();
+    let mut timelines = HashMap::<&str, Vec<(&str, HoldingMinute)>>::new();
+    for (&(time, code), return_bp) in label_keys.iter().zip(returns) {
+        if contracts.contains(code) {
+            timelines.entry(code).or_default().push((
+                time,
+                HoldingMinute {
+                    signal_row: signals.get(&(time, code)).copied(),
+                    return_bp,
+                },
+            ));
+        }
+    }
+    timelines
+        .into_iter()
+        .map(|(code, mut rows)| {
+            rows.sort_unstable_by_key(|(time, _)| *time);
+            (
+                code.to_string(),
+                rows.into_iter().map(|(_, minute)| minute).collect(),
+            )
+        })
+        .collect()
 }
 
 fn selected_columns<'a>(columns: &'a [String], kind: &str) -> Result<Vec<&'a str>> {
@@ -835,18 +955,23 @@ fn minute_path(root: &Path, date: i32) -> PathBuf {
         .join(format!("{date}.parquet"))
 }
 
-fn read_day(path: &Path, values: &[&str]) -> Result<Table> {
-    let projection: Vec<String> = ["trade_date", "trade_time", "ts_code"]
+fn read_day(path: &Path, values: &[&str], optional: Option<&str>) -> Result<Table> {
+    let required: Vec<String> = ["trade_date", "trade_time", "ts_code"]
         .into_iter()
         .chain(values.iter().copied())
         .map(str::to_string)
         .collect();
+    let optional = optional.filter(|name| !values.contains(name));
+    let mut projection = required.clone();
+    projection.extend(optional.map(str::to_string));
     let null_types = values
         .iter()
-        .map(|&name| (name.to_string(), DataType::Float64))
+        .copied()
+        .chain(optional)
+        .map(|name| (name.to_string(), DataType::Float64))
         .collect();
     let table = read_parquet_with_null_types(path, &projection, &null_types)?;
-    for column in &projection {
+    for column in &required {
         if !table.columns.contains_key(column) {
             return Err(err(format!(
                 "missing column {column} in {}",
@@ -895,7 +1020,7 @@ fn finite_column(table: &Table, name: &str) -> Result<Vec<Option<f64>>> {
 }
 
 fn observations_batch(rows: &[Observation]) -> Result<RecordBatch> {
-    let columns: [(&str, ArrayRef); 8] = [
+    let columns: [(&str, ArrayRef); 10] = [
         (
             "trade_date",
             Arc::new(Int32Array::from_iter_values(
@@ -942,6 +1067,18 @@ fn observations_batch(rows: &[Observation]) -> Result<RecordBatch> {
             "eligible_contract_count",
             Arc::new(UInt64Array::from_iter(
                 rows.iter().map(|row| row.metrics.eligible_contract_count),
+            )),
+        ),
+        (
+            "holding_rtn",
+            Arc::new(Float64Array::from_iter(
+                rows.iter().map(|row| row.metrics.holding_rtn.value()),
+            )),
+        ),
+        (
+            "holding_minutes",
+            Arc::new(UInt64Array::from_iter(
+                rows.iter().map(|row| row.metrics.holding_minutes),
             )),
         ),
     ];

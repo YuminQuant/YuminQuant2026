@@ -171,12 +171,13 @@ cargo run --release --manifest-path factor_engine/Cargo.toml -- backtest --asset
 - 远端数据按存储后端的读取并发预取，期货分钟评价按交易日顺序消费结果。计算线程数独立于 HDFS I/O 上限。
 - `--future-pool-id` 默认为 `liquidity_001`，按 `future_data/basic/mapping_pool/<pool_id>/YYYY.parquet` 中每个交易日的实际主力合约筛选 All、板块和品种样本。任一评价日缺池映射时报告日期并终止。`--products` 可传 `RB` 或 `RB.SHF`，与池筛选取交集。`--future-pool-id none` 使用全市场口径，同品种若有多个期限，合并分钟样本。
 - 默认模式 `--quantile-mode trailing-5` 使用每个品种、因子在 T−5 至 T−1 的每日上下分位数的等权均值。启用池筛选时，每天的历史分位数用当日普通主力合约的因子值计算，跨年新入池品种可以使用入池前的数据。`--quantile-mode daily` 使用评价日有效样本的当日分位数。默认双端为 P05/P95，`--quantile 90` 可切换到 P10/P90。
-- 默认结果写入 `data/backtest/future/minute_1m/{factor_name}/summary.parquet`，当日分位模式在 `minute_1m` 下增加 `daily/`。`--output-dir` 可覆盖因子目录的上一级。列顺序为 `trade_date, ts_code, ic, cosic, long_rtn, short_rtn, trigger_count, eligible_contract_count`。Parquet 元数据记录池 ID、标签、模式和分位参数。
+- 默认结果写入 `data/backtest/future/minute_1m/{factor_name}/summary.parquet`，当日分位模式在 `minute_1m` 下增加 `daily/`。`--output-dir` 可覆盖因子目录的上一级。原有统计列之后写入 `holding_rtn` 和 `holding_minutes`。Parquet 元数据记录池 ID、标签、持仓收益标签、模式和分位参数。
 - 每个交易日为每个品种输出一行，`ts_code` 存品种代码。`ic` 和 `cosic` 分别为 Pearson IC 和余弦相似度，使用该品种当日的有效分钟配对。`long_rtn` 和 `short_rtn` 分别为因子值达到上阈值及以上、下阈值及以下的有效标签均值，沿用标签的单位和符号。分位点由当日所有有限因子值线性插值得到。两条阈值重合且当日有有效因子与标签配对时，上下尾收益均记为 0。没有有效配对时，收益留空。`trigger_count` 记录上下端合计的有效合约分钟触发数，All 行为品种合计。有阈值和有效配对但没有触发时记 0，缺少阈值或有效配对时留空。
 - 每个交易日还有一行 `ts_code=all`。将全部合约当日的分钟样本拼接，直接对有效因子值和标签计算一次 `ic` 和 `cosic`。两端收益分别在当日有对应有效收益的品种间等权平均。余弦相似度至少需要两个有效配对，任一向量全为零时为空。
 - 板块行用 `ts_code=sector:<板块缩写>` 标识，按同一口径在板块内跨合约计算 IC 和 CosIC。板块行的两端收益列留空，报告侧使用各品种定向后的收益汇总板块收益。
 - `eligible_contract_count` 记录当日有可用阈值且至少有一个有效因子标签配对的合约数。品种和 All 行记录此分母，板块报告按品种汇总。
 - 五日模式只用因子预热，最多读取回测起点之前五个交易日。前五个交易日有任一天缺少该品种的有效分位数时，当日两端收益留空。阈值可用且当日有有效配对时，某一端没有达到该端阈值的有效配对，则该端收益记为 0。IC 和 CosIC 的计算口径相同。
+- 持仓检验按实际合约、交易日独立计算。因子值严格高于上阈值时，在次根开盘切换为多头。严格低于下阈值时，在次根开盘切换为空头。阈值之间、恰好等于阈值、信号缺失时维持原仓位。同方向连续触发维持一份仓位。交易日以空仓开始，在末根 K 线开盘平仓。每天把持仓期间的 `future_open_return_1m` 按方向带符号累加得到 `holding_rtn`（bp），`holding_minutes` 记录计入收益的持仓区间数。品种按合约等权，All 和板块按品种等权，持仓区间数加总。持仓区间内缺收益时，该合约当日持仓统计留空。老标签文件缺 1 分钟收益列时，持仓统计留空。
 - `--quantile 50` 使用中位数作为分界。因子值严格高于或低于中位数的样本分别进入上端和下端，等于中位数的样本不归入两端。
 - 板块分类、品种中英文名称和交易所代码见[期货板块](docs/FUTURE_SECTORS.md)。
 

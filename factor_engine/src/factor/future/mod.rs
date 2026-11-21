@@ -9,3 +9,4 @@ mod rsi;
 mod skewness;
 mod trend;
 mod variance_amplitude;
+mod variance_timing;

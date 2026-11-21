@@ -236,6 +236,8 @@ pub enum FutureMinuteField {
     ContractDiff(&'static str),
     /// A level whose history must stay on the actual contract even in main-sequence mode.
     ContractLevel(&'static str),
+    /// One when the preceding bar is one clock minute earlier in the same trading day.
+    ContinuousMinute,
     /// Amount divided by contract multiplier, in price times lots.
     VwapNotional,
 }
@@ -249,6 +251,7 @@ impl FutureMinuteField {
         match self {
             Self::Raw(name) | Self::ContractDiff(name) | Self::ContractLevel(name) => name,
             Self::VwapNotional => "amount",
+            Self::ContinuousMinute => unreachable!("continuity is derived from timestamps"),
         }
     }
 
@@ -269,6 +272,7 @@ pub fn future_minute_request(fields: &[FutureMinuteField]) -> DataRequest {
             FutureMinuteField::ContractDiff(name) => format!("{}{name}", FutureMinuteField::DIFF_PREFIX),
             FutureMinuteField::ContractLevel(name) => format!("{}{name}", FutureMinuteField::CONTRACT_PREFIX),
             FutureMinuteField::VwapNotional => FutureMinuteField::VWAP_NOTIONAL.to_string(),
+            FutureMinuteField::ContinuousMinute => continue,
         };
         if !request.columns.contains(&name) {
             request.columns.push(name);
@@ -412,7 +416,9 @@ pub fn compute_future_minute_many(
             let values = fields
                 .iter()
                 .map(|field| {
-                    if matches!(field, FutureMinuteField::VwapNotional) && !table.columns.contains_key("amount") {
+                    if matches!(field, FutureMinuteField::ContinuousMinute) {
+                        Ok(Vec::new())
+                    } else if matches!(field, FutureMinuteField::VwapNotional) && !table.columns.contains_key("amount") {
                         Ok(vec![None; table.len])
                     } else {
                         table.required_f64_cast(field.raw())
@@ -486,6 +492,11 @@ pub fn compute_future_minute_many(
                         intraday_scale *= boundary_ratio(closes[prev], opens[idx]).unwrap_or(1.0);
                     }
                     for (column_idx, &field) in fields.iter().enumerate() {
+                        if matches!(field, FutureMinuteField::ContinuousMinute) {
+                            let continuous = position > 0 && adjacent_minute(time(prev), time(idx));
+                            day_values[column_idx].push(Some(if continuous { 1.0 } else { 0.0 }));
+                            continue;
+                        }
                         let value = values[column_idx][idx];
                         let value = if let FutureMinuteField::ContractDiff(name) = field {
                             let prior = if position == 0 {
@@ -683,6 +694,37 @@ pub(crate) fn boundary_ratio(close: Option<f64>, open: Option<f64>) -> Option<f6
 
 fn minute(time: &str) -> Option<u16> {
     Some(time.get(11..13)?.parse::<u16>().ok()? * 60 + time.get(14..16)?.parse::<u16>().ok()?)
+}
+
+fn adjacent_minute(previous: &str, current: &str) -> bool {
+    let (Some(a), Some(b)) = (minute(previous), minute(current)) else {
+        return false;
+    };
+    let (Some(previous_date), Some(current_date)) = (previous.get(..10), current.get(..10)) else {
+        return false;
+    };
+    previous.get(17..19) == current.get(17..19)
+        && ((previous_date == current_date && b < 1_440 && a + 1 == b)
+            || (a == 1_439 && b == 0 && next_civil_date(previous_date).as_deref() == Some(current_date)))
+}
+
+fn next_civil_date(date: &str) -> Option<String> {
+    let year: u16 = date.get(..4)?.parse().ok()?;
+    let month: u8 = date.get(5..7)?.parse().ok()?;
+    let day: u8 = date.get(8..10)?.parse().ok()?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 => if leap { 29 } else { 28 },
+        4 | 6 | 9 | 11 => 30,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => return None,
+    };
+    Some(match day {
+        1..=30 if day < days => format!("{year:04}-{month:02}-{:02}", day + 1),
+        _ if day == days && month < 12 => format!("{year:04}-{:02}-01", month + 1),
+        31 if month == 12 => format!("{:04}-01-01", year + 1),
+        _ => return None,
+    })
 }
 
 fn near(time: u16, hour: u16, minute: u16) -> bool {

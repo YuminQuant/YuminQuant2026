@@ -19,7 +19,7 @@ use crate::data::parquet_io::{read_parquet_with_null_types, write_parquet_batch}
 use crate::data::Table;
 use crate::error::{err, Result};
 use crate::factor::common::intraday_raw::quantile_linear;
-use crate::factor::future::minute_input::product;
+use crate::factor::future::minute_input::{product, FutureMinuteInput, FutureMinuteOptions};
 use crate::operators::time_series::pearson_corr_finite;
 use crate::storage::FactorMetadata;
 
@@ -30,6 +30,7 @@ pub struct FutureMinuteBacktestRequest {
     pub factor_selection: FactorSelection,
     pub label_column: String,
     pub products: Vec<String>,
+    pub pool_id: Option<String>,
     pub factor_root: Option<PathBuf>,
     pub label_root: Option<PathBuf>,
     pub output_dir: Option<PathBuf>,
@@ -285,23 +286,17 @@ impl FactorSummary {
         &mut self,
         date: i32,
         groups: &DayGroups,
+        history_groups: Option<&DayGroups>,
         factor: &[Option<f64>],
         returns: Option<&[Option<f64>]>,
     ) {
-        let mut today = DailyThresholds::new();
         let mut all = Metrics::default();
         for (code, group) in &groups.by_product {
             let rows = &group.pooled;
-            let daily = TailThresholds::for_day(rows, factor, self.quantile);
-            if self.history.is_some() {
-                if let Some(daily) = daily {
-                    today.insert(code.clone(), daily);
-                }
-            }
             let Some(returns) = returns else { continue };
             let thresholds = match &self.history {
                 Some(history) => history.mean(code),
-                None => daily,
+                None => TailThresholds::for_day(rows, factor, self.quantile),
             };
             let mut local = Metrics::default();
             local.add_pair_metrics(rows, factor, returns);
@@ -344,6 +339,15 @@ impl FactorSummary {
         }
         // Publish today's thresholds only after using the previous sessions.
         if let Some(history) = &mut self.history {
+            let today = history_groups
+                .unwrap_or(groups)
+                .by_product
+                .iter()
+                .filter_map(|(code, group)| {
+                    let threshold = TailThresholds::for_day(&group.pooled, factor, self.quantile)?;
+                    Some((code.clone(), threshold))
+                })
+                .collect();
             history.advance(today);
         }
     }
@@ -386,6 +390,33 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
     if dates.last().is_none_or(|&date| date < request.start_date) {
         return Err(err("no futures trading dates in the requested range"));
     }
+    let target_dates = &dates[dates.partition_point(|&date| date < request.start_date)..];
+    let liquidity_pool = if let Some(id) = &request.pool_id {
+        if id.is_empty()
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(err("invalid futures pool ID"));
+        }
+        let pool = FutureMinuteInput::load_pool(&config.data_root, id, target_dates)?;
+        let missing: Vec<_> = target_dates
+            .iter()
+            .filter(|&&date| pool.selection(date).is_none())
+            .collect();
+        if !missing.is_empty() {
+            return Err(err(format!(
+                "futures pool {id} has no mapping on {missing:?}"
+            )));
+        }
+        Some(pool)
+    } else {
+        None
+    };
+    let historical_main = (liquidity_pool.is_some()
+        && matches!(request.quantile_mode, QuantileMode::Trailing5))
+    .then(|| FutureMinuteInput::load(FutureMinuteOptions::default(), &config.data_root, &dates))
+    .transpose()?;
     let factor_root = request
         .factor_root
         .as_deref()
@@ -399,15 +430,20 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
         label,
         products: &products,
         sectors: &sectors,
+        liquidity_pool: liquidity_pool.as_ref(),
+        historical_main: historical_main.as_ref(),
     };
     let pool =
         crate::resources::thread_pool(Some(request.threads.unwrap_or(DEFAULT_BACKTEST_THREADS)))?;
     let output_dir = request.output_dir.clone().unwrap_or_else(|| {
-        let root = config
+        let mut root = config
             .data_root
             .join("backtest")
             .join("future")
             .join("minute_1m");
+        if let Some(id) = &request.pool_id {
+            root = root.join("pools").join(id);
+        }
         match request.quantile_mode {
             QuantileMode::Daily => root.join("daily"),
             QuantileMode::Trailing5 => root,
@@ -501,12 +537,15 @@ struct EvaluationInputs<'a> {
     label: &'a str,
     products: &'a BTreeSet<String>,
     sectors: &'a HashMap<String, &'static str>,
+    liquidity_pool: Option<&'a FutureMinuteInput>,
+    historical_main: Option<&'a FutureMinuteInput>,
 }
 
 struct EvaluationDay {
     date: i32,
     table: Table,
     groups: DayGroups,
+    history_groups: Option<DayGroups>,
     returns: Option<Vec<Option<f64>>>,
 }
 
@@ -519,14 +558,44 @@ impl EvaluationInputs<'_> {
         }
         let table = read_day(&path, factors)?;
         let keys = minute_keys(&table, date)?;
-        let groups = group_rows(&keys, self.products, evaluate.then_some(self.sectors), date)?;
+        let pool_mapping = self.liquidity_pool.filter(|_| evaluate).map(|pool| {
+            pool.selection(date)
+                .expect("pool coverage checked before evaluation")
+        });
+        let groups = if evaluate || self.historical_main.is_none() {
+            group_rows(
+                &keys,
+                self.products,
+                evaluate.then_some(self.sectors),
+                pool_mapping,
+                date,
+            )?
+        } else {
+            DayGroups::default()
+        };
+        let history_groups = self
+            .historical_main
+            .map(|ordinary| match ordinary.selection(date) {
+                Some(mapping) => group_rows(&keys, self.products, None, Some(mapping), date),
+                None => Ok(DayGroups::default()),
+            })
+            .transpose()?;
         let returns = evaluate
-            .then(|| aligned_returns(self.label_root, self.label, date, &keys))
+            .then(|| {
+                aligned_returns(
+                    self.label_root,
+                    self.label,
+                    date,
+                    &keys,
+                    pool_mapping.map(|_| groups.all.as_slice()),
+                )
+            })
             .transpose()?;
         Ok(Some(EvaluationDay {
             date,
             table,
             groups,
+            history_groups,
             returns,
         }))
     }
@@ -568,7 +637,13 @@ fn evaluate_batch(
                     .zip(summaries.par_iter_mut())
                     .try_for_each(|(&factor, summary)| -> Result<()> {
                         let values = finite_column(&day.table, factor)?;
-                        summary.add_day(day.date, &day.groups, &values, day.returns.as_deref());
+                        summary.add_day(
+                            day.date,
+                            &day.groups,
+                            day.history_groups.as_ref(),
+                            &values,
+                            day.returns.as_deref(),
+                        );
                         Ok(())
                     })?;
             }
@@ -602,6 +677,10 @@ fn write_summary(
                 request.quantile_mode.as_str().to_string(),
             ),
             KeyValue::new("tail_quantile".to_string(), request.quantile.to_string()),
+            KeyValue::new(
+                "pool_id".to_string(),
+                request.pool_id.as_deref().unwrap_or("none").to_string(),
+            ),
         ]))
         .build();
     write_parquet_batch(path, &observations_batch(rows)?, props)
@@ -619,6 +698,7 @@ fn group_rows(
     keys: &[(&str, &str)],
     products: &BTreeSet<String>,
     sectors: Option<&HashMap<String, &'static str>>,
+    mapping: Option<&BTreeMap<String, String>>,
     date: i32,
 ) -> Result<DayGroups> {
     let mut groups = DayGroups::default();
@@ -630,9 +710,12 @@ fn group_rows(
                 "invalid futures contract code {contract} on {date}"
             ))
         })?;
-        let selected = products.is_empty()
+        let selected_product = products.is_empty()
             || products.contains(&code)
             || products.contains(code.split_once('.').unwrap().0);
+        let selected = selected_product
+            && mapping
+                .is_none_or(|mapping| mapping.get(&code).is_some_and(|main| main == contract));
         codes.insert(contract, selected.then_some(code));
     }
     let mut product_rows = BTreeMap::<&str, ProductRows>::new();
@@ -707,6 +790,7 @@ fn aligned_returns(
     label: &str,
     date: i32,
     factor_keys: &[(&str, &str)],
+    selected_rows: Option<&[usize]>,
 ) -> Result<Vec<Option<f64>>> {
     let label_table = read_day(&minute_path(root, date), &[label])?;
     let label_index: HashMap<_, _> = minute_keys(&label_table, date)?
@@ -716,15 +800,19 @@ fn aligned_returns(
         .collect();
     let values = finite_column(&label_table, label)?;
     let mut matched = false;
-    let returns = factor_keys
-        .iter()
-        .map(|key| {
-            let index = label_index.get(key)?;
+    let mut returns = vec![None; factor_keys.len()];
+    let mut align = |row: usize| {
+        if let Some(&index) = label_index.get(&factor_keys[row]) {
             matched = true;
-            values[*index]
-        })
-        .collect();
-    if !matched {
+            returns[row] = values[index];
+        }
+    };
+    if let Some(rows) = selected_rows {
+        rows.iter().copied().for_each(&mut align);
+    } else {
+        (0..factor_keys.len()).for_each(&mut align);
+    }
+    if !matched && !selected_rows.is_some_and(|rows| rows.is_empty()) {
         return Err(err(format!(
             "no matching futures factor and label minute keys on {date}"
         )));

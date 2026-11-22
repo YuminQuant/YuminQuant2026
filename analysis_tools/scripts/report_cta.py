@@ -39,13 +39,21 @@ def _encode_pnl(curves):
 
 
 def generate_report(signal, *, root, market_root, output):
-    portfolio, product_tables, curves = load_cta_report_views(signal, root=root, market_root=market_root)
     sectors = load_future_sectors(ROOT / "factor_engine/docs/FUTURE_SECTORS.md")
+    scopes = {"product:" + code: [code] for code in sectors['product']}
+    scopes.update({"sector:" + str(abbr): group['product'].tolist()
+                   for abbr, group in sectors.groupby('abbr')})
+    portfolio, product_tables, curves, scoped = load_cta_report_views(
+        signal, root=root, market_root=market_root, product_scopes=scopes)
+    for code in curves.columns:
+        if "product:" + code not in scoped:
+            raise ValueError(f"Missing portfolio scope for {code}; update FUTURE_SECTORS.md")
     data = {
         "signal": signal,
         "dates": [f"{date // 10000:04d}-{date // 100 % 100:02d}-{date % 100:02d}" for date in curves.index],
         "products": _product_labels(curves.columns, sectors),
         "portfolio": _rows(portfolio),
+        "portfolio_scopes": {scope: _rows(table) for scope, table in scoped.items()},
         "product_tables": {str(period): _rows(table) for period, table in product_tables.items()},
         "product_columns": list(product_tables["All"].reset_index().columns),
         "portfolio_columns": list(portfolio.reset_index().columns),

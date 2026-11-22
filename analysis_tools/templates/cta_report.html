@@ -267,7 +267,7 @@
       const rows = data.product_tables[view].filter(({product}) =>
         selected === "All" || selected === "sector:" + data.products[product].sector || selected === "product:" + product
       );
-      const portfolio = data.portfolio.filter(row => view === "All" || String(row.period) === view);
+      const portfolio = data.portfolio_scopes[selected].filter(row => view === "All" || String(row.period) === view);
       document.getElementById("selection").textContent =
         data.dates[start] + " 至 " + data.dates[end - 1] + " · " + rows.length + " 个品种";
       renderTable("portfolio", data.portfolio_columns, portfolio);

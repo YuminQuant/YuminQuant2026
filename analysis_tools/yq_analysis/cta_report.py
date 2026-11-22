@@ -40,6 +40,8 @@ def _load_run(path):
     totals["fill_count"] = account[SIDES].sum(axis=1)
     totals["turnover"] = products.groupby("trade_date").turnover_notional.sum() / previous_equity.where(previous_equity.gt(0))
     products["pnl_contribution"] = products.net_pnl / cash
+    products["initial_cash"] = cash
+    products["run_start"] = int(account.index[0])
     contribution_by_product = products.groupby("product").pnl_contribution
     equity_ratio = 1.0 + contribution_by_product.cumsum()
     previous_ratio = equity_ratio.groupby(products["product"]).shift(fill_value=1.0)
@@ -216,14 +218,38 @@ def load_cta_report(signal, *, root="data/strategy/future", year=None, market_ro
     )
 
 
-def load_cta_report_views(signal, *, root="data/strategy/future", market_root=None, periods_per_year=240):
+def scoped_portfolio_tables(daily, products, scopes, periods_per_year=240):
+    """Rebuild each selected portfolio from daily PnL, with annual cash resets."""
+    result = {"All": _portfolio_table(daily, periods_per_year, include_total=True)}
+    cash = products.groupby("trade_date").initial_cash.first().reindex(daily.index)
+    runs = products.groupby("trade_date").run_start.first().reindex(daily.index)
+    for scope, members in scopes.items():
+        selected = products[products['product'].isin(members)]
+        totals = selected.groupby('trade_date').agg(
+            net_pnl=('net_pnl', 'sum'), gross_pnl=('gross_pnl', 'sum'),
+            fee=('fee', 'sum'), slippage=('slippage', 'sum'),
+            fill_count=('trade_count', 'sum'), turnover=('turnover_notional', 'sum'),
+        ).reindex(daily.index, fill_value=0.0)
+        cumulative = totals.net_pnl.groupby(runs).cumsum()
+        previous = cash + cumulative - totals.net_pnl
+        valid = previous.gt(0) & (cash + cumulative).gt(0)
+        totals['daily_return'] = (totals.net_pnl / previous).where(valid)
+        totals['turnover'] = totals.turnover / previous.where(previous.gt(0))
+        result[scope] = _portfolio_table(totals, periods_per_year, include_total=True)
+    return result
+
+
+def load_cta_report_views(signal, *, root="data/strategy/future", market_root=None, periods_per_year=240, product_scopes=None):
     """Build report tables and curves with gaps before each product's first day."""
     daily, products, holding, missing = _load_report_data(signal, root, market_root)
     tables = {"All": _product_table(products, holding, missing, periods_per_year)}
     for year, group in products.groupby(products.trade_date // 10000):
         tables[int(year)] = _product_table(group, holding, missing, periods_per_year, year=year)
     curves = _pnl_curves(daily, products, keep_leading_gaps=True)
-    return _portfolio_table(daily, periods_per_year, include_total=True), tables, curves
+    views = (_portfolio_table(daily, periods_per_year, include_total=True), tables, curves)
+    if product_scopes is not None:
+        return (*views, scoped_portfolio_tables(daily, products, product_scopes, periods_per_year))
+    return views
 
 
 def plot_product_pnl(curves, *, columns=5, rows=4):

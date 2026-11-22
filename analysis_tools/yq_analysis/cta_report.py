@@ -29,7 +29,9 @@ def _load_run(path):
     net_pnl = account.account_pnl.diff()
     net_pnl.iloc[0] = account.account_pnl.iloc[0]
     np.testing.assert_allclose(aggregate, net_pnl, atol=0.0100001, rtol=0, err_msg=str(path))
-    np.testing.assert_allclose(aggregate.cumsum(), account.account_pnl, atol=0.0050001, rtol=0, err_msg=str(path))
+    # Account PnL is rounded to cents; allow half a cent plus 0.0001 yuan
+    # for numerical accumulation in the unrounded product totals.
+    np.testing.assert_allclose(aggregate.cumsum(), account.account_pnl, atol=0.0051, rtol=0, err_msg=str(path))
     equity = cash + account.account_pnl
     previous_equity = equity.shift(fill_value=cash)
     totals = products.groupby("trade_date").agg(

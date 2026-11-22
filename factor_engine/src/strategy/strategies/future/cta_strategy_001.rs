@@ -273,10 +273,11 @@ impl Strategy for CtaStrategy001 {
                     .is_some_and(|&close| liquidation_window(minute, close));
             for side in [OrderSide::Sell, OrderSide::Cover] {
                 let key = (symbol.clone(), side);
-                let timed_out = self
-                    .holding_minutes
-                    .get(&(symbol.clone(), side == OrderSide::Sell))
-                    .is_some_and(|&minutes| minutes >= 60);
+                let timed_out = self.variant == 2
+                    && self
+                        .holding_minutes
+                        .get(&(symbol.clone(), side == OrderSide::Sell))
+                        .is_some_and(|&minutes| minutes >= 60);
                 if !liquidation && !timed_out && !self.pending_exits.contains(&key) {
                     continue;
                 }
@@ -351,7 +352,7 @@ impl Strategy for CtaStrategy001 {
             return Ok(());
         };
         for symbol in ctx.market().symbols() {
-            {
+            if self.variant == 2 {
                 for (index, side) in [OrderSide::Buy, OrderSide::Short].into_iter().enumerate() {
                     if ctx.account().future_position(symbol, side).is_some() {
                         let age = self
@@ -422,7 +423,7 @@ impl Strategy for CtaStrategy001 {
     }
 
     fn on_fill(&mut self, ctx: &mut StrategyContext, fill: &FillEvent) -> Result<()> {
-        {
+        if self.variant == 2 {
             for (long, side) in [(true, OrderSide::Buy), (false, OrderSide::Short)] {
                 let key = (fill.symbol.clone(), long);
                 if ctx.account().future_position(&fill.symbol, side).is_none() {

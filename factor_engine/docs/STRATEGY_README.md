@@ -173,9 +173,9 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --c
 - 按品种分别计算前五个交易日普通主力信号的日 P1/P3/P97/P99，再分别取五日均值。该品种任一天缺少分位数时不开仓。当天信号只在对应 `on_bar` 使用。
 - 严格高于 P99 做多，严格低于 P1 做空；每侧一个最小交易单位，同向不加仓。`on_bar` 保存意图，在该合约下一根可用行情的 `on_bar_open` 提交；反向时先平后开，成交仍受成交量、保证金和涨跌停限制。
 - 按合约日盘收盘时间提前五分钟停止新开仓并逐分钟尝试平仓；隔夜余仓在下一交易日优先平仓，保留旧合约行情。夜盘按所属交易日处理。
-- 信号列名通过必填的 `[strategy].signal_id` 配置；五日窗口、开平仓分位数、60 个持仓交易分钟和提前五分钟平仓仍固定在实现中。`strategy_class` 选择策略代码，`strategy_id` 标识实验输出，二者都不选择信号列。
+- 信号列名通过必填的 `[strategy].signal_id` 配置；五日窗口、开平仓分位数和提前五分钟平仓仍固定在实现中。`strategy_class` 选择策略代码，`strategy_id` 标识实验输出，二者都不选择信号列。
 
-The model CTA reads minute predictions, averages five prior sessions' daily main-contract P1/P99 thresholds, and submits one minimum lot per side on strict threshold crossings. It stores close-time signals for the contract's next available open, uses P3/P97 exits or a 60-trading-minute timeout, closes before reversing, and retries liquidation in the last five minutes and on the next trading date. Select the signal column with required `[strategy].signal_id`; threshold and timing parameters remain fixed in code.
+The model CTA reads minute predictions, averages five prior sessions' daily main-contract P1/P99 thresholds, and submits one minimum lot per side on strict threshold crossings. It stores close-time signals for the contract's next available open, uses P3/P97 exits without a holding-time timeout, closes before reversing, and retries liquidation in the last five minutes and on the next trading date. Select the signal column with required `[strategy].signal_id`; threshold and timing parameters remain fixed in code.
 
 ```toml
 strategy_class = "future::cta_strategy_001"
@@ -202,7 +202,8 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --c
 002 分别使用 P5/P95。各分位数沿用前五个交易日逐日分位数的均值。
 信号触发后下一根可用 bar 执行，旧方向未平完可开反向仓。
 
-两者同时实施 60 个持仓交易分钟的时间止盈亏：首次开仓成交所在 bar 为
+001 不设 60 分钟持仓上限，仍保留尾盘强平和隔夜继续平仓。
+002 实施 60 个持仓交易分钟的时间止盈亏：首次开仓成交所在 bar 为
 第 0 分钟，后续该合约的有效分钟 bar 逐根累积，午休和闭市暂停计数；
 缺信号但有行情仍计时。累计 60 分钟时在该 bar 开盘提交全部实际持仓平仓，
 不依赖当前信号或分位数。部分平仓不重置计时，未成交逐 bar 重试；方向完全

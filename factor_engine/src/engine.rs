@@ -272,7 +272,7 @@ impl Engine {
 
         let factor_batch_size = request.factor_batch_size.max(1);
         let raw_work = build_intraday_raw_work(&raw_requirements, &target_dates, &calendar)?;
-        let execution_groups = execution_groups_for_factors(request.frequency, &specs, &factors);
+        let execution_groups = execution_groups_for_specs(request.frequency, &specs);
         let execution_stages = execution_stage_names(&raw_work, &execution_groups);
         let date_batch_size = request.date_batch_size.max(1);
         let raw_date_batch_count = raw_work
@@ -286,7 +286,7 @@ impl Engine {
             .map(|group| {
                 let date_batch_count = date_batches_for_stage(
                     &group.stage,
-                    &stage_dates(&group.stage, &target_dates, &calendar),
+                    &target_dates,
                     date_batch_size,
                 )
                 .len();
@@ -441,8 +441,7 @@ impl Engine {
                 .map(spec_calendar_lookback_days)
                 .max()
                 .unwrap_or(0);
-            let streaming = matches!(group.stage, ExecutionStage::IntradayDailyStreaming { .. });
-            let group_dates = stage_dates(&group.stage, &target_dates, &calendar);
+            let group_dates = &target_dates;
             let date_batches =
                 date_batches_for_stage(&group.stage, &group_dates, request.date_batch_size);
             let provider_batches =
@@ -458,7 +457,7 @@ impl Engine {
                     .expect("date batches are never empty after split");
                 let batch_load_start_date = calendar.warmup_start(
                     batch_start_date,
-                    if streaming { 0 } else { group_max_lookback },
+                    group_max_lookback,
                 );
                 let load_dates = calendar.open_dates_between(batch_load_start_date, batch_end_date);
                 let context = FactorContext {
@@ -1757,11 +1756,7 @@ fn contextual_requirements_for_factor_batch<'a>(
 ) -> ContextualRequirements {
     let mut output = ContextualRequirements::default();
     for (factor, spec) in factors.iter().zip(specs.iter()) {
-        let lookback = if factor.streams_minute_state() {
-            0
-        } else {
-            spec_calendar_lookback_days(spec)
-        };
+        let lookback = spec_calendar_lookback_days(spec);
         let load_start_date = calendar.warmup_start(context.start_date, lookback);
         let factor_context = FactorContext {
             asset_class: context.asset_class,
@@ -1931,7 +1926,6 @@ enum ExecutionStage {
     DailyNoMinute,
     IntradayDaily { lookback: usize },
     IntradayDailyPostprocess { lookback: usize },
-    IntradayDailyStreaming { lookback: usize },
 }
 
 impl ExecutionStage {
@@ -1942,56 +1936,8 @@ impl ExecutionStage {
             Self::IntradayDailyPostprocess { lookback } => {
                 format!("intraday_daily_postprocess_lookback_{lookback}")
             }
-            Self::IntradayDailyStreaming { lookback } => {
-                format!("intraday_daily_streaming_lookback_{lookback}")
-            }
         }
     }
-}
-
-fn stage_dates(
-    stage: &ExecutionStage,
-    target_dates: &[i32],
-    calendar: &TradingCalendar,
-) -> Vec<i32> {
-    if let ExecutionStage::IntradayDailyStreaming { lookback } = stage {
-        if let (Some(first), Some(last)) = (target_dates.first(), target_dates.last()) {
-            return calendar.open_dates_between(calendar.warmup_start(*first, *lookback), *last);
-        }
-    }
-    target_dates.to_vec()
-}
-
-fn execution_groups_for_factors(
-    frequency: Frequency,
-    specs: &[FactorSpec],
-    factors: &[Box<dyn Factor>],
-) -> Vec<ExecutionGroup> {
-    let mut groups = execution_groups_for_specs(frequency, specs);
-    let mut streaming = BTreeMap::<usize, Vec<usize>>::new();
-    for group in &mut groups {
-        group.factor_indices.retain(|idx| {
-            if frequency == Frequency::Daily && factors[*idx].streams_minute_state() {
-                streaming
-                    .entry(spec_calendar_lookback_days(&specs[*idx]))
-                    .or_default()
-                    .push(*idx);
-                false
-            } else {
-                true
-            }
-        });
-    }
-    groups.retain(|group| !group.factor_indices.is_empty());
-    groups.extend(
-        streaming
-            .into_iter()
-            .map(|(lookback, factor_indices)| ExecutionGroup {
-                stage: ExecutionStage::IntradayDailyStreaming { lookback },
-                factor_indices,
-            }),
-    );
-    groups
 }
 
 fn execution_groups_for_specs(frequency: Frequency, specs: &[FactorSpec]) -> Vec<ExecutionGroup> {
@@ -2148,36 +2094,6 @@ fn context_for_provider_requests(
     }
 }
 
-/// Read and publish configured batches while advancing chronological provider state by date.
-fn compute_streamed_dates(
-    job: &mut ComputeProviderJob<'_>,
-    context: &FactorContext,
-    pool: &DataPool,
-) -> Result<Vec<FactorSeries>> {
-    let mut outputs = BTreeMap::<String, FactorSeries>::new();
-    for &date in &context.load_dates {
-        let day_context = FactorContext {
-            start_date: date,
-            end_date: date,
-            load_start_date: date,
-            load_dates: vec![date],
-            target_dates: context.target_dates.iter().copied().filter(|target| *target == date).collect(),
-            ..context.clone()
-        };
-        let requests = job.requirements.iter().cloned()
-            .map(|request| request.with_explicit_dates(vec![date])).collect::<Vec<_>>();
-        let day_pool = pool.view_for_requests(&requests, &day_context);
-        for series in job.factor.compute_many_stateful(
-            &job.requested_ids, &day_context, &day_pool, job.state.as_mut(),
-        )? {
-            outputs.entry(series.spec.id.clone()).or_insert_with(|| FactorSeries {
-                spec: series.spec.clone(), values: Vec::new(),
-            }).values.extend(series.values);
-        }
-    }
-    Ok(outputs.into_values().collect())
-}
-
 fn compute_factor_batch(
     factors: &[&dyn Factor],
     context: &FactorContext,
@@ -2233,16 +2149,12 @@ fn compute_factor_batch(
                 let provider_context =
                     context_for_provider_requests(context, &job.requirements, computation_dates);
                 let provider_pool = pool.view_for_requests(&job.requirements, &provider_context);
-                let result = if job.factor.streams_minute_state() {
-                    compute_streamed_dates(&mut job, &provider_context, &provider_pool)
-                } else {
-                    job.factor.compute_many_stateful(
-                        &job.requested_ids,
-                        &provider_context,
-                        &provider_pool,
-                        job.state.as_mut(),
-                    )
-                };
+                let result = job.factor.compute_many_stateful(
+                    &job.requested_ids,
+                    &provider_context,
+                    &provider_pool,
+                    job.state.as_mut(),
+                );
                 (job.key, job.state, result)
             })
             .collect::<Vec<_>>()

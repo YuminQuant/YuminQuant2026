@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::core::{
@@ -23,12 +22,6 @@ pub enum Output {
     Jump,
 }
 impl Output {
-    fn index(self) -> usize {
-        match self {
-            Self::Continuous => 0,
-            Self::Jump => 1,
-        }
-    }
     fn id(self) -> &'static str {
         match self {
             Self::Continuous => "continuous_beta",
@@ -43,12 +36,9 @@ impl Factor for HighFrequencyBeta {
             id:self.0.id().into(),aliases:vec![match self.0 {Output::Continuous=>"ContinuousBeta",Output::Jump=>"JumpBeta"}.into()],
             name:self.0.id().into(),asset_class:AssetClass::Stock,frequency:Frequency::Daily,version:"0.1.0".into(),
             tags:["DFZQ","price_volume","beta","intraday","5min","stateful","daily","neutralize","barra","size","sector","deprecated"].into_iter().map(str::to_string).collect(),
-            description:"Negative 252-session high-frequency beta against equal-weight non-BJ SH/SZ stock log returns (including self), not CSI800. 09:30 excluded; 48 closes 09:35..11:30/13:05..15:00 give 47 trading-time returns, including 11:30 to 13:05, never overnight. Requires full calendar window and >=126 valid days, >=24 paired slots per valid day. Continuous: separate plus/minus/market RV/BV, preliminary truncation, rolling TOD, sqrt(min(RV,BV)*TOD), refilter entire window daily. Jump: sqrt(sum((stock*market)^2)/sum(market^4)), no daily-beta averaging. Missing slots not filled or bridged; no adjacent BV product across missing slots. Final SW L1 industry and Barra SIZE neutralization; no smoothing or zscore. One-day streaming with shared in-memory state, no raw disk cache; only final factors are persisted.".into(),
+            description:"Negative 252-session high-frequency beta against equal-weight non-BJ SH/SZ stock log returns (including self), not CSI800. 09:30 excluded; 48 closes 09:35..11:30/13:05..15:00 give 47 trading-time returns, including 11:30 to 13:05, never overnight. Requires full calendar window and >=126 valid days, >=24 paired slots per valid day. Continuous: separate plus/minus/market RV/BV, preliminary truncation, rolling TOD, sqrt(min(RV,BV)*TOD), refilter entire window daily. Jump: sqrt(sum((stock*market)^2)/sum(market^4)), no daily-beta averaging. Missing slots not filled or bridged; no adjacent BV product across missing slots. Final SW L1 industry and Barra SIZE neutralization; no smoothing or zscore. Native multi-date batches with a full warmup window per batch; only final factors are persisted.".into(),
             dependencies:vec![DataRequest::new(DatasetId::StockMinute1m, &["close", "vol"]),DataRequest::new(DatasetId::StockBarraDaily, &["SIZE"]),DataRequest::new(DatasetId::StockSwClassification, &["l1_code"])],intraday_raw_dependencies:vec![],lookback:Lookback{trading_days:WINDOW - 1},
         }
-    }
-    fn streams_minute_state(&self) -> bool {
-        true
     }
     fn compute_provider_key(&self) -> String {
         PROVIDER.into()
@@ -61,88 +51,62 @@ impl Factor for HighFrequencyBeta {
             .map(|r| r.with_explicit_dates(context.load_dates.clone()))
             .collect()
     }
-    fn initial_compute_state(&self, ids: &[String]) -> Box<dyn Any + Send> {
-        Box::new(State::new(
-            ids.iter().any(|id| id == Output::Continuous.id()),
-        ))
-    }
-    fn compute_many_stateful(
+    fn compute_many(
         &self,
         ids: &[String],
         context: &FactorContext,
         data: &DataPool,
-        state: &mut (dyn Any + Send),
     ) -> Result<Vec<FactorSeries>> {
-        let state = state
-            .downcast_mut::<State>()
-            .ok_or_else(|| err("HF beta state mismatch"))?;
-        if context.load_dates.len() != 1 {
-            return Err(err("HF beta requires one streamed date"));
-        }
-        let date = context.load_dates[0];
-        if !context.target_dates.is_empty() && context.target_dates != context.load_dates {
-            return Err(err("HF beta target date must match streamed date"));
-        }
-        let outputs: Vec<_> = [Output::Continuous, Output::Jump]
-            .into_iter()
-            .filter(|kind| ids.iter().any(|id| id == kind.id()))
-            .collect();
-        if outputs
-            .iter()
-            .any(|kind| matches!(kind, Output::Continuous))
-            && !state.continuous
-        {
-            return Err(err("HF beta requested outputs changed within stream"));
-        }
-        let day = match data.minute(DatasetId::StockMinute1m, date) {
-            Some(table) => Day::from_table(table, state.continuous)?,
-            None => Day::empty(),
-        };
-        let codes: Vec<_> = day.stocks.keys().cloned().collect();
-        state.push(date, day)?;
-        if context.target_dates.is_empty() || codes.is_empty() {
-            return Ok(outputs
-                .into_iter()
-                .map(|kind| FactorSeries {
-                    spec: HighFrequencyBeta(kind).spec(),
-                    values: Vec::new(),
-                })
-                .collect());
-        }
-        let values: Vec<_> = codes
-            .into_iter()
-            .map(|code| {
+        let outputs = [Output::Continuous, Output::Jump].into_iter()
+            .filter(|kind| ids.iter().any(|id| id == kind.id())).collect::<Vec<_>>();
+        let mut state = State::new(outputs.iter().any(|kind| matches!(kind, Output::Continuous)));
+        let targets = context.target_dates.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        let mut dates = Vec::new();
+        let mut codes = Vec::new();
+        let mut values = [Vec::new(), Vec::new()];
+        for &date in &context.load_dates {
+            let day = match data.minute(DatasetId::StockMinute1m, date) {
+                Some(table) => Day::from_table(table, state.continuous)?,
+                None => Day::empty(),
+            };
+            let day_codes = day.stocks.keys().cloned().collect::<Vec<_>>();
+            state.push(date, day)?;
+            if !targets.contains(&date) {
+                continue;
+            }
+            for code in day_codes {
                 let beta = state.values(&code);
-                (code, beta)
-            })
-            .collect();
+                dates.push(Some(date));
+                codes.push(Some(code));
+                for (column, value) in values.iter_mut().zip(beta) {
+                    column.push(value);
+                }
+            }
+        }
+        if dates.is_empty() {
+            return Ok(outputs.into_iter().map(|kind| FactorSeries {
+                spec: HighFrequencyBeta(kind).spec(), values: Vec::new(),
+            }).collect());
+        }
+        let [continuous, jump] = values;
         let table = Table::new(BTreeMap::from([
-            (
-                "trade_date".into(),
-                ColumnData::I32(vec![Some(date); values.len()]),
-            ),
-            (
-                "ts_code".into(),
-                ColumnData::Utf8(values.iter().map(|(code, _)| Some(code.clone())).collect()),
-            ),
+            ("trade_date".into(), ColumnData::I32(dates)),
+            ("ts_code".into(), ColumnData::Utf8(codes)),
+            (Output::Continuous.id().into(), ColumnData::F64(continuous)),
+            (Output::Jump.id().into(), ColumnData::F64(jump)),
         ]))?;
         let panel = DailyPanel::from_table(&table, context)?;
-        outputs
-            .into_iter()
-            .map(|kind| {
-                // BTreeMap stock order matches the panel's sorted instrument index.
-                let beta = panel.column_from_values(
-                    values.iter().map(|(_, beta)| beta[kind.index()]).collect(),
-                )?;
-                finalize(kind, &panel, &beta, data)
-            })
-            .collect()
+        outputs.into_iter().map(|kind| {
+            let beta = panel.column(kind.id())?;
+            finalize(kind, &panel, &beta, data)
+        }).collect()
     }
-    fn compute(&self, _: &FactorContext, _: &DataPool) -> Result<FactorSeries> {
-        Err(err(
-            "HF beta requires the stateful minute streaming scheduler",
-        ))
+
+    fn compute(&self, context: &FactorContext, data: &DataPool) -> Result<FactorSeries> {
+        self.compute_many(&[self.spec().id], context, data)?.into_iter().next()
+            .ok_or_else(|| err("HF beta did not return its requested output"))
     }
+
 }
 
 fn finalize(

@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-ML_COMMANDS = {f'{kind}-{action}' for kind in ('model','factor') for action in ('train','predict','run','materialize')}
+ML_COMMANDS = {f'{kind}-{action}' for kind in ('model','factor') for action in ('train','predict','run')}
 ML_COMMANDS |= {'factor-metadata','factor-metadata-all'}
 PRODUCE = {'run','label-run','barra-run','backtest','strategy-run'}
 

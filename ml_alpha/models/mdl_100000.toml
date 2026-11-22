@@ -8,7 +8,7 @@ train = [20150101, 20260930]
 predict = [20200101, 20261231]
 
 [sample]
-train_frequency = "5"
+train_frequency = "3"
 predict_frequency = "daily"
 
 [train_scheme]

@@ -22,7 +22,3 @@ pub fn thread_pool(requested: Option<usize>) -> Result<rayon::ThreadPool> {
 pub(crate) fn parallel_work(len: usize) -> bool {
     len >= 65_536 && rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1
 }
-
-pub(crate) fn stock_wave_width(_dates: usize, _inputs: usize) -> usize {
-    rayon::current_num_threads().max(1)
-}

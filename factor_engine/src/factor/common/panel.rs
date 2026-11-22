@@ -591,19 +591,15 @@ impl PanelColumn {
     fn ts_parallel_inputs<F>(&self, others: &[&Self], f: F) -> Result<Self>
     where F: Fn(&[Vec<Option<f64>>]) -> Vec<Option<f64>> + Sync {
         let mut output = vec![None; self.values.len()];
-        let width = crate::resources::stock_wave_width(self.index.date_count(), others.len() + 1);
-        for start in (0..self.index.instrument_count()).step_by(width) {
-            let end = (start + width).min(self.index.instrument_count());
-            let results = (start..end).into_par_iter().map(|stock| {
-                let mut inputs = vec![self.series_for_instrument(stock)];
-                inputs.extend(others.iter().map(|column| column.series_for_instrument(stock)));
-                let computed = f(&inputs);
-                self.require_series_len(computed.len(), "ts_parallel")?;
-                Ok(computed)
-            }).collect::<Result<Vec<_>>>()?;
-            for (stock, computed) in (start..end).zip(results) {
-                self.write_series_for_instrument(stock, &computed, &mut output);
-            }
+        let results = (0..self.index.instrument_count()).into_par_iter().map(|stock| {
+            let mut inputs = vec![self.series_for_instrument(stock)];
+            inputs.extend(others.iter().map(|column| column.series_for_instrument(stock)));
+            let computed = f(&inputs);
+            self.require_series_len(computed.len(), "ts_parallel")?;
+            Ok(computed)
+        }).collect::<Result<Vec<_>>>()?;
+        for (stock, computed) in results.into_iter().enumerate() {
+            self.write_series_for_instrument(stock, &computed, &mut output);
         }
         Ok(self.with_values(output))
     }

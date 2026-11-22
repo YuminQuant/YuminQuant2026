@@ -277,7 +277,7 @@ impl Engine {
         let date_batch_size = request.date_batch_size.max(1);
         let raw_date_batch_count = raw_work
             .iter()
-            .map(|work| split_dates_by_chunk(&work.target_dates, DEFAULT_DATE_BATCH_SIZE).len())
+            .map(|work| split_dates_by_chunk(&work.target_dates, date_batch_size).len())
             .sum::<usize>();
         let raw_factor_batch_count = raw_work.len();
         let raw_execution_batch_count = raw_date_batch_count;
@@ -2131,6 +2131,36 @@ fn context_for_provider_requests(
     }
 }
 
+/// Read and publish configured batches while advancing chronological provider state by date.
+fn compute_streamed_dates(
+    job: &mut ComputeProviderJob<'_>,
+    context: &FactorContext,
+    pool: &DataPool,
+) -> Result<Vec<FactorSeries>> {
+    let mut outputs = BTreeMap::<String, FactorSeries>::new();
+    for &date in &context.load_dates {
+        let day_context = FactorContext {
+            start_date: date,
+            end_date: date,
+            load_start_date: date,
+            load_dates: vec![date],
+            target_dates: context.target_dates.iter().copied().filter(|target| *target == date).collect(),
+            ..context.clone()
+        };
+        let requests = job.requirements.iter().cloned()
+            .map(|request| request.with_explicit_dates(vec![date])).collect::<Vec<_>>();
+        let day_pool = pool.view_for_requests(&requests, &day_context);
+        for series in job.factor.compute_many_stateful(
+            &job.requested_ids, &day_context, &day_pool, job.state.as_mut(),
+        )? {
+            outputs.entry(series.spec.id.clone()).or_insert_with(|| FactorSeries {
+                spec: series.spec.clone(), values: Vec::new(),
+            }).values.extend(series.values);
+        }
+    }
+    Ok(outputs.into_values().collect())
+}
+
 fn compute_factor_batch(
     factors: &[&dyn Factor],
     context: &FactorContext,
@@ -2186,12 +2216,16 @@ fn compute_factor_batch(
                 let provider_context =
                     context_for_provider_requests(context, &job.requirements, computation_dates);
                 let provider_pool = pool.view_for_requests(&job.requirements, &provider_context);
-                let result = job.factor.compute_many_stateful(
-                    &job.requested_ids,
-                    &provider_context,
-                    &provider_pool,
-                    job.state.as_mut(),
-                );
+                let result = if job.factor.streams_minute_state() {
+                    compute_streamed_dates(&mut job, &provider_context, &provider_pool)
+                } else {
+                    job.factor.compute_many_stateful(
+                        &job.requested_ids,
+                        &provider_context,
+                        &provider_pool,
+                        job.state.as_mut(),
+                    )
+                };
                 (job.key, job.state, result)
             })
             .collect::<Vec<_>>()

@@ -356,6 +356,30 @@ impl FactorSummary {
         }
     }
 
+    fn orient_holding_returns(&mut self, sectors: &HashMap<String, &'static str>) {
+        let is_product = |code: &str| code != "all" && !code.starts_with("sector:");
+        let mut product_ic = BTreeMap::<String, Mean>::new();
+        for row in self.rows.iter().filter(|row| is_product(&row.code)) {
+            product_ic.entry(row.code.clone()).or_default().push(row.metrics.ic.value());
+        }
+        let mut aggregate_returns = BTreeMap::<(i32, String), Mean>::new();
+        for row in self.rows.iter_mut().filter(|row| is_product(&row.code)) {
+            // Every minute's position is reversed for a negative mean product IC.
+            // The linear return changes sign; entries, reversals and durations are identical.
+            if product_ic[&row.code].value().is_some_and(|ic| ic < 0.0) {
+                row.metrics.holding_rtn.sum = -row.metrics.holding_rtn.sum;
+            }
+            let value = row.metrics.holding_rtn.value();
+            aggregate_returns.entry((row.date, "all".to_owned())).or_default().push(value);
+            if let Some(sector) = sectors.get(&row.code) {
+                aggregate_returns.entry((row.date, format!("sector:{sector}"))).or_default().push(value);
+            }
+        }
+        for row in self.rows.iter_mut().filter(|row| !is_product(&row.code)) {
+            row.metrics.holding_rtn = aggregate_returns.remove(&(row.date, row.code.clone())).unwrap_or_default();
+        }
+    }
+
     fn add_day(
         &mut self,
         date: i32,
@@ -742,6 +766,9 @@ fn evaluate_batch(
             },
         )?;
     }
+    for summary in &mut summaries {
+        summary.orient_holding_returns(inputs.sectors);
+    }
     for code in inputs.products {
         if !seen_products
             .iter()
@@ -766,6 +793,7 @@ fn write_summary(
         .set_key_value_metadata(Some(vec![
             KeyValue::new("label_id".to_string(), label.to_string()),
             KeyValue::new("holding_label_id".to_string(), HOLDING_LABEL.to_string()),
+            KeyValue::new("holding_direction".to_string(), "product_mean_daily_ic".to_string()),
             KeyValue::new(
                 "quantile_mode".to_string(),
                 request.quantile_mode.as_str().to_string(),

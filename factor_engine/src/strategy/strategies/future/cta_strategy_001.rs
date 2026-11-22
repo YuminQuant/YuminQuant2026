@@ -19,8 +19,6 @@ type Thresholds = BTreeMap<String, (f64, f64, f64, f64)>;
 type DailyMapping = BTreeMap<String, String>;
 
 pub struct CtaStrategy001 {
-    variant: u8,
-    holding_minutes: BTreeMap<(String, bool), u32>,
     signal_id: String,
     mappings: Option<FutureMinuteInput>,
     entry_pool: Option<FutureMinuteInput>,
@@ -58,11 +56,6 @@ impl CtaStrategy001 {
             .ok_or_else(|| err("cta_strategy_001 requires a valid [strategy].signal_id"))?
             .clone();
         Ok(Self {
-            variant: match config.strategy_class.as_str() {
-                "future::cta_strategy_002" => 2,
-                _ => 1,
-            },
-            holding_minutes: BTreeMap::new(),
             signal_id,
             mappings: None,
             entry_pool: None,
@@ -133,10 +126,7 @@ impl CtaStrategy001 {
 
 impl Strategy for CtaStrategy001 {
     fn name(&self) -> &'static str {
-        match self.variant {
-            2 => "future::cta_strategy_002",
-            _ => "future::cta_strategy_001",
-        }
+        "future::cta_strategy_001"
     }
 
     fn prepare_future_run(
@@ -222,7 +212,7 @@ impl Strategy for CtaStrategy001 {
     }
 
     fn on_session_inputs(&mut self, date: i32, mut inputs: SessionInputs) -> Result<()> {
-        let exit_probability = if self.variant == 2 { 0.05 } else { 0.03 };
+        let exit_probability = 0.03;
         for day in self.prior_dates(date).to_vec() {
             if !self.history.contains_key(&day) {
                 let samples = parse_signals(
@@ -273,12 +263,7 @@ impl Strategy for CtaStrategy001 {
                     .is_some_and(|&close| liquidation_window(minute, close));
             for side in [OrderSide::Sell, OrderSide::Cover] {
                 let key = (symbol.clone(), side);
-                let timed_out = self.variant == 2
-                    && self
-                        .holding_minutes
-                        .get(&(symbol.clone(), side == OrderSide::Sell))
-                        .is_some_and(|&minutes| minutes >= 60);
-                if !liquidation && !timed_out && !self.pending_exits.contains(&key) {
+                if !liquidation && !self.pending_exits.contains(&key) {
                     continue;
                 }
                 if let Some(quantity) = ctx
@@ -286,9 +271,6 @@ impl Strategy for CtaStrategy001 {
                     .future_position(symbol, side)
                     .map(|position| position.quantity.abs())
                 {
-                    if timed_out && !self.pending_exits.contains(&key) {
-                        self.pending_exits.push(key.clone());
-                    }
                     ctx.order_future_side(symbol, side, quantity, ctx.signal_time());
                     closing.push(key);
                 }
@@ -352,17 +334,6 @@ impl Strategy for CtaStrategy001 {
             return Ok(());
         };
         for symbol in ctx.market().symbols() {
-            if self.variant == 2 {
-                for (index, side) in [OrderSide::Buy, OrderSide::Short].into_iter().enumerate() {
-                    if ctx.account().future_position(symbol, side).is_some() {
-                        let age = self
-                            .holding_minutes
-                            .entry((symbol.clone(), index == 0))
-                            .or_default();
-                        *age += 1;
-                    }
-                }
-            }
             if self.overnight.contains(symbol) {
                 continue;
             }
@@ -423,16 +394,6 @@ impl Strategy for CtaStrategy001 {
     }
 
     fn on_fill(&mut self, ctx: &mut StrategyContext, fill: &FillEvent) -> Result<()> {
-        if self.variant == 2 {
-            for (long, side) in [(true, OrderSide::Buy), (false, OrderSide::Short)] {
-                let key = (fill.symbol.clone(), long);
-                if ctx.account().future_position(&fill.symbol, side).is_none() {
-                    self.holding_minutes.remove(&key);
-                } else {
-                    self.holding_minutes.entry(key).or_insert(0);
-                }
-            }
-        }
         self.pending_exits
             .retain(|(symbol, side)| ctx.account().future_position(symbol, *side).is_some());
         if self.overnight.contains(&fill.symbol)

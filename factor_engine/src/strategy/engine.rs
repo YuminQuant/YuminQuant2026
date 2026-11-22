@@ -409,7 +409,6 @@ fn create_strategy(config: &StrategyRunConfig) -> Result<Box<dyn Strategy>> {
     match config.strategy_class.as_str() {
         "stock::strategy_001" => Ok(Box::new(Strategy001::from_config(config)?)),
         "future::cta_strategy_001" => Ok(Box::new(CtaStrategy001::from_config(config)?)),
-        "future::cta_strategy_002" => Ok(Box::new(crate::strategy::strategies::future::cta_strategy_002::create(config)?)),
         "future::sma" => Ok(Box::new(SmaStrategy::from_context_config(config))),
         other => Err(err(format!("unknown strategy_class: {other}"))),
     }

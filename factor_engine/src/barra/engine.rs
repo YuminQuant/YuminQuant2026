@@ -317,7 +317,6 @@ impl BarraEngine {
             let batch_inputs = DataPool::load_batch_inputs(&loader, &loaded_requests, &context,
                 &mut disclosure_cache, financial_context.clone())?;
             let shared_load_ms = shared_load_started.elapsed().as_millis();
-            let mut batch_results = crate::storage::OutputBatch::default();
 
             for (exposure_batch_index, range) in exposure_ranges.iter().enumerate() {
                 let batch_entries = &selected_provider_entries[range.clone()];
@@ -378,8 +377,9 @@ impl BarraEngine {
                     .collect::<Vec<_>>();
                 let result_rows: usize = results.iter().map(|series| series.values.len()).sum();
                 let write_started = Instant::now();
+                let mut batch_results = crate::storage::OutputBatch::default();
                 batch_results.push_barra(results);
-                if batch_results.full()? { output_paths.extend(batch_results.write_barra(&storage)?); }
+                output_paths.extend(batch_results.write_barra(&storage)?);
                 let write_ms = write_started.elapsed().as_millis();
                 let stage_name = batch_stage_name(&batch_providers);
                 if request.profile {
@@ -415,14 +415,6 @@ impl BarraEngine {
                     batch_end_date,
                     batch_specs.len()
                 ));
-            }
-            // Only target-date values are retained; publish each daily wide table once.
-            let write_started = Instant::now();
-            output_paths.extend(batch_results.write_barra(&storage)?);
-            if request.profile {
-                if let Some(profile) = profiles.last_mut() {
-                    profile.write_ms += write_started.elapsed().as_millis();
-                }
             }
             disclosure_cache.retain_disclosure_windows(&disclosure_windows);
         }

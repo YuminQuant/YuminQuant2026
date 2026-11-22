@@ -291,8 +291,7 @@ impl LabelEngine {
             }
             let shared_load_ms = shared_started.elapsed().as_millis();
             let mut shared_load_pending = true;
-            let mut output = crate::storage::OutputBatch::default();
-            for (stage_index, stage) in execution_stages.iter().enumerate() {
+            for stage in &execution_stages {
                 let mut raw_inputs = DataPool::default();
                 let raw_ids = raw_ids_for_label_indices(&labels, &stage.label_indices);
                 let mut raw_load_ms = 0;
@@ -392,14 +391,10 @@ impl LabelEngine {
                         .collect::<Vec<_>>();
                     let write_started = Instant::now();
                     let result_rows = results.iter().map(|series| series.values.len()).sum();
+                    let mut output = crate::storage::OutputBatch::default();
                     output.push_labels(results);
-                    let last_batch = stage_index + 1 == execution_stages.len()
-                        && label_batch_index + 1 == stage.batch_ranges.len();
-                    let written_paths = if output.full()? || last_batch {
-                        output.write_labels(&storage)?
-                    } else { Vec::new() };
+                    output_paths.extend(output.write_labels(&storage)?);
                     let write_ms = write_started.elapsed().as_millis();
-                    output_paths.extend(written_paths);
                     if request.profile {
                         profiles.push(BatchProfile {
                             stage: stage.name.to_string(),

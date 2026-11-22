@@ -23,36 +23,19 @@ static INIT: Mutex<()> = Mutex::new(());
 static THREADS: AtomicUsize = AtomicUsize::new(0);
 static WRITERS: OnceLock<std::result::Result<rayon::ThreadPool, rayon::ThreadPoolBuildError>> = OnceLock::new();
 
-/// Dispatch independent destinations only. Callers retain their existing date/memory batches.
+/// Dispatch independent remote destinations in the shared 50-thread write pool.
 pub(crate) fn write_files<I: Send, T: Send>(
     root: &Path,
     items: Vec<I>,
     write: impl Fn(I) -> Result<T> + Sync + Send,
 ) -> Result<Vec<T>> {
-    write_files_windowed(root, items, 50, write)
-}
-
-pub(crate) fn write_files_windowed<I: Send, T: Send>(
-    root: &Path,
-    items: Vec<I>,
-    window: usize,
-    write: impl Fn(I) -> Result<T> + Sync + Send,
-) -> Result<Vec<T>> {
-    if window <= 1 || items.len() < 2 || artifact_io::backend(root).is_none() {
+    if items.len() < 2 || artifact_io::backend(root).is_none() {
         return items.into_iter().map(write).collect();
     }
     let pool = WRITERS.get_or_init(|| rayon::ThreadPoolBuilder::new()
         .num_threads(50).thread_name(|i| format!("output-write-{i}")).build())
         .as_ref().map_err(|e| err(format!("cannot build remote write pool: {e}")))?;
-    let mut results = Vec::with_capacity(items.len());
-    let mut items = items.into_iter();
-    while items.len() > 0 {
-        let wave = items.by_ref().take(window.min(50)).collect::<Vec<_>>();
-        for result in pool.install(|| wave.into_par_iter().map(&write).collect::<Vec<_>>()) {
-            results.push(result?);
-        }
-    }
-    Ok(results)
+    pool.install(|| items.into_par_iter().map(write).collect())
 }
 pub(crate) fn configure_threads(threads: usize) { THREADS.store(threads, Ordering::Relaxed); }
 

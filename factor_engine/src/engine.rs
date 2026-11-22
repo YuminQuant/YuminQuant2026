@@ -520,7 +520,6 @@ impl Engine {
                     Some(inputs)
                 } else { None };
                 let shared_load_ms = shared_load_started.elapsed().as_millis();
-                let mut batch_outputs = crate::storage::OutputBatch::default();
 
                 for (factor_batch_index, batch_indices) in provider_batches.iter().enumerate() {
                     let batch_specs = batch_indices
@@ -623,14 +622,9 @@ impl Engine {
                         stage_name, batch_start_date, batch_end_date
                     ));
                     let result_rows: usize = results.iter().map(|series| series.values.len()).sum();
-                    let written_paths = if provider_batches.len() == 1 {
-                        storage.write_results(&results)?
-                    } else {
-                        batch_outputs.push_factors(results);
-                        if batch_outputs.full()? { batch_outputs.write_factors(&storage)? } else { Vec::new() }
-                    };
+                    output_paths.extend(storage.write_results(&results)?);
+                    drop(results);
                     let write_ms = write_started.elapsed().as_millis();
-                    output_paths.extend(written_paths);
                     if request.profile {
                         let provider_count = provider_count_for_factors(&batch_factors);
                         let disclosure_cache = disclosure_cache.profiles();
@@ -664,11 +658,6 @@ impl Engine {
                         batch_end_date,
                         batch_specs.len()
                     ));
-                }
-                let write_started = Instant::now();
-                output_paths.extend(batch_outputs.write_factors(&storage)?);
-                if request.profile {
-                    if let Some(profile) = profiles.last_mut() { profile.write_ms += write_started.elapsed().as_millis(); }
                 }
                 disclosure_cache.retain_disclosure_windows(&group_disclosure_windows);
             }

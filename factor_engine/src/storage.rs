@@ -55,12 +55,6 @@ struct OutputColumns {
 }
 
 impl OutputBatch {
-    pub fn push_factors(&mut self, series: Vec<FactorSeries>) {
-        for series in series {
-            self.push(series.spec.asset_class, series.spec.frequency, series.spec.output_column(), series.values);
-        }
-    }
-
     pub fn push_barra(&mut self, series: Vec<BarraSeries>) {
         for series in series {
             self.push(series.spec.asset_class, series.spec.frequency, series.spec.output_column(), series.values);
@@ -90,40 +84,21 @@ impl OutputBatch {
         }
     }
 
-    pub fn full(&self) -> Result<bool> {
-        let limit = std::env::var("YQ_OUTPUT_BUFFER_BYTES").ok().map(|value| value.parse::<usize>())
-            .transpose()?.unwrap_or(256 * 1024 * 1024);
-        if limit == 0 { return Err(err("YQ_OUTPUT_BUFFER_BYTES must be positive")); }
-        let bytes = self.frames.values().map(|frame| frame.keys.len() * 96 + frame.columns.values()
-            .map(|(data, changed)| data.capacity() * std::mem::size_of::<Option<f64>>() + changed.capacity() / 8 + 1)
-            .sum::<usize>()).sum::<usize>();
-        Ok(bytes >= limit)
-    }
-
-    pub fn write_factors(&mut self, storage: &FactorStorage) -> Result<Vec<PathBuf>> {
+    pub fn write_barra(self, storage: &BarraStorage) -> Result<Vec<PathBuf>> {
         self.write(|asset, frequency, date| storage.output_path(asset, frequency, date))
     }
 
-    pub fn write_barra(&mut self, storage: &BarraStorage) -> Result<Vec<PathBuf>> {
+    pub fn write_labels(self, storage: &LabelStorage) -> Result<Vec<PathBuf>> {
         self.write(|asset, frequency, date| storage.output_path(asset, frequency, date))
     }
 
-    pub fn write_labels(&mut self, storage: &LabelStorage) -> Result<Vec<PathBuf>> {
-        self.write(|asset, frequency, date| storage.output_path(asset, frequency, date))
-    }
-
-    fn write(&mut self, path: impl Fn(AssetClass, Frequency, i32) -> PathBuf) -> Result<Vec<PathBuf>> {
-        let jobs = std::mem::take(&mut self.frames).into_iter()
+    fn write(self, path: impl Fn(AssetClass, Frequency, i32) -> PathBuf) -> Result<Vec<PathBuf>> {
+        let jobs = self.frames.into_iter()
             .map(|((asset, frequency, date), frame)| (path(asset, frequency, date), asset, frequency, date, frame))
             .collect::<Vec<_>>();
         let Some((first, ..)) = jobs.first() else { return Ok(Vec::new()); };
         let root = first.clone();
-        let window = output_file_window(jobs.iter().map(|job| job.2)).min(
-            merge_file_window(jobs.iter().map(|job| {
-                job.4.keys.len().saturating_mul(job.4.columns.len().max(1))
-            })),
-        );
-        crate::data::read_ahead::write_files_windowed(&root, jobs, window, |(destination, asset, frequency, date, frame)| {
+        crate::data::read_ahead::write_files(&root, jobs, |(destination, asset, frequency, date, frame)| {
             let _guard = crate::artifact_io::lock(&destination)?;
             let mut updates = BTreeMap::new();
             for (name, (data, changed)) in frame.columns {
@@ -143,16 +118,6 @@ impl OutputBatch {
             Ok(destination)
         })
     }
-}
-
-fn output_file_window(frequencies: impl Iterator<Item = Frequency>) -> usize {
-    if frequencies.into_iter().any(|frequency| frequency != Frequency::Daily) { 4 } else { 50 }
-}
-
-fn merge_file_window(cells: impl Iterator<Item = usize>) -> usize {
-    // Bound temporary keys, pending updates and column buffers for wide merges.
-    let largest = cells.max().unwrap_or(0).saturating_mul(160).max(1);
-    (256 * 1024 * 1024 / largest).max(1)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -353,13 +318,8 @@ impl FactorStorage {
 
         let total = grouped.len();
         if crate::artifact_io::backend(&self.factor_root).is_some() {
-            let window = output_file_window(grouped.keys().map(|key| key.1)).min(
-                merge_file_window(grouped.values().map(|columns| {
-                    columns.values().map(Vec::len).sum()
-                })),
-            );
-            let written = crate::data::read_ahead::write_files_windowed(
-                &self.factor_root, grouped.into_iter().collect(), window,
+            let written = crate::data::read_ahead::write_files(
+                &self.factor_root, grouped.into_iter().collect(),
                 |((asset, frequency, date), columns)| {
                     let path = self.output_path(asset, frequency, date);
                     let _guard = crate::artifact_io::lock(&path)?;
@@ -644,8 +604,7 @@ impl LabelStorage {
             }
         }
 
-        let window = output_file_window(grouped.keys().map(|key| key.1));
-        crate::data::read_ahead::write_files_windowed(&self.label_root, grouped.into_iter().collect(), window, |((asset_class, frequency, trade_date), mut frame)| {
+        crate::data::read_ahead::write_files(&self.label_root, grouped.into_iter().collect(), |((asset_class, frequency, trade_date), mut frame)| {
             let path = self.output_path(asset_class, frequency, trade_date);
             let _guard = crate::artifact_io::lock(&path)?;
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;
@@ -742,8 +701,7 @@ impl BarraStorage {
             }
         }
 
-        let window = output_file_window(grouped.keys().map(|key| key.1));
-        crate::data::read_ahead::write_files_windowed(&self.barra_root, grouped.into_iter().collect(), window, |((asset_class, frequency, trade_date), mut frame)| {
+        crate::data::read_ahead::write_files(&self.barra_root, grouped.into_iter().collect(), |((asset_class, frequency, trade_date), mut frame)| {
             let path = self.output_path(asset_class, frequency, trade_date);
             let _guard = crate::artifact_io::lock(&path)?;
             merge_existing_output(&path, frequency, trade_date, &mut frame)?;

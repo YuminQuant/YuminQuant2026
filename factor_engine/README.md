@@ -46,9 +46,9 @@ A deployment adapter may reserve 30 CPUs and pass `--threads 28`. Providers and 
 
 Factors and Barra share daily inputs within each date batch, merging physical reads while retaining request-specific dates and columns. Sparse requests do not inherit other requests' dates. Ordinary factors preload only dependencies reused across compute batches; single-use inputs remain lazy and single-provider runs bypass sharing. Panel-only requests share panels; row tables retain only required dates/columns, or panels are built per compute batch, avoiding equivalent full-history representations. Shared financial PIT indexes, report preferences, warmup windows and cross-batch slow states retain their existing semantics.
 
-Parquet 随机读使用文件生命周期内的有界内存块缓冲，复用页头/页体重叠读取；不合并小文件，不增加节点磁盘数据缓存。输出仅累计目标日的列式数据，默认达到约 256 MiB 后分批发布；未达到阈值时，同日多批因子/暴露只合并写出一次。锁、Snappy、原子发布及保留已有其他列的规则不变。`YQ_OUTPUT_BUFFER_BYTES` 可调整发布缓冲阈值；它不是整个进程的内存限制。`--profile` 的读取字节/文件打开/区间读取/缓冲命中为客户端计数，不等于 DataNode 的全局 RPC 数。
+Parquet 随机读使用文件生命周期内的内存块缓冲，复用页头和页体的重叠读取。因子、标签和 Barra 每个计算批次完成后立即合并写入当日文件，释放该批结果后进入下一批。远端落盘统一最多 50 个并发写入，使用文件锁、Snappy 压缩和原子发布，保留未更新的已有列。`--profile` 记录客户端读取字节数、打开文件数、区间读取数和缓冲命中数。
 
-Parquet random reads use a bounded, per-file in-memory block buffer shared by page-header and page-body reads. Small files remain unchanged; no node disk data cache is introduced. Target-date columns are accumulated and flushed at an approximate 256 MiB threshold; batches below that threshold merge each day's outputs once. Locking, Snappy, atomic publication and preservation of unrelated columns remain unchanged. `YQ_OUTPUT_BUFFER_BYTES` changes this flush threshold, not the total process memory limit. Profile bytes, opens, range reads and cache hits are client-side counters, not global DataNode RPC counts.
+Parquet random reads use a per-file block buffer shared by page-header and page-body reads. Factor, label and Barra results are merged into daily files and released after each compute batch. Remote publication allows up to 50 concurrent writes and uses file locking, Snappy compression and atomic replacement while preserving untouched columns. Profile bytes, opens, range reads and cache hits count client activity.
 
 ## 期货分钟复权 / Futures minute adjustment
 

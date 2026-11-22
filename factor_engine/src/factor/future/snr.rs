@@ -8,6 +8,7 @@ use crate::factor::future::minute_input::{
 };
 use crate::factor::future::multiscale_volatility::{divide, log_return, map, zip, Series, Values};
 use crate::factor::future::rolling::rolling_exponential_mean;
+use crate::factor::future::soft_scoring::{event_decay, scaled, sigmoid};
 use crate::factor::future::variance_amplitude::relative_volume;
 use crate::factor::Factor;
 use crate::operators::cross_sectional::cs_neutralize_regression::solve_linear_system;
@@ -48,7 +49,7 @@ const FACTORS: [(&str, &str); 13] = [
     ("snr07_jump_robust_diffusive", "Return drift clipped at three times the prior five-minute RMS and scaled by bipower volatility."),
     ("snr08_jump_dominated_shock", "Signed largest absolute return, scaled by prior five-minute RMS and weighted by jump share and five-minute exponential recency."),
     ("snr09_volume_conditioned_drift_premium", "Difference between relative-volume-weighted and unweighted return drift, scaled by return noise. Relative volume uses the preceding five-minute mean."),
-    ("snr10_oi_event_forward_drift", "Next-minute drift after historical net open-interest shocks above one, activated by a current shock. Its weight shrinks toward zero with five pseudo-observations."),
+    ("snr10_oi_event_forward_drift", "Soft-shock-weighted historical next-minute drift, scaled by regularized response noise and shrunk by effective sample size with five pseudo-observations. A single positive OI change updates the score, followed by finite exponential decay with a linear taper over the search window; absent events use the soft background."),
     ("snr11_volume_oi_predictive", "Next-minute return predicted from log relative volume, open-interest shock and their interaction, scaled by training residual noise. Relative volume and open-interest shocks use preceding five-minute baselines."),
     ("snr12_ar1_predictive", "Next-minute AR(1) return forecast scaled by the population standard deviation of training residuals."),
     ("snr13_ma_alignment_snr", "Continuous agreement of three price moving averages, scaled by prior ATR and weighted by unsigned return signal-to-noise."),
@@ -116,7 +117,7 @@ impl Factor for SnrFactor {
             aliases: vec![format!("{alias}_{suffix}")],
             asset_class: AssetClass::Future,
             frequency: Frequency::Minute1,
-            version: "0.1.0".into(),
+            version: if self.kind == 10 { "0.2.0" } else { "0.1.0" }.into(),
             tags: ["minute", "pv", "yq", "snr"].map(str::to_string).to_vec(),
             description: format!("{description} {windows}"),
             dependencies: vec![future_minute_request(fields(self.kind))],
@@ -162,7 +163,13 @@ impl Factor for SnrFactor {
             context,
             data,
             fields(self.kind),
-            MAX_WINDOW + 1,
+            MAX_WINDOW
+                + 1
+                + if self.kind == 10 {
+                    BASELINE_WINDOWS[2]
+                } else {
+                    0
+                },
             |inputs| evaluate(self.kind, &selected, inputs),
         )
     }
@@ -320,36 +327,50 @@ fn jumps(returns: &Values, n: usize, scales: &Values, clipped: Option<&Values>) 
     })
 }
 
-fn oi_shocks(oi_change: &Values) -> Series {
+fn oi_shocks(oi_change: &Values, soft: bool) -> Series {
     let typical = ts_delay(
         &ts_mean(&map(oi_change, f64::abs), SCALE_WINDOW, SCALE_WINDOW),
         1,
     );
     zip(oi_change, &typical, |change, base| {
-        ratio(change, base).map(f64::asinh)
+        (if soft {
+            scaled(change, base)
+        } else {
+            ratio(change, base)
+        })
+        .map(f64::asinh)
     })
 }
 
 fn oi_event_drift(returns: &Values, shocks: &Values, n: usize) -> Series {
-    rolling(returns.len(), n, |t| {
+    let scores = rolling(returns.len(), n, |t| {
         let current = shocks[t]?;
-        let mut responses = [0.0; MAX_WINDOW];
-        let mut count = 0;
+        let (mut mass, mut mass2, mut total) = (0.0, 0.0, 0.0);
+        let mut square = 0.0;
+        let mut baseline = 0.0;
+        // Only realized responses strictly before t enter the training sample.
         for i in t - n..t - 1 {
             let next_return = returns[i + 1]?;
-            if shocks[i]? > OI_EVENT_THRESHOLD {
-                responses[count] = next_return;
-                count += 1;
-            }
+            let weight = sigmoid((shocks[i]? - OI_EVENT_THRESHOLD) / 0.5);
+            mass += weight;
+            mass2 += weight * weight;
+            total += weight * next_return;
+            square += weight * next_return * next_return;
+            baseline += next_return * next_return;
         }
-        if current <= OI_EVENT_THRESHOLD {
+        if mass == 0.0 {
             return Some(0.0);
         }
-        (count >= 2).then_some(())?;
-        let selected = &responses[..count];
-        let weight = count as f64 / (count as f64 + EVENT_SHRINKAGE);
-        Some(weight * score(mean(selected), std_dev(selected))?)
-    })
+        let response = total / mass;
+        let variance = (square / mass - response * response).max(0.0);
+        let noise = (variance + 0.05 * baseline / (n - 1) as f64).sqrt();
+        let neff = mass * mass / mass2;
+        let activation = sigmoid((current - OI_EVENT_THRESHOLD) / 0.5);
+        Some(activation * neff / (neff + EVENT_SHRINKAGE) * scaled(response, noise)?.tanh())
+    });
+    // One positive OI change is enough to start/restart the finite event memory.
+    let events = shocks.iter().map(|s| Some((*s)? > 0.0)).collect::<Vec<_>>();
+    event_decay(&scores, &events, n)
 }
 
 fn forecast_score<const P: usize>(
@@ -519,12 +540,12 @@ fn evaluate(kind: usize, variants: &[usize], inputs: &[Series]) -> Vec<Series> {
             })
         }
         10 => {
-            let shock = oi_shocks(&inputs[1]);
+            let shock = oi_shocks(&inputs[1], true);
             each(kind, variants, |n, _| oi_event_drift(&returns, &shock, n))
         }
         11 => {
             let log_volume = map(&relative_volume(&inputs[1]), f64::ln);
-            let shock = oi_shocks(&inputs[2]);
+            let shock = oi_shocks(&inputs[2], false);
             let joint = zip(&log_volume, &shock, |v, d| Some(v * d));
             each(kind, variants, |n, _| {
                 predictive(&returns, [&log_volume, &shock, &joint], n)

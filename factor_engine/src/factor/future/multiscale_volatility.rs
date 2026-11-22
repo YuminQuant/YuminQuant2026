@@ -6,6 +6,7 @@ use crate::factor::future::minute_input::{
     FutureMinuteField::ContractLevel,
 };
 use crate::factor::future::rolling::rolling_exponential_mean;
+use crate::factor::future::soft_scoring::{event_decay, expansion, scaled, sigmoid, softplus};
 use crate::factor::Factor;
 use crate::operators::{ts_delay, ts_max, ts_median, ts_min, ts_sum};
 
@@ -43,10 +44,10 @@ const FACTORS: [(&str, &str); 10] = [
     ("msv_f04_semivariance_imbalance", "Five-bar upside versus downside semivariance imbalance weighted by volatility expansion."),
     ("msv_f05_semivariance_rotation", "Change in signed semivariance imbalance between five recent minutes and the preceding baseline, weighted by volatility expansion."),
     ("msv_f06_vol_of_vol_shock", "Five-bar standardized momentum weighted by expansion in the sample volatility of log five-bar realized volatility."),
-    ("msv_f07_compression_breakout", "ATR-scaled minute channel breakout confirmed by prior compression and five-minute volatility release."),
+    ("msv_f07_compression_breakout", "Smooth ATR-scaled channel proximity weighted by continuous compression and volatility-release scores. A single close outside the preceding channel triggers event memory without requiring simultaneous compression and release."),
     ("msv_f08_abnormal_range_pressure", "Five-bar signed candle bodies weighted by true-range expansion relative to the preceding median."),
-    ("msv_f09_failed_breakout_reversal", "Abnormal true range amplifies a minute channel breach that closes back inside the channel."),
-    ("msv_f10_gap_confirmation", "One-minute close-to-open gaps confirmed by the current minute's candle body. The shock baseline uses the median of nonzero prior gaps so ordinary zero-gap minutes do not erase it."),
+    ("msv_f09_failed_breakout_reversal", "Smooth channel-breach proximity and close-location confirmation, weighted by relative true range. A single channel touch and retreat triggers event memory without requiring an abnormal range."),
+    ("msv_f10_gap_confirmation", "Signed close-to-open gap strength with soft candle-body agreement and relative-gap weighting. Any nonzero gap triggers event memory; disagreement attenuates rather than discards the score."),
 ];
 
 struct VolatilityFactor {
@@ -95,13 +96,23 @@ impl Factor for VolatilityFactor {
             },
             asset_class: AssetClass::Future,
             frequency: Frequency::Minute1,
-            version: "0.1.0".into(),
+            version: if matches!(self.index, 6 | 8 | 9) {
+                "0.2.0"
+            } else {
+                "0.1.0"
+            }
+            .into(),
             tags: ["minute", "pv", "yq", "volatility"]
                 .map(str::to_string)
                 .to_vec(),
             description: format!(
-                "{description} {}",
-                window_description(self.index, self.variant)
+                "{description} {}{}",
+                window_description(self.index, self.variant),
+                if matches!(self.index, 6 | 8 | 9) {
+                    format!(" A single event replaces the score, which decays exponentially with a linear taper over {} trading bars; otherwise the soft background applies.", WINDOWS[self.variant])
+                } else {
+                    String::new()
+                }
             ),
             dependencies: vec![future_minute_request(fields(self.index))],
             intraday_raw_dependencies: Vec::new(),
@@ -115,7 +126,12 @@ impl Factor for VolatilityFactor {
             context,
             data,
             fields(self.index),
-            HISTORY_BARS,
+            HISTORY_BARS
+                + if matches!(self.index, 6 | 8 | 9) {
+                    WINDOWS[self.variant]
+                } else {
+                    0
+                },
             |inputs| evaluate(self.index, self.variant, inputs),
         )
     }
@@ -313,31 +329,52 @@ fn range_factor(index: usize, variant: usize, inputs: &[Series]) -> Series {
         &rolling_exponential_mean(&tr, scale_window, 1.0 - 1.0 / scale_window as f64),
         1,
     );
-    let breakout = |diff: f64, atr: f64| divide(diff.max(0.0), atr).map(f64::tanh);
+    let proximity =
+        |diff: f64, atr: f64| scaled(diff, atr).map(|z| (0.5 * softplus(z / 0.5)).tanh());
     if index == 6 {
         let returns = zip(close, &ts_delay(close, 1), log_return);
         let baseline_window = COMPRESSION_BASES[variant];
         let compressed = ts_delay(&rv(&returns, channel), 1);
         let baseline = ts_delay(&rv(&returns, baseline_window), channel + 1);
-        let compression = zip(&baseline, &compressed, log_expansion);
-        let release = zip(&rv(&returns, SHORT), &compressed, log_expansion);
-        return (0..close.len())
+        let compression = zip(&baseline, &compressed, expansion);
+        let release = zip(&rv(&returns, SHORT), &compressed, expansion);
+        let scores = (0..close.len())
             .map(|i| {
                 let (c, u, l, a) = (close[i]?, upper[i]?, lower[i]?, scale[i]?);
-                finite(compression[i]? * release[i]? * (breakout(c - u, a)? - breakout(l - c, a)?))
+                finite(
+                    compression[i]? * release[i]? * (proximity(c - u, a)? - proximity(l - c, a)?),
+                )
             })
-            .collect();
+            .collect::<Series>();
+        let events = (0..close.len())
+            .map(|i| Some(close[i]? > upper[i]? || close[i]? < lower[i]?))
+            .collect::<Vec<_>>();
+        return event_decay(&scores, &events, scale_window);
     }
-    let weight = unusual_range();
-    (0..close.len())
+    let weight = zip(
+        &tr,
+        &ts_delay(&ts_median(&tr, tr_window, tr_window), 1),
+        expansion,
+    );
+    let scores = (0..close.len())
         .map(|i| {
             let (c, h, low, u, l, a) = (
                 close[i]?, high[i]?, low[i]?, upper[i]?, lower[i]?, scale[i]?,
             );
-            let inside = breakout(c - l, a)? * breakout(u - c, a)?;
-            finite(weight[i]? * inside * (breakout(l - low, a)? - breakout(h - u, a)?))
+            let inside = sigmoid(scaled(c - l, a)? / 0.5) * sigmoid(scaled(u - c, a)? / 0.5);
+            finite(weight[i]? * inside * (proximity(l - low, a)? - proximity(h - u, a)?))
         })
-        .collect()
+        .collect::<Series>();
+    // A single touch and retreat suffices; no abnormal-range or compression gate.
+    let events = (0..close.len())
+        .map(|i| {
+            Some(
+                (high[i]? >= upper[i]? && close[i]? < high[i]?)
+                    || (low[i]? <= lower[i]? && close[i]? > low[i]?),
+            )
+        })
+        .collect::<Vec<_>>();
+    event_decay(&scores, &events, scale_window)
 }
 
 fn gap_confirmation(close: &Values, open: &Values, window: usize) -> Series {
@@ -347,20 +384,23 @@ fn gap_confirmation(close: &Values, open: &Values, window: usize) -> Series {
     let returns = zip(close, &previous_close, log_return);
     let gap_scale = ts_delay(&sample_std(&gaps, window), 1);
     let movement_scale = ts_delay(&sample_std(&returns, window), 1);
-    (0..close.len())
+    let scores = (0..close.len())
         .map(|i| {
             let (gap, movement) = (gaps[i]?, movement[i]?);
             let (gap_scale, movement_scale) = (gap_scale[i]?, movement_scale[i]?);
-            if gap * movement <= 0.0 {
-                return Some(0.0);
-            }
             let typical_gap = nonzero_gap_median(&gaps[i - window..i])?;
-            let shock = log_expansion(gap.abs(), typical_gap)?;
-            let strength = divide(gap, gap_scale)?.tanh().abs();
-            let confirmation = divide(movement, movement_scale)?.tanh().abs();
-            Some(gap.signum() * shock * strength.min(confirmation))
+            let shock = expansion(gap.abs(), typical_gap)?;
+            let strength = scaled(gap, gap_scale)?;
+            let body = scaled(movement, movement_scale)?;
+            let confirmation = sigmoid(2.0 * strength * body);
+            Some(shock * strength.tanh() * body.tanh().abs() * confirmation)
         })
-        .collect()
+        .collect::<Series>();
+    let events = gaps
+        .iter()
+        .map(|gap| Some((*gap)? != 0.0))
+        .collect::<Vec<_>>();
+    event_decay(&scores, &events, window)
 }
 
 fn nonzero_gap_median(gaps: &Values) -> Option<f64> {
@@ -374,7 +414,7 @@ fn nonzero_gap_median(gaps: &Values) -> Option<f64> {
         }
     }
     if len == 0 {
-        return None;
+        return Some(0.0);
     }
     magnitudes[..len].sort_unstable_by(f64::total_cmp);
     Some((magnitudes[(len - 1) / 2] + magnitudes[len / 2]) / 2.0)

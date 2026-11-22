@@ -13,6 +13,7 @@ mod runs;
 mod rsi;
 mod skewness;
 mod snr;
+mod soft_scoring;
 mod trend;
 mod variance_amplitude;
 mod variance_timing;

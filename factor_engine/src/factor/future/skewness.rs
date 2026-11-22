@@ -10,7 +10,7 @@ use crate::factor::future::minute_input::{
 use crate::factor::future::multiscale_volatility::{
     divide, log_return, map, zip, Series, Values, HISTORY_BARS,
 };
-use crate::factor::future::variance_amplitude::relative_volume;
+use crate::factor::future::soft_scoring::{scaled, sigmoid, softplus};
 use crate::factor::Factor;
 use crate::operators::cross_sectional::cs_neutralize_regression::solve_linear_system;
 use crate::operators::{ts_delay, ts_mean, ts_median, ts_quantile};
@@ -21,6 +21,9 @@ const MAX_WINDOW: usize = 30;
 const TAIL: f64 = 1.5;
 const HIGH_VOLUME: f64 = 1.5;
 const OI_SHOCK: f64 = 1.0;
+const SHRINKAGE: f64 = 5.0;
+const VARIANCE_RIDGE: f64 = 0.05;
+const TAIL_TEMPERATURE: f64 = 0.5;
 
 const CLOSE: &[FutureMinuteField] = &[ContractLevel("close")];
 const OHLC: &[FutureMinuteField] = &[
@@ -38,30 +41,30 @@ const VOLUME_OI: &[FutureMinuteField] = &[
 ];
 
 const FACTORS: [(&str, &str); 24] = [
-    ("skew_s01_short_return", "Population skewness of volatility-standardized returns."),
+    ("skew_s01_short_return", "Population skewness of returns standardized by the prior five-minute RMS with a current-return-relative scale floor; flat valid windows are neutral."),
     ("skew_s02_short_mid_diff", "Recent return skewness minus skewness in the immediately preceding window."),
     ("skew_s03_acceleration", "Second difference of return skewness across three consecutive non-overlapping windows."),
     ("skew_s04_vol_adjusted_diff", "Short-minus-preceding return skewness dampened by recent volatility expansion."),
     ("skew_s05_quantile", "Bowley skewness of standardized returns, using linearly interpolated quartiles."),
-    ("skew_s06_tail_exceedance", "Normalized imbalance of positive and negative standardized return exceedances beyond 1.5."),
+    ("skew_s06_tail_exceedance", "Signed softplus tail imbalance centered on standardized returns of plus/minus 1.5, with temperature 0.5 and a neutral-tail denominator anchor."),
     ("skew_s07_extreme_contribution", "Return skewness minus skewness after winsorizing at the fifth and 95th percentiles."),
-    ("skew_s08_tail_clustering", "Normalized imbalance of tail exceedances that follow a same-direction exceedance."),
+    ("skew_s08_tail_clustering", "Softplus tail imbalance weighted by the preceding minute's same-direction sigmoid tail strength. A neutral-tail denominator anchor keeps quiet valid windows finite."),
     ("skew_s09_candle_body_ratio", "Skewness of the signed candle body divided by the candle range."),
     ("skew_s10_closing_location", "Skewness of the close location within the candle range."),
     ("skew_s11_intrabar_third_moment", "Normalized imbalance of cubed log excursions above and below the candle open."),
-    ("skew_s12_range_conditional_diff", "Return skewness in high-range candles minus skewness in normal-range candles."),
-    ("skew_s13_volume_weighted_premium", "Return skewness weighted by log-one-plus-relative-volume minus unweighted skewness."),
-    ("skew_s14_high_low_volume_diff", "Return skewness in high-volume minutes minus skewness in low-volume minutes."),
+    ("skew_s12_range_conditional_diff", "Regularized return-skew difference between sigmoid high-range weights centered at 1.5 and their complements, shrunk by the smaller effective sample size."),
+    ("skew_s13_volume_weighted_premium", "Regularized log-one-plus-relative-volume-weighted return skewness minus unweighted skewness, shrunk by effective sample size."),
+    ("skew_s14_high_low_volume_diff", "Regularized return-skew difference between sigmoid log-relative-volume weights centered at 1.5 and their complements, shrunk by the smaller effective sample size."),
     ("skew_s15_price_volume_coskew", "Standardized co-skewness of returns with squared log relative-volume deviations."),
-    ("skew_s16_lagged_volume_shock", "Return skewness following a high relative-volume minute."),
-    ("skew_s17_oi_increase_conditioned", "Return skewness in minutes with rising open interest."),
-    ("skew_s18_oi_increase_decrease_diff", "Return skewness during open-interest increases minus skewness during decreases."),
+    ("skew_s16_lagged_volume_shock", "Regularized return-skew premium weighted by the previous minute's sigmoid relative-volume score, shrunk by effective sample size."),
+    ("skew_s17_oi_increase_conditioned", "Regularized return-skew premium weighted by a sigmoid standardized OI increase score, shrunk by effective sample size."),
+    ("skew_s18_oi_increase_decrease_diff", "Regularized return-skew difference between sigmoid OI increase weights and their complements, shrunk by the smaller effective sample size."),
     ("skew_s19_price_oi_coskew", "Standardized co-skewness of returns with squared open-interest shock deviations."),
-    ("skew_s20_lagged_oi_shock", "Return skewness following a positive standardized open-interest shock above one."),
-    ("skew_s21_volume_oi_conditioned", "Return skewness in high-volume minutes with rising open interest."),
-    ("skew_s22_volume_oi_tail_asymmetry", "Return tail imbalance weighted by relative volume and positive open-interest shocks."),
+    ("skew_s20_lagged_oi_shock", "Regularized return-skew premium weighted by the previous minute's sigmoid OI shock score centered at one, shrunk by effective sample size."),
+    ("skew_s21_volume_oi_conditioned", "Regularized return-skew premium weighted by current sigmoid volume and OI-increase participation, shrunk by effective sample size."),
+    ("skew_s22_volume_oi_tail_asymmetry", "Softplus return-tail imbalance weighted by relative volume and sigmoid OI-increase strength, with a neutral-tail denominator anchor."),
     ("skew_s23_volume_oi_residual", "Skewness of out-of-sample return residuals from a prior-window regression on volume and open-interest shocks."),
-    ("skew_s24_joint_participation_lagged", "Return skewness following a minute with high volume and rising open interest."),
+    ("skew_s24_joint_participation_lagged", "Regularized return-skew premium weighted by the preceding minute's sigmoid volume and OI-increase participation, shrunk by effective sample size."),
 ];
 
 type Windows = (usize, usize);
@@ -132,17 +135,27 @@ impl Factor for SkewFactor {
         } else {
             ""
         };
+        let regularization = if matches!(self.kind, 12..=14 | 16..=18 | 20..=21 | 24) {
+            " Weighted and unweighted moments share a ridge of 5% of full-window variance; effective sample size shrinks scores with five pseudo-observations."
+        } else {
+            ""
+        };
+        let standardization = if !matches!(self.kind, 9..=11) {
+            " Return and OI scales use a relative floor of 10% of the current observation, with flat complete inputs treated as neutral."
+        } else {
+            ""
+        };
         FactorSpec {
             name: id.clone(),
             id,
             aliases: vec![format!("{alias}_{suffix}")],
             asset_class: AssetClass::Future,
             frequency: Frequency::Minute1,
-            version: "0.1.0".into(),
+            version: "0.2.0".into(),
             tags: ["minute", "pv", "yq", "skewness"]
                 .map(str::to_string)
                 .to_vec(),
-            description: format!("{description}{history}{volume}"),
+            description: format!("{description}{history}{volume}{regularization}{standardization}"),
             dependencies: vec![future_minute_request(fields(self.kind))],
             intraday_raw_dependencies: Vec::new(),
             lookback: Lookback { trading_days: 3 },
@@ -223,7 +236,11 @@ fn skew(values: &[f64]) -> Option<f64> {
         (m2 + delta * delta, m3 + delta.powi(3))
     });
     let n = values.len() as f64;
-    divide(m3 / n, (m2 / n).powf(1.5))
+    if m2 == 0.0 {
+        Some(0.0)
+    } else {
+        divide(m3 / n, (m2 / n).powf(1.5))
+    }
 }
 
 fn rolling_skew(values: &Values, n: usize) -> Series {
@@ -234,64 +251,90 @@ fn rolling_skew(values: &Values, n: usize) -> Series {
     })
 }
 
-fn conditional_skew(
-    values: &Values,
-    condition: &Values,
-    choose: impl Fn(f64) -> bool,
-) -> Option<f64> {
-    let mut sample = [0.0; MAX_WINDOW];
-    let mut len = 0;
-    for (&value, &test) in values.iter().zip(condition) {
-        let value = value?;
-        if choose(test?) {
-            sample[len] = value;
-            len += 1;
-        }
+/// Weighted and unweighted skew use the same window-relative variance ridge.
+/// Equal weights therefore give exactly zero premium, including flat windows.
+fn weighted_shape(values: &Values, weights: &Values) -> Option<(f64, f64, f64)> {
+    let n = values.len();
+    let (mut x, mut w) = ([0.0; MAX_WINDOW], [0.0; MAX_WINDOW]);
+    full_sample(values, &mut x)?;
+    full_sample(weights, &mut w)?;
+    let (x, w) = (&mut x[..n], &w[..n]);
+    if x.iter().any(|x| !x.is_finite()) || w.iter().any(|w| !w.is_finite() || *w < 0.0) {
+        return None;
     }
-    skew(&sample[..len])
+    let mass = w.iter().sum::<f64>();
+    if mass == 0.0 {
+        return Some((0.0, 0.0, 0.0));
+    }
+    let neff = mass * mass / w.iter().map(|w| w * w).sum::<f64>();
+    let center = mean(x);
+    let amplitude = x.iter().map(|x| (x - center).abs()).fold(0.0, f64::max);
+    if amplitude == 0.0 {
+        return Some((0.0, 0.0, neff));
+    }
+    x.iter_mut().for_each(|x| *x = (*x - center) / amplitude);
+    let base_variance = x.iter().map(|x| x * x).sum::<f64>() / n as f64;
+    let ridge = VARIANCE_RIDGE * base_variance;
+    let weighted_center = x.iter().zip(w).map(|(x, w)| x * w).sum::<f64>() / mass;
+    let (m2, m3) = x.iter().zip(w).fold((0.0, 0.0), |(v, s), (x, w)| {
+        let d = x - weighted_center;
+        (v + w * d * d, s + w * d.powi(3))
+    });
+    let weighted = (m3 / mass) / (m2 / mass + ridge).powf(1.5);
+    let unweighted =
+        (x.iter().map(|x| x.powi(3)).sum::<f64>() / n as f64) / (base_variance + ridge).powf(1.5);
+    Some((weighted, unweighted, neff))
 }
 
-fn conditional(
-    values: &Values,
-    condition: &Values,
-    n: usize,
-    choose: impl Fn(f64) -> bool,
-) -> Series {
+fn weighted_premium(values: &Values, weights: &Values, n: usize) -> Series {
     rolling(values.len(), n, |range| {
-        conditional_skew(&values[range.clone()], &condition[range], &choose)
+        let (weighted, raw, neff) = weighted_shape(&values[range.clone()], &weights[range])?;
+        Some(((weighted - raw) * neff / (neff + SHRINKAGE)).tanh())
     })
 }
 
-fn conditional_difference(
-    values: &Values,
-    condition: &Values,
-    n: usize,
-    high: impl Fn(f64) -> bool,
-    low: impl Fn(f64) -> bool,
-) -> Series {
+fn conditional_difference(values: &Values, weights: &Values, n: usize) -> Series {
+    let complement = map(weights, |w| 1.0 - w);
+    rolling(values.len(), n, |range| {
+        let (up, _, nu) = weighted_shape(&values[range.clone()], &weights[range.clone()])?;
+        let (down, _, nd) = weighted_shape(&values[range.clone()], &complement[range])?;
+        let neff = nu.min(nd);
+        Some(((up - down) * neff / (neff + SHRINKAGE)).tanh())
+    })
+}
+
+fn volume_weight(volume: &Values) -> Series {
+    volume
+        .iter()
+        .map(|v| {
+            let v = (*v)?;
+            if v < 0.0 {
+                None
+            } else if v == 0.0 {
+                Some(0.0)
+            } else {
+                Some(sigmoid((v.ln() - HIGH_VOLUME.ln()) / 0.5))
+            }
+        })
+        .collect()
+}
+
+fn relative_volume(volume: &Values) -> Series {
+    let valid = volume
+        .iter()
+        .map(|v| v.filter(|x| *x >= 0.0))
+        .collect::<Series>();
     zip(
-        &conditional(values, condition, n, high),
-        &conditional(values, condition, n, low),
-        |a, b| Some((a - b).tanh()),
+        &valid,
+        &ts_delay(&ts_mean(&valid, BASE, BASE), 1),
+        |v, base| {
+            if base == 0.0 {
+                scaled(v, base)
+            } else {
+                divide(v, base)
+            }
+        },
     )
-}
-
-fn weighted_skew(values: &Values, weights: &Values, n: usize) -> Series {
-    rolling(values.len(), n, |range| {
-        let anchor = values[range.start]?;
-        let mut pairs = values[range.clone()].iter().zip(&weights[range]);
-        let (mass, numerator) = pairs
-            .clone()
-            .try_fold((0.0, 0.0), |(mass, total), (&x, &w)| {
-                Some((mass + w?, total + w? * (x? - anchor)))
-            })?;
-        let center = anchor + divide(numerator, mass)?;
-        let (m2, m3) = pairs.try_fold((0.0, 0.0), |(m2, m3), (&x, &w)| {
-            let delta = x? - center;
-            Some((m2 + w? * delta.powi(2), m3 + w? * delta.powi(3)))
-        })?;
-        divide(m3 / mass, (m2 / mass).powf(1.5))
-    })
 }
 
 fn covariance(left: &[f64], right: &[f64], center_l: f64, center_r: f64) -> f64 {
@@ -315,11 +358,12 @@ fn coskew(values: &Values, signals: &Values, n: usize) -> Series {
             .map(|(y, x)| (y - my) * (x - mx).powi(2))
             .sum::<f64>()
             / n as f64;
-        divide(
-            moment,
-            covariance(x, x, mx, mx) * covariance(y, y, my, my).sqrt(),
-        )
-        .map(f64::tanh)
+        let scale = covariance(x, x, mx, mx) * covariance(y, y, my, my).sqrt();
+        if scale == 0.0 {
+            Some(0.0)
+        } else {
+            divide(moment, scale).map(f64::tanh)
+        }
     })
 }
 
@@ -327,7 +371,11 @@ fn imbalance(up: &Values, down: &Values, n: usize) -> Series {
     rolling(up.len(), n, |range| {
         let u = up[range.clone()].iter().copied().sum::<Option<f64>>()?;
         let d = down[range].iter().copied().sum::<Option<f64>>()?;
-        divide(u - d, u + d)
+        if u + d == 0.0 {
+            Some(0.0)
+        } else {
+            divide(u - d, u + d)
+        }
     })
 }
 
@@ -340,20 +388,28 @@ fn tail_exceedance(
     let tail = |sign: f64| -> Series {
         (0..values.len())
             .map(|i| {
-                let excess = (sign * values[i]? - TAIL).max(0.0);
-                let selected = match previous {
-                    Some(lead) => sign * lead[i]? > TAIL,
-                    None => true,
+                let excess =
+                    TAIL_TEMPERATURE * softplus((sign * values[i]? - TAIL) / TAIL_TEMPERATURE);
+                let persistence = match previous {
+                    Some(lead) => sigmoid((sign * lead[i]? - TAIL) / TAIL_TEMPERATURE),
+                    None => 1.0,
                 };
                 let weight = match weights {
                     Some(weights) => weights[i]?,
                     None => 1.0,
                 };
-                Some(if selected { weight * excess } else { 0.0 })
+                Some(persistence * weight * excess)
             })
             .collect()
     };
-    imbalance(&tail(1.0), &tail(-1.0), n)
+    let (up, down) = (tail(1.0), tail(-1.0));
+    // Neutral-tail mass anchors the dimensionless denominator even without tail events.
+    let neutral = 2.0 * TAIL_TEMPERATURE * softplus(-TAIL / TAIL_TEMPERATURE) * n as f64;
+    rolling(values.len(), n, |range| {
+        let u = up[range.clone()].iter().copied().sum::<Option<f64>>()?;
+        let d = down[range].iter().copied().sum::<Option<f64>>()?;
+        Some((u - d) / (u + d + neutral))
+    })
 }
 
 fn rms(values: &Values, n: usize) -> Series {
@@ -413,7 +469,11 @@ fn evaluate(kind: usize, configs: &[Windows], inputs: &[Series]) -> Vec<Series> 
     if kind == 9 || kind == 10 {
         let candle = position(inputs, |c, o, h, l| {
             let numerator = if kind == 9 { c - o } else { (c - l) - (h - c) };
-            divide(numerator, h - l)
+            if h == l {
+                Some(0.0)
+            } else {
+                divide(numerator, h - l)
+            }
         });
         return each(configs, |n, _| map(&rolling_skew(&candle, n), f64::tanh));
     }
@@ -423,7 +483,7 @@ fn evaluate(kind: usize, configs: &[Windows], inputs: &[Series]) -> Vec<Series> 
         return each(configs, |n, _| imbalance(&up, &down, n));
     }
     let returns = zip(close, &ts_delay(close, 1), log_return);
-    let z = zip(&returns, &ts_delay(&rms(&returns, BASE), 1), divide);
+    let z = zip(&returns, &ts_delay(&rms(&returns, BASE), 1), scaled);
     match kind {
         1 => each(configs, |n, _| map(&rolling_skew(&z, n), f64::tanh)),
         2 | 4 => each(configs, |n, past| {
@@ -437,8 +497,13 @@ fn evaluate(kind: usize, configs: &[Windows], inputs: &[Series]) -> Vec<Series> 
             }
             let baseline = ts_delay(&rms(&returns, past), n);
             let damp = zip(&rms(&returns, n), &baseline, |short, long| {
-                (short > 0.0).then_some(())?;
-                divide(short, long).map(|ratio| (-ratio.ln().max(0.0)).exp())
+                if long == 0.0 {
+                    Some(if short == 0.0 { 1.0 } else { 0.0 })
+                } else if short == 0.0 {
+                    Some(1.0)
+                } else {
+                    divide(short, long).map(|ratio| (-ratio.ln().max(0.0)).exp())
+                }
             });
             zip(&score, &damp, |s, w| Some(s * w))
         }),
@@ -457,7 +522,11 @@ fn evaluate(kind: usize, configs: &[Windows], inputs: &[Series]) -> Vec<Series> 
             (0..z.len())
                 .map(|i| {
                     let (l, m, h) = (low[i]?, mid[i]?, high[i]?);
-                    divide((h - m) - (m - l), h - l)
+                    if h == l {
+                        Some(0.0)
+                    } else {
+                        divide((h - m) - (m - l), h - l)
+                    }
                 })
                 .collect()
         }),
@@ -482,10 +551,9 @@ fn evaluate(kind: usize, configs: &[Windows], inputs: &[Series]) -> Vec<Series> 
         }
         12 => {
             let range = position(inputs, |_, _, h, l| log_return(h, l));
-            let scaled = zip(&range, &ts_delay(&ts_median(&range, BASE, BASE), 1), divide);
-            each(configs, |n, _| {
-                conditional_difference(&z, &scaled, n, |v| v > 1.5, |v| 0.0 < v && v <= 1.0)
-            })
+            let relative_range = zip(&range, &ts_delay(&ts_median(&range, BASE, BASE), 1), scaled);
+            let weight = map(&relative_range, |r| sigmoid((r - 1.5) / 0.5));
+            each(configs, |n, _| conditional_difference(&z, &weight, n))
         }
         13..=16 => volume_factors(kind, configs, &z, &relative_volume(&inputs[1])),
         17..=20 => oi_factors(kind, configs, &z, &inputs[1]),
@@ -497,7 +565,7 @@ fn evaluate(kind: usize, configs: &[Windows], inputs: &[Series]) -> Vec<Series> 
 fn oi_shocks(changes: &Values) -> Series {
     let baseline = ts_delay(&ts_mean(&map(changes, f64::abs), BASE, BASE), 1);
     zip(changes, &baseline, |oi, scale| {
-        divide(oi, scale).map(f64::asinh)
+        scaled(oi, scale).map(f64::asinh)
     })
 }
 
@@ -505,26 +573,19 @@ fn volume_factors(kind: usize, configs: &[Windows], z: &Values, volume: &Values)
     match kind {
         13 => {
             let weight = map(volume, f64::ln_1p);
-            each(configs, |n, _| {
-                zip(
-                    &weighted_skew(z, &weight, n),
-                    &rolling_skew(z, n),
-                    |a, b| Some((a - b).tanh()),
-                )
-            })
+            each(configs, |n, _| weighted_premium(z, &weight, n))
         }
-        14 => each(configs, |n, _| {
-            conditional_difference(z, volume, n, |v| v >= HIGH_VOLUME, |v| 0.0 < v && v <= 0.75)
-        }),
+        14 => {
+            let weights = volume_weight(volume);
+            each(configs, |n, _| conditional_difference(z, &weights, n))
+        }
         15 => {
             let log_volume = map(volume, f64::ln);
             each(configs, |n, _| coskew(z, &log_volume, n))
         }
         16 => {
-            let prev = ts_delay(volume, 1);
-            each(configs, |n, _| {
-                map(&conditional(z, &prev, n, |v| v > HIGH_VOLUME), f64::tanh)
-            })
+            let prev = ts_delay(&volume_weight(volume), 1);
+            each(configs, |n, _| weighted_premium(z, &prev, n))
         }
         _ => unreachable!(),
     }
@@ -532,21 +593,23 @@ fn volume_factors(kind: usize, configs: &[Windows], z: &Values, volume: &Values)
 
 fn oi_factors(kind: usize, configs: &[Windows], z: &Values, oi: &Values) -> Vec<Series> {
     match kind {
-        17 => each(configs, |n, _| {
-            map(&conditional(z, oi, n, |d| d > 0.0), f64::tanh)
-        }),
-        18 => each(configs, |n, _| {
-            conditional_difference(z, oi, n, |d| d > 0.0, |d| d < 0.0)
-        }),
+        17 | 18 => {
+            let weight = map(&oi_shocks(oi), |d| sigmoid(d / 0.5));
+            each(configs, |n, _| {
+                if kind == 17 {
+                    weighted_premium(z, &weight, n)
+                } else {
+                    conditional_difference(z, &weight, n)
+                }
+            })
+        }
         19 => {
             let shock = oi_shocks(oi);
             each(configs, |n, _| coskew(z, &shock, n))
         }
         20 => {
-            let prev = ts_delay(&oi_shocks(oi), 1);
-            each(configs, |n, _| {
-                map(&conditional(z, &prev, n, |d| d > OI_SHOCK), f64::tanh)
-            })
+            let prev = ts_delay(&map(&oi_shocks(oi), |d| sigmoid((d - OI_SHOCK) / 0.5)), 1);
+            each(configs, |n, _| weighted_premium(z, &prev, n))
         }
         _ => unreachable!(),
     }
@@ -561,25 +624,19 @@ fn joint_factors(
 ) -> Vec<Series> {
     match kind {
         21 | 24 => {
-            let joint = zip(volume, oi, |v, oi| {
-                Some(if v > HIGH_VOLUME && oi > 0.0 {
-                    1.0
-                } else {
-                    0.0
-                })
+            let joint = zip(&volume_weight(volume), &oi_shocks(oi), |v, d| {
+                Some(v * sigmoid(d / 0.5))
             });
             let test = if kind == 24 {
                 ts_delay(&joint, 1)
             } else {
                 joint
             };
-            each(configs, |n, _| {
-                map(&conditional(z, &test, n, |yes| yes > 0.0), f64::tanh)
-            })
+            each(configs, |n, _| weighted_premium(z, &test, n))
         }
         22 => {
             let weight = zip(volume, &oi_shocks(oi), |v, d| {
-                Some(v.ln_1p() * d.max(0.0).tanh())
+                Some(v.ln_1p() * sigmoid(d / 0.5))
             });
             each(configs, |n, _| tail_exceedance(z, n, None, Some(&weight)))
         }

@@ -1223,110 +1223,127 @@ fn materialize_intraday_raw_table(
             let mut total_write_ms = 0u128;
             let mut raw_profiles = BTreeMap::<String, (usize, usize)>::new();
 
-            for trade_date in stream_dates {
-                let raw_context = FactorContext {
+            for dates in stream_dates.chunks(request.date_batch_size.max(1)) {
+                let batch_context = FactorContext {
                     asset_class: request.asset_class,
                     frequency: Frequency::Daily,
-                    start_date: trade_date,
-                    end_date: trade_date,
-                    load_start_date: trade_date,
-                    load_dates: vec![trade_date],
-                    target_dates: vec![trade_date],
+                    start_date: dates[0],
+                    end_date: *dates.last().expect("nonempty raw date batch"),
+                    load_start_date: dates[0],
+                    load_dates: dates.to_vec(),
+                    target_dates: dates.to_vec(),
                 };
-
                 let load_started = Instant::now();
-                let mut raw_pool = DataPool::load(loader, &batch_requests, &raw_context)?;
-                let auxiliary_target_dates = auxiliary_target_dates(
-                    source_dataset,
-                    source_bar_size,
-                    &raw_pool,
-                    &[trade_date],
-                );
-                if !auxiliary_requirements.is_empty() && !auxiliary_target_dates.is_empty() {
-                    let auxiliary_load_start_date =
-                        calendar.warmup_start(trade_date, auxiliary_max_lookback);
-                    let auxiliary_context = FactorContext {
+                let batch_pool = DataPool::load(loader, &batch_requests, &batch_context)?;
+                total_load_ms += load_started.elapsed().as_millis();
+                let mut pending_series = Vec::new();
+                for &trade_date in dates {
+                    let raw_context = FactorContext {
                         asset_class: request.asset_class,
                         frequency: Frequency::Daily,
                         start_date: trade_date,
                         end_date: trade_date,
-                        load_start_date: auxiliary_load_start_date,
-                        load_dates: calendar
-                            .open_dates_between(auxiliary_load_start_date, trade_date),
-                        target_dates: auxiliary_target_dates,
+                        load_start_date: trade_date,
+                        load_dates: vec![trade_date],
+                        target_dates: vec![trade_date],
                     };
-                    let auxiliary_pool = DataPool::load(
-                        loader,
-                        &merge_requests(
-                            auxiliary_requirements
-                                .iter()
-                                .map(|request| request.request.clone()),
-                        ),
-                        &auxiliary_context,
+
+                    let load_started = Instant::now();
+                    let mut raw_pool = batch_pool.view_for_requests(&batch_requests, &raw_context);
+                    let auxiliary_target_dates = auxiliary_target_dates(
+                        source_dataset,
+                        source_bar_size,
+                        &raw_pool,
+                        &[trade_date],
+                    );
+                    if !auxiliary_requirements.is_empty() && !auxiliary_target_dates.is_empty() {
+                        let auxiliary_load_start_date =
+                            calendar.warmup_start(trade_date, auxiliary_max_lookback);
+                        let auxiliary_context = FactorContext {
+                            asset_class: request.asset_class,
+                            frequency: Frequency::Daily,
+                            start_date: trade_date,
+                            end_date: trade_date,
+                            load_start_date: auxiliary_load_start_date,
+                            load_dates: calendar
+                                .open_dates_between(auxiliary_load_start_date, trade_date),
+                            target_dates: auxiliary_target_dates,
+                        };
+                        let auxiliary_pool = DataPool::load(
+                            loader,
+                            &merge_requests(
+                                auxiliary_requirements
+                                    .iter()
+                                    .map(|request| request.request.clone()),
+                            ),
+                            &auxiliary_context,
+                        )?;
+                        raw_pool.extend(auxiliary_pool);
+                    }
+                    total_load_ms += load_started.elapsed().as_millis();
+
+                    let compute_started = Instant::now();
+                    let mut raw_series_list = factor.minute_compute_stateful_many(
+                        &raw_ids_vec,
+                        &raw_context,
+                        &raw_pool,
+                        state.as_mut(),
                     )?;
-                    raw_pool.extend(auxiliary_pool);
-                }
-                total_load_ms += load_started.elapsed().as_millis();
+                    raw_series_list.retain(|series| raw_ids.contains(&series.spec.raw_id));
+                    for series in &mut raw_series_list {
+                        series
+                            .values
+                            .retain(|value| target_set.contains(&value.key.trade_date()));
+                    }
+                    total_compute_ms += compute_started.elapsed().as_millis();
 
-                let compute_started = Instant::now();
-                let mut raw_series_list = factor.minute_compute_stateful_many(
-                    &raw_ids_vec,
-                    &raw_context,
-                    &raw_pool,
-                    state.as_mut(),
-                )?;
-                raw_series_list.retain(|series| raw_ids.contains(&series.spec.raw_id));
-                for series in &mut raw_series_list {
-                    series
-                        .values
-                        .retain(|value| target_set.contains(&value.key.trade_date()));
-                }
-                total_compute_ms += compute_started.elapsed().as_millis();
+                    if !target_set.contains(&trade_date) {
+                        continue;
+                    }
 
-                if !target_set.contains(&trade_date) {
-                    continue;
-                }
-
-                let returned = raw_series_list
-                    .iter()
-                    .map(|series| series.spec.raw_id.clone())
-                    .collect::<BTreeSet<_>>();
-                let missing = raw_ids.difference(&returned).cloned().collect::<Vec<_>>();
-                if !missing.is_empty() {
-                    return Err(err(format!(
-                        "stateful intraday daily raw provider did not return requested raw(s): {}",
-                        missing.join(",")
-                    )));
-                }
-
-                for raw_series in &raw_series_list {
-                    let entry = raw_profiles
-                        .entry(raw_series.spec.raw_id.clone())
-                        .or_insert((0, 0));
-                    entry.0 += raw_series.values.len();
-                    entry.1 += raw_series
-                        .values
+                    let returned = raw_series_list
                         .iter()
-                        .filter(|item| item.value.is_some())
-                        .count();
+                        .map(|series| series.spec.raw_id.clone())
+                        .collect::<BTreeSet<_>>();
+                    let missing = raw_ids.difference(&returned).cloned().collect::<Vec<_>>();
+                    if !missing.is_empty() {
+                        return Err(err(format!(
+                            "stateful intraday daily raw provider did not return requested raw(s): {}",
+                            missing.join(",")
+                        )));
+                    }
+
+                    for raw_series in &raw_series_list {
+                        let entry = raw_profiles
+                            .entry(raw_series.spec.raw_id.clone())
+                            .or_insert((0, 0));
+                        entry.0 += raw_series.values.len();
+                        entry.1 += raw_series
+                            .values
+                            .iter()
+                            .filter(|item| item.value.is_some())
+                            .count();
+                    }
+
+                    progress.tick(format!(
+                        "stage={} date={} raw={}",
+                        stage_name,
+                        trade_date,
+                        raw_series_list.len()
+                    ));
+                    pending_series.extend(raw_series_list);
                 }
 
                 let write_started = Instant::now();
-                if !raw_series_list.is_empty() {
-                    storage.write_results(&raw_series_list)?;
+                if !pending_series.is_empty() {
+                    storage.write_results(&pending_series)?;
                 }
                 total_write_ms += write_started.elapsed().as_millis();
-
-                for raw_series in &raw_series_list {
-                    materialized_intraday_raw_dates
-                        .insert((raw_series.spec.raw_id.clone(), trade_date));
+                for series in &pending_series {
+                    for value in &series.values {
+                        materialized_intraday_raw_dates.insert((series.spec.raw_id.clone(), value.key.trade_date()));
+                    }
                 }
-                progress.tick(format!(
-                    "stage={} date={} raw={}",
-                    stage_name,
-                    trade_date,
-                    raw_series_list.len()
-                ));
             }
 
             if request.profile && !raw_profiles.is_empty() {

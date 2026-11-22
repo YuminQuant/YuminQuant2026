@@ -6,6 +6,7 @@ pub mod lifecycle;
 pub mod engine;
 pub mod execution;
 pub mod future_market;
+mod future_order_limits;
 pub mod market;
 pub mod order;
 mod product_pnl;

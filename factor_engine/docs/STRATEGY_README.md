@@ -111,7 +111,7 @@ ctx.account().futures_positions();          // both sides, including held old co
 
 显式方向订单要求当天有可用的 `future_day` 合约参数，由 `[future].daily_costs = true` 加载。多空仓位分别存储、保证金分别计提，不要用 `position_quantity()` 或 `order_target_quantity()` 查询或调整这些仓位。显式方向撮合检查最小手数、当前分钟可用成交量、保证金及配置启用的涨跌停限制；同一次撮合内按提交顺序扣减该合约可用成交量。先平后开时应依次提交平仓、开仓订单。
 
-Explicit-side CTA orders require daily contract specifications (`daily_costs = true`). Long and short positions are stored separately; use `future_position()` rather than net-position helpers. Matching checks lot size, remaining minute volume, margin and configured price limits, processing orders in submission order.
+Explicit-side CTA orders require daily contract specifications (`daily_costs = true`). Long and short positions are stored separately; use `future_position()` rather than net-position helpers. Matching checks lot size, remaining minute volume, margin and configured price limits, processing orders in submission order. Minimum opening quantities use daily API records first and dated fallback rules otherwise; closing minimums are independent. See [quantity sources and effective dates](FUTURE_ORDER_LIMITS.md).
 
 ## 当前策略 / Built-In Strategies
 

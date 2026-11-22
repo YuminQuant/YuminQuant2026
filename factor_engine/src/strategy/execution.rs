@@ -325,7 +325,7 @@ impl ExecutionEngine {
                 let held = account.future_position(&order.symbol, side)
                     .map_or(0.0, |position| position.quantity.abs());
                 // Retain any unfilled balance so the strategy can retry in its close window.
-                round_down_lot(requested.min(held).min(volume), spec.min_lots)
+                round_down_lot(requested.min(held).min(volume), spec.min_close_lots)
             }
         };
         if quantity <= 0.0 {

@@ -449,6 +449,9 @@ def update_future_trade_param(args, logger):
         "future_trade_param",
         lambda: FutureTradeParamDownloader().sync(args.start_date, args.end_date),
     )
+    from data_manager.processor.future_order_limits import FutureOrderLimitsBuilder
+    run_task(logger, "future_order_limits",
+             lambda: FutureOrderLimitsBuilder().sync(args.start_date, args.end_date))
 
 
 def update_future_settle(args, logger):

@@ -18,6 +18,7 @@ pub struct FutureMarketDay {
 #[derive(Debug)]
 pub struct FutureTradingSpec {
     pub min_lots: f64,
+    pub min_close_lots: f64,
     pub multiplier: f64,
     pub cost_date: i32,
     long_margin: f64,
@@ -65,6 +66,7 @@ impl FutureMarketDay {
 #[derive(Default)]
 pub(super) struct FutureReferenceData {
     limit_year: Option<(i32, DailyLimits)>,
+    order_limit_year: Option<(i32, super::future_order_limits::DailyOrderLimits)>,
 }
 
 impl FutureReferenceData {
@@ -80,6 +82,9 @@ impl FutureReferenceData {
             return Ok(FutureMarketDay::default());
         };
         let year = date / 10000;
+        if self.order_limit_year.as_ref().is_none_or(|(old, _)| *old != year) {
+            self.order_limit_year = Some((year, super::future_order_limits::load(&config.data_root, year)?));
+        }
         let exchanges: BTreeSet<_> = contracts
             .iter()
             .filter(|(symbol, meta)| {
@@ -130,6 +135,9 @@ impl FutureReferenceData {
             .limit_year
             .as_ref()
             .and_then(|(_, days)| days.get(&date));
+        if config.respect_price_limits && limits.is_none() {
+            eprintln!("[strategy warning] {date}: no daily price limits; missing limits do not restrict trading");
+        }
         for (exchange, path, table) in settlements? {
             let Some(table) = table else {
                 eprintln!(
@@ -179,11 +187,19 @@ impl FutureReferenceData {
                     continue;
                 };
                 let (lower_limit, upper_limit) = limits
-                    .and_then(|entries| entries.get(symbol))
+                    .and_then(|entries| super::future_order_limits::lookup(entries, symbol))
                     .copied()
                     .unwrap_or_default();
+                if config.respect_price_limits && (lower_limit.is_none() || upper_limit.is_none()) {
+                    eprintln!("[strategy warning] {date}: missing price limits for {symbol}; missing limits do not restrict trading");
+                }
+                let (open_lots, close_lots) = self.order_limit_year.as_ref()
+                    .and_then(|(_, days)| days.get(&date))
+                    .and_then(|entries| super::future_order_limits::lookup(entries, symbol)).copied()
+                    .unwrap_or_else(|| super::future_order_limits::fallback(symbol, date));
                 let spec = FutureTradingSpec {
-                    min_lots: config.future_min_lots(symbol),
+                    min_lots: config.future_min_lots(symbol).max(open_lots),
+                    min_close_lots: close_lots,
                     multiplier: meta.multiplier,
                     cost_date,
                     long_margin,

@@ -89,6 +89,8 @@ python scripts/update_incremental.py --groups future_trade_param --start-date 20
 
 `future_trade_param` 是单独选择的增量组。省略开始日期时只处理结束日期，结束日期默认为北京时间当天。四个接口各用对应交易所的日历，保留接口默认返回的列，写入 `future_data/basic/trade_param/<交易所>/YYYY/YYYYMMDD.parquet`。四个接口共享 `api.rate_limits.fut_trade_param`，默认上限为每分钟 500 次。满 3,000 条继续分页，收齐后发布当天文件。
 
+该组完成后还将郑商所的 `min_order_qty` 规范化至 `future_data/basic/order_limits/YYYY.parquet`，保留原始代码和来源，保留接口原始合约标识；引擎先精确匹配，并兼容历史三位郑商所代码。其他交易所接口缺少该字段时不填造历史值。策略优先使用该表中的当日记录，缺失时使用有生效日期及来源的人工规则；详见 [期货下单数量口径](../factor_engine/docs/FUTURE_ORDER_LIMITS.md)。`fut_basic.per_unit` 是每手实物数量，不能作为最小下单手数。
+
 Select `future_trade_param` explicitly. The start date defaults to the end date, which defaults to today in Beijing time. The four endpoints use their exchange calendars and share the `api.rate_limits.fut_trade_param` ceiling of 500 requests per minute by default. Each date is published after pagination completes, with the default response columns.
 
 ## 期货结算参数 / Futures settlement parameters

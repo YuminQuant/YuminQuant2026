@@ -52,6 +52,8 @@ Parquet random reads use a per-file block buffer shared by page-header and page-
 
 ## 期货分钟复权 / Futures minute adjustment
 
+期货时序因子按排序后的交易分钟序列计算。夜盘到日盘、早盘短休、午休和跨交易日均连接到上一根可用 bar，预热数据参与该序列。公共连续标记仅在组装后序列的第一根 bar 为 0，其后为 1。原始字段缺失、零方差、样本不足等情况按各因子公式处理。价格由复权开关调整，默认日间复权开启，日内各休盘复权关闭。
+
 ```bash
 python scripts/yq.py run --asset future --frequency minute_1m --start-date 20260424 --end-date 20260424 --factors yq_001
 python scripts/update_incremental.py --groups future_mapping --start-date 20260423 --end-date 20260424

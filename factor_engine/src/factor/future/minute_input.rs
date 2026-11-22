@@ -236,7 +236,8 @@ pub enum FutureMinuteField {
     ContractDiff(&'static str),
     /// A level whose history must stay on the actual contract even in main-sequence mode.
     ContractLevel(&'static str),
-    /// One when the preceding bar is one clock minute earlier in the same trading day.
+    /// One when a preceding observed bar exists in the assembled trading-minute sequence.
+    /// Session breaks and trading-day boundaries remain linked through available warmup.
     ContinuousMinute,
     /// Amount divided by contract multiplier, in price times lots.
     VwapNotional,
@@ -251,7 +252,7 @@ impl FutureMinuteField {
         match self {
             Self::Raw(name) | Self::ContractDiff(name) | Self::ContractLevel(name) => name,
             Self::VwapNotional => "amount",
-            Self::ContinuousMinute => unreachable!("continuity is derived from timestamps"),
+            Self::ContinuousMinute => unreachable!("continuity is derived from the trading-minute sequence"),
         }
     }
 
@@ -493,8 +494,8 @@ pub fn compute_future_minute_many(
                     }
                     for (column_idx, &field) in fields.iter().enumerate() {
                         if matches!(field, FutureMinuteField::ContinuousMinute) {
-                            let continuous = position > 0 && adjacent_minute(time(prev), time(idx));
-                            day_values[column_idx].push(Some(if continuous { 1.0 } else { 0.0 }));
+                            // Resolve the start of the series after attaching its warmup.
+                            day_values[column_idx].push(Some(1.0));
                             continue;
                         }
                         let value = values[column_idx][idx];
@@ -579,7 +580,7 @@ pub fn compute_future_minute_many(
                         code,
                     )?;
                     let skip = seeds[0].len();
-                    let series = seeds
+                    let mut series = seeds
                         .into_iter()
                         .zip(day_values)
                         .zip(&price_columns)
@@ -591,6 +592,13 @@ pub fn compute_future_minute_many(
                                 .collect::<Vec<_>>()
                         })
                         .collect::<Vec<_>>();
+                    for (values, field) in series.iter_mut().zip(fields) {
+                        if matches!(field, FutureMinuteField::ContinuousMinute) {
+                            if let Some(first) = values.first_mut() {
+                                *first = Some(0.0);
+                            }
+                        }
+                    }
                     let computed = expr(&series);
                     if computed.len() != specs.len()
                         || computed

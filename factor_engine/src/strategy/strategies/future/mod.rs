@@ -1,2 +1,2 @@
-pub mod cta_strategy001;
+pub mod cta_strategy_001;
 pub mod sma;

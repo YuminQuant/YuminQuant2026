@@ -175,7 +175,7 @@ impl ExecutionEngine {
             return;
         }
         let multiplier = bar.multiplier.max(1.0);
-        let slippage_per_lot = future_slippage_per_lot(config, price, multiplier, quote_cost);
+        let slippage_per_lot = future_slippage_per_lot(multiplier, quote_cost);
         let margin_ratio = config.future_margin_ratio(&order.symbol);
         let lot = config.lot_size.max(1.0);
         let mut remaining = round_down_lot(order.signed_quantity.abs(), lot);
@@ -303,7 +303,7 @@ impl ExecutionEngine {
         }
         let requested = order.signed_quantity.abs();
         let margin_ratio = spec.margin(side);
-        let slippage_per_lot = future_slippage_per_lot(config, price, spec.multiplier, quote_cost);
+        let slippage_per_lot = future_slippage_per_lot(spec.multiplier, quote_cost);
         let quantity = match side {
             OrderSide::Buy | OrderSide::Short => {
                 let lots = round_down_lot(requested.min(volume), spec.min_lots);
@@ -505,8 +505,8 @@ fn affordable_future_open_quantity(
     requested.min(affordable).max(0.0)
 }
 
-fn future_slippage_per_lot(config: &StrategyRunConfig, price: f64, multiplier: f64, quote_cost: f64) -> f64 {
-    (price * config.slippage_bps / 10_000.0 + quote_cost) * multiplier
+fn future_slippage_per_lot(multiplier: f64, quote_cost: f64) -> f64 {
+    quote_cost * multiplier
 }
 
 fn round_down_lot(quantity: f64, lot: f64) -> f64 {

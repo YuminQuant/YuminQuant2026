@@ -167,15 +167,27 @@ cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --c
 
 ### 期货模型 CTA / Model CTA
 
-实现为 [cta_strategy001.rs](../src/strategy/strategies/future/cta_strategy001.rs) 中的 `ModelCta`，注册名为 `future::mdl_100000`，配置为 [mdl_100000.toml](../../strategy_config/future/mdl_100000.toml)。
+实现为 [cta_strategy_001.rs](../src/strategy/strategies/future/cta_strategy_001.rs) 中的 `CtaStrategy001`，注册名为 `future::cta_strategy_001`，配置为 [mdl_100000.toml](../../strategy_config/future/mdl_100000.toml)。
 
-- 从 `<model_root>/future/minute_1m/YYYY/YYYYMMDD.parquet` 读取 `trade_date, ts_code, trade_time, mdl_100000`；`model_root` 默认是数据根目录下的 `models`，可由 `[paths].model_root` 覆盖。日期不符或合约时间键重复会报错，缺失文件或非有限信号不产生交易信号。
+- 从 `<model_root>/future/minute_1m/YYYY/YYYYMMDD.parquet` 读取 `trade_date, ts_code, trade_time` 和 `[strategy].signal_id` 指定的信号列（示例为 `mdl_100000`）；`model_root` 默认是数据根目录下的 `models`，可由 `[paths].model_root` 覆盖。日期不符或合约时间键重复会报错，缺失文件或非有限信号不产生交易信号。
 - 按品种分别计算前五个交易日普通主力信号的日 P1/P99，再分别取五日均值。该品种任一天缺少分位数时不开仓。当天信号只在对应 `on_bar` 使用。
 - 严格高于 P99 做多，严格低于 P1 做空；每侧一个最小交易单位，同向不加仓。`on_bar` 保存意图，在该合约下一根可用行情的 `on_bar_open` 提交；反向时先平后开，成交仍受成交量、保证金和涨跌停限制。
 - 按合约日盘收盘时间提前五分钟停止新开仓并逐分钟尝试平仓；隔夜余仓在下一交易日优先平仓，保留旧合约行情。夜盘按所属交易日处理。
-- 信号列名、五日窗口、P1/P99 和提前五分钟平仓目前均写在实现中，尚未通过 `[strategy]` 参数化。修改 TOML 不会改变这些规则。
+- 信号列名通过必填的 `[strategy].signal_id` 配置；五日窗口、P1/P99 和提前五分钟平仓仍固定在实现中。`strategy_class` 选择策略代码，`strategy_id` 标识实验输出，二者都不选择信号列。
 
-The model CTA reads minute predictions, averages five prior sessions' daily main-contract P1/P99 thresholds, and submits one minimum lot per side on strict threshold crossings. It stores close-time signals for the contract's next available open, closes before reversing, and retries liquidation in the last five minutes and on the next trading date. These signal and timing parameters are currently hard-coded.
+The model CTA reads minute predictions, averages five prior sessions' daily main-contract P1/P99 thresholds, and submits one minimum lot per side on strict threshold crossings. It stores close-time signals for the contract's next available open, closes before reversing, and retries liquidation in the last five minutes and on the next trading date. Select the signal column with required `[strategy].signal_id`; threshold and timing parameters remain fixed in code.
+
+```toml
+strategy_class = "future::cta_strategy_001"
+strategy_id = "mdl_100000"
+
+[strategy]
+signal_id = "mdl_100000"
+```
+
+期货的 spread 与滑点只接受 `[execution].spread_ticks`、`slippage_ticks`；旧的 `slippage_bps` 会报错。每手金额为两者之和乘以最小变动价位和合约乘数。交易所手续费仍取每日结算快照。股票保留 bps 成本配置。
+
+Futures spread and slippage are configured in ticks only; `slippage_bps` is rejected. Exchange fees still come from daily snapshots. Stock bps settings are unchanged.
 
 ```powershell
 cargo run --release --manifest-path factor_engine\Cargo.toml -- strategy-run --config strategy_config\future\mdl_100000.toml --detail true
@@ -218,7 +230,7 @@ JSON fields use `"[]"` when empty. Direction fields are numeric to keep parsing 
    factor_engine/src/strategy/strategies/future/my_cta.rs
    ```
 
-2. 实现 `Strategy` trait，并提供构造函数读取配置。构造函数名不受 trait 限制：可参考 `ModelCta::from_config()`（返回 `Result<Self>`）或 `SmaStrategy::from_context_config()`。自定义 `[strategy]` 参数从 `config.strategy_params` 读取并校验。
+2. 实现 `Strategy` trait，并提供构造函数读取配置。构造函数名不受 trait 限制：可参考 `CtaStrategy001::from_config()`（返回 `Result<Self>`）或 `SmaStrategy::from_context_config()`。自定义 `[strategy]` 参数从 `config.strategy_params` 读取并校验。
 
    Implement `Strategy` and a configuration constructor; its name is not prescribed. Read and validate custom parameters from `config.strategy_params`.
 

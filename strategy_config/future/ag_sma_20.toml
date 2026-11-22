@@ -22,7 +22,8 @@ sell_commission_bps = 0.0
 short_commission_bps = 0.0
 cover_commission_bps = 0.0
 stamp_tax_bps = 0.0
-slippage_bps = 0.0
+spread_ticks = 0.0
+slippage_ticks = 0.0
 lot_size = 1
 
 [future]

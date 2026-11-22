@@ -216,6 +216,9 @@ impl StrategyRunConfig {
             .unwrap_or_else(|| data_root.join("models"));
         let mut future = FutureConfig::default();
         if asset_class == StrategyAssetClass::Future {
+            if doc.string("execution", "slippage_bps").is_some() {
+                return Err(err("futures [execution].slippage_bps was removed; use spread_ticks and slippage_ticks"));
+            }
             future.pool_id = doc.string("future", "pool_id");
             if future.pool_id.as_ref().is_some_and(|pool| {
                 pool.is_empty()

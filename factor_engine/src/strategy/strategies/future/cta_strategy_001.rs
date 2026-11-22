@@ -18,7 +18,8 @@ type Signals = BTreeMap<String, BTreeMap<String, f64>>;
 type Thresholds = BTreeMap<String, (f64, f64)>;
 type DailyMapping = BTreeMap<String, String>;
 
-pub struct ModelCta {
+pub struct CtaStrategy001 {
+    signal_id: String,
     mappings: Option<FutureMinuteInput>,
     entry_pool: Option<FutureMinuteInput>,
     dates: Vec<i32>,
@@ -30,7 +31,7 @@ pub struct ModelCta {
     overnight: BTreeSet<String>,
 }
 
-impl ModelCta {
+impl CtaStrategy001 {
     pub fn from_config(config: &StrategyRunConfig) -> Result<Self> {
         if config.asset_class != StrategyAssetClass::Future
             || config.bar_frequency != BarFrequency::Minute
@@ -39,10 +40,22 @@ impl ModelCta {
             || config.lot_size.fract() != 0.0
         {
             return Err(err(
-                "mdl_100000 CTA requires futures minute bars, daily costs and integer lots",
+                "cta_strategy_001 requires futures minute bars, daily costs and integer lots",
             ));
         }
+        let signal_id = config
+            .strategy_params
+            .get("signal_id")
+            .filter(|value| {
+                !value.is_empty()
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            })
+            .ok_or_else(|| err("cta_strategy_001 requires a valid [strategy].signal_id"))?
+            .clone();
         Ok(Self {
+            signal_id,
             mappings: None,
             entry_pool: None,
             dates: Vec::new(),
@@ -103,9 +116,9 @@ impl ModelCta {
     }
 }
 
-impl Strategy for ModelCta {
+impl Strategy for CtaStrategy001 {
     fn name(&self) -> &'static str {
-        "future::mdl_100000"
+        "future::cta_strategy_001"
     }
 
     fn prepare_future_run(
@@ -177,13 +190,13 @@ impl Strategy for ModelCta {
         let mut todays_signals = Self::selected(config, self.main_mapping(date));
         todays_signals.extend(selected.into_iter().flatten().cloned());
         if !todays_signals.is_empty() {
-            files.push(signal_file(config, date, todays_signals));
+            files.push(signal_file(config, &self.signal_id, date, todays_signals));
         }
         for &day in self.prior_dates(date) {
             if !self.history.contains_key(&day) {
                 let selected = Self::selected(config, self.main_mapping(day));
                 if !selected.is_empty() {
-                    files.push(signal_file(config, day, selected));
+                    files.push(signal_file(config, &self.signal_id, day, selected));
                 }
             }
         }
@@ -193,18 +206,30 @@ impl Strategy for ModelCta {
     fn on_session_inputs(&mut self, date: i32, mut inputs: SessionInputs) -> Result<()> {
         for day in self.prior_dates(date).to_vec() {
             if !self.history.contains_key(&day) {
-                let samples = parse_signals(day, inputs.remove(&signal_name(day)).flatten())?;
+                let samples = parse_signals(
+                    &self.signal_id,
+                    day,
+                    inputs.remove(&signal_name(&self.signal_id, day)).flatten(),
+                )?;
                 let quantiles = daily_quantiles(self.main_mapping(day), &samples);
                 self.history.insert(day, quantiles);
             }
         }
         self.refresh_thresholds(date);
-        self.signals = parse_signals(date, inputs.remove(&signal_name(date)).flatten())?;
+        self.signals = parse_signals(
+            &self.signal_id,
+            date,
+            inputs.remove(&signal_name(&self.signal_id, date)).flatten(),
+        )?;
         if !self.close_minutes.is_empty()
-            && !self.close_minutes.keys().any(|symbol| self.signals.contains_key(symbol))
+            && !self
+                .close_minutes
+                .keys()
+                .any(|symbol| self.signals.contains_key(symbol))
         {
             eprintln!(
-                "[strategy warning] {date}: no usable mdl_100000 signals for selected contracts"
+                "[strategy warning] {date}: no usable {} signals for selected contracts",
+                self.signal_id
             );
         }
         let quantiles = daily_quantiles(self.main_mapping(date), &self.signals);
@@ -222,7 +247,10 @@ impl Strategy for ModelCta {
         let symbols: Vec<_> = ctx.market().symbols().cloned().collect();
         for symbol in &symbols {
             if !self.overnight.contains(symbol)
-                && !self.close_minutes.get(symbol).is_some_and(|&close| liquidation_window(minute, close))
+                && !self
+                    .close_minutes
+                    .get(symbol)
+                    .is_some_and(|&close| liquidation_window(minute, close))
             {
                 continue;
             }
@@ -241,7 +269,10 @@ impl Strategy for ModelCta {
                 continue;
             };
             if self.overnight.contains(&symbol)
-                || self.close_minutes.get(&symbol).is_none_or(|&close| after_liquidation_cutoff(minute, close))
+                || self
+                    .close_minutes
+                    .get(&symbol)
+                    .is_none_or(|&close| after_liquidation_cutoff(minute, close))
             {
                 continue;
             }
@@ -254,8 +285,14 @@ impl Strategy for ModelCta {
             else {
                 continue;
             };
-            let close_side = if side == OrderSide::Buy { OrderSide::Cover } else { OrderSide::Sell };
-            if let Some(quantity) = ctx.account().future_position(&symbol, close_side)
+            let close_side = if side == OrderSide::Buy {
+                OrderSide::Cover
+            } else {
+                OrderSide::Sell
+            };
+            if let Some(quantity) = ctx
+                .account()
+                .future_position(&symbol, close_side)
                 .map(|position| position.quantity.abs())
             {
                 // The matcher deducts the filled close quantity from this bar's volume
@@ -309,7 +346,8 @@ impl Strategy for ModelCta {
 
     fn on_fill(&mut self, ctx: &mut StrategyContext, fill: &FillEvent) -> Result<()> {
         if self.overnight.contains(&fill.symbol)
-            && [OrderSide::Sell, OrderSide::Cover].into_iter()
+            && [OrderSide::Sell, OrderSide::Cover]
+                .into_iter()
                 .all(|side| ctx.account().future_position(&fill.symbol, side).is_none())
         {
             self.overnight.remove(&fill.symbol);
@@ -325,8 +363,10 @@ impl Strategy for ModelCta {
             .map(|(symbol, _)| symbol.clone())
             .collect();
         if !self.overnight.is_empty() {
-            eprintln!("[strategy warning] {} deferred close to next trading day: {:?}",
-                event.trade_date, self.overnight);
+            eprintln!(
+                "[strategy warning] {} deferred close to next trading day: {:?}",
+                event.trade_date, self.overnight
+            );
         }
         Ok(())
     }
@@ -341,19 +381,24 @@ fn after_liquidation_cutoff(minute: u16, close: u16) -> bool {
     minute >= close.saturating_sub(5) && minute < 18 * 60
 }
 
-fn signal_name(date: i32) -> String {
-    format!("mdl_100000:{date}")
+fn signal_name(signal_id: &str, date: i32) -> String {
+    format!("{signal_id}:{date}")
 }
 
-fn signal_file(config: &StrategyRunConfig, date: i32, selected: BTreeSet<String>) -> SessionFile {
+fn signal_file(
+    config: &StrategyRunConfig,
+    signal_id: &str,
+    date: i32,
+    selected: BTreeSet<String>,
+) -> SessionFile {
     SessionFile {
-        name: signal_name(date),
+        name: signal_name(signal_id, date),
         path: config
             .model_root
             .join("future/minute_1m")
             .join((date / 10000).to_string())
             .join(format!("{date}.parquet")),
-        columns: ["trade_date", "ts_code", "trade_time", "mdl_100000"]
+        columns: ["trade_date", "ts_code", "trade_time", signal_id]
             .map(str::to_owned)
             .to_vec(),
         symbols: Some(selected),
@@ -361,7 +406,7 @@ fn signal_file(config: &StrategyRunConfig, date: i32, selected: BTreeSet<String>
     }
 }
 
-fn parse_signals(date: i32, table: Option<Table>) -> Result<Signals> {
+fn parse_signals(signal_id: &str, date: i32, table: Option<Table>) -> Result<Signals> {
     let mut signals = Signals::new();
     let Some(table) = table else {
         return Ok(signals);
@@ -369,15 +414,15 @@ fn parse_signals(date: i32, table: Option<Table>) -> Result<Signals> {
     let dates = table.required_i32_date_cast("trade_date")?;
     let symbols = table.required_utf8("ts_code")?;
     let times = table.required_utf8("trade_time")?;
-    let values = table.required_f64_cast("mdl_100000")?;
+    let values = table.required_f64_cast(signal_id)?;
     let mut keys = BTreeSet::new();
     for i in 0..table.len {
         let (Some(symbol), Some(time)) = (&symbols[i], &times[i]) else {
-            return Err(err(format!("invalid mdl_100000 row on {date}")));
+            return Err(err(format!("invalid {signal_id} row on {date}")));
         };
         if dates[i] != Some(date) || !keys.insert((symbol, time)) {
             return Err(err(format!(
-                "invalid or duplicate mdl_100000 key: {date} {symbol} {time}"
+                "invalid or duplicate {signal_id} key: {date} {symbol} {time}"
             )));
         }
         if let Some(value) = values[i].filter(|v| v.is_finite()) {

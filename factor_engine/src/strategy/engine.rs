@@ -23,7 +23,7 @@ use crate::strategy::request::StrategyRunRequest;
 use crate::strategy::session_io;
 use crate::strategy::storage::{HoldingsWriter, TradesWriter};
 use crate::strategy::future_market::FutureReferenceData;
-use crate::strategy::strategies::future::cta_strategy001::ModelCta;
+use crate::strategy::strategies::future::cta_strategy_001::CtaStrategy001;
 use crate::strategy::strategies::future::sma::SmaStrategy;
 use crate::strategy::strategies::stock::strategy_001::Strategy001;
 use crate::strategy::strategy::Strategy;
@@ -408,7 +408,7 @@ fn load_session_frames(
 fn create_strategy(config: &StrategyRunConfig) -> Result<Box<dyn Strategy>> {
     match config.strategy_class.as_str() {
         "stock::strategy_001" => Ok(Box::new(Strategy001::from_config(config)?)),
-        "future::mdl_100000" => Ok(Box::new(ModelCta::from_config(config)?)),
+        "future::cta_strategy_001" => Ok(Box::new(CtaStrategy001::from_config(config)?)),
         "future::sma" => Ok(Box::new(SmaStrategy::from_context_config(config))),
         other => Err(err(format!("unknown strategy_class: {other}"))),
     }

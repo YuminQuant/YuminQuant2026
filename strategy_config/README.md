@@ -38,15 +38,15 @@ Stock examples vary portfolio size, rank filters and execution assumptions; futu
 
 With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar open. Consult the development guide for callback and order semantics. Disabling price limits is a hypothetical comparison, not a claim of executable trades.
 
-## `mdl_100000` 期货 CTA
+## `cta_strategy_001` 期货 CTA
 
-策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P1/P99 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P99 时尝试开多，低于 P1 时尝试开空，成交时点为该合约下一根分钟行情的开盘。有反向旧仓时，先提交平仓，再用该分钟剩余的可成交量和可用保证金开新仓。成交量只够平仓时只平旧仓，无法平仓时保留旧仓。同向持仓不加仓，每侧开仓量为一个最小交易单位。
+配置使用 `strategy_class = "future::cta_strategy_001"` 选择策略，通过 `[strategy].signal_id = "mdl_100000"` 选择预测列，`strategy_id` 仅标识实验输出。示例区间为 2020-01-01 至 2026-04-24。策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P1/P99 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P99 时尝试开多，低于 P1 时尝试开空，成交时点为该合约下一根分钟行情的开盘。有反向旧仓时，先提交平仓，再用该分钟剩余的可成交量和可用保证金开新仓。成交量只够平仓时只平旧仓，无法平仓时保留旧仓。同向持仓不加仓，每侧开仓量为一个最小交易单位。
 
 公共层按期货日历加载交易日和合约资料。最小下单手数由 `[future.min_lots_by_product]` 覆盖，未配置品种取 `[execution].lot_size`。开启 `[future].daily_costs` 后，公共层每天读取上一交易日的结算快照，路径可用 `[paths].future_settle_root` 覆盖。快照缺失或合约参数无效时，该合约跳过交易。郑商所使用可用的按手平今费用，其他缺失平今字段使用普通手续费。中金所股指按成交金额计费，国债按手计费。双持保证金按两侧分别计提。
 
 尾盘由策略根据合约交易时间进入平仓窗口，撤销该合约待开仓信号，逐分钟尝试平掉两侧。撮合使用开盘价和该分钟成交量约束，日涨跌停文件可用时检查开盘价。日终未成交的仓位按原合约和方向隔夜，下一交易日从该合约第一根行情开始优先平仓。若仍无法成交，逐分钟重试，直到仓位平掉。换主力后仍加载持仓旧合约的行情和交易参数。隔夜仓按普通平仓费用结算。用 `--detail true` 导出逐笔成交。
 
-期货 `[execution]` 支持 `spread_ticks` 和 `slippage_ticks`，默认均为零。`mdl_100000` 每笔开仓和平仓各计入 0.5 tick spread 与 0.1 tick 滑点，每边合计 0.6 tick。每手成本等于 tick 数乘以该合约的最小变动价位和乘数，再加上原有的 `slippage_bps` 成本，一并计入开仓资金校验与 `slippage` 日结。最小变动价位取自 `fut_basic.parquet` 的 `quote_unit_desc`。启用 tick 成本时，待撮合合约缺少最小变动价位会报错。成交价和交易所手续费沿用原口径。
+期货 `[execution]` 支持 `spread_ticks` 和 `slippage_ticks`，默认均为零。`mdl_100000` 每笔开仓和平仓各计入 0.5 tick spread 与 0.1 tick 滑点，每边合计 0.6 tick。每手成本等于 tick 数乘以该合约的最小变动价位和乘数，计入开仓资金校验与 `slippage` 日结。最小变动价位取自 `fut_basic.parquet` 的 `quote_unit_desc`。启用 tick 成本时，待撮合合约缺少最小变动价位会报错。期货配置中的 `slippage_bps` 已移除，出现该字段会报错；股票仍支持 bps 配置。成交价和交易所手续费沿用原口径。
 
 ## 输出与分析 / Outputs and analysis
 

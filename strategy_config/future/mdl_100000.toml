@@ -1,8 +1,8 @@
 asset_class = "future"
 strategy_id = "mdl_100000"
-strategy_class = "future::mdl_100000"
+strategy_class = "future::cta_strategy_001"
 
-start_date = 20260408
+start_date = 20200101
 end_date = 20260424
 initial_cash = 100000000.0
 
@@ -12,7 +12,6 @@ bar_frequency = "minute_1m"
 [execution]
 fill_price = "next_open"
 lot_size = 1
-slippage_bps = 0.0
 spread_ticks = 0.5
 slippage_ticks = 0.1
 respect_price_limits = true
@@ -27,3 +26,6 @@ pool_id = "liquidity_001"
 
 [output]
 product_pnl = true
+
+[strategy]
+signal_id = "mdl_100000"

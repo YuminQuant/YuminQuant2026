@@ -29,9 +29,9 @@ Select factors with either `--factors a,b` or `--tags tag`, not both. Refresh me
 See [raw cache placement](docs/RAW_CACHE_PIPELINE.md) for task-local caching,
 cleanup boundaries and explicit shared preparation. Default local paths are unchanged.
 
-因子、Barra 和标签生产通过 `--threads N` 指定计算线程数；未指定时，默认使用当前进程可用 CPU 配额的一半，至少为 1。显式线程数不得超过进程可用 CPU 或部署层声明的配额。线程数是上限，不保证所有阶段都能占满 CPU；IO 并发独立控制，不随计算线程数增大。
+因子、Barra 和标签生产通过 `--threads N` 指定计算线程数；未指定时，默认使用当前进程可用 CPU 配额，至少为 1。显式线程数不得超过进程可用 CPU 或部署层声明的配额。线程数是上限，不保证所有阶段都能占满 CPU；IO 并发独立控制，不随计算线程数增大。
 
-Factor, Barra and label production accept `--threads N`. The default is half the effective process CPU allocation, with a minimum of one. Explicit values cannot exceed the process/deployment allocation. This is a concurrency ceiling, not a promise of full CPU utilization. IO concurrency is independent of compute threads.
+Factor, Barra and label production accept `--threads N`. The default is the effective process CPU allocation, with a minimum of one. Explicit values cannot exceed the process/deployment allocation. This is a concurrency ceiling, not a promise of full CPU utilization. IO concurrency is independent of compute threads.
 
 ```bash
 python scripts/yq.py run --asset stock --frequency daily --start-date 20260413 --end-date 20260424 --factors ret20 --threads 8 --date-batch-size 120 --profile
@@ -92,13 +92,13 @@ python scripts/update_incremental.py --groups future_mapping --start-date 202604
 
 ## 回测输入读取 / Backtest input reads
 
-本地文件读写串行，计算线程独立配置。远程可并发读独立文件及写独立目标文件，保留日期批次、缓存窗口和同文件写锁。HDFS 部署的进程内读、写并发上限各为 50，两者共用每秒 1,000 次客户端文件操作的限流；这不是集群级 RPC 上限。远程预读复用 reader 和 footer/schema，投影结果按输入顺序消费；PIT 和依赖前序状态的计算顺序不变。
+本地文件读写串行，计算线程独立配置。远程可并发读独立文件及写独立目标文件，使用配置的日期批次和同文件写锁。HDFS 部署的进程内读、写并发上限各为 50，读取操作每秒限流 1,000 次，写入使用独立并发额度；这不是集群级 RPC 上限。远程预读复用 reader 和 footer/schema，投影结果按输入顺序消费；PIT 和依赖前序状态的计算顺序不变。
 
-Local file I/O is serial; compute threads are configured independently. Remote I/O can read independent files and write independent destinations concurrently within the existing batches and cache windows, with per-file write locks. The HDFS deployment allows up to 50 reads and 50 writes per process, sharing a budget of 1,000 client file operations per second, not a cluster-wide RPC limit. Prefetch reuses the reader and footer/schema and delivers projections in input order, preserving PIT and sequential state updates.
+Local file I/O is serial; compute threads are configured independently. Remote I/O can read independent files and write independent destinations concurrently within the configured batches, with per-file write locks. The HDFS deployment allows up to 50 reads and 50 writes per process, with reads paced at 1,000 client operations per second and writes using independent slots, not a cluster-wide RPC limit. Prefetch reuses the reader and footer/schema and delivers projections in input order, preserving PIT and sequential state updates.
 
-manual/ML 因子表在同一次打开中完成 schema 获取和数据读取，列归属、按股票和日期键合并、空值及 forward-fill 规则不变。同一远程回测的多个 factor batch 可共享最多约 128 MiB 的 Barra 投影表；按文件长度和修改时间失效，预算不足则正常重读，不积累全历史缓存。`--profile` 新增同时打开句柄峰值及打开延迟 P50/P95 的直方图区间上界，仍是客户端指标，不代表 NameNode/DataNode 的全局请求数。
+manual/ML 因子表在同一次打开中完成 schema 获取和数据读取，列归属、按股票和日期键合并、空值及 forward-fill 规则不变。同一远程回测的多个 factor batch 共享 Barra 投影表，按文件长度和修改时间失效，运行结束释放。`--profile` 新增同时打开句柄峰值及打开延迟 P50/P95 的直方图区间上界，仍是客户端指标，不代表 NameNode/DataNode 的全局请求数。
 
-Manual/ML factor schema and projected data share one open, retaining ownership, keyed merges, nulls and forward-fill semantics. Multiple factor batches in one remote backtest can share approximately 128 MiB of projected Barra tables. Entries are invalidated by file size/mtime; inputs outside the budget are reread normally rather than retained for the full history. Profile output includes peak live read handles and histogram upper bounds for open-latency P50/P95. These remain client-side measurements, not global NameNode/DataNode request counts.
+Manual/ML factor schema and projected data share one open, retaining ownership, keyed merges, nulls and forward-fill semantics. Multiple factor batches in one remote backtest share projected Barra tables until the run ends. Entries are invalidated by file size/mtime. Profile output includes peak live read handles and histogram upper bounds for open-latency P50/P95. These remain client-side measurements, not global NameNode/DataNode request counts.
 
 ## 派生数据 / Derived datasets
 
@@ -201,9 +201,9 @@ Here `data` denotes the configured data root. Formal factor wide tables merge by
 
 ## 性能与数据边界 / Performance and data boundaries
 
-标签生产与因子复用相同的 date-batch 共享输入、受控线程池和有界批量写出工具。每个标签仍只看到自身声明的未来交易日窗口，只写目标日；不会把标签未来收益混入因子历史预热。多个标签批次在预算内合并后更新同一日宽表，保留其他列，统一使用 Snappy 和原子发布。本机和远程后端使用相同的计算与写出链路。
+标签生产与因子复用相同的 date-batch 共享输入、受控线程池和有界批量写出工具。每个标签仍只看到自身声明的未来交易日窗口，只写目标日；不会把标签未来收益混入因子历史预热。每个标签计算批次完成后更新对应日宽表，保留其他列，统一使用 Snappy 和原子发布。本机和远程后端使用相同的计算与写出链路。
 
-Label production reuses the factor engine's date-batch shared inputs, bounded thread pool and buffered output tools. Each label retains its declared future window and writes target dates only; future label returns never enter factor warmup data. Label batches share daily-wide writes within the buffer budget, preserving other columns with Snappy and atomic publication. Local and remote backends use the same execution path.
+Label production reuses the factor engine's date-batch shared inputs, bounded thread pool and buffered output tools. Each label retains its declared future window and writes target dates only; future label returns never enter factor warmup data. Each label compute batch publishes its daily-wide results, preserving other columns with Snappy and atomic publication. Local and remote backends use the same execution path.
 
 - `--threads` 控制线程数，`--date-batch-size` 和 `--factor-batch-size` 控制批量；用 `--profile` 观察加载、计算和写出时间，不把 batch 大小理解为内存硬上限。
   Threads and batch sizes tune execution; use profiling to distinguish loading, computation and writing. Batch size is not a hard memory cap.
@@ -276,3 +276,9 @@ history. These simulated sales use normal selling costs, credit cash, and
 appear in the regular fill accounting and `lifecycle.csv`. Set
 `force_delisting_exit = false` to disable the rule. An absent stock metadata file
 emits a warning. A missing quote alone does not trigger an exit.
+
+## Batch and I/O controls / 批量和 I/O
+
+日期批量和因子批量由 `--date-batch-size`、`--factor-batch-size` 控制。股票分钟派生、raw 物化沿用配置的日期批量。计算使用配置的 CPU 线程，默认使用可用 CPU。内存、合并、缓存与文件数量不施加额外预算。远端读取与写入各 50 并发，读取客户端操作每秒 1,000 次。期货评价 summary 按因子批次并发写出。
+
+Configured date and factor batch sizes control work batches. Stock minute derivation and raw materialization use the configured date batch size. Compute defaults to the available CPUs. Memory, merge, cache and file-count budgets are removed. Remote reads and writes each have 50 independent slots, and reads are paced at 1,000 client operations per second. Futures evaluation publishes factor summaries concurrently within each batch.

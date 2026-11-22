@@ -154,7 +154,6 @@ class OutputConfig:
     asset: str = "stock"
     frequency: str = "daily"
     base_root: Path | None = Path("data/chn_stock_data/daily/pv")
-    write_workers: int = 4
     write_metadata: bool = True
 
 
@@ -316,7 +315,6 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             base_root=None if minute_frame else _project_path(
                 output.get("base_root", data_root / "chn_stock_data" / "daily" / "pv")
             ),
-            write_workers=max(1, int(output.get("write_workers", 4))),
             write_metadata=bool(output.get("write_metadata", True)),
         ),
         factor_id=factor_id,

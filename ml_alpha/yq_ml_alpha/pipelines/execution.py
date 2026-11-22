@@ -1,4 +1,4 @@
-"""Operational budgets; deliberately excluded from model artifact identities."""
+"""Execution settings shared by local and cluster entrypoints."""
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 import os
@@ -13,22 +13,12 @@ class ExecutionOptions:
     model_predict_workers: int = 1
     threads: int = 1
     predict_task_days: int = 120
-    write_workers: int = 1
-    input_cache_mib: int = 64
-    metadata_cache_mib: int = 8
-    score_buffer_mib: int = 128
-    model_cache_mib: int = 512
-    max_resident_models: int = 2
-    memory_budget_mib: int = 2048
 
     def __post_init__(self):
         for field in fields(self):
             value = getattr(self, field.name)
-            minimum = 0 if field.name in {'input_cache_mib', 'metadata_cache_mib'} else 1
-            if type(value) is not int or value < minimum:
-                raise ValueError(f'{field.name} must be an integer >= {minimum}')
-        if self.input_cache_mib + self.metadata_cache_mib + self.score_buffer_mib + self.model_cache_mib >= self.memory_budget_mib:
-            raise ValueError('Cache and score budgets must leave room for inputs, models and the interpreter')
+            if type(value) is not int or value < 1:
+                raise ValueError(f'{field.name} must be an integer >= 1')
 
     def environment(self):
         inner = str(max(1, self.threads // self.model_predict_workers))
@@ -70,9 +60,6 @@ def resident_bytes():
 
 def check_memory(options, stage):
     current = resident_bytes()
-    if current > options.memory_budget_mib * 1024**2:
-        raise MemoryError(f'{stage}: resident RAM {current / 1024**2:.1f} MiB exceeds '
-                          f'{options.memory_budget_mib} MiB; reduce parallelism/batches or increase the budget')
     return current
 
 
@@ -87,10 +74,7 @@ def execution_scope(options):
     torch_threads = torch.get_num_threads() if torch is not None else None
     if torch is not None:
         torch.set_num_threads(max(1, options.threads // options.model_predict_workers))
-    old = reader.table_limit, reader.metadata_limit
     reader.invalidate()
-    reader.table_limit = options.input_cache_mib * 1024**2
-    reader.metadata_limit = options.metadata_cache_mib * 1024**2
     try:
         try:
             from threadpoolctl import threadpool_limits
@@ -105,7 +89,6 @@ def execution_scope(options):
         if 'native' in locals() and native is not None:
             native.restore_original_limits()
         reader.invalidate()
-        reader.table_limit, reader.metadata_limit = old
         if 'previous' in locals():
             pa.set_cpu_count(previous)
         if torch is not None:

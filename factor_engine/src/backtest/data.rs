@@ -97,11 +97,11 @@ struct FactorLoadResult {
     present_dates: BTreeMap<String, BTreeSet<i32>>,
 }
 
-/// Run-local, bounded admission cache; never retains whole historical panels.
+/// Run-local projected input reuse across factor batches.
 pub(crate) struct BacktestReadCache {
     entries: HashMap<PathBuf, (crate::artifact_io::FileInfo, Arc<Table>, usize)>,
     bytes: usize,
-    budget: usize,
+    reuse: bool,
     pub hits: usize,
 }
 
@@ -111,7 +111,7 @@ impl BacktestReadCache {
     }
     pub(crate) fn new(remote: bool, reuse: bool) -> Self {
         Self { entries: HashMap::new(), bytes: 0,
-            budget: if remote && reuse { 128 * 1024 * 1024 } else { 0 }, hits: 0 }
+            reuse: remote && reuse, hits: 0 }
     }
 
     fn load_barra(&mut self, paths: &[PathBuf], columns: &[String]) -> Result<Vec<Arc<Table>>> {
@@ -142,7 +142,7 @@ impl BacktestReadCache {
             ensure_table_columns(&mut table, &columns.iter().filter(|c| !matches!(c.as_str(), "trade_date" | "ts_code")).cloned().collect::<Vec<_>>())?;
             let bytes = table.allocated_bytes();
             let table = Arc::new(table);
-            if bytes <= self.budget.saturating_sub(self.bytes) {
+            if self.reuse {
                 let version = crate::artifact_io::metadata(path)?;
                 let before = &versions[path];
                 if version.size == before.size && version.modified_ns == before.modified_ns {

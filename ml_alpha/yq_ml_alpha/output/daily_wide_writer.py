@@ -29,7 +29,6 @@ class DailyWideWriter:
         asset: str = "stock",
         frequency: str = "daily",
         base_root: str | Path | None = None,
-        write_workers: int = 4,
         file_suffix: str = "",
         key_columns: list[str] = KEY_COLUMNS,
     ) -> None:
@@ -54,16 +53,13 @@ class DailyWideWriter:
             root = self.output_root / asset / frequency if layout == "standard" else self.output_root
             self._owners = FactorFiles(root).owners
             self._check_owner(output_id)
-        self.write_workers = max(1, int(write_workers))
-        if data_io.backend(self.output_root) is not None:
-            self.write_workers = data_io.io_options(self.output_root)["workers"]
         self._schema_dates_seen: set[int] = set()
         self._known_columns = set(self.key_columns) | {output_id}
 
     def _map_writes(self, function, items):
         if data_io.backend(self.output_root) is not None:
             return list(data_io.ordered_io_map(function, items, root=self.output_root,
-                workers=self.write_workers, write=True, window=4 if self.key_columns == MINUTE_KEY_COLUMNS else None))
+                write=True))
         return [function(item) for item in items]
 
     def write(
@@ -85,7 +81,7 @@ class DailyWideWriter:
         schema_source_dates = _coverage_dates(predictions, schema_dates if schema_dates is not None else dates)
         schema_columns = self._schema_columns(schema_source_dates)
         tasks = [(date, grouped.get(date), schema_columns) for date in dates]
-        if self.write_workers == 1 or len(tasks) <= 1:
+        if len(tasks) <= 1:
             return [self._write_one(date, daily, columns) for date, daily, columns in tasks]
         return self._map_writes(lambda item: self._write_one(item[0], item[1], item[2]), tasks)
 
@@ -143,7 +139,7 @@ class DailyWideWriter:
         )
         schema_columns = self._schema_columns(dates)
         tasks = [(date, schema_columns) for date in missing_dates]
-        if self.write_workers == 1 or len(tasks) <= 1:
+        if len(tasks) <= 1:
             paths = [self._ensure_output_column_one(date, columns) for date, columns in tasks]
         else:
             paths = self._map_writes(lambda item: self._ensure_output_column_one(item[0], item[1]), tasks)

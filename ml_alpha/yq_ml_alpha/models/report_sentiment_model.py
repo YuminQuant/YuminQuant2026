@@ -199,7 +199,7 @@ def _execute(model_class, config, *, train, predict, resume=False, window_ids=No
     writer = DailyWideWriter(
         config.output.root, config.output.id, layout="standard",
         asset=config.output.asset, frequency=config.output.frequency,
-        base_root=config.output.base_root, write_workers=config.output.write_workers,
+        base_root=config.output.base_root,
         file_suffix="_ml",
     ) if predict else None
     output_dates = calendar.between(*config.dates.predict)

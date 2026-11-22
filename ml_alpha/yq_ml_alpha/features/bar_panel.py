@@ -58,9 +58,6 @@ class BarPanelProvider(FeatureProvider):
         self.lookback_sessions = int(params.get("lookback_sessions", 1))
         self.time_series_scale = str(params.get("time_series_scale", "none")).strip().lower()
         self.strict = bool(params.get("strict", True))
-        self._max_cache_raw = params.get("max_cache_sessions", params.get("max_cache_days", 80))
-        self._cache_auto = str(self._max_cache_raw).strip().lower() == "auto"
-        self.max_cache_sessions = self.lookback_sessions if self._cache_auto else int(self._max_cache_raw)
         self.output_features = BAR_FEATURES if is_all_column_request(columns) else list(columns)
         _validate_features(self.output_features)
         self.steps_per_session = _steps_per_session(
@@ -82,18 +79,10 @@ class BarPanelProvider(FeatureProvider):
         return list(history_dates)[-self.lookback_sessions :]
 
     def set_cache_sessions_for_target_dates(self, dates: list[int], calendar_dates: list[int]) -> None:
-        if not self._cache_auto:
-            return
-        stride = _min_target_stride_sessions(dates, calendar_dates)
-        self.max_cache_sessions = max(0, self.lookback_sessions - stride)
-        self._trim_cache()
+        pass
 
     def cache_policy_summary(self) -> str:
-        mode = "auto" if self._cache_auto else "fixed"
-        return (
-            f"mode={mode} limit={self.max_cache_sessions} "
-            f"lookback={self.lookback_sessions} source_frequency={self.source_frequency} bar_size={self.bar_size}"
-        )
+        return f"cache=unlimited lookback={self.lookback_sessions} source_frequency={self.source_frequency} bar_size={self.bar_size}"
 
     def load_window(
         self,
@@ -315,8 +304,6 @@ class BarPanelProvider(FeatureProvider):
                 prepared = (pd.Index(session.ts_code), session[block_columns].to_numpy(dtype="float64", copy=False))
                 self._tensor_blocks[id(session)] = (weakref.ref(session), prepared)
                 self._tensor_blocks.move_to_end(id(session))
-                while len(self._tensor_blocks) > max(1, self.lookback_sessions):
-                    self._tensor_blocks.popitem(last=False)
             index, values = prepared
             positions = index.get_indexer(symbols)
             block = np.full((len(symbols), len(block_columns)), np.nan, dtype="float64")
@@ -488,11 +475,6 @@ class BarPanelProvider(FeatureProvider):
 
     def _cache_put(self, key: Any, frame: pd.DataFrame) -> None:
         self._session_cache[key] = frame
-        self._trim_cache()
-
-    def _trim_cache(self) -> None:
-        while len(self._session_cache) > self.max_cache_sessions:
-            self._session_cache.popitem(last=False)
 
 
 class MultiBarPanelProvider(FeatureProvider):
@@ -959,19 +941,6 @@ def _align_tensor_rows(tensor: np.ndarray, source_symbols: list[str], target_sym
     if take_source:
         output[np.asarray(take_target, dtype=np.int64)] = tensor[np.asarray(take_source, dtype=np.int64)]
     return output
-
-
-def _min_target_stride_sessions(dates: list[int], calendar_dates: list[int]) -> int:
-    if len(dates) < 2:
-        return 1
-    positions = {int(date): idx for idx, date in enumerate(calendar_dates)}
-    indices = [positions[int(date)] for date in dates if int(date) in positions]
-    if len(indices) < 2:
-        return 1
-    strides = [right - left for left, right in zip(indices, indices[1:]) if right > left]
-    if not strides:
-        return 1
-    return max(1, min(strides))
 
 
 def _feature_columns(features: list[str], total_steps: int) -> list[str]:

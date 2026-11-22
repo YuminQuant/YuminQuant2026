@@ -71,9 +71,8 @@ impl DeriveEngine {
         let selected = selected_bar_columns(request.columns.as_deref())?;
         let columns = bar_source_columns(&selected);
         let mut report = DeriveBarReport::default();
-        let threads = crate::resources::compute_threads(request.threads)?;
-        // Each minute file expands to a full day's table and intermediate rows.
-        let date_width = request.date_batch_size.min(threads).min(4);
+        crate::resources::compute_threads(request.threads)?;
+        let date_width = request.date_batch_size;
         for date_batch in dates.chunks(date_width) {
             let outcomes = crate::data::read_ahead::write_files(
                 &self.config.data_root, date_batch.to_vec(), |trade_date| {

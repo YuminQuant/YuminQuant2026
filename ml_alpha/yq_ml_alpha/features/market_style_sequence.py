@@ -35,7 +35,7 @@ class MarketStyleHistory(DailyTensorSequence):
                 or not isinstance(columns, list) or columns != self.market_columns + self.barra_columns):
             raise ValueError("market_style_sequence columns must be market inputs followed by explicit Barra columns")
         super().__init__(config.features.root, columns, (len(columns),),
-                         length=int(params["sequence_length"]), memory_budget_mb=params.get("memory_budget_mb"))
+                         length=int(params["sequence_length"]))
         self.basic_root = _project_path(params.get("basic_root", self.root.parent / "basic"))
         self.adj_root = _project_path(params.get("adj_root", self.root.parent / "adj_factor"))
         self.barra_root = _project_path(params.get("barra_root", config.data_root / "barra" / "stock" / "daily" / params["barra_model"]))
@@ -46,10 +46,7 @@ class MarketStyleHistory(DailyTensorSequence):
         self.filters = TradeFilters(config.filters, config.data_root)
         self.universe = Universe(config.universe.id, config.data_root)
         from yq_ml_alpha.output import artifact_io
-        workers = int(params["history_read_workers"])
-        if workers < 1:
-            raise ValueError("history read workers must be positive")
-        self.read_workers = workers if artifact_io.remote_enabled() else 1
+        self.read_workers = artifact_io.io_options(self.root)["workers"]
         self.normalization = str(params["normalization"])
         if self.normalization not in {"window_mean", "last_value"}:
             raise ValueError("unsupported market/style normalization")

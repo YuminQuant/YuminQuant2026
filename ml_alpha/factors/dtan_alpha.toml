@@ -11,7 +11,6 @@ root = "data/factors"
 asset = "stock"
 frequency = "daily"
 base_root = "data/chn_stock_data/daily/pv"
-write_workers = 4
 
 [dates]
 train = [20110101, 20251231]
@@ -57,7 +56,6 @@ barra_columns = ["DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY",
 turnover_column = "turnover_rate_f"
 sequence_length = 40
 normalization = "window_mean"
-history_read_workers = 30
 
 [materialize]
 cache_samples = false

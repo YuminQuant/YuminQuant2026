@@ -169,7 +169,6 @@ def _new_writer(config: MlAlphaConfig) -> AlphaWriter:
         config.output.root,
         config.output.id,
         base_root=config.output.base_root,
-        write_workers=config.output.write_workers,
         key_columns=config.key_columns,
     )
 

@@ -15,7 +15,6 @@ class AlphaWriter:
         alpha_id: str,
         *,
         base_root: str | Path | None = None,
-        write_workers: int = 4,
         key_columns: list[str] = KEY_COLUMNS,
     ) -> None:
         self.alpha_id = alpha_id
@@ -24,7 +23,6 @@ class AlphaWriter:
             alpha_id,
             layout="direct",
             base_root=base_root,
-            write_workers=write_workers,
             key_columns=key_columns,
         )
 

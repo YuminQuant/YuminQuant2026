@@ -1,4 +1,4 @@
-"""Process-local, byte-bounded Parquet metadata and projected Arrow tables.
+"""Process-local Parquet metadata and projected Arrow tables.
 
 Only immutable source data is shared. Each pandas consumer receives independent
 arrays; model transforms, split membership and tensors are never cached here.
@@ -7,7 +7,6 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
-import os
 from threading import RLock
 
 _projection_hints = ContextVar('ml_projection_hints', default={})
@@ -24,17 +23,8 @@ def projected_inputs(requests):
         _projection_hints.reset(token)
 
 
-def _budget(name, default):
-    value = int(os.environ.get(name, default))
-    if value < 0:
-        raise ValueError(f"{name} must be nonnegative")
-    return value
-
-
 class ParquetReadCache:
     def __init__(self):
-        self.table_limit = _budget("YQ_PARQUET_CACHE_BYTES", 64 * 1024**2)
-        self.metadata_limit = _budget("YQ_PARQUET_METADATA_BYTES", 8 * 1024**2)
         self.tables = OrderedDict()
         self.metadata = OrderedDict()
         self.table_bytes = self.metadata_bytes = 0
@@ -72,18 +62,11 @@ class ParquetReadCache:
         return None
 
     def put(self, entries, key, value, size, kind):
-        limit = getattr(self, kind + "_limit")
-        if not limit or size > limit:
-            return
         with self.lock:
             attr = kind + "_bytes"
             if key in entries:
                 _, old_size = entries.pop(key)
                 setattr(self, attr, getattr(self, attr) - old_size)
-            while entries and (getattr(self, attr) + size > limit or len(entries) >= 4096):
-                _, (_, old_size) = entries.popitem(last=False)
-                setattr(self, attr, getattr(self, attr) - old_size)
-                self.evictions += 1
             entries[key] = (value, size)
             setattr(self, attr, getattr(self, attr) + size)
 
@@ -171,7 +154,7 @@ class ParquetReadCache:
     def info(self):
         with self.lock:
             return {name: getattr(self, name) for name in (
-                "table_limit", "metadata_limit", "table_bytes", "metadata_bytes",
+                "table_bytes", "metadata_bytes",
                 "hits", "misses", "evictions", "opens", "footer_reads")}
 
 
@@ -190,7 +173,4 @@ def cache():
 def to_frame(table):
     # Never expose writable views into shared Arrow buffers to a caller.
     frame = table.to_pandas()
-    if table.get_total_buffer_size() <= cache().table_limit and cache().table_limit:
-        return frame.copy(deep=True)
-    # Oversized/disabled-cache reads have no shared resident table to protect.
-    return frame
+    return frame.copy(deep=True)

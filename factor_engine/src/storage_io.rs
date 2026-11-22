@@ -183,7 +183,6 @@ impl ReadAt for LocalRead {
 #[derive(Clone)]
 pub struct StorageReader(Arc<BufferedRead>);
 const READ_BLOCK_BYTES: usize = 64 * 1024;
-const READ_CACHE_BLOCKS: usize = 16;
 struct BufferedRead {
     source: Arc<dyn ReadAt>,
     blocks: Mutex<VecDeque<(u64, Bytes)>>,
@@ -248,7 +247,7 @@ impl StorageReader {
                 bytes
             } else {
                 let needed = (end - start).div_ceil(READ_BLOCK_BYTES as u64)
-                    .min(READ_CACHE_BLOCKS as u64) * READ_BLOCK_BYTES as u64;
+                    * READ_BLOCK_BYTES as u64;
                 let size = (self.len() - start).min(needed) as usize;
                 let started = std::time::Instant::now();
                 let bytes = self.0.source.read_at(start, size)?;
@@ -259,7 +258,6 @@ impl StorageReader {
                 READ_BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
                 READ_NS.fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
                 for (index, block) in bytes.chunks(READ_BLOCK_BYTES).enumerate() {
-                    if blocks.len() == READ_CACHE_BLOCKS { blocks.pop_front(); }
                     let from = index * READ_BLOCK_BYTES;
                     blocks.push_back((start + from as u64, Bytes::copy_from_slice(block)));
                 }

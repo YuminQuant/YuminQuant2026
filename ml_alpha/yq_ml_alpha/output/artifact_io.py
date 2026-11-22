@@ -16,9 +16,9 @@ def io_options(root):
     return options(root)
 
 
-def ordered_io_map(function, items, *, root, workers=None, write=False, window=None):
+def ordered_io_map(function, items, *, root, workers=None, write=False):
     from .read_ahead import ordered_map
-    return ordered_map(function, items, root=root, workers=workers, write=write, window=window)
+    return ordered_map(function, items, root=root, workers=workers, write=write)
 
 def read_path(path):
     for line in os.environ.get('YQ_METADATA_SNAPSHOTS','').splitlines():

@@ -310,9 +310,9 @@ pub fn derive(config: &EngineConfig, request: &LogsigRnnRequest) -> Result<()> {
     if kernel.log_width() != WIDTH {
         return Err(err("Logsig-RNN Lyndon width mismatch"));
     }
-    let threads = crate::resources::compute_threads(Some(request.threads))?;
+    crate::resources::compute_threads(Some(request.threads))?;
     let progress = ProgressBar::new("derive-logsigrnn", dates.len(), true);
-    for batch in dates.chunks(request.date_batch_size.min(threads).min(4)) {
+    for batch in dates.chunks(request.date_batch_size) {
         let results = crate::data::read_ahead::write_files(
             &config.data_root, batch.to_vec(), |date| {
                     let previous = calendar.warmup_start(date, 1);

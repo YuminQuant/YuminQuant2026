@@ -40,17 +40,9 @@ around unrestricted BLAS kernels. `threads` is the per-task compute budget.
 兼容 CPU 模型的并发；神经网络/GPU 模型任务内顺序推理。CPU 并发要求模型显式
 声明能力，同时限制 BLAS 原生线程，防止线程池叠加。`threads` 是单任务计算预算。
 
-Cache limits apply to raw Arrow tables/footer, pending scalar scores and resident
-model weights separately. `memory_budget_mib` checks process resident RAM at stage
-boundaries; it is not an OS allocation limiter. Tensor assembly also uses the
-existing spool budget. Oversized inputs fail explicitly rather than silently
-changing model batch semantics or spilling remote data to disk. Concurrent tasks
-each need their own reservation; these settings do not reserve cluster resources.
+Arrow tables, metadata, scores, model weights and tensors have no software memory budget. Remote input and output use independent 50-worker pools. Read operations are paced at 1,000 per second. Execution TOMLs contain task scheduling and CPU settings.
 
-各缓存分别限制原始 Arrow/footer、待写分数和模型权重；总内存在阶段边界检查，
-并非操作系统级分配上限。张量组装继续遵守既有 spool 预算。超限明确失败，
-不静默改变模型批次，也不将远程数据溢写节点磁盘。并发任务各自需要内存，
-执行参数本身不代表已经申请集群资源。
+Arrow 表、元数据、预测分数、模型与张量均不设置软件内存预算。远端读写各 50 并发，读取每秒 1,000 次。执行 TOML 配置任务调度和 CPU。
 
 ## Windows and sharing / 窗口与共享
 

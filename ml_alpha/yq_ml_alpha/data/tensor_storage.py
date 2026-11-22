@@ -1,8 +1,7 @@
-"""Bounded, append-only tensor assembly; the bundle owns the mapped files."""
+"""Append-only tensor assembly; the bundle owns the mapped files."""
 from __future__ import annotations
 
 import tempfile
-import os
 import threading
 from pathlib import Path
 
@@ -61,12 +60,9 @@ class MemoryTensorSpool:
         self.chunks = {}
         self.maps = {}
         self.bytes = 0
-        self.limit = int(os.environ.get('YQ_TENSOR_MEMORY_BYTES', str(2 * 1024**3)))
 
     def _reserve(self, cost):
         with self._guard:
-            if type(self)._reserved + cost > self.limit:
-                raise MemoryError('Concurrent training tensors exceed the configured RAM budget; reduce the window or increase memory')
             type(self)._reserved += cost
 
     def _release(self, cost):

@@ -87,7 +87,7 @@ Rust exposes `ArtifactBackend` through `artifact_io`: stat/list, random reads, s
 后端启动时注册一次；本地无需注册。远程客户端由进程复用、限制 IO 并发，不扫描本地数据缓存或构造全任务数据清单。DataRequest 日期选择、provider 日期隔离、PIT 和 report type 逻辑不变。
 Register a backend once at startup; local execution needs no registration. Remote clients are process-reused and IO-limited, without node data-cache scans or full input manifests. DataRequest isolation and PIT/report-type semantics are unchanged.
 
-Python 使用 [`output.artifact_io`](../../ml_alpha/yq_ml_alpha/output/artifact_io.py) 读取表格、日历、特征及模型。远程训练使用当前窗口内存张量，预算由 `YQ_TENSOR_MEMORY_BYTES` 控制；超限明确失败，不回退节点 memmap。可复用特征和模型写入配置的远程目录。本地原有 memmap 选择不变。
+Python 使用 [`output.artifact_io`](../../ml_alpha/yq_ml_alpha/output/artifact_io.py) 读取表格、日历、特征及模型。远程训练使用当前窗口内存张量，不设置软件内存预算。可复用特征和模型写入配置的远程目录。本地原有 memmap 选择不变。
 Python routes tables, calendars, features and models through `output.artifact_io`. Remote tensor assembly stays in RAM under `YQ_TENSOR_MEMORY_BYTES`; excess fails explicitly, never spills to node memmaps. Reusable features/models go to remote storage. Existing local memmap choices remain available.
 
 新表格 Parquet 默认 Snappy，不批量改写历史文件。宽表修改在锁内按股票/日期键合并、写同后端临时文件再原子发布；异常不替换旧文件。

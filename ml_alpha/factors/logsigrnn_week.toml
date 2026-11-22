@@ -10,7 +10,6 @@ root = "data/factors"
 asset = "stock"
 frequency = "daily"
 base_root = "data/chn_stock_data/daily/pv"
-write_workers = 4
 
 [dates]
 train = [20110101, 20251231]
@@ -142,7 +141,6 @@ columns = [
 
 [features.params]
 sequence_length = 21
-history_read_workers = 30
 
 [materialize]
 cache_samples = false

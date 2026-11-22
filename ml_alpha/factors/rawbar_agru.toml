@@ -9,7 +9,6 @@ root = "data/factors"
 asset = "stock"
 frequency = "daily"
 base_root = "data/chn_stock_data/daily/pv"
-write_workers = 4
 
 [dates]
 train = [20110101, 20251231]
@@ -53,7 +52,6 @@ bar_size = 1
 lookback_sessions = 30
 time_series_scale = "none"
 strict = true
-max_cache_sessions = "auto"
 
 [materialize]
 cache_samples = false

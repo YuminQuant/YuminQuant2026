@@ -16,16 +16,11 @@ from yq_ml_alpha.features.transforms import apply_cross_section_transform
 
 
 class FactorHistory(DailyTensorSequence):
-    def __init__(self, config, provider, sequence_length=None, *, budget_key="memory_budget_mb"):
+    def __init__(self, config, provider, sequence_length=None):
         params = config.features.params
         super().__init__(config.features.root, provider.feature_columns, (len(provider.feature_columns),),
-                         int(params.get("sequence_length", 40) if sequence_length is None else sequence_length),
-                         params.get(budget_key))
-        read_workers = int(params.get("history_read_workers", data_io.io_options(self.root)["workers"]))
-        if read_workers < 1:
-            raise ValueError("history_read_workers must be positive")
-        # Parallel history IO is for remote storage; local reads stay serial.
-        self.read_workers = read_workers if data_io.remote_enabled() else 1
+                         int(params.get("sequence_length", 40) if sequence_length is None else sequence_length))
+        self.read_workers = data_io.io_options(self.root)["workers"]
         self.config = config
         self.provider = provider
         self.universe = Universe(config.universe.id, config.data_root)
@@ -76,8 +71,7 @@ class FactorHistory(DailyTensorSequence):
 
     def forward_view(self, length):
         """Independent reader for supervised future slices; caller must close it."""
-        view = FactorHistory(self.config, self.provider, sequence_length=length,
-                             budget_key="future_memory_budget_mb")
+        view = FactorHistory(self.config, self.provider, sequence_length=length)
         view.set_calendar_dates(self.dates)
         return view
 

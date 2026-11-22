@@ -539,11 +539,12 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
     let mut paths = Vec::new();
     for batch in factors.chunks(request.factor_batch_size) {
         let summaries = pool.install(|| evaluate_batch(&inputs, batch, &dates, request))?;
-        for (&factor, summary) in batch.iter().zip(summaries) {
+        let jobs = batch.iter().copied().zip(summaries).collect::<Vec<_>>();
+        paths.extend(crate::data::read_ahead::write_files(&output_dir, jobs, |(factor, summary)| {
             let path = output_dir.join(factor).join("summary.parquet");
             write_summary(&path, &summary.rows, label, request)?;
-            paths.push(path);
-        }
+            Ok(path)
+        })?);
     }
     if request.profile {
         eprintln!(

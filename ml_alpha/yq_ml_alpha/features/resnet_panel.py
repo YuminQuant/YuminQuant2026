@@ -52,9 +52,6 @@ class ResNetPanelProvider(FeatureProvider):
                           else self.root.parents[3] / "chn_stock_data" / "daily")
         self.daily_root = Path(daily_root)
         self.feature_columns = _feature_columns(self.output_features, self.total_steps)
-        self.max_cache_sessions = int(params.get("max_cache_sessions", self.lookback_sessions))
-        if self.max_cache_sessions < 0:
-            raise ValueError("max_cache_sessions must be nonnegative")
         self._sessions = OrderedDict()
         self._symbol_ids = {}
         self._prefetched = None
@@ -66,7 +63,7 @@ class ResNetPanelProvider(FeatureProvider):
         return list(history_dates)[-self.lookback_sessions:]
 
     def cache_policy_summary(self):
-        return f"mode=memory_only limit={self.max_cache_sessions} dataset={self.dataset}"
+        return f"mode=memory_only limit=unlimited dataset={self.dataset}"
 
     def empty_tensor_window(self, trade_date=None, *, tensor_key="bar"):
         return BarTensorWindow(pd.DataFrame(columns=["trade_date", "ts_code"]),
@@ -146,8 +143,6 @@ class ResNetPanelProvider(FeatureProvider):
     def _remember_session(self, date, session):
         self._sessions[date] = session
         self._sessions.move_to_end(date)
-        while len(self._sessions) > self.max_cache_sessions:
-            self._sessions.popitem(last=False)
         return session
 
     def _index_session(self, raw):

@@ -8,7 +8,7 @@ pub fn compute_threads(requested: Option<usize>) -> Result<usize> {
     let limit = available.min(allocation);
     let configured = std::env::var("YQ_COMPUTE_THREADS").ok()
         .map(|value| value.parse::<usize>()).transpose()?;
-    let threads = requested.or(configured).unwrap_or_else(|| (limit / 2).max(1));
+    let threads = requested.or(configured).unwrap_or_else(|| limit.max(1));
     if threads == 0 || threads > limit {
         return Err(err(format!("threads must be in 1..={limit} (effective CPU allocation), got {threads}")));
     }
@@ -23,9 +23,6 @@ pub(crate) fn parallel_work(len: usize) -> bool {
     len >= 65_536 && rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1
 }
 
-pub(crate) fn stock_wave_width(dates: usize, inputs: usize) -> usize {
-    // Bound gathered inputs/results, independently of the full date-major output.
-    let per_stock = dates.saturating_mul(std::mem::size_of::<Option<f64>>())
-        .saturating_mul(inputs + 1).max(1);
-    (32 * 1024 * 1024 / per_stock).max(1).min(rayon::current_num_threads().saturating_mul(2))
+pub(crate) fn stock_wave_width(_dates: usize, _inputs: usize) -> usize {
+    rayon::current_num_threads().max(1)
 }

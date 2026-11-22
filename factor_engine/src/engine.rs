@@ -892,7 +892,7 @@ fn materialize_intraday_raw_table(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let date_batches = split_dates_by_chunk(&missing_dates, DEFAULT_DATE_BATCH_SIZE);
+        let date_batches = split_dates_by_chunk(&missing_dates, request.date_batch_size.max(1));
         let stage_name = if plans.len() == 1 {
             raw_materialize_stage_name(&plans[0].0.spec)
         } else {
@@ -2025,18 +2025,11 @@ fn execution_groups_for_specs(frequency: Frequency, specs: &[FactorSpec]) -> Vec
 }
 
 fn date_batches_for_stage(
-    stage: &ExecutionStage,
+    _stage: &ExecutionStage,
     target_dates: &[i32],
     date_batch_size: usize,
 ) -> Vec<Vec<i32>> {
-    match stage {
-        ExecutionStage::DailyNoMinute | ExecutionStage::IntradayDailyPostprocess { .. } => {
-            split_dates_by_chunk(target_dates, date_batch_size.max(1))
-        }
-        ExecutionStage::IntradayDaily { .. } | ExecutionStage::IntradayDailyStreaming { .. } => {
-            split_dates_by_chunk(target_dates, DEFAULT_DATE_BATCH_SIZE)
-        }
-    }
+    split_dates_by_chunk(target_dates, date_batch_size.max(1))
 }
 
 fn spec_has_minute_dependency(spec: &FactorSpec) -> bool {

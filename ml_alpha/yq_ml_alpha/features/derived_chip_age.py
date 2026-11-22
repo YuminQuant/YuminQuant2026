@@ -15,8 +15,7 @@ class DerivedChipAgeProvider(FeatureProvider):
         self.feature_columns = [f"chip_age_{age}_{bucket:02d}" for age in range(4) for bucket in range(32)]
         self.sequence = DailyTensorSequence(
             root, self.feature_columns, (4, 32),
-            length=int(params.get("sequence_length", 30)),
-            memory_budget_mb=params.get("memory_budget_mb"),
+            length=int(params.get("sequence_length", 30))
         )
         self.expected_version = params.get("dataset_version", "chip_age_rolling250_v2")
         self._manifest = None

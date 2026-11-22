@@ -70,7 +70,8 @@ def _canonical(value) -> str:
 def _without_history_cache_budget(identity: dict) -> dict:
     features = identity["features"]
     params = {key: value for key, value in features["params"].items()
-              if key not in {"memory_budget_mb", "future_memory_budget_mb"}}
+              if key not in {"memory_budget_mb", "future_memory_budget_mb", "max_cache_sessions",
+                             "max_cache_days", "cache_days", "history_read_workers"}}
     return {**identity, "features": {**features, "params": params}}
 
 

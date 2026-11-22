@@ -10,7 +10,6 @@ root = "data/factors"
 asset = "stock"
 frequency = "daily"
 base_root = "data/chn_stock_data/daily/pv"
-write_workers = 4
 
 [dates]
 train = [20100101, 20251231]

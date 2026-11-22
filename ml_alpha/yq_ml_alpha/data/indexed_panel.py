@@ -14,7 +14,7 @@ import pandas as pd
 
 
 class IndexedPanelStore:
-    def __init__(self, root, provider, preprocess, memory_budget_mb=256):
+    def __init__(self, root, provider, preprocess):
         root = Path(root).resolve()
         if root.drive.lower() == "c:":
             raise ValueError("indexed tensor scratch must not be placed on C:")
@@ -25,7 +25,6 @@ class IndexedPanelStore:
         self.frames = {}
         self.map_sizes = {}
         self.map_bytes = 0
-        self.budget = int(memory_budget_mb) * 2**20
         self.windows = {}
         self.preprocess = preprocess
         self._prepared_date = None
@@ -89,16 +88,9 @@ class IndexedPanelStore:
             # np.memmap cannot map an empty array.
             values = np.load(path, mmap_mode="r" if count else None, allow_pickle=False)
             cost = values.nbytes * (3 if kind == "frame" else 1) + int(symbols.memory_usage(deep=True))
-            while self.maps and self.map_bytes + cost > self.budget:
-                old_key, old = self.maps.popitem(last=False)
-                self.map_bytes -= self.map_sizes.pop(old_key)
-                self.frames.pop(old_key, None)
-                # Existing window views may still refer to this map. NumPy
-                # releases it when those views expire; never close it early.
-            if cost <= self.budget:
-                self.maps[key] = values
-                self.map_sizes[key] = cost
-                self.map_bytes += cost
+            self.maps[key] = values
+            self.map_sizes[key] = cost
+            self.map_bytes += cost
         if kind == "array":
             return symbols, values
         frame = pd.DataFrame(values, columns=columns).astype(dtypes)

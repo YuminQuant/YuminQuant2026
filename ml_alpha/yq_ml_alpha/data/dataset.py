@@ -121,8 +121,7 @@ class DatasetBuilder:
                     labels = (self._read_labels(date)
                               if include_label and (self.minute_frame or not features.empty) else None)
                     return features, labels
-                preloaded = data_io.ordered_io_map(load_input, dates, root=root,
-                                                  window=4 if self.minute_frame else None)
+                preloaded = data_io.ordered_io_map(load_input, dates, root=root)
         try:
             return self._load_dates(dates, include_label, split_name, graph_tensor, lazy_tensor,
                                     frames, total_dates, started, preloaded)
@@ -301,7 +300,6 @@ class DatasetBuilder:
     def _prefetch_bar_panel(self, dates, include_label, calendar):
         provider = self.feature_provider
         if (not dates or include_label or not isinstance(provider, ResNetPanelProvider)
-                or provider.max_cache_sessions < provider.lookback_sessions
                 or not data_io.remote_enabled() or dates != sorted(dates)):
             yield
             return

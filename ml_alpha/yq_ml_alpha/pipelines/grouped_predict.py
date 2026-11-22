@@ -93,16 +93,6 @@ class _Models:
         validate_manifest(path, config, window, dataset)
         model = _model_class(config.model.class_path).load(path)
         cost = max(_bytes(model), artifact_io.stat(path).st_size)
-        if cost > self.options.model_cache_mib * 1024**2:
-            raise MemoryError(f'{config.output.id}: model exceeds model_cache_mib')
-        while self.entries and (len(self.entries) >= self.options.max_resident_models or
-                self.bytes + cost > self.options.model_cache_mib * 1024**2):
-            candidate = next((k for k, (m, _, _) in self.entries.items()
-                              if getattr(m, 'prediction_replay_safe', False)), None)
-            if candidate is None:
-                raise MemoryError('Active stateful models cannot be evicted safely; increase model budget '
-                                  'or reduce models in this prediction group')
-            self.remove(candidate)
         session = model.prediction_session()
         session.__enter__()
         self.entries[key] = model, session, cost
@@ -220,13 +210,9 @@ def _predict_group(configs, options, target_dates):
             if not getattr(cls, 'prediction_cpu_parallel', False) or config.model.params.get('device', 'cpu') != 'cpu':
                 raise ValueError('Concurrent inference requires CPU-parallel-safe models; '
                                  'use model_predict_workers=1 for neural/GPU models')
-        if options.model_predict_workers > min(options.threads, options.max_resident_models):
-            raise ValueError('model_predict_workers must not exceed threads or max_resident_models')
     from yq_ml_alpha.pipelines.factor import _new_writer as factor_writer
     from yq_ml_alpha.pipelines.model import _new_writer as signal_writer
     writer = factor_writer(first) if first.output.kind == 'factor' else signal_writer(first).writer
-    if not artifact_io.io_options(writer.output_root).get("fixed", False):
-        writer.write_workers = options.write_workers
     writer._known_columns.update(c.output.id for c in configs)
     models = _Models(configs, options)
     datasets = _Datasets(configs)
@@ -248,8 +234,6 @@ def _predict_group(configs, options, target_dates):
                 values[name].append(frame)
                 covered[name].append(date)
         frames = {name: pd.concat(parts, ignore_index=True) for name, parts in values.items()}
-        if sum(_bytes(v) for v in frames.values()) > options.score_buffer_mib * 1024**2:
-            raise MemoryError('Ready scores exceed score_buffer_mib; reduce configured prediction batch sizes')
         check_memory(options, 'before daily merge')
         started = perf_counter()
         written.extend(writer.write_many(frames, coverage_dates=covered, schema_dates=sorted(owned)))
@@ -345,8 +329,6 @@ def _predict_group(configs, options, target_dates):
                         datasets.release(index)
                     peak = max(peak, check_memory(options, 'prediction scores'))
             flush_ready()
-            if sum(_bytes(frame) for columns in pending.values() for frame in columns.values()) > options.score_buffer_mib * 1024**2:
-                raise MemoryError('Unequal prediction batches exceed score_buffer_mib; increase budget or use compatible batch sizes')
             print(f'grouped-predict batches={end}/{len(units)} shared_bundles={shared} '
                   f'rss_mib={peak/1024**2:.1f}', flush=True)
             position = end

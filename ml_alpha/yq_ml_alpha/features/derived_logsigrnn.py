@@ -31,14 +31,10 @@ class LogsigRnnHistory(DailyTensorSequence):
         params = config.features.params
         if config.features.columns != FEATURES or params["sequence_length"] != 21:
             raise ValueError("derived_logsigrnn requires 21 sessions and 728 ordered Lyndon coordinates")
-        super().__init__(config.features.root, FEATURES, (WIDTH,), length=21,
-                         memory_budget_mb=params.get("memory_budget_mb"))
+        super().__init__(config.features.root, FEATURES, (WIDTH,), length=21)
         self.filters = TradeFilters(config.filters, config.data_root)
         self.universe = Universe(config.universe.id, config.data_root)
-        workers = int(params["history_read_workers"])
-        if workers < 1:
-            raise ValueError("Logsig-RNN history read workers must be positive")
-        self.read_workers = workers if artifact_io.remote_enabled() else 1
+        self.read_workers = artifact_io.io_options(self.root)["workers"]
         self._counts = np.array([[word.count(axis) for axis in (3, 4, 5)] for word in lyndon_words()])
         if self._counts.shape != (WIDTH, 3):
             raise ValueError("Logsig-RNN basis width mismatch")

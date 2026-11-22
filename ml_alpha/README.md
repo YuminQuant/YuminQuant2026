@@ -12,9 +12,9 @@ Local file I/O is serial. HDFS allows up to 50 reads and 50 writes, sharing a pe
 
 The deployment adapter controls remote concurrency and pacing. On xz336 the settings are 50 workers and 1,000 filesystem operations per second. Local reads run serially on the caller thread. Remote workers read independent files, and the caller updates caches and assembles samples in date order. Nested reads run inline. Remote daily output shares the worker queue.
 
-公共日截面缓存按需载入 RAM，默认跨训练、验证和 epoch 保留预处理结果。可通过 `features.params.memory_budget_mb` 显式设置 MiB 上限，超预算时按 LRU 淘汰并保护当前历史窗口。缓存命中的日期直接从内存读取。缓存与当前张量、标签和运行时共同占用任务内存。
+公共日截面缓存按需载入 RAM，默认跨训练、验证和 epoch 保留预处理结果。缓存命中的日期直接从内存读取。缓存与当前张量、标签和运行时共同占用任务内存。
 
-公共联合预测按配置复用已声明 `prediction_inputs_readonly` 的 DatasetBuilder，历史截面RAM缓存因此能跨预测批次保留，结束或异常退出时统一释放。未声明输入只读的模型继续按原来的每批生命周期执行。各模型已有缓存预算及执行层总内存检查仍然生效。
+公共联合预测按配置复用已声明 `prediction_inputs_readonly` 的 DatasetBuilder，历史截面RAM缓存因此能跨预测批次保留，结束或异常退出时统一释放。未声明输入只读的模型继续按原来的每批生命周期执行。缓存按 Dataset 生命周期释放。
 
 一次联合预测调用内，`__all__` 的物理因子列仅按输入根路径、日期上限扫描一次；缓存的是有序列名，各模型独立应用排除规则，下次调用重新扫描。此缓存不会保存矩阵或写磁盘。日志分别报告数据集初始化、输入加载、推理和合并写出耗时，写出进度使用已完成交易日数；历史缓存日志可核对跨批次加载/淘汰量。
 
@@ -132,12 +132,12 @@ Use `factor-metadata-all` to refresh Rust and ML metadata. ML factors maintain t
 详见[多模型执行](docs/MULTI_MODEL_EXECUTION.md)，执行示例为 `execution.example.toml`。
 
 Multi-model fits can run as independent original refit windows. Grouped prediction
-supports different windows, compatible input sharing, bounded score buffers and
+supports different windows, compatible input sharing, shared score buffers and
 one multi-column daily write. Local defaults are serial; a separate execution TOML
 controls concurrency. See [multi-model execution](docs/MULTI_MODEL_EXECUTION.md).
 
-统一入口在正式 ML 因子生产前刷新一次 metadata；原模块命令保留。普通训练入口默认单任务；scripts/train_models.py 按配置中的模型窗口拆成独立任务，本机顺序执行，部署调度器可并发。带 validation_lookback 的窗口支持年度、半年度、季度、月度更新；窗口 ID、标签清洗和模型路径保持一致。远程张量受预算限制，不在节点写 memmap。详见[统一计算与存储](../factor_engine/docs/ARTIFACT_STORAGE.md)。
-The unified entrypoint refreshes metadata once before ML factor production; module commands remain available. Ordinary training remains single-task. scripts/train_models.py creates one task per configured model window, sequential locally or concurrent through deployment scheduling. Calendar windows with validation_lookback support annual, semiannual, quarterly and monthly refits while retaining window IDs, label purging and artifact paths. Remote tensors stay within a RAM budget, not node memmaps. See [execution and storage](../factor_engine/docs/ARTIFACT_STORAGE.md).
+统一入口在正式 ML 因子生产前刷新一次 metadata；原模块命令保留。普通训练入口默认单任务；scripts/train_models.py 按配置中的模型窗口拆成独立任务，本机顺序执行，部署调度器可并发。带 validation_lookback 的窗口支持年度、半年度、季度、月度更新；窗口 ID、标签清洗和模型路径保持一致。远程张量在内存中组装。详见[统一计算与存储](../factor_engine/docs/ARTIFACT_STORAGE.md)。
+The unified entrypoint refreshes metadata once before ML factor production; module commands remain available. Ordinary training remains single-task. scripts/train_models.py creates one task per configured model window, sequential locally or concurrent through deployment scheduling. Calendar windows with validation_lookback support annual, semiannual, quarterly and monthly refits while retaining window IDs, label purging and artifact paths. Remote tensors are assembled in memory. See [execution and storage](../factor_engine/docs/ARTIFACT_STORAGE.md).
 
 - 模型信号通常写入 `data/models/{year}/{date}.parquet`；ML 正式因子写入 `data/factors/stock/daily/{year}/{date}_ml.parquet`，手工因子保留 `{date}.parquet`。公共读取、并发及旧文件迁移见 [双文件存储](docs/FACTOR_FILE_PARTITIONS.md)。
   Model signals normally go to `data/models`; formal factors go to the daily factor library.
@@ -152,9 +152,9 @@ Parquet 输入通过统一存储接口直接读取，本机与远程使用相同
 
 Parquet inputs use the same projected reader through the storage backend locally and remotely. Daily schema checks and data reads share one managed file handle. Optional missing columns remain null; IO/corruption errors never trigger a full-column fallback. The process-local LRU stores only source Arrow tables and footers, not transformed samples or predictions, and never spills to node disk.
 
-`YQ_PARQUET_CACHE_BYTES` 默认 64 MiB，`YQ_PARQUET_METADATA_BYTES` 默认 8 MiB，设为 `0` 可关闭对应缓存。超大表正常读取但不留在缓存中；每次访问检查文件身份，写入、替换、删除会使缓存失效，DatasetBuilder 关闭时释放缓存。预算是额外的读取缓存上限，不是训练张量、已有特征窗口缓存和模型的总内存上限。
+Parquet 表和元数据缓存保留至失效或 Dataset 关闭，不设置内存或条目数量上限。
 
-`YQ_PARQUET_CACHE_BYTES` defaults to 64 MiB and `YQ_PARQUET_METADATA_BYTES` to 8 MiB; set either to `0` to disable that cache. Oversized tables are read without retention. File identity is checked on access; writes, replacement and deletion invalidate entries, and closing DatasetBuilder clears them. These budgets cover extra read caching, not the combined RAM of training tensors, existing feature-window caches and models.
+Parquet tables and metadata are retained until invalidation or dataset closure, with no memory or entry-count budget.
 
 训练与验证必须遵守标签成熟时间；固定训练、滚动训练及验证划分不是全项目统一常量，以配置和专题说明为准。按行划分验证集不保证时间隔离，不能把它当作严格样本外检验。
 
@@ -177,3 +177,7 @@ Start with small materialization/training runs before tuning batches, caches and
 
 验证脚本、测试数据和本机安装记录不属于 README 或版本库内容。
 Keep validation scripts, fixtures and machine-specific installation logs out of README overviews and version control.
+
+批量与 I/O 使用统一规则。远端输入和宽表落盘各 50 并发，读取每秒 1,000 次。已移除分钟 4 文件窗口、内存预算、分数缓冲预算、模型驻留数量上限和缓存淘汰上限。旧 TOML 的预算字段已删除。
+
+Remote input and wide-table output use independent 50-worker pools, with 1,000 read operations per second. Minute file windows, RAM budgets, score limits, model-residency limits and cache eviction limits are removed from code and TOML configurations.

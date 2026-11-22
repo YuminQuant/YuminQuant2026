@@ -79,11 +79,8 @@ var_y[i] = sigma_alpha[i]^2 + sum_k beta[i,k]^2 * sigma_z[k]^2
   日志分别记录重构 MSE、KL、总损失、验证 IC 和耗时。
 - `device=auto` 有 CUDA 时使用 GPU，否则使用 CPU，可显式改为 `cuda` 强制 GPU。
 - 复用公共惰性序列读取和 RAM 缓存，默认跨 epoch 和训练、验证切换保留日度预处理结果。
-  如显式配置 `memory_budget_mb`，超预算时按 LRU 淘汰，保护当前 30 日窗口。
   每轮打印耗时、缓存加载和淘汰增量，以及进程级 Parquet 打开次数增量。
-  缓存预算不包含股票索引、当前编码块、训练标签表、网络和优化器。不会落盘完整历史序列，
-  也不会写 C 盘缓存。分块 CPU 输入会被检查点保留至当日反向结束，不能将缓存预算
-  当作整个进程的内存上限。
+  RAM 缓存按 Dataset 生命周期释放，不设置预算上限。
 - 权重：`data/model_workspace/mdl_000026/rolling60m_5d_vwap10d/artifacts/<window_id>/model.pkl`，
   实际使用 torch checkpoint；同目录有 `model.manifest.json`、
   `loss_history.parquet`、`model_info.json`。checkpoint 保存列顺序、参数及结构版本。

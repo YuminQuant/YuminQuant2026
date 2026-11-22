@@ -15,11 +15,22 @@ def window_artifact_path(artifact_dir: str | Path, window_id: str) -> Path:
     return path
 
 
-def artifact_identity(config, window, dataset) -> dict:
+def artifact_identity(config, window, dataset, *, future_sector_ic=None) -> dict:
     label_identity = asdict(config.label)
     # Keep existing single-label model fingerprints unchanged.
     if not config.label.auxiliary:
         label_identity.pop("auxiliary", None)
+    filters = asdict(config.filters)
+    if not filters.pop("future_liquidity_enabled"):
+        filters.pop("future_pool_id")
+    else:
+        filters["future_liquidity_enabled"] = True
+    preprocess = asdict(config.preprocess)
+    if not preprocess.pop("future_sector_ic_align"):
+        preprocess.pop("future_sector_ic_summary_root")
+        preprocess.pop("future_sector_map")
+    else:
+        preprocess["future_sector_ic_align"] = True
     identity = {
         "pipeline_version": 3,
         "training_information_cutoff": window.training_cutoff_date,
@@ -27,15 +38,19 @@ def artifact_identity(config, window, dataset) -> dict:
         "model": {"class": config.model.class_path, "params": config.model.params, "search": config.model.search},
         "features": asdict(config.features),
         "feature_columns": list(dataset.feature_provider.feature_columns),
-        "preprocess": asdict(config.preprocess),
+        "preprocess": preprocess,
         "label": label_identity,
-        "filters": asdict(config.filters),
+        "filters": filters,
         "universe": asdict(config.universe),
         "data_root": artifact_io.identity_path(config.data_root),
         "data_version": config.data_version,
         "train_dates": window.train_dates,
         "valid_dates": window.valid_dates,
     }
+    if config.preprocess.future_sector_ic_align:
+        if future_sector_ic is None:
+            raise ValueError("missing fitted futures sector IC directions")
+        identity["future_sector_ic"] = future_sector_ic
     if config.calendar_exchange != "SSE":
         identity["calendar_exchange"] = config.calendar_exchange
     if getattr(window, "activation_date", None) is not None:
@@ -76,7 +91,8 @@ def _without_history_cache_budget(identity: dict) -> dict:
 
 
 def save_manifest(path: Path, config, window, dataset) -> None:
-    identity = artifact_identity(config, window, dataset)
+    identity = artifact_identity(config, window, dataset,
+                                 future_sector_ic=getattr(dataset, "future_sector_ic", None))
     payload = {"identity": identity, "fingerprint": hashlib.sha256(_canonical(identity).encode()).hexdigest()}
     row_split = getattr(dataset, "row_split_info", None)
     if config.train_scheme.validation_unit == "rows" and row_split and row_split["window_id"] == window.window_id:
@@ -95,16 +111,18 @@ def validate_manifest(path: Path, config, window, dataset) -> None:
     if not artifact_io.exists(path) or not artifact_io.exists(manifest):
         raise ValueError(f"missing model/manifest; retrain before resume or predict: {path}")
     payload = json.loads(artifact_io.read_text(manifest, encoding="utf-8"))
-    identity = artifact_identity(config, window, dataset)
+    saved = payload.get("identity")
+    sector_ic = saved.get("future_sector_ic") if isinstance(saved, dict) else None
+    identity = artifact_identity(config, window, dataset, future_sector_ic=sector_ic)
     expected = hashlib.sha256(_canonical(identity).encode()).hexdigest()
     if payload.get("fingerprint") != expected:
-        saved = payload.get("identity")
         # Existing weights remain compatible when only RAM retention changes.
-        if (isinstance(saved, dict)
+        if not (isinstance(saved, dict)
                 and isinstance(saved.get("features"), dict)
                 and isinstance(saved["features"].get("params"), dict)
                 and payload.get("fingerprint") == hashlib.sha256(_canonical(saved).encode()).hexdigest()
                 and _canonical(_without_history_cache_budget(saved)) ==
                     _canonical(_without_history_cache_budget(identity))):
-            return
-        raise ValueError(f"model config/features/data version changed; retrain: {path}")
+            raise ValueError(f"model config/features/data version changed; retrain: {path}")
+    if config.preprocess.future_sector_ic_align:
+        dataset.future_sector_ic = sector_ic

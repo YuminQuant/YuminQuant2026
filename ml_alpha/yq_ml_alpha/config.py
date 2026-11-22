@@ -60,6 +60,9 @@ class TrainSchemeConfig:
 class PreprocessConfig:
     cross_section_transform: str = "none"
     feature_fill_value: float = 0.0
+    future_sector_ic_align: bool = False
+    future_sector_ic_summary_root: str = "backtest/future/minute_1m"
+    future_sector_map: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,8 @@ class FiltersConfig:
     exclude_limit: bool = True
     exclude_st: bool = True
     exclude_bj: bool = True
+    future_liquidity_enabled: bool = False
+    future_pool_id: str = "liquidity_001"
 
 
 @dataclass(frozen=True)
@@ -236,6 +241,15 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     model_search = dict(model.get("search", legacy_search))
     feature_type = _required(features, "type", "features.type")
     minute_frame = feature_type == "minute_factor_frame"
+    future_liquidity_enabled = filters.get("future_liquidity_enabled", minute_frame)
+    future_sector_ic_align = preprocess.get("future_sector_ic_align", False)
+    if not isinstance(future_liquidity_enabled, bool) or not isinstance(future_sector_ic_align, bool):
+        raise ValueError("future_liquidity_enabled and future_sector_ic_align must be boolean")
+    if not minute_frame and (future_liquidity_enabled or future_sector_ic_align):
+        raise ValueError("futures liquidity and sector IC settings require minute_factor_frame")
+    future_pool_id = filters.get("future_pool_id", "liquidity_001")
+    if not isinstance(future_pool_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", future_pool_id):
+        raise ValueError("filters.future_pool_id must be a nonempty pool ID")
     if minute_frame and (output_kind != "signal" or output.get("frequency") != "minute_1m"):
         raise ValueError("minute_factor_frame requires a signal output with frequency='minute_1m'")
     if minute_frame and "base_root" in output:
@@ -274,10 +288,21 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             exclude_limit=bool(filters.get("exclude_limit", True)),
             exclude_st=bool(filters.get("exclude_st", True)),
             exclude_bj=bool(filters.get("exclude_bj", True)),
+            future_liquidity_enabled=future_liquidity_enabled,
+            future_pool_id=future_pool_id,
         ),
         preprocess=PreprocessConfig(
             cross_section_transform=preprocess.get("cross_section_transform", "none"),
             feature_fill_value=float(preprocess.get("feature_fill_value", 0.0)),
+            future_sector_ic_align=future_sector_ic_align,
+            future_sector_ic_summary_root=_relative_data_path(
+                preprocess.get("future_sector_ic_summary_root", "backtest/future/minute_1m"),
+                "preprocess.future_sector_ic_summary_root",
+            ),
+            future_sector_map=(
+                _relative_data_path(preprocess["future_sector_map"], "preprocess.future_sector_map")
+                if "future_sector_map" in preprocess else None
+            ),
         ),
         postprocess=_postprocess_config(postprocess, data_root),
         features=FeaturesConfig(
@@ -414,6 +439,15 @@ def _postprocess_config(section: dict[str, Any], data_root: Path) -> Postprocess
             "model.params.neutralize so the model owns the Rust import call"
         )
     return PostprocessConfig()
+
+
+def _relative_data_path(value, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a path relative to data_root")
+    path = Path(value)
+    if path.anchor or ".." in path.parts or path == Path("."):
+        raise ValueError(f"{name} must be a path relative to data_root")
+    return path.as_posix()
 
 
 def _project_path(value: str | Path) -> Path:

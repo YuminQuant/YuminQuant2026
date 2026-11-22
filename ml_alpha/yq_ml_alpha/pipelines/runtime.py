@@ -292,6 +292,8 @@ def _fit_model(model: AlphaModel, train_bundle, valid_bundle, context: ModelCont
 
 def _load_train_valid(config, dataset, calendar, window, progress):
     """Shared row/date split for both model and factor training entry points."""
+    if config.preprocess.future_sector_ic_align:
+        dataset.fit_window_preprocess(window.train_dates)
     if config.train_scheme.validation_unit != "rows":
         progress.step("load_train")
         train = _load_bundle(config, dataset, calendar, window.train_dates, True, split_name="train")

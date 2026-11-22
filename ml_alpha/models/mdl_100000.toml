@@ -30,10 +30,14 @@ id = "mkt_all"
 exclude_limit = false
 exclude_st = false
 exclude_bj = false
+future_liquidity_enabled = true
+future_pool_id = "liquidity_001"
 
 [preprocess]
 cross_section_transform = "none"
 feature_fill_value = 0.0
+future_sector_ic_align = false
+future_sector_ic_summary_root = "backtest/future/minute_1m"
 
 [features]
 type = "minute_factor_frame"

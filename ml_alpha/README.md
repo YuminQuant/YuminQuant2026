@@ -110,6 +110,21 @@ python -m yq_ml_alpha factor-metadata
 输出位于 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet`，可以将
 `data/models` 作为期货分钟回测的 `--factor-root`，通过 `--factors mdl_100000` 选择。
 
+期货分钟配置默认启用 `[filters].future_liquidity_enabled`，使用
+`future_pool_id = "liquidity_001"`。训练、验证和预测按交易日读取年度池表
+`data/future_data/basic/mapping_pool/<pool_id>/YYYY.parquet`，用
+`mapping_ts_code` 匹配当日实际合约。整日缺池数据时停止并报告日期。
+
+`[preprocess].future_sector_ic_align` 默认关闭。开启后，每个训练窗口从
+`future_sector_ic_summary_root` 下各因子的 `summary.parquet` 读取训练日的
+板块 Pearson IC，按日平均后翻转负方向。模型清单保存该窗口的方向表和
+板块映射，验证和预测使用同一份方向。摘要的标签、流动性池和训练日期须匹配。
+板块映射使用仓库的 `factor_engine/docs/FUTURE_SECTORS.md`。
+只打包 Python 源码的远程作业可将该文档发布到数据目录，并将
+`[preprocess].future_sector_map` 设为相对 `data_root` 的路径。
+`future_sector_ic_summary_root` 也相对于 `data_root`，默认为
+`backtest/future/minute_1m`。
+
 部署启动器需注册 HDFS 后端并设置 `YQ_STORAGE_BACKEND=hdfs`，将逻辑
 `data/factors/future/minute_1m` 和 `data/label/future/minute_1m` 映射到 HDFS。
 `features.params.require_hdfs = true` 会在输入路径未被接管时报错。复用

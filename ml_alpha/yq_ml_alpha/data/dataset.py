@@ -15,6 +15,7 @@ import pandas as pd
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.data.filters import TradeFilters
+from yq_ml_alpha.data.future_pool import FutureLiquidityPool, future_products
 from yq_ml_alpha.data.stores import daily_path, read_daily, read_minute, require_hdfs_input
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
@@ -24,6 +25,7 @@ from yq_ml_alpha.features.rawbar_sequence import RawBarSequenceProvider
 from yq_ml_alpha.features.derived_logsigrnn import DerivedLogsigRnnProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
 from yq_ml_alpha.features.factor_frame import FactorFrameProvider, MinuteFactorFrameProvider
+from yq_ml_alpha.features.future_sector_ic import apply_future_sector_ic, fit_future_sector_ic
 from yq_ml_alpha.features.graph_factor_frame import FactorSequenceProvider, GraphFactorFrameProvider
 from yq_ml_alpha.features.analyst_factor_frame import AnalystFactorFrameProvider
 from yq_ml_alpha.features.derived_analyst_gat import DerivedAnalystGATProvider
@@ -67,18 +69,31 @@ class DatasetBuilder:
         self.config = config
         self.feature_provider = make_feature_provider(config)
         self.minute_frame = isinstance(self.feature_provider, MinuteFactorFrameProvider)
+        self.future_pool = None
+        self.future_sector_ic = None
         if self.minute_frame:
-            if any(vars(config.filters).values()):
+            if config.filters.exclude_limit or config.filters.exclude_st or config.filters.exclude_bj:
                 raise ValueError("minute_factor_frame requires disabling the stock filters")
             if config.preprocess.cross_section_transform.strip().lower() not in {"", "none"}:
                 raise ValueError("minute_factor_frame requires cross_section_transform='none'")
             if config.train_scheme.validation_unit != "dates":
                 raise ValueError("minute_factor_frame requires date-based validation")
+            if config.filters.future_liquidity_enabled:
+                self.future_pool = FutureLiquidityPool(
+                    config.data_root, config.filters.future_pool_id,
+                    require_hdfs=self.feature_provider.require_hdfs,
+                )
         if hasattr(self.feature_provider, "set_calendar_dates"):
             self.feature_provider.set_calendar_dates(TradingCalendar.for_config(config).dates)
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
         self._source_st_symbol_cache: dict[int, set[str]] = {}
+
+    def fit_window_preprocess(self, train_dates: list[int]) -> None:
+        if self.config.preprocess.future_sector_ic_align:
+            self.future_sector_ic = fit_future_sector_ic(
+                self.config, self.feature_provider.feature_columns, train_dates,
+            )
 
     def close(self, *, clear_read_cache=True):
         def clear(provider):
@@ -100,6 +115,10 @@ class DatasetBuilder:
             data_io.invalidate_parquet()
 
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
+        if self.future_pool is not None:
+            self.future_pool.prepare(dates)
+        if self.config.preprocess.future_sector_ic_align and self.future_sector_ic is None:
+            raise ValueError("futures sector IC preprocessing requires the window's fitted directions")
         if dates and include_label and self.minute_frame and self.feature_provider.require_hdfs:
             require_hdfs_input(self.config.label.root)
         graph_tensor = isinstance(self.feature_provider, DailySequenceProvider)
@@ -131,6 +150,9 @@ class DatasetBuilder:
     def _load_dates(self, dates, include_label, split_name, graph_tensor, lazy_tensor,
                     frames, total_dates, started, preloaded):
         total_rows = 0
+        pool_rows_before = pool_rows_after = 0
+        pool_contracts_before: set[str] = set()
+        pool_contracts_after: set[str] = set()
         def log_date(status, current, date, rows, date_started):
             if include_label:
                 now = perf_counter()
@@ -152,6 +174,12 @@ class DatasetBuilder:
                 features, labels = next(preloaded)
             else:
                 features = self.feature_provider.load(trade_date)
+            if self.future_pool is not None:
+                pool_rows_before += len(features)
+                pool_contracts_before.update(features["ts_code"].unique())
+                features = self.future_pool.filter(features, trade_date)
+                pool_rows_after += len(features)
+                pool_contracts_after.update(features["ts_code"].unique())
             if features.empty and not (self.minute_frame and include_label):
                 log_date("done", date_idx, trade_date, 0, date_started)
                 continue
@@ -183,6 +211,13 @@ class DatasetBuilder:
             if include_label:
                 columns.extend(self.config.label.columns)
             output = pd.DataFrame(columns=columns)
+        if self.future_pool is not None and dates:
+            products_before = future_products(pd.Series(list(pool_contracts_before), dtype="string")).nunique()
+            products_after = future_products(pd.Series(list(pool_contracts_after), dtype="string")).nunique()
+            print(f"ml-alpha future pool={self.config.filters.future_pool_id} split={split_name} "
+                  f"dates={dates[0]}..{dates[-1]} rows={pool_rows_before}->{pool_rows_after} "
+                  f"contracts={len(pool_contracts_before)}->{len(pool_contracts_after)} "
+                  f"products={products_before}->{products_after}", flush=True)
         if self.minute_frame and dates and include_label and output.empty:
             raise ValueError(f"no usable minute labels for {split_name} {dates[0]}..{dates[-1]}")
         self._maybe_cache(output, dates, include_label)
@@ -487,6 +522,8 @@ class DatasetBuilder:
         return np.isfinite(target) if finite else target.notna()
 
     def _preprocess(self, frame: pd.DataFrame, include_label: bool) -> pd.DataFrame:
+        if self.future_sector_ic is not None:
+            frame = apply_future_sector_ic(frame, self.future_sector_ic)
         columns = list(self.feature_provider.feature_columns)
         label_columns = [column for column in self.config.label.columns if include_label and column in frame.columns]
         return apply_cross_section_transform(

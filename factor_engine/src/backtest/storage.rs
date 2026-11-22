@@ -142,7 +142,7 @@ fn safe_file_stem(value: &str) -> String {
         .collect()
 }
 
-fn factor_stats_table(rows: &[&FactorStatsDaily]) -> Result<Table> {
+pub(crate) fn factor_stats_table(rows: &[&FactorStatsDaily]) -> Result<Table> {
     table_from_columns(BTreeMap::from([
         (
             "factor_id",

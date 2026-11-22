@@ -11,12 +11,14 @@ use rayon::prelude::*;
 use crate::backtest::data::{
     active_factor_matches_tags, external_factor_ids_from_root, factor_metadata_matches,
 };
+use crate::backtest::metrics::{daily_factor_stats, FactorStatsDaily};
+use crate::backtest::preprocess::coverage_stats;
 use crate::backtest::request::DEFAULT_BACKTEST_THREADS;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::core::{AssetClass, Frequency};
-use crate::data::parquet_io::{read_parquet_with_null_types, write_parquet_batch};
-use crate::data::Table;
+use crate::data::parquet_io::{read_parquet_with_null_types, write_parquet, write_parquet_batch};
+use crate::data::{ColumnData, Table};
 use crate::error::{err, Result};
 use crate::factor::common::intraday_raw::quantile_linear;
 use crate::factor::future::minute_input::{
@@ -341,8 +343,14 @@ impl ProductRows {
     }
 }
 
+struct FactorDistribution {
+    code: String,
+    stats: FactorStatsDaily,
+}
+
 struct FactorSummary {
     rows: Vec<Observation>,
+    distributions: Vec<FactorDistribution>,
     history: Option<ThresholdHistory>,
     quantile: u8,
 }
@@ -351,8 +359,23 @@ impl FactorSummary {
     fn new(mode: QuantileMode, quantile: u8) -> Self {
         Self {
             rows: Vec::new(),
+            distributions: Vec::new(),
             history: matches!(mode, QuantileMode::Trailing5).then(ThresholdHistory::default),
             quantile,
+        }
+    }
+
+    fn add_distributions(&mut self, date: i32, factor: &str, groups: &DayGroups, raw: &[Option<f64>]) {
+        let pooled = std::iter::once(("all".to_owned(), groups.all.as_slice()))
+            .chain(groups.by_product.iter().map(|(code, rows)| (code.clone(), rows.pooled.as_slice())))
+            .chain(groups.by_sector.iter().map(|(sector, rows)| (format!("sector:{sector}"), rows.as_slice())));
+        for (code, rows) in pooled {
+            let values = rows.iter().map(|&row| raw[row]).collect::<Vec<_>>();
+            let coverage = coverage_stats(&values);
+            self.distributions.push(FactorDistribution {
+                code,
+                stats: daily_factor_stats(factor.to_owned(), date, &values, coverage.coverage, coverage.inf_rate),
+            });
         }
     }
 
@@ -563,12 +586,20 @@ pub fn run(config: &EngineConfig, request: &FutureMinuteBacktestRequest) -> Resu
     let mut paths = Vec::new();
     for batch in factors.chunks(request.factor_batch_size) {
         let summaries = pool.install(|| evaluate_batch(&inputs, batch, &dates, request))?;
-        let jobs = batch.iter().copied().zip(summaries).collect::<Vec<_>>();
-        paths.extend(crate::data::read_ahead::write_files(&output_dir, jobs, |(factor, summary)| {
-            let path = output_dir.join(factor).join("summary.parquet");
-            write_summary(&path, &summary.rows, label, request)?;
-            Ok(path)
-        })?);
+        let mut jobs: Vec<Box<dyn FnOnce() -> Result<PathBuf> + Send + '_>> = Vec::new();
+        for (&factor, summary) in batch.iter().zip(summaries) {
+            let summary_path = output_dir.join(factor).join("summary.parquet");
+            jobs.push(Box::new(move || {
+                write_summary(&summary_path, &summary.rows, label, request)?;
+                Ok(summary_path)
+            }));
+            let stats_path = output_dir.join(factor).join("factor_stats.parquet");
+            jobs.push(Box::new(move || {
+                write_factor_stats(&stats_path, &summary.distributions)?;
+                Ok(stats_path)
+            }));
+        }
+        paths.extend(crate::data::read_ahead::write_files(&output_dir, jobs, |job| job())?);
     }
     if request.profile {
         eprintln!(
@@ -753,7 +784,11 @@ fn evaluate_batch(
                     .par_iter()
                     .zip(summaries.par_iter_mut())
                     .try_for_each(|(&factor, summary)| -> Result<()> {
-                        let values = finite_column(&day.table, factor)?;
+                        let raw = day.table.required_f64_cast(factor)?;
+                        if day.date >= inputs.start_date {
+                            summary.add_distributions(day.date, factor, &day.groups, &raw);
+                        }
+                        let values = raw.into_iter().map(|value| value.filter(|v| v.is_finite())).collect::<Vec<_>>();
                         summary.add_day(
                             day.date,
                             &day.groups,
@@ -780,6 +815,15 @@ fn evaluate_batch(
         }
     }
     Ok(summaries)
+}
+
+fn write_factor_stats(path: &Path, rows: &[FactorDistribution]) -> Result<()> {
+    let stats = rows.iter().map(|row| &row.stats).collect::<Vec<_>>();
+    let mut table = crate::backtest::storage::factor_stats_table(&stats)?;
+    table.columns.insert("ts_code".to_owned(), ColumnData::Utf8(
+        rows.iter().map(|row| Some(row.code.clone())).collect(),
+    ));
+    write_parquet(path, &table)
 }
 
 fn write_summary(

@@ -1,1 +1,1 @@
-"""Training, prediction, and materialization orchestration."""
+"""Training and prediction orchestration."""

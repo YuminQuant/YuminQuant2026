@@ -283,7 +283,7 @@ Current `derive-logsig` specifics / 当前实现：
 - Default overwrite is true; false skips existing files without freshness checks / 默认覆盖；跳过模式不校验源数据修订。
 - After source revisions, regenerate affected windows and review `data_version` / 源数据修订后重算受影响窗口，评估模型数据版本。
 - `derived_logsig` provider reads files only, fails on missing files/columns / 模型端只读，缺文件或列报错。
-- `factor-materialize` rejects this provider; it is not the derived production CLI / 不再通过 Python materialize 生产此数据。
+- Rust `derive-logsig` is the only production entrypoint; Python only reads its output / 统一由 Rust 生产，Python 只读产物。
 
 The Rust kernel caches fixed order-10 structures and reuses numerical buffers.
 Descending-degree in-place updates preserve arithmetic order at a fixed precision.
@@ -293,25 +293,25 @@ new numerical validation: high-order cancellation can change the features.
 Rust 内核缓存固定10阶结构、复用数值缓冲，并通过倒序原地更新减少复制。
 不要未经数值验证就改成 signature 逆运算移除历史窗口；高阶抵消误差可能改变特征。
 
-Precision: volume aggregation, tensor intermediates, Python/Rust signature input
+Precision: volume aggregation, tensor intermediates, Rust signature input
 and the 226 output features all use `f32`. Every date computes its complete
 960-point path; only input days and scratch buffers are reused, never the previous
 date's tensor value. This avoids inverse-update error accumulation and dependence
 on the requested start date, but float32 high-order rounding can still change
 values and ranks relative to the former float64 version. Regenerate the model's
-feature dataset, update `data_version`, and retrain; rebuild the Rust extension
-before using the legacy Python signature API.
-精度约定：成交量聚合、张量中间量、Python/Rust 签名输入和226维输出均使用 `f32`。
+feature dataset, update `data_version`, and retrain.
+精度约定：成交量聚合、张量中间量、Rust 签名输入和226维输出均使用 `f32`。
 每天完整计算960点路径，只复用输入日和工作缓冲，不递推上一日的张量值。
 因此没有逆运算跨日误差累积或起算日依赖，但单精度高阶误差仍可能改变数值和排序。
 不要混用旧float64特征：应重建模型特征集、更新 `data_version` 并重新训练。
-旧Python签名接口需重新构建Rust扩展后使用。
+旧 Python 签名计算接口及其 Rust 扩展导出已移除；扩展仅保留模型所需的中性化接口。
 
-The materialization entrypoint supports derived logsignature features. Generic
-sample export has been removed from the dataset loader and CLI implementation.
+Derived datasets are produced only by Rust `derive-*` commands. Python reads
+the outputs; its legacy logsignature provider, materialization commands, and
+generic sample export have been removed.
 
-materialize 入口支持派生 logsignature 特征。公共样本导出已从数据装载层和
-CLI 实现中移除。
+派生数据统一由 Rust `derive-*` 命令生产，Python 只读取产物。旧 Python
+logsignature 计算器、materialize 命令及公共样本导出均已移除。
 
 ## 5. Model Interface And Postprocessing / 模型接口与后处理
 

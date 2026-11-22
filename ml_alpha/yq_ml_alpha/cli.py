@@ -14,11 +14,9 @@ def main(argv: list[str] | None = None) -> None:
         "model-train",
         "model-predict",
         "model-run",
-        "model-materialize",
         "factor-train",
         "factor-predict",
         "factor-run",
-        "factor-materialize",
     ]
     for name in config_commands:
         command = subparsers.add_parser(name)
@@ -97,8 +95,6 @@ def main(argv: list[str] | None = None) -> None:
         paths = model.predict_only(args.config)
     elif args.command == "model-run":
         paths = model.run(args.config)
-    elif args.command == "model-materialize":
-        paths = model.materialize_only(args.config)
     elif args.command == "factor-train":
         paths = factor.train_only(args.config, resume=args.resume, window_ids=args.window_id)
     elif args.command == "factor-predict":
@@ -109,8 +105,6 @@ def main(argv: list[str] | None = None) -> None:
             paths = predict_many(args.config)
     elif args.command == "factor-run":
         paths = factor.run(args.config, resume=args.resume)
-    elif args.command == "factor-materialize":
-        paths = factor.materialize_only(args.config)
     elif args.command == "factor-metadata":
         paths = factor.metadata_only(args.config, args.config_dir)
     elif args.command == "factor-metadata-all":

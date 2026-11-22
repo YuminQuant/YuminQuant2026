@@ -63,10 +63,6 @@ class ReportTermFrequencyAlphaModel(AlphaModel):
     def planning_config(config):
         return _history_config(config)
 
-    @staticmethod
-    def materialize_error():
-        return "report events are read directly; factor-materialize is not supported"
-
     @classmethod
     def check_dependencies(cls):
         # Fail before reading years of source data, without initializing a

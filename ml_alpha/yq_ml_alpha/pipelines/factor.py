@@ -11,7 +11,6 @@ from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.output.artifacts import window_artifact_path, save_manifest, validate_manifest
 from yq_ml_alpha.output.daily_wide_writer import DailyWideWriter
 from yq_ml_alpha.output.factor_metadata import write_factor_metadata
-from yq_ml_alpha.pipelines import materialize
 from yq_ml_alpha.pipelines.runtime import (
     _Progress,
     _aggregate_diagnostics,
@@ -38,14 +37,6 @@ def train_only(config_path: str | Path, *, resume: bool = False, window_ids=None
 
 def predict_only(config_path: str | Path) -> list[Path]:
     return predict_config(_load_factor_config(config_path))
-
-
-def materialize_only(config_path: str | Path) -> list[Path]:
-    config = _load_factor_config(config_path)
-    materialize_error = getattr(_model_class(config.model.class_path), "materialize_error", None)
-    if callable(materialize_error):
-        raise ValueError(materialize_error())
-    return materialize.run_config(config)
 
 
 def metadata_only(config_paths: list[str | Path] | None = None, config_dir: str | Path | None = None) -> list[Path]:

@@ -66,7 +66,7 @@ data/derived/stock/analyst_gat_inputs/
 使用目录旁锁和原子manifest身份写入，拒绝混合不同口径。源数据修订后需重建对应派生
 范围及其后40日受影响窗口，并更新训练配置的data_version；manifest不哈希整库内容。
 同一套派生输入可以由其他模型复用，不是训练专用预处理缓存。
-`factor-materialize` 对该配置明确拒绝写调试样本缓存，并提示使用上述Rust派生入口。
+派生数据只由上述 Rust 入口生产，Python 读取产物；不提供 Python 派生生产或样本导出命令。
 
 季度分析师图继续读取 `data/derived/stock/analyst_coverage`，每季度最后一个交易日
 Q收盘使用 `(Q−6自然月,Q]` 的报告建图，样本日用最近 `Q<=T`。

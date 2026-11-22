@@ -7,7 +7,6 @@ from yq_ml_alpha.config import MlAlphaConfig, load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
 from yq_ml_alpha.output.artifacts import window_artifact_path, save_manifest, validate_manifest
-from yq_ml_alpha.pipelines import materialize
 from yq_ml_alpha.pipelines.runtime import (
     _Progress,
     _aggregate_diagnostics,
@@ -35,11 +34,6 @@ def train_only(config_path: str | Path, *, window_ids=None) -> list[Path]:
 
 def predict_only(config_path: str | Path) -> list[Path]:
     return predict_config(_load_model_config(config_path))
-
-
-def materialize_only(config_path: str | Path) -> list[Path]:
-    config = _load_model_config(config_path)
-    return materialize.run_config(config)
 
 
 def run_config(config: MlAlphaConfig) -> list[Path]:

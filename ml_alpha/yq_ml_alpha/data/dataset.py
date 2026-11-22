@@ -34,7 +34,6 @@ from yq_ml_alpha.features.hist_factor_frame import HistFactorFrameProvider, Conc
 from yq_ml_alpha.features.raw_panel import RawPanelProvider
 from yq_ml_alpha.features.rawbar import RawBarProvider
 from yq_ml_alpha.features.resnet_panel import ResNetPanelProvider
-from yq_ml_alpha.features.logsig_signature import LogsigSignatureProvider
 from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
 from yq_ml_alpha.features.derived_chip_age import DerivedChipAgeProvider
 from yq_ml_alpha.data.sampler import sample_dates
@@ -129,8 +128,6 @@ class DatasetBuilder:
         total_dates = len(dates)
         split_name = split_name or ("labeled" if include_label else "predict")
         started = perf_counter()
-        if isinstance(self.feature_provider, LogsigSignatureProvider):
-            self.feature_provider.set_cache_days_for_target_dates(dates)
         preloaded = None
         if type(self.feature_provider) in (FactorFrameProvider, MinuteFactorFrameProvider, RawPanelProvider):
             root = self.feature_provider.root
@@ -166,11 +163,7 @@ class DatasetBuilder:
             date_started = perf_counter()
             labels = None
             log_date("start", date_idx, trade_date, 0, date_started)
-            if isinstance(self.feature_provider, LogsigSignatureProvider):
-                progress = _logsig_signature_progress(split_name, date_idx, total_dates, trade_date)
-                features = self.feature_provider.load(trade_date, progress=progress)
-                progress(f"target_done feature_rows={len(features)}")
-            elif preloaded is not None:
+            if preloaded is not None:
                 features, labels = next(preloaded)
             else:
                 features = self.feature_provider.load(trade_date)
@@ -693,8 +686,6 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return provider
     if config.features.type == "raw_panel":
         return RawPanelProvider(config.features.root, config.features.columns)
-    if config.features.type == "logsig_signature":
-        return LogsigSignatureProvider(config.features.root, config.features.columns, config.features.params)
     if config.features.type == "bar_panel":
         return BarPanelProvider(config.features.root, config.features.columns, config.features.params)
     if config.features.type == "multi_bar_panel":
@@ -715,16 +706,6 @@ def _bar_panel_progress(split_name: str, current: int, total: int, trade_date: i
 def _resnet_history(calendar: TradingCalendar, date: int, lookback: int) -> list[int]:
     end = bisect_right(calendar.dates, date)
     return calendar.dates[max(0, end - lookback):end]
-
-
-def _logsig_signature_progress(split_name: str, current: int, total: int, trade_date: int):
-    def emit(message: str) -> None:
-        print(
-            f"logsig-signature {split_name} [{current}/{total}] target={trade_date} {message}",
-            flush=True,
-        )
-
-    return emit
 
 
 def _factor_sequence_progress(split_name: str, current: int, total: int, trade_date: int):

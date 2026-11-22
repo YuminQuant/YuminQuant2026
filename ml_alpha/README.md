@@ -97,9 +97,9 @@ python scripts/yq.py factor-predict --config ml_alpha/factors/bar_gru_15m.toml
 python -m yq_ml_alpha factor-metadata
 ```
 
-`model-run` / `factor-run` 连续执行训练与预测；`model-materialize` / `factor-materialize` 支持生成 `logsig_signature` 派生特征。样本导出功能已移除，旧配置中的样本导出字段会被拒绝。不要批量盲跑示例配置：不同配置可能依赖尚未生成的派生数据或标签。
+`model-run` / `factor-run` 连续执行训练与预测。派生数据统一由 Rust `derive-*` 命令生产，Python 只读取产物；Python 派生计算入口和样本导出功能已移除，旧配置中的样本导出字段会被拒绝。不要批量盲跑示例配置：不同配置可能依赖尚未生成的派生数据或标签。
 
-`model-run` / `factor-run` combine training and inference. Materialization commands support derived `logsig_signature` features. Sample export has been removed, and legacy sample-export settings are rejected. Do not run all example configurations blindly: some require derived inputs or labels that have not been generated.
+`model-run` / `factor-run` combine training and inference. Rust `derive-*` commands produce derived datasets; Python only reads the outputs. Python derived-data computation and sample export have been removed, and legacy sample-export settings are rejected. Do not run all example configurations blindly: some require derived inputs or labels that have not been generated.
 
 ### 期货分钟模型
 

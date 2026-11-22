@@ -54,6 +54,8 @@
     figcaption .chart-range { flex-basis: 100%; color: var(--muted); font-size: 12px; }
     canvas { display: block; width: 100%; height: 150px; margin-top: 8px; }
     .charts[data-single="true"] canvas { height: clamp(240px, 38vw, 370px); }
+    #portfolio-chart { margin-top: 18px; }
+    #portfolio-chart canvas { height: clamp(240px, 30vw, 370px); }
     @media (max-width: 600px) {
       .wrap { width: calc(100% - 24px); }
       .panel { padding: 14px; }
@@ -74,8 +76,9 @@
     </section>
     <section class="panel" aria-labelledby="portfolio-title">
       <h2 id="portfolio-title">组合绩效</h2>
-      <p class="note">账户绩效按所选日期展示。金额为人民币，年化按 240 个交易日。</p>
+      <p class="note">组合绩效随品种范围及日期选择更新。金额为人民币，年化按 240 个交易日。累计净盈亏曲线在所选区间起点归零，跨年度按净盈亏金额累加。</p>
       <div id="portfolio" class="scroll"></div>
+      <div id="portfolio-chart"></div>
     </section>
     <section class="panel" aria-labelledby="products-title">
       <h2 id="products-title">品种绩效</h2>
@@ -229,21 +232,36 @@
       const base = offset ? series.values[offset - 1] : 0;
       const path = [0, ...series.values.slice(offset, end - series.start).map(value => value - base)];
       const times = [dates[first] - 86400000, ...dates.slice(first, end)];
+      addSeriesChart(productName(code), path, times, charts, code);
+    }
+
+    function portfolioPath(codes, start, end) {
+      const valueAt = (code, index) => {
+        const series = data.pnl[code];
+        return index < series.start ? 0 : series.values[index - series.start];
+      };
+      const bases = codes.map(code => valueAt(code, start - 1));
+      return [0, ...dates.slice(start, end).map((_, offset) =>
+        codes.reduce((sum, code, index) => sum + valueAt(code, start + offset) - bases[index], 0)
+      )];
+    }
+
+    function addSeriesChart(label, path, times, container, code) {
       const figure = document.createElement("figure");
       figure.dataset.product = code;
       const caption = document.createElement("figcaption");
       const name = document.createElement("strong");
-      name.textContent = productName(code);
+      name.textContent = label;
       const readout = document.createElement("output");
       const total = amount.format(path.at(-1)) + " 元";
       readout.textContent = total;
       const range = document.createElement("span");
       range.className = "chart-range";
-      range.textContent = new Date(times[0]).toISOString().slice(0, 10) + " 至 " + data.dates[end - 1];
+      range.textContent = new Date(times[0]).toISOString().slice(0, 10) + " 至 " + new Date(times.at(-1)).toISOString().slice(0, 10);
       caption.append(name, readout, range);
       const canvas = document.createElement("canvas");
       canvas.setAttribute("role", "img");
-      canvas.setAttribute("aria-label", code + " 累计净盈亏 " + total);
+      canvas.setAttribute("aria-label", label + " 累计净盈亏 " + total);
       let area;
       canvas.redraw = () => { area = drawChart(canvas, times, path); };
       canvas.addEventListener("pointermove", event => {
@@ -256,7 +274,7 @@
       });
       canvas.addEventListener("pointerleave", () => { readout.textContent = total; });
       figure.append(caption, canvas);
-      charts.append(figure);
+      container.append(figure);
       observer.observe(canvas);
     }
 
@@ -273,6 +291,16 @@
       renderTable("portfolio", data.portfolio_columns, portfolio);
       renderTable("products", data.product_columns, rows);
       observer.disconnect();
+      const portfolioChart = document.getElementById("portfolio-chart");
+      portfolioChart.replaceChildren();
+      const codes = rows.map(row => row.product);
+      const scopeLabel = universe.selectedOptions[0].textContent;
+      if (codes.length) {
+        addSeriesChart(scopeLabel + " · 组合累计净盈亏", portfolioPath(codes, start, end),
+          [dates[start] - 86400000, ...dates.slice(start, end)], portfolioChart, "portfolio");
+      } else {
+        portfolioChart.textContent = "所选范围没有组合 PnL。";
+      }
       charts.replaceChildren();
       charts.dataset.single = String(rows.length === 1);
       for (const {product} of rows) addChart(product, start, end);

@@ -7,7 +7,7 @@ from yq_analysis.report_source import read_parquet
 
 def distribution_diagnostics(path: Path) -> dict:
     if not path.is_file():
-        return {"available": False, "scopes": [], "monthly": []}
+        return {"available": False, "scopes": []}
     frame = read_parquet(path)
     required = {"trade_date", "ts_code", "observations", "mean", "std", "min", "p25", "median", "p75", "max", "coverage", "inf_rate"}
     if missing := required - set(frame):
@@ -24,9 +24,6 @@ def distribution_diagnostics(path: Path) -> dict:
     scopes["max"] = grouped["max"].max()
     scopes["observations"] = grouped["observations"].sum()
     scopes["days"] = grouped.size()
-    market = frame[frame.ts_code.eq("all")].copy()
-    market["month"] = market.trade_date.astype(str).str[:6]
-    monthly = market.groupby("month")[means].mean().reset_index()
     def rows(value):
-        return json.loads(value.to_json(orient="records", double_precision=8))
-    return {"available": True, "scopes": rows(scopes.reset_index()), "monthly": rows(monthly)}
+        return json.loads(value.to_json(orient="records", double_precision=15))
+    return {"available": True, "scopes": rows(scopes.reset_index())}

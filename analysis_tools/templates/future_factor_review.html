@@ -32,6 +32,7 @@ th[aria-sort=ascending] button::after{content:" ↑"}th[aria-sort=descending] bu
 tbody tr:hover{background:#f6f9fc}.table-wrap{overflow:auto}.detail-table{max-height:510px;overflow:auto}.pager{justify-content:flex-end;margin:10px 0}
 .pager span:first-child{margin-right:auto}.link{border:0;background:transparent;padding:0;font-weight:600}.pos{color:var(--up)}.neg{color:var(--down)}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px}.two-col>div{min-width:0}
+.sector-reference{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}.sector-reference>div{min-width:0;border:1px solid var(--line);border-radius:5px;padding:12px}.sector-reference h3{margin-bottom:8px}.sector-reference table{white-space:normal;font-size:12px}.sector-reference th,.sector-reference td{text-align:left;padding:6px 8px}
 figure{margin:15px 0 0}figcaption{margin:0 0 6px}figure img{width:100%;height:auto;border:1px solid var(--line);display:block}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:16px 0}.card{background:var(--panel);padding:15px;border-radius:6px}.card strong{display:block;font-size:24px}.distribution-chart{width:100%;height:auto;background:var(--panel);border-radius:6px}
 .tabs{margin:16px 0 12px;border-bottom:1px solid var(--line);padding-bottom:8px}
@@ -39,12 +40,12 @@ figure{margin:15px 0 0}figcaption{margin:0 0 6px}figure img{width:100%;height:au
 .detail-header{margin-top:12px}.detail-header p{margin-top:3px}
 .empty{padding:13px 0;color:var(--muted)}[hidden]{display:none!important}
 ul{padding-left:22px}li+li{margin-top:6px}footer{margin-top:22px}
-@media(max-width:900px){.two-col{grid-template-columns:1fr;gap:16px}.page,nav div{padding-left:16px;padding-right:16px}}
+@media(max-width:900px){.two-col,.sector-reference{grid-template-columns:1fr;gap:16px}.page,nav div{padding-left:16px;padding-right:16px}}
 @media(max-width:585px){nav div{gap:10px}.controls label{width:100%}.controls select{max-width:calc(100% - 80px)}th,td{padding:6px 8px}}
 </style>
 </head>
 <body>
-<nav aria-label="报告导航"><div><strong>YuminQuant · 期货研究</strong><a href="#overview">总览</a><a href="#families">分类与相关</a><a href="#detail">逐因子</a><a href="#method">结算口径</a></div></nav>
+<nav aria-label="报告导航"><div><strong>YuminQuant · 期货研究</strong><a href="#overview">总览</a><a href="#families">分类与相关</a><a href="#detail">逐因子</a><a href="#method">结算口径</a><a href="#sector-members">板块与品种</a></div></nav>
 <main class="page">
 <header class="hero">
 <h1>期货分钟因子回测总报告</h1>
@@ -88,13 +89,18 @@ ul{padding-left:22px}li+li{margin-top:6px}footer{margin-top:22px}
 <li>历史五日模式使用每个品种、每个因子过去五个交易日的上下分位数均值触发分钟信号。当日分位模式按同品种当日数据取分位数，配置单独列示。</li>
 <li>总表的 IC 和 CosIC 取摘要中 All 行的日度均值。absIC 为全体 IC 的绝对值。</li>
 <li>新摘要的收益统计直接读取已按品种 IC 定向的 holding_rtn（1分钟持仓收益），不重复调整方向；IC 和两端收益仍使用5分钟标签。年化收益为日均收益 × 240，Sharpe 按 240 日年化。最大回撤用逐日累加的净值计算，初始净值为 1。</li>
-<li>有效日包括有有效日收益的零收益日。总回测日为摘要中 All 行的交易日总数。覆盖率为有效日除以总回测日。</li>
+<li>总表「分钟值日均覆盖率」读取 factor_stats.parquet 的 All 行 coverage，再对交易日等权平均，以百分比显示；不再用收益有效日占比代替。</li>
 <li>每合约日均触发数为每日触发上、下阈值的分钟总数，除以当日有阈值且有有效数据的合约数，再对交易日平均。</li>
 <li>收益明细沿用回测图的定向结果。累计图按日加总 bp。因子相关性使用同配置下共同有效交易日的全体日收益。</li>
 <li>摘要文件路径、大小和更新时间用于识别新增和更新。摘要和图分别保存在项目目录中，HTML 通过相对路径打开图。</li>
-<li>分布诊断来自 factor_stats.parquet。覆盖率与无穷值率取日均；常数日、四分位区间退化日占比仅以有观测的日为分母。均值、标准差、分位数均为日统计的等权平均，不能解释为全样本合并后的分布；极值取区间极值。月度曲线为每日分位数的月均值。</li>
+<li>分布诊断只读取 factor_stats.parquet，以表格展示 All、板块与品种统计，不绘制分布图。日均值、日均标准差及每日分位数按交易日等权平均；极值取区间极值。表格中的「日中位数均值」不是跨品种中位数。</li>
 </ul>
 <details id="issues"><summary>摘要读取或结算问题</summary><div id="issue-table"></div></details>
+</section>
+<section id="sector-members">
+<div class="section-head"><h2>板块与品种中英文对照</h2></div>
+<p class="muted small">来自项目 FUTURE_SECTORS.md 的完整研究分类；品种对照不代表全部品种均进入本次回测样本。</p>
+<div id="sector-reference" class="sector-reference"></div>
 </section>
 <footer class="muted small">表格和筛选逻辑嵌入 HTML，浏览器可离线打开。</footer>
 </main>
@@ -116,7 +122,7 @@ const COLUMNS = [
  metric('ic','IC',OVERVIEW_DIGITS),metric('cosic','CosIC',OVERVIEW_DIGITS),
  metric('annual_return','年化收益 %',OVERVIEW_DIGITS),metric('sharpe','Sharpe',OVERVIEW_DIGITS),
  metric('max_drawdown','最大回撤 %',OVERVIEW_DIGITS),
- ['coverage','有效日 / 总回测日 / 覆盖率',(x,row)=>`${format(row.days,0)} / ${format(row.total_days,0)} / ${format(x,2)}%`]
+ ['minute_coverage','分钟值日均覆盖率',x=>Number.isFinite(x)?`${format(x,2)}%`:'—']
 ];
 const RETURN_COLUMNS = [
  metric('long','5分钟多端 bp'),metric('short','5分钟空端 bp'),metric('net','日择时收益 bp'),
@@ -177,7 +183,7 @@ function drawDetail(){
  const f=LOOKUP.get(state.selected);
  byId('factor-info').innerHTML=`<h3>${esc(f.id)} · ${esc(f.family)}</h3><p class="muted small">${date(f.first)} 至 ${date(f.last)} · ${esc(f.group)}${f.aliases.length?' · '+esc(f.aliases.join(', ')):''}</p>${f.description?`<p>${esc(f.description)}</p>`:''}`;
  const tabs={
-  curves:()=>`<figure><figcaption>期货择时回测图 <span class="muted small">含板块池化 IC 与按品种定向的收益</span></figcaption><img src="${esc(f.plot)}" loading="lazy" alt="${esc(f.id)} 的板块 IC、累计收益和品种收益图"></figure>`,
+  curves:()=>`<figure><figcaption>期货择时回测图 <span class="muted small">底部为1分钟持仓合计收益：红色表示盈利，绿色表示亏损；右上多空分项为5分钟两端收益。</span></figcaption><img src="${esc(f.plot)}" loading="lazy" alt="${esc(f.id)} 的板块 IC、累计收益和品种收益图"></figure>`,
   sectors:()=>table(f.sectors,[['sector','板块'],...RETURN_COLUMNS]),
   products:()=>table(f.products,[['ts_code','品种'],...RETURN_COLUMNS]),
   distribution:()=>distributionView(f)
@@ -189,22 +195,12 @@ function drawDetail(){
 function distributionView(f){
  const d=f.distribution;
  if(!d?.available)return '<p class="empty">缺少 factor_stats.parquet，不能诊断因子值分布。</p>';
- const all=d.scopes.find(x=>x.ts_code==='all');
- const card=(title,value)=>`<div class="card"><span class="muted small">${title}</span><strong>${value}</strong></div>`;
- const cards=all?`<div class="cards">${card('分钟值日均覆盖率',format(all.coverage*100,2)+'%')}${card('常数日占比',format(all.constant*100,2)+'%')}${card('四分位区间退化日占比',format(all.flat_iqr*100,2)+'%')}${card('有效分钟样本',format(all.observations,0))}</div>`:'';
  const columns=[['ts_code','范围'],quantity('observations','有效样本'),['coverage','日均覆盖率',x=>format(x*100,2)+'%'],['inf_rate','日均无穷值率',x=>format(x*100,2)+'%'],['constant','常数日占比',x=>format(x*100,2)+'%'],['flat_iqr','四分位退化日占比',x=>format(x*100,2)+'%'],...['mean','std','min','p25','median','p75','max'].map((key,i)=>quantity(key,['日均值','日均标准差','最小值','日P25均值','日中位数均值','日P75均值','最大值'][i],4))];
- const scopes=d.scopes.map(x=>({...x,ts_code:x.ts_code==='all'?'All':x.ts_code.replace('sector:','板块 · ')}));
- return cards+distributionChart(d.monthly)+'<p class="muted small">下表均值、标准差和分位数按交易日等权平均。常数日和四分位退化日反映分布退化，不等于零值占比。</p><div class="detail-table">'+table(scopes,columns)+'</div>';
-}
-function distributionChart(rows){
- const values=rows.filter(x=>[x.p25,x.median,x.p75].every(Number.isFinite));
- if(values.length<2)return '';
- const lo=Math.min(...values.map(x=>x.p25)),hi=Math.max(...values.map(x=>x.p75));
- const span=hi-lo||Math.max(Math.abs(hi)*.1,1);
- const x=i=>65+i/(values.length-1)*875,y=v=>205-(v-lo)/span*160;
- const line=key=>values.map((r,i)=>`${x(i)},${y(r[key])}`).join(' ');
- const band=line('p25')+' '+values.map((r,i)=>`${x(i)},${y(r.p75)}`).reverse().join(' ');
- return `<figure><figcaption>因子值月度分布 · 每日P25–P75的月均带与日中位数月均线</figcaption><svg class="distribution-chart" viewBox="0 0 1000 250" role="img" aria-label="因子值月度分布"><polygon points="${band}" fill="#bbd4e9"/><polyline points="${line('median')}" fill="none" stroke="#174d85" stroke-width="2"/><text x="8" y="48" font-size="12">${format(hi,4)}</text><text x="8" y="208" font-size="12">${format(lo,4)}</text><text x="65" y="235" font-size="13">${esc(values[0].month)}</text><text x="880" y="235" font-size="13">${esc(values.at(-1).month)}</text></svg></figure>`;
+ const scopes=[...d.scopes].sort((a,b)=>{
+  const rank=x=>x.ts_code==='all'?0:x.ts_code.startsWith('sector:')?1:2;
+  return rank(a)-rank(b)||a.ts_code.localeCompare(b.ts_code);
+ }).map(x=>({...x,ts_code:x.ts_code==='all'?'All':x.ts_code.replace('sector:','板块 · ')}));
+ return '<p class="muted small">读取 factor_stats.parquet 的现有统计量。日均值、日均标准差与每日分位数按交易日等权平均，极值取区间极值；常数日和四分位退化日不等于零值占比。</p><div class="detail-table">'+table(scopes,columns)+'</div>';
 }
 function showFactor(id,focus=false){
  const f=LOOKUP.get(id);
@@ -228,6 +224,7 @@ byId('report-cards').innerHTML=[['因子',doc.factors.length],['分布统计',do
 byId('group').innerHTML=doc.groups.map(g=>`<option value="${esc(g.name)}">${esc(g.name)} · ${g.size} 项</option>`).join('');
 byId('issues').hidden=!doc.failed.length;
 byId('issue-table').innerHTML=table(doc.failed,[['id','因子'],['reason','原因']]);
+byId('sector-reference').innerHTML=(doc.sector_catalog||[]).map(s=>`<div><h3>${esc(s.abbr)} · ${esc(s.chinese)}<br><span class="muted small">${esc(s.english)}</span></h3>${table(s.products,[['product','代码'],['chinese','中文名称'],['english','English'],['exchange','交易所']])}</div>`).join('');
 byId('group').addEventListener('change',e=>{state.group=e.target.value;refreshGroup();});
 byId('family').addEventListener('change',e=>{state.family=e.target.value;state.page=0;drawOverview();});
 byId('search').addEventListener('input',e=>{state.search=e.target.value.trim().toLowerCase();state.page=0;drawOverview();});

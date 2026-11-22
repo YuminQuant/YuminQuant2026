@@ -128,6 +128,16 @@ def records(frame):
     return json.loads(frame.reset_index().to_json(orient="records", double_precision=8, force_ascii=False))
 
 
+def sector_catalog(sectors):
+    """Embed the canonical bilingual mapping, independently of backtest coverage."""
+    return [
+        {"abbr": str(abbr), "chinese": group["name"].iloc[0],
+         "english": group["sector"].iloc[0],
+         "products": group[["product", "chinese", "english", "exchange"]].to_dict("records")}
+        for abbr, group in sectors.groupby("abbr", observed=True, sort=False)
+    ]
+
+
 def return_metrics(daily_bp):
     returns = daily_bp / 10_000
     nav = 1 + returns.cumsum()
@@ -304,6 +314,9 @@ def generate(summaries, output, plots, metadata, rebuild, workers=4):
                     continue
             meta = catalog.get(factor, {"description": "", "aliases": [], "tags": []})
             entry.update(family=family(meta["tags"]), plot=plot_link(plot, output), **meta)
+            scope = next((row for row in entry.get("distribution", {}).get("scopes", []) if row["ts_code"] == "all"), {})
+            coverage = scope.get("coverage")
+            entry["minute_coverage"] = finite(100 * coverage) if coverage is not None else None
             entries.append(entry)
         if not entries:
             raise ValueError("没有可结算的期货因子")
@@ -315,6 +328,7 @@ def generate(summaries, output, plots, metadata, rebuild, workers=4):
         payload = {
             "generated": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M"),
             "cache_key": key, "factors": entries, "failed": failed,
+            "sector_catalog": sector_catalog(sectors),
             "groups": [{"name": name, "size": len(rows), **correlations(rows)}
                        for name, rows in sorted(groups.items(), key=lambda p: (-len(p[1]), p[0]))],
             "min_common": MIN_COMMON, "min_correlation": MIN_CORRELATION,

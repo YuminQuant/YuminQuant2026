@@ -49,7 +49,6 @@ history_transform = "zscore_clip3"
 supervision_lookahead_days = 10
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

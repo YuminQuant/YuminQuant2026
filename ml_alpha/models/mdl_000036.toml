@@ -47,7 +47,6 @@ include_related = false
 active_scope = "own"
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

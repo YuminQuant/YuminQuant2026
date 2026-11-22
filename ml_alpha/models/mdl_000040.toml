@@ -45,7 +45,6 @@ include_tags_any = ["fundamental"]
 exclude_tags_any = ["price_volume", "analyst", "analyst_coverage", "events"]
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/mdl_000040/cache"
 predict_batch_size = 20
 

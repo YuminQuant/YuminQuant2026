@@ -47,7 +47,6 @@ root = "data/derived/stock/logsig_v"
 columns = "__all__"
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/logsig_alpha_v/cache"
 predict_batch_size = 20
 

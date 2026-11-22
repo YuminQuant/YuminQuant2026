@@ -49,7 +49,6 @@ columns = "__all__"
 include_model_generated = true
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/mdl_000034/cache"
 predict_batch_size = 20
 

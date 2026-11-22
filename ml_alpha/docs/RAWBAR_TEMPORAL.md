@@ -27,7 +27,7 @@
 - `device=auto`：现有 PyTorch CUDA 可用时使用 GPU。
 
 不需要新增 Rust 派生数据或全量预处理文件。
-`cache_samples=false`；输入缓存继续使用 provider 的内存策略。
+输入缓存继续使用 provider 的内存策略。
 公共训练流程可能使用配置工作区内的临时 mmap 张量，沿用现有生命周期，
 不新增 C 盘缓存路径。
 

@@ -46,7 +46,6 @@ include_model_generated = true
 sequence_length = 40
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/mdl_000024/cache"
 predict_batch_size = 20
 

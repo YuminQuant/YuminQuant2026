@@ -292,8 +292,8 @@ def _validate(config):
         raise ValueError("report revision is a publication-time label with lookahead_days=0")
     if config.label.id != "report_np_revision_current_fy":
         raise ValueError("unsupported report revision label")
-    if config.materialize.cache_samples or config.preprocess.cross_section_transform != "none":
-        raise ValueError("report events require cache_samples=false and transform=none")
+    if config.preprocess.cross_section_transform != "none":
+        raise ValueError("report events require transform=none")
     if list(config.features.columns) != ["report_title"]:
         raise ValueError("the title-only RPTF adapter requires columns=['report_title']")
     if int(config.features.params.get("aggregation_months", 3)) <= 0:

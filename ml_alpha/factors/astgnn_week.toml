@@ -52,7 +52,6 @@ dataset = "week"
 daily_root = "data/chn_stock_data/daily"
 
 [materialize]
-cache_samples = false
 tensor_storage = "indexed"
 cache_dir = "data/model_workspace/astgnn_week/cache"
 predict_batch_size = 20

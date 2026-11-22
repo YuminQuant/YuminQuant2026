@@ -86,7 +86,7 @@ Q收盘使用 `(Q−6自然月,Q]` 的报告建图，样本日用最近 `Q<=T`�
 标签采用当日有效股票收益z-score，损失MSE。单头单层5维GAT、独立线性残差及FC
 正好51个参数；Adam lr=0.0005、最多100轮、验证MSE早停10轮。
 输入块3000、注意力查询块512，查询仍面对完整图；CUDA显式要求可用GPU。
-`cache_samples=false`，有界CPU因子日缓存512MiB，无C盘缓存或磁盘预处理缓存。
+有界CPU因子日缓存512MiB，无C盘缓存或磁盘预处理缓存。
 
 模型权重和诊断在：
 `data/model_workspace/analyst_coverage_gat_40d/artifacts/<window_id>/`。

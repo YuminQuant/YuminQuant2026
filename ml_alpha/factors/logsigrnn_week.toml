@@ -143,7 +143,6 @@ columns = [
 sequence_length = 21
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

@@ -52,7 +52,6 @@ sequence_length = 1
 history_transform = "mad5_zscore_rank_label"
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

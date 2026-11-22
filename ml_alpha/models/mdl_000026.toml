@@ -46,7 +46,6 @@ sequence_length = 30
 # Per-window RAM cache; normalized days survive train/valid and epoch changes.
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

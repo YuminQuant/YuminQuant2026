@@ -45,7 +45,6 @@ include_model_generated = true
 sequence_length = 60
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

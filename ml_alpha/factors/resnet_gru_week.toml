@@ -51,7 +51,6 @@ dataset = "week"
 daily_root = "data/chn_stock_data/daily"
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/resnet_gru_week/cache"
 predict_batch_size = 20
 

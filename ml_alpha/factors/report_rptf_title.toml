@@ -52,7 +52,6 @@ revision_lookback_months = 12
 aggregation_months = 3
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

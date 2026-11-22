@@ -58,7 +58,6 @@ sequence_length = 40
 normalization = "window_mean"
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

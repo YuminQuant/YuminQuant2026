@@ -217,7 +217,6 @@ root = "data/derived/stock/logsig_v"
 columns = "__all__"
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/logsig_alpha_v/cache"
 predict_batch_size = 20
 
@@ -308,12 +307,11 @@ before using the legacy Python signature API.
 不要混用旧float64特征：应重建模型特征集、更新 `data_version` 并重新训练。
 旧Python签名接口需重新构建Rust扩展后使用。
 
-Other `materialize` paths may write debug samples or legacy provider caches;
-they are not automatically streaming or a replacement for Rust derived production.
-Inspect the selected provider rather than generalizing from logsignature.
+The materialization entrypoint supports derived logsignature features. Generic
+sample export has been removed from the dataset loader and CLI implementation.
 
-其他 materialize 分支可能生成调试样本或旧 provider 缓存，并不自动具备逐日低内存语义；
-接手时应核对具体 provider，不能将 logsignature 的保证推广到所有模型。
+materialize 入口支持派生 logsignature 特征。公共样本导出已从数据装载层和
+CLI 实现中移除。
 
 ## 5. Model Interface And Postprocessing / 模型接口与后处理
 
@@ -484,7 +482,7 @@ provider 的 `requires_full_cross_section` 经 bundle 传递，保留缺失标�
 每个窗口按需加载、过滤、对齐标签并执行预处理，不改变采样日期、股票范围或变换公式。
 单日 rank_gauss 直接调用相同的截面变换，省去逐列 groupby。
 后续新增磁盘缓存必须显式指定经用户认可的存储路径，不得默认写入 C 盘。
-`[materialize].cache_samples` 的显式调试样本导出配置保持独立。
+公共数据装载层已移除调试样本导出功能。
 
 XGBoost Optuna 使用公共 `models/xgb_training.py` 构建 DMatrix 和训练：同一窗口的候选模型
 复用训练、验证矩阵，每次候选训练结束后预测一次并计算 MSE，不执行逐棵树验证。

@@ -50,7 +50,6 @@ coverage_root = "data/derived/stock/analyst_coverage"
 coverage_window_months = 6
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

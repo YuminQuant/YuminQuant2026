@@ -52,7 +52,6 @@ dataset_version = "chip_age_rolling250_v2"
 sequence_length = 30
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/chip_age_alpha/cache"
 tensor_storage = "memory"
 predict_batch_size = 20

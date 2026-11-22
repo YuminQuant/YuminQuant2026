@@ -54,7 +54,6 @@ include_daily_return = true
 week_preprocess = "mad5_zscore"
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/cmm_week/cache"
 predict_batch_size = 20
 

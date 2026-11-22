@@ -48,7 +48,6 @@ sequence_length = 30
 history_transform = "zscore_clip3"
 
 [materialize]
-cache_samples = false
 predict_batch_size = 20
 
 [diagnostics]

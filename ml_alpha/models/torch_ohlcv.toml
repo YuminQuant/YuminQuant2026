@@ -36,7 +36,6 @@ root = "data/chn_stock_data/daily/pv"
 columns = ["open", "high", "low", "close", "vol", "amount"]
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/torch_ohlcv_v1/cache"
 
 [model]

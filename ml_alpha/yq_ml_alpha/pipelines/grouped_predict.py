@@ -161,8 +161,6 @@ def predict_many_configs(configs, *, options=None, target_dates=None):
     written = []
     with execution_scope(options), column_discovery_scope() as catalog:
         before = artifact_io.parquet_cache_info()
-        if artifact_io.remote_enabled() and any(c.materialize.cache_samples for c in configs):
-            raise ValueError('Grouped remote prediction must not materialize samples on node disk')
         if os.environ.get('YQ_METADATA_MANAGED') != '1':
             written.extend(write_factor_metadata_many(configs))
         for group in groups.values():

@@ -156,6 +156,6 @@ python -B -u -m yq_ml_alpha model-run --config ml_alpha/models/mdl_000016.toml
 - 权重、manifest、诊断：`data/model_workspace/<model_id>/artifacts/<window_id>/`。
 - 预测：`data/models/<YYYY>/<YYYYMMDD>.parquet`，键为 `trade_date`、`ts_code`，
   每个模型占一列 `mdl_XXXXXX`，float32。分类概率、margin 和预测收益共用此格式。
-- `cache_samples=false`；所有配置路径均相对项目，未新增 C 盘缓存操作。
+- 所有配置路径均相对项目，未新增 C 盘缓存操作。
 - 回测单独运行，输出仍放 `data/backtest/stock/daily`。多个预测进程不要并发覆盖
   同一批每日文件，使用现有顺序预测流程。

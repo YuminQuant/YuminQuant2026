@@ -42,8 +42,6 @@ class StockEventsProvider(FeatureProvider):
     def __init__(self, config):
         if config.preprocess.cross_section_transform.strip().lower() != "none":
             raise ValueError("stock_events requires preprocess.cross_section_transform=none")
-        if config.materialize.cache_samples:
-            raise ValueError("stock_events requires materialize.cache_samples=false")
         params = config.features.params
         self.root = _project_path(params.get("event_root", config.features.root))
         self.include_related = params.get("include_related", False)

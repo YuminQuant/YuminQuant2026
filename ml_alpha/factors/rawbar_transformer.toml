@@ -54,7 +54,6 @@ time_series_scale = "none"
 strict = true
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/rawbar_transformer/cache"
 predict_batch_size = 20
 

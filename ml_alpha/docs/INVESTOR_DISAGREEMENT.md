@@ -89,7 +89,7 @@ Welford 算法累计均值/方差。不会构造 N×50 的全量预测表。所�
 - `data/models/<YYYY>/<YYYYMMDD>.parquet`：`trade_date`、`ts_code` 键下的
   `mdl_000028` float32 分数列。
 
-`cache_samples=false`，不新增磁盘预处理缓存，不写 C 盘缓存。50 个子模型作为一个
+不新增磁盘预处理缓存，不写 C 盘缓存。50 个子模型作为一个
 model artifact 保存，仍使用公共 model-train/model-predict 工作流。
 
 ## CLI

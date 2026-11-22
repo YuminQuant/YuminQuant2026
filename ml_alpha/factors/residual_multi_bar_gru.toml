@@ -63,7 +63,6 @@ strict = true
 columns = ["open", "high", "low", "close", "vwap", "volume"]
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/residual_multi_bar_gru/cache"
 predict_batch_size = 20
 

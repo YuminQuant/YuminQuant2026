@@ -123,8 +123,8 @@ class DatasetBuilder:
             require_hdfs_input(self.config.label.root)
         graph_tensor = isinstance(self.feature_provider, DailySequenceProvider)
         lazy_tensor = isinstance(self.feature_provider, (DerivedChipAgeProvider, DailySequenceProvider))
-        if lazy_tensor and (self.config.preprocess.cross_section_transform != "none" or self.config.materialize.cache_samples):
-            raise ValueError("lazy tensors require transform=none and cache_samples=false")
+        if lazy_tensor and self.config.preprocess.cross_section_transform != "none":
+            raise ValueError("lazy tensors require transform=none")
         frames = []
         total_dates = len(dates)
         split_name = split_name or ("labeled" if include_label else "predict")
@@ -220,7 +220,6 @@ class DatasetBuilder:
                   f"products={products_before}->{products_after}", flush=True)
         if self.minute_frame and dates and include_label and output.empty:
             raise ValueError(f"no usable minute labels for {split_name} {dates[0]}..{dates[-1]}")
-        self._maybe_cache(output, dates, include_label)
         if include_label:
             print(
                 f"ml-alpha load split={split_name} step=complete dates={total_dates} "
@@ -314,7 +313,6 @@ class DatasetBuilder:
             if include_label:
                 columns.extend(self.config.label.columns)
             output = pd.DataFrame(columns=columns)
-        self._maybe_cache(output, dates, include_label)
         return DatasetBundle(output, sequence_columns, self.config.label.id)
 
     def load_bar_panel(
@@ -463,7 +461,6 @@ class DatasetBuilder:
         if resnet_panel:
             print(f"bar-panel {split_name} batch rows={len(output)} "
                   f"finalize_s={perf_counter() - joined:.3f}", flush=True)
-        self._maybe_cache(output, dates, include_label)
         return DatasetBundle(
             output,
             self.feature_provider.feature_columns,
@@ -612,15 +609,6 @@ class DatasetBuilder:
             progress(f"step=done rows={len(frame)}")
         cache[trade_date] = frame
         return frame
-
-    def _maybe_cache(self, frame: pd.DataFrame, dates: list[int], include_label: bool) -> None:
-        if not self.config.materialize.cache_samples or not dates:
-            return
-        cache_dir = Path(self.config.materialize.cache_dir)
-        data_io.mkdir(cache_dir, parents=True, exist_ok=True)
-        split = "labeled" if include_label else "predict"
-        data_io.write_parquet(frame, cache_dir / f"{split}_{dates[0]}_{dates[-1]}.parquet", index=False)
-
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
     factory = getattr(load_model_class(config.model.class_path), "make_feature_provider", None)

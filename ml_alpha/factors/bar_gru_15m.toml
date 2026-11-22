@@ -54,7 +54,6 @@ time_series_scale = "mean"
 strict = true
 
 [materialize]
-cache_samples = false
 cache_dir = "data/model_workspace/bar_gru_15m/cache"
 predict_batch_size = 20
 

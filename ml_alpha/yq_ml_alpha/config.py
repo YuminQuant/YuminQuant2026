@@ -127,7 +127,6 @@ class FeaturesConfig:
 
 @dataclass(frozen=True)
 class MaterializeConfig:
-    cache_samples: bool = False
     cache_dir: Path = Path("data/model_workspace/cache")
     predict_batch_size: int = 20
     tensor_storage: str = "indexed"
@@ -233,6 +232,8 @@ def load_config(path: str | Path) -> MlAlphaConfig:
     postprocess = raw.get("postprocess", {})
     features = raw.get("features", {})
     materialize = raw.get("materialize", {})
+    if "cache_samples" in materialize:
+        raise ValueError("materialize.cache_samples has been removed; delete this setting")
     diagnostics = raw.get("diagnostics", {})
     model = raw.get("model", {})
 
@@ -312,7 +313,6 @@ def load_config(path: str | Path) -> MlAlphaConfig:
             params=feature_params,
         ),
         materialize=MaterializeConfig(
-            cache_samples=bool(materialize.get("cache_samples", False)),
             cache_dir=_project_path(materialize.get("cache_dir", data_root / "model_workspace" / run_id / "cache")),
             predict_batch_size=max(1, int(materialize.get("predict_batch_size", 20))),
             tensor_storage=str(materialize.get("tensor_storage", "indexed")),

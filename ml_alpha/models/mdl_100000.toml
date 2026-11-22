@@ -61,7 +61,6 @@ columns = [
 require_hdfs = true
 
 [materialize]
-cache_samples = false
 predict_batch_size = 5
 
 [model]

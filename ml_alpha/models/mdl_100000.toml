@@ -65,25 +65,76 @@ cache_samples = false
 predict_batch_size = 5
 
 [model]
-name = "xgboost_fixed"
-class = "yq_ml_alpha.models.xgb_model.XGBoostAlphaModel"
+name = "xgboost_optuna"
+class = "yq_ml_alpha.models.xgb_optuna_model.XGBoostOptunaAlphaModel"
 
 [model.params]
 objective = "reg:squarederror"
 tree_method = "hist"
 device = "cuda"
-n_estimators = 600
-learning_rate = 0.001
-max_depth = 6
-min_child_weight = 10.0
-subsample = 0.8
-colsample_bytree = 0.8
-reg_alpha = 0.1
-reg_lambda = 10.0
-gamma = 0.0
 random_state = 42
 n_jobs = -1
-fit_on_validation = true
+
+[model.search]
+# Tune on the calendar validation split, then refit on train plus validation.
+refit_on_validation = true
+n_trials = 20
+early_stopping_patience = 5
+min_relative_improvement = 0.0001
+valid_fraction = 0.2
+random_state = 42
+show_progress_bar = false
+
+[model.search.space.n_estimators]
+type = "int"
+low = 300
+high = 800
+step = 100
+
+[model.search.space.max_depth]
+type = "int"
+low = 2
+high = 8
+
+[model.search.space.learning_rate]
+type = "float"
+low = 0.005
+high = 0.2
+log = true
+
+[model.search.space.subsample]
+type = "float"
+low = 0.5
+high = 1.0
+
+[model.search.space.colsample_bytree]
+type = "float"
+low = 0.5
+high = 1.0
+
+[model.search.space.min_child_weight]
+type = "float"
+low = 0.01
+high = 100.0
+log = true
+
+[model.search.space.gamma]
+type = "float"
+low = 0.00000001
+high = 10.0
+log = true
+
+[model.search.space.reg_alpha]
+type = "float"
+low = 0.00000001
+high = 10.0
+log = true
+
+[model.search.space.reg_lambda]
+type = "float"
+low = 0.0001
+high = 100.0
+log = true
 
 [output]
 root = "data/models/future/minute_1m"

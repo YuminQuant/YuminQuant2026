@@ -105,8 +105,10 @@ python -m yq_ml_alpha factor-metadata
 
 `mdl_100000` 使用 `minute_factor_frame` 读取分日的期货因子和标签，并按
 `trade_date, trade_time, ts_code` 一对一对齐。57 个月训练段和 3 个月验证段
-均每 5 个交易日取一天，保留采样日的分钟样本。固定参数 XGBoost 合并两段
-拟合，每半年更新，逐日输出下一个半年的分钟预测。
+均每 5 个交易日取一天，保留采样日的分钟样本。GPU XGBoost 使用 Optuna
+在前 57 个月训练，在后 3 个月按验证 MSE 选参，随后合并两段重拟合。
+每半年更新，逐日输出下一个半年的分钟预测。搜索空间沿用 `mdl_000021`，
+最多 20 次试验，连续 5 次未达到 0.01% 的相对改善时结束搜索。
 输出位于 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet`，可以将
 `data/models` 作为期货分钟回测的 `--factor-root`，通过 `--factors mdl_100000` 选择。
 

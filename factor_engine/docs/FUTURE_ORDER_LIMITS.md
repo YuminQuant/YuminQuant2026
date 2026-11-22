@@ -58,9 +58,14 @@ future announcement must not be applied to earlier trading dates.
 
 ## Matching
 
-CTA opens one selected minimum opening unit. Liquidation uses the closing
-minimum independently, so a partially closed five-lot position can still
-close its remaining one or two lots. When price-limit checking is enabled,
+CTA 001 opens one selected `min_lots` unit by default, but closes the full
+actual quantity of the direction being exited, including liquidation. A
+six-lot holding produces a six-lot close order. Reverse entry orders may be
+submitted before the old side is fully filled; unfilled exits are retried at
+each following available bar. No flat-position prerequisite is imposed.
+The matcher uses the exchange closing minimum independently and caps fills
+at the actual holding, so a partly closed five-lot position can still close
+its remaining one or two lots. When price-limit checking is enabled,
 available daily upper/lower prices restrict matching. A missing file, date
 or contract price produces a warning but does not restrict trading for the
 missing limit, as required by the research execution convention.

@@ -40,7 +40,7 @@ With `fill_price = "next_open"`, ordinary `on_bar` orders fill at the next bar o
 
 ## `cta_strategy_001` 期货 CTA
 
-配置使用 `strategy_class = "future::cta_strategy_001"` 选择策略，通过 `[strategy].signal_id = "mdl_100000"` 选择预测列，`strategy_id` 仅标识实验输出。示例区间为 2020-01-01 至 2026-04-24。策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P1/P99 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P99 时尝试开多，低于 P1 时尝试开空，成交时点为该合约下一根分钟行情的开盘。有反向旧仓时，先提交平仓，再用该分钟剩余的可成交量和可用保证金开新仓。成交量只够平仓时只平旧仓，无法平仓时保留旧仓。同向持仓不加仓，每侧开仓量为一个最小交易单位。
+配置使用 `strategy_class = "future::cta_strategy_001"` 选择策略，通过 `[strategy].signal_id = "mdl_100000"` 选择预测列，`strategy_id` 仅标识实验输出。示例区间为 2020-01-01 至 2026-04-24。策略从每日主力映射选择真实合约，并读取 `data/models/future/minute_1m/YYYY/YYYYMMDD.parquet` 的分钟预测。P1/P99 取同品种过去五个交易日各自主力的日分位数均值。分钟信号超过 P99 时尝试开多，低于 P1 时尝试开空，成交时点为该合约下一根分钟行情的开盘。有反向旧仓时，先提交平仓，再用该分钟剩余的可成交量和可用保证金开新仓。成交量只够平仓时只平旧仓，无法平仓时保留旧仓。同向持仓不加仓。001 默认每次开仓提交一个当前 `min_lots` 单位，平仓提交该方向实际剩余持仓的全量，例如持有 6 手就提交平 6 手。旧方向未完全平掉时也允许提交反向开仓；未完成平仓会在后续每根可用 bar 重试。撮合成交量不超过实际剩余持仓。
 
 公共层按期货日历加载交易日和合约资料。最小开仓手数优先读取 HDFS `future_data/basic/order_limits/YYYY.parquet` 的当日接口记录；接口缺失时使用有来源和生效日期的人工规则。`[future.min_lots_by_product]` 和 `[execution].lot_size` 只可提高这一开仓下限。平仓最小手数单独处理，不能把开仓 5 手的限制套到平仓。`fut_basic.per_unit` 仅用于每手实物数量与乘数换算。详见 [下单数量口径](../factor_engine/docs/FUTURE_ORDER_LIMITS.md)。开启 `[future].daily_costs` 后，公共层每天读取上一交易日的结算快照，路径可用 `[paths].future_settle_root` 覆盖。快照缺失或合约参数无效时，该合约跳过交易。郑商所使用可用的按手平今费用，其他缺失平今字段使用普通手续费。中金所股指按成交金额计费，国债按手计费。双持保证金按两侧分别计提。
 

@@ -29,6 +29,7 @@ pub struct CtaStrategy001 {
     signals: Signals,
     entries: BTreeMap<String, (OrderSide, String)>,
     overnight: BTreeSet<String>,
+    pending_exits: Vec<(String, OrderSide)>,
 }
 
 impl CtaStrategy001 {
@@ -65,6 +66,7 @@ impl CtaStrategy001 {
             signals: BTreeMap::new(),
             entries: BTreeMap::new(),
             overnight: BTreeSet::new(),
+            pending_exits: Vec::new(),
         })
     }
 
@@ -245,22 +247,25 @@ impl Strategy for CtaStrategy001 {
             ))
         })?;
         let symbols: Vec<_> = ctx.market().symbols().cloned().collect();
+        let mut closing = Vec::new();
         for symbol in &symbols {
-            if !self.overnight.contains(symbol)
-                && !self
+            let liquidation = self.overnight.contains(symbol)
+                || self
                     .close_minutes
                     .get(symbol)
-                    .is_some_and(|&close| liquidation_window(minute, close))
-            {
-                continue;
-            }
+                    .is_some_and(|&close| liquidation_window(minute, close));
             for side in [OrderSide::Sell, OrderSide::Cover] {
+                let key = (symbol.clone(), side);
+                if !liquidation && !self.pending_exits.contains(&key) {
+                    continue;
+                }
                 if let Some(quantity) = ctx
                     .account()
                     .future_position(symbol, side)
-                    .map(|p| p.quantity.abs())
+                    .map(|position| position.quantity.abs())
                 {
                     ctx.order_future_side(symbol, side, quantity, ctx.signal_time());
+                    closing.push(key);
                 }
             }
         }
@@ -290,14 +295,25 @@ impl Strategy for CtaStrategy001 {
             } else {
                 OrderSide::Sell
             };
-            if let Some(quantity) = ctx
+            let opposite_quantity = ctx
                 .account()
                 .future_position(&symbol, close_side)
-                .map(|position| position.quantity.abs())
-            {
+                .map_or(0.0, |position| position.quantity.abs());
+            if opposite_quantity > 0.0 {
                 // The matcher deducts the filled close quantity from this bar's volume
                 // and releases its margin before processing the entry below.
-                ctx.order_future_side(&symbol, close_side, quantity, signal_time.clone());
+                let key = (symbol.clone(), close_side);
+                if !self.pending_exits.contains(&key) {
+                    self.pending_exits.push(key.clone());
+                }
+                if !closing.contains(&key) {
+                    ctx.order_future_side(
+                        &symbol,
+                        close_side,
+                        opposite_quantity,
+                        signal_time.clone(),
+                    );
+                }
             }
             if ctx.account().future_position(&symbol, side).is_none() {
                 ctx.order_future_side(&symbol, side, lots, signal_time);
@@ -345,6 +361,8 @@ impl Strategy for CtaStrategy001 {
     }
 
     fn on_fill(&mut self, ctx: &mut StrategyContext, fill: &FillEvent) -> Result<()> {
+        self.pending_exits
+            .retain(|(symbol, side)| ctx.account().future_position(symbol, *side).is_some());
         if self.overnight.contains(&fill.symbol)
             && [OrderSide::Sell, OrderSide::Cover]
                 .into_iter()

@@ -15,10 +15,12 @@ use crate::strategy::session_io::{SessionFile, SessionInputs};
 use crate::strategy::strategy::Strategy;
 
 type Signals = BTreeMap<String, BTreeMap<String, f64>>;
-type Thresholds = BTreeMap<String, (f64, f64)>;
+type Thresholds = BTreeMap<String, (f64, f64, f64, f64)>;
 type DailyMapping = BTreeMap<String, String>;
 
 pub struct CtaStrategy001 {
+    variant: u8,
+    holding_minutes: BTreeMap<(String, bool), u32>,
     signal_id: String,
     mappings: Option<FutureMinuteInput>,
     entry_pool: Option<FutureMinuteInput>,
@@ -56,6 +58,11 @@ impl CtaStrategy001 {
             .ok_or_else(|| err("cta_strategy_001 requires a valid [strategy].signal_id"))?
             .clone();
         Ok(Self {
+            variant: match config.strategy_class.as_str() {
+                "future::cta_strategy_002" => 2,
+                _ => 1,
+            },
+            holding_minutes: BTreeMap::new(),
             signal_id,
             mappings: None,
             entry_pool: None,
@@ -105,13 +112,19 @@ impl CtaStrategy001 {
             return;
         }
         for key in self.history[&prior[0]].keys() {
-            let pair = prior.iter().try_fold((0.0, 0.0), |(low, high), day| {
-                let (lo, hi) = self.history[day].get(key)?;
-                Some((low + lo, high + hi))
-            });
-            if let Some((low, high)) = pair {
+            let pair = prior.iter().try_fold(
+                (0.0, 0.0, 0.0, 0.0),
+                |(low, high, exit_low, exit_high), day| {
+                    let (lo, hi, elo, ehi) = self.history[day].get(key)?;
+                    Some((low + lo, high + hi, exit_low + elo, exit_high + ehi))
+                },
+            );
+            if let Some((low, high, exit_low, exit_high)) = pair {
                 if low < high {
-                    self.thresholds.insert(key.clone(), (low / 5.0, high / 5.0));
+                    self.thresholds.insert(
+                        key.clone(),
+                        (low / 5.0, high / 5.0, exit_low / 5.0, exit_high / 5.0),
+                    );
                 }
             }
         }
@@ -120,7 +133,10 @@ impl CtaStrategy001 {
 
 impl Strategy for CtaStrategy001 {
     fn name(&self) -> &'static str {
-        "future::cta_strategy_001"
+        match self.variant {
+            2 => "future::cta_strategy_002",
+            _ => "future::cta_strategy_001",
+        }
     }
 
     fn prepare_future_run(
@@ -206,6 +222,7 @@ impl Strategy for CtaStrategy001 {
     }
 
     fn on_session_inputs(&mut self, date: i32, mut inputs: SessionInputs) -> Result<()> {
+        let exit_probability = if self.variant == 2 { 0.05 } else { 0.03 };
         for day in self.prior_dates(date).to_vec() {
             if !self.history.contains_key(&day) {
                 let samples = parse_signals(
@@ -213,7 +230,7 @@ impl Strategy for CtaStrategy001 {
                     day,
                     inputs.remove(&signal_name(&self.signal_id, day)).flatten(),
                 )?;
-                let quantiles = daily_quantiles(self.main_mapping(day), &samples);
+                let quantiles = daily_quantiles(self.main_mapping(day), &samples, exit_probability);
                 self.history.insert(day, quantiles);
             }
         }
@@ -234,7 +251,7 @@ impl Strategy for CtaStrategy001 {
                 self.signal_id
             );
         }
-        let quantiles = daily_quantiles(self.main_mapping(date), &self.signals);
+        let quantiles = daily_quantiles(self.main_mapping(date), &self.signals, exit_probability);
         self.history.insert(date, quantiles);
         Ok(())
     }
@@ -256,7 +273,11 @@ impl Strategy for CtaStrategy001 {
                     .is_some_and(|&close| liquidation_window(minute, close));
             for side in [OrderSide::Sell, OrderSide::Cover] {
                 let key = (symbol.clone(), side);
-                if !liquidation && !self.pending_exits.contains(&key) {
+                let timed_out = self
+                    .holding_minutes
+                    .get(&(symbol.clone(), side == OrderSide::Sell))
+                    .is_some_and(|&minutes| minutes >= 60);
+                if !liquidation && !timed_out && !self.pending_exits.contains(&key) {
                     continue;
                 }
                 if let Some(quantity) = ctx
@@ -264,6 +285,9 @@ impl Strategy for CtaStrategy001 {
                     .future_position(symbol, side)
                     .map(|position| position.quantity.abs())
                 {
+                    if timed_out && !self.pending_exits.contains(&key) {
+                        self.pending_exits.push(key.clone());
+                    }
                     ctx.order_future_side(symbol, side, quantity, ctx.signal_time());
                     closing.push(key);
                 }
@@ -327,6 +351,17 @@ impl Strategy for CtaStrategy001 {
             return Ok(());
         };
         for symbol in ctx.market().symbols() {
+            {
+                for (index, side) in [OrderSide::Buy, OrderSide::Short].into_iter().enumerate() {
+                    if ctx.account().future_position(symbol, side).is_some() {
+                        let age = self
+                            .holding_minutes
+                            .entry((symbol.clone(), index == 0))
+                            .or_default();
+                        *age += 1;
+                    }
+                }
+            }
             if self.overnight.contains(symbol) {
                 continue;
             }
@@ -336,17 +371,43 @@ impl Strategy for CtaStrategy001 {
             if after_liquidation_cutoff(minute, close) || event.is_session_end {
                 continue;
             }
-            let Some(score) = self
+            let Some(&score) = self
                 .signals
                 .get(symbol)
                 .and_then(|scores| scores.get(&event.trade_time))
             else {
                 continue;
             };
-            let Some((low, high)) = product(symbol).and_then(|key| self.thresholds.get(&key))
+            let Some(&(low, high, exit_low, exit_high)) =
+                product(symbol).and_then(|key| self.thresholds.get(&key))
             else {
                 continue;
             };
+            {
+                for (index, close_side) in
+                    [OrderSide::Sell, OrderSide::Cover].into_iter().enumerate()
+                {
+                    let threshold = {
+                        if index == 0 {
+                            exit_low
+                        } else {
+                            exit_high
+                        }
+                    };
+                    let hit = if index == 0 {
+                        score < threshold
+                    } else {
+                        score > threshold
+                    };
+                    let key = (symbol.clone(), close_side);
+                    if hit
+                        && ctx.account().future_position(symbol, close_side).is_some()
+                        && !self.pending_exits.contains(&key)
+                    {
+                        self.pending_exits.push(key);
+                    }
+                }
+            }
             let side = if score > high {
                 OrderSide::Buy
             } else if score < low {
@@ -361,6 +422,16 @@ impl Strategy for CtaStrategy001 {
     }
 
     fn on_fill(&mut self, ctx: &mut StrategyContext, fill: &FillEvent) -> Result<()> {
+        {
+            for (long, side) in [(true, OrderSide::Buy), (false, OrderSide::Short)] {
+                let key = (fill.symbol.clone(), long);
+                if ctx.account().future_position(&fill.symbol, side).is_none() {
+                    self.holding_minutes.remove(&key);
+                } else {
+                    self.holding_minutes.entry(key).or_insert(0);
+                }
+            }
+        }
         self.pending_exits
             .retain(|(symbol, side)| ctx.account().future_position(symbol, *side).is_some());
         if self.overnight.contains(&fill.symbol)
@@ -453,7 +524,11 @@ fn parse_signals(signal_id: &str, date: i32, table: Option<Table>) -> Result<Sig
     Ok(signals)
 }
 
-fn daily_quantiles(mapping: Option<&DailyMapping>, signals: &Signals) -> Thresholds {
+fn daily_quantiles(
+    mapping: Option<&DailyMapping>,
+    signals: &Signals,
+    exit_probability: f64,
+) -> Thresholds {
     mapping
         .into_iter()
         .flatten()
@@ -461,7 +536,9 @@ fn daily_quantiles(mapping: Option<&DailyMapping>, signals: &Signals) -> Thresho
             let mut values: Vec<_> = signals.get(symbol)?.values().copied().collect();
             let low = quantile_linear(&mut values, 0.01)?;
             let high = quantile_linear(&mut values, 0.99)?;
-            Some((key.clone(), (low, high)))
+            let exit_low = quantile_linear(&mut values, exit_probability)?;
+            let exit_high = quantile_linear(&mut values, 1.0 - exit_probability)?;
+            Some((key.clone(), (low, high, exit_low, exit_high)))
         })
         .collect()
 }

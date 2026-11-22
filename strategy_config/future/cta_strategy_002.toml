@@ -1,0 +1,31 @@
+asset_class = "future"
+strategy_id = "cta_strategy_002/mdl_100000"
+strategy_class = "future::cta_strategy_002"
+
+start_date = 20200101
+end_date = 20260424
+initial_cash = 100000000.0
+
+[clock]
+bar_frequency = "minute_1m"
+
+[execution]
+fill_price = "next_open"
+lot_size = 1
+spread_ticks = 0.5
+slippage_ticks = 0.1
+respect_price_limits = true
+
+[future]
+daily_costs = true
+mark_price = "close"
+pool_id = "liquidity_001"
+
+# Product-specific overrides in lots, e.g. IF = 1
+[future.min_lots_by_product]
+
+[output]
+product_pnl = true
+
+[strategy]
+signal_id = "mdl_100000"

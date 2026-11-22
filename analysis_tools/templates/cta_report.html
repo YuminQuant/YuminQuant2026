@@ -35,6 +35,7 @@
     }
     select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     #selection { grid-column: 1 / -1; }
+    [hidden] { display: none !important; }
     .note { color: var(--muted); font-size: 13px; line-height: 1.6; }
     .scroll { margin-top: 12px; overflow: auto; }
     #products { max-height: 390px; }
@@ -72,6 +73,8 @@
     <section class="panel filters" aria-label="报告筛选">
       <label>品种范围 <select id="universe"></select></label>
       <label>日期范围 <select id="period"></select></label>
+      <label id="start-year-label" hidden>起始年份 <select id="start-year"></select></label>
+      <label id="end-year-label" hidden>结束年份 <select id="end-year"></select></label>
       <p id="selection" class="note" aria-live="polite"></p>
     </section>
     <section class="panel" aria-labelledby="portfolio-title">
@@ -97,6 +100,8 @@
     const data = JSON.parse(document.getElementById("cta-data").textContent);
     const universe = document.getElementById("universe");
     const period = document.getElementById("period");
+    const startYear = document.getElementById("start-year");
+    const endYear = document.getElementById("end-year");
     const charts = document.getElementById("charts");
     const products = Object.keys(data.products);
     const dates = data.dates.map(date => Date.parse(date));
@@ -137,6 +142,12 @@
       universe.append(sectorGroup, productGroup);
       option(period, "全日期范围", "All");
       for (const year of yearRanges.keys()) option(period, year + " 年", year);
+      option(period, "自定义起止年份", "Custom");
+      for (const year of yearRanges.keys()) {
+        option(startYear, year + " 年", year);
+        option(endYear, year + " 年", year);
+      }
+      endYear.value = [...yearRanges.keys()].at(-1);
     }
 
     function productName(code) {
@@ -179,7 +190,7 @@
       panel.replaceChildren(table);
     }
 
-    function drawChart(canvas, times, values) {
+    function drawChart(canvas, times, values, sessionAxis = false) {
       const {width, height} = canvas.getBoundingClientRect();
       if (!width || !height) return;
       const ratio = window.devicePixelRatio || 1;
@@ -193,7 +204,7 @@
       const padding = Math.max(1, (max - min) * 0.05);
       const low = min - padding, high = max + padding;
       const span = times.at(-1) - times[0];
-      const x = i => left + (times[i] - times[0]) / span * (right - left);
+      const x = i => left + (sessionAxis ? i / (times.length - 1) : (times[i] - times[0]) / span) * (right - left);
       const y = value => bottom - (value - low) / (high - low) * (bottom - top);
       ctx.font = "11px system-ui, sans-serif";
       ctx.fillStyle = "#4d626c";
@@ -217,7 +228,7 @@
       ctx.textBaseline = "top";
       for (let tick = 0; tick < labels; tick++) {
         const fraction = tick / (labels - 1);
-        const time = times[0] + span * fraction;
+        const time = sessionAxis ? times[Math.round(fraction * (times.length - 1))] : times[0] + span * fraction;
         const label = new Date(time).toISOString().slice(longRange ? 0 : 5, longRange ? 7 : 10);
         ctx.textAlign = fraction === 0 ? "left" : fraction === 1 ? "right" : "center";
         ctx.fillText(label, left + (right - left) * fraction, bottom + 6);
@@ -235,18 +246,18 @@
       addSeriesChart(productName(code), path, times, charts, code);
     }
 
-    function portfolioPath(codes, start, end) {
+    function portfolioPath(codes, start, end, indices = Array.from({length: end - start}, (_, i) => start + i)) {
       const valueAt = (code, index) => {
         const series = data.pnl[code];
         return index < series.start ? 0 : series.values[index - series.start];
       };
       const bases = codes.map(code => valueAt(code, start - 1));
-      return [0, ...dates.slice(start, end).map((_, offset) =>
-        codes.reduce((sum, code, index) => sum + valueAt(code, start + offset) - bases[index], 0)
+      return [0, ...indices.map(day =>
+        codes.reduce((sum, code, index) => sum + valueAt(code, day) - bases[index], 0)
       )];
     }
 
-    function addSeriesChart(label, path, times, container, code) {
+    function addSeriesChart(label, path, times, container, code, sessionAxis = false) {
       const figure = document.createElement("figure");
       figure.dataset.product = code;
       const caption = document.createElement("figcaption");
@@ -263,13 +274,13 @@
       canvas.setAttribute("role", "img");
       canvas.setAttribute("aria-label", label + " 累计净盈亏 " + total);
       let area;
-      canvas.redraw = () => { area = drawChart(canvas, times, path); };
+      canvas.redraw = () => { area = drawChart(canvas, times, path, sessionAxis); };
       canvas.addEventListener("pointermove", event => {
         if (!area) return;
         const fraction = Math.max(0, Math.min(1, (event.offsetX - area.left) / (area.right - area.left)));
         const target = times[0] + fraction * (times.at(-1) - times[0]);
         const next = times.findIndex(time => time >= target);
-        const index = next > 0 && target - times[next - 1] < times[next] - target ? next - 1 : Math.max(0, next);
+        const index = sessionAxis ? Math.round(fraction * (times.length - 1)) : next > 0 && target - times[next - 1] < times[next] - target ? next - 1 : Math.max(0, next);
         readout.textContent = new Date(times[index]).toISOString().slice(0, 10) + "  " + amount.format(path[index]) + " 元";
       });
       canvas.addEventListener("pointerleave", () => { readout.textContent = total; });
@@ -280,12 +291,17 @@
 
     function render() {
       const selected = universe.value;
-      const view = period.value;
-      const [start, end] = yearRanges.get(view) || [0, dates.length];
+      const custom = period.value === "Custom";
+      document.getElementById("start-year-label").hidden = !custom;
+      document.getElementById("end-year-label").hidden = !custom;
+      for (const item of startYear.options) item.disabled = Number(item.value) > Number(endYear.value);
+      for (const item of endYear.options) item.disabled = Number(item.value) < Number(startYear.value);
+      const view = custom ? (startYear.value === endYear.value ? startYear.value : startYear.value + "-" + endYear.value) : period.value;
+      const [start, end] = custom ? [yearRanges.get(startYear.value)[0], yearRanges.get(endYear.value)[1]] : yearRanges.get(view) || [0, dates.length];
       const rows = data.product_tables[view].filter(({product}) =>
         selected === "All" || selected === "sector:" + data.products[product].sector || selected === "product:" + product
       );
-      const portfolio = data.portfolio_scopes[selected].filter(row => view === "All" || String(row.period) === view);
+      const portfolio = data.portfolio_scopes[selected].filter(row => view === "All" ? !String(row.period).includes("-") : String(row.period) === view);
       document.getElementById("selection").textContent =
         data.dates[start] + " 至 " + data.dates[end - 1] + " · " + rows.length + " 个品种";
       renderTable("portfolio", data.portfolio_columns, portfolio);
@@ -295,9 +311,11 @@
       portfolioChart.replaceChildren();
       const codes = rows.map(row => row.product);
       const scopeLabel = universe.selectedOptions[0].textContent;
-      if (codes.length) {
-        addSeriesChart(scopeLabel + " · 组合累计净盈亏", portfolioPath(codes, start, end),
-          [dates[start] - 86400000, ...dates.slice(start, end)], portfolioChart, "portfolio");
+      const active = [...new Set(codes.flatMap(code => data.active_dates[code]))]
+        .filter(index => index >= start && index < end).sort((a, b) => a - b);
+      if (active.length) {
+        addSeriesChart(scopeLabel + " · 组合累计净盈亏", portfolioPath(codes, active[0], end, active),
+          [dates[active[0]] - 86400000, ...active.map(index => dates[index])], portfolioChart, "portfolio", true);
       } else {
         portfolioChart.textContent = "所选范围没有组合 PnL。";
       }
@@ -310,6 +328,8 @@
     addOptions();
     universe.addEventListener("change", render);
     period.addEventListener("change", render);
+    startYear.addEventListener("change", render);
+    endYear.addEventListener("change", render);
     render();
   </script>
 </body>

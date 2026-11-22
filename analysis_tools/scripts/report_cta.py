@@ -43,7 +43,7 @@ def generate_report(signal, *, root, market_root, output):
     scopes = {"product:" + code: [code] for code in sectors['product']}
     scopes.update({"sector:" + str(abbr): group['product'].tolist()
                    for abbr, group in sectors.groupby('abbr')})
-    portfolio, product_tables, curves, scoped = load_cta_report_views(
+    portfolio, product_tables, curves, scoped, active_dates = load_cta_report_views(
         signal, root=root, market_root=market_root, product_scopes=scopes)
     for code in curves.columns:
         if "product:" + code not in scoped:
@@ -58,6 +58,7 @@ def generate_report(signal, *, root, market_root, output):
         "product_columns": list(product_tables["All"].reset_index().columns),
         "portfolio_columns": list(portfolio.reset_index().columns),
         "pnl": _encode_pnl(curves),
+        "active_dates": active_dates,
     }
     embedded = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
     template = (ANALYSIS / "templates/cta_report.html").read_text(encoding="utf-8")

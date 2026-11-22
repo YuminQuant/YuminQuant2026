@@ -1,4 +1,4 @@
-"""Build the local futures minute factor review from downloaded summaries."""
+"""Build futures factor reports from local files or authenticated direct HDFS reads."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ import re
 import subprocess
 import sys
 from tempfile import NamedTemporaryFile, TemporaryDirectory
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import get_context
 
 import numpy as np
 import pandas as pd
@@ -25,6 +28,8 @@ from yq_analysis.future_io import load_future_backtest_result, load_future_secto
 from yq_analysis.future_plots import plot_future_return_summary
 from yq_analysis.future_report import make_future_backtest_report
 from yq_analysis.metrics import clean_series, sharpe
+from yq_analysis.future_diagnostics import distribution_diagnostics
+from yq_analysis.report_source import initialize_hdfs, hdfs_config, source_path, read_parquet
 
 SUMMARY_ROOT = ROOT / "data/backtest/future/minute_1m"
 PLOTS_ROOT = ANALYSIS / "plots/future"
@@ -75,7 +80,7 @@ def read_factor_metadata(path):
     if not path.is_file():
         return {}
     columns = ["asset_class", "frequency", "factor_id", "description", "aliases_json", "tags_json"]
-    frame = pd.read_parquet(path, columns=columns)
+    frame = read_parquet(path, columns=columns)
     futures = frame[frame.asset_class.eq("future") & frame.frequency.eq("minute_1m")]
     return {
         row.factor_id: {
@@ -137,7 +142,9 @@ def return_metrics(daily_bp):
 
 def fingerprint(path):
     stat = path.stat()
-    return [stat.st_size, stat.st_mtime_ns]
+    stats = path.with_name("factor_stats.parquet")
+    detail = stats.stat() if stats.is_file() else None
+    return [stat.st_size, stat.st_mtime_ns, detail.st_size if detail else None, detail.st_mtime_ns if detail else None]
 
 
 def settle(factor, path, sectors, plots, work, plot_fresh):
@@ -153,6 +160,8 @@ def settle(factor, path, sectors, plots, work, plot_fresh):
     sector_returns = report["sector"].rename_axis("sector").join(report["trade_num"])
     directed = report["directed"]
     product_returns = directed.assign(net=directed.sum(axis=1, min_count=2)).join(report["product_trade_num"])
+    if report.get("holding_returns"):
+        product_returns["net"] = report["daily_product"].groupby("ts_code").mean()
     stage = None
     plot = plots / f"{factor}.png"
     if not plot_fresh:
@@ -167,6 +176,8 @@ def settle(factor, path, sectors, plots, work, plot_fresh):
         "daily": [[int(day), finite(value)] for day, value in market_net.items()],
         "sectors": records(sector_returns),
         "products": records(product_returns),
+        "holding_label": result["holding_label_id"],
+        "distribution": distribution_diagnostics(path.with_name("factor_stats.parquet")),
         **return_metrics(market_net),
     }
     return entry, stage
@@ -195,7 +206,7 @@ def correlations(entries):
 
 def cache_key(summaries):
     paths = [Path(__file__), SECTORS, *(ANALYSIS / "yq_analysis" / f"{name}.py" for name in
-             ("future_report", "future_io", "metrics", "future_plots"))]
+             ("future_report", "future_io", "metrics", "future_plots", "future_diagnostics"))]
     digest = hashlib.sha256()
     for path in paths:
         digest.update(path.read_bytes())
@@ -236,11 +247,13 @@ def plot_link(plot, report):
         return plot.as_uri()
 
 
-def generate(summaries, output, plots, metadata, rebuild):
+def generate(summaries, output, plots, metadata, rebuild, workers=4):
     files = {p.parent.name: p for p in summaries.glob("yq_*/summary.parquet")
              if FACTOR_ID.fullmatch(p.parent.name)}
     if not files:
         raise ValueError(f"没有找到因子回测摘要：{summaries}")
+    with ThreadPoolExecutor(max_workers=50) as reader:
+        fingerprints = dict(zip(files, reader.map(fingerprint, files.values())))
     key = cache_key(summaries)
     previous = {} if rebuild else prior_entries(output, key)
     sectors = load_future_sectors(SECTORS)
@@ -251,20 +264,28 @@ def generate(summaries, output, plots, metadata, rebuild):
     failed, entries = [], []
     reused, updated = 0, 0
     plots.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="future-factor-review-", dir=tmp) as directory:
+    with TemporaryDirectory(prefix="future-factor-review-", dir=tmp) as directory, ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn"), initializer=initialize_hdfs, initargs=(hdfs_config(),)) as executor:
         work = Path(directory)
         catalog = factor_catalog(metadata, set(files), work)
+        jobs = {}
+        for factor, path in sorted(files.items(), key=lambda p: factor_number(p[0])):
+            current = fingerprints[factor]
+            plot = plots / f"{factor}.png"
+            plot_fresh = not rebuild and plot.is_file() and plot.stat().st_mtime_ns >= current[1]
+            saved = previous.get(factor)
+            if not (saved and saved["fingerprint"] == current and plot_fresh):
+                jobs[factor] = executor.submit(settle, factor, path, sectors, plots, work, plot_fresh)
         for factor, path in sorted(files.items(), key=lambda p: factor_number(p[0])):
             plot = plots / f"{factor}.png"
             saved = previous.get(factor)
-            current = fingerprint(path)
+            current = fingerprints[factor]
             plot_fresh = (not rebuild and plot.is_file() and plot.stat().st_mtime_ns >= current[1])
             if saved and saved["fingerprint"] == current and plot_fresh:
                 entry = saved
                 reused += 1
             else:
                 try:
-                    entry, stage = settle(factor, path, sectors, plots, work, plot_fresh)
+                    entry, stage = jobs[factor].result()
                     if entry["fingerprint"] != current:
                         raise ValueError("摘要在读取期间发生变化")
                     if stage is not None:
@@ -310,10 +331,16 @@ def main():
     parser.add_argument("--output", type=Path, default=REPORT_PATH)
     parser.add_argument("--plots-root", type=Path, default=PLOTS_ROOT)
     parser.add_argument("--metadata", type=Path, default=METADATA)
+    parser.add_argument("--hdfs-config", type=Path, help="Authenticated deployment config; read inputs directly from HDFS")
     parser.add_argument("--rebuild", action="store_true", help="重新结算全部摘要并重画全部图")
+    parser.add_argument("--workers", type=int, default=4, help="结算和绘图进程数，默认4，可按机器资源调整")
     args = parser.parse_args()
-    generate(args.summary_root.resolve(), args.output.resolve(), args.plots_root.resolve(),
-             args.metadata.resolve(), args.rebuild)
+    if args.workers < 1:
+        parser.error("--workers 必须大于零")
+    initialize_hdfs(args.hdfs_config)
+    summaries = source_path(args.summary_root if args.summary_root != SUMMARY_ROOT else "data/backtest/future/minute_1m") if args.hdfs_config else args.summary_root.resolve()
+    metadata = source_path(args.metadata if args.metadata != METADATA else "data/factors/factor_metadata.parquet") if args.hdfs_config else args.metadata.resolve()
+    generate(summaries, args.output.resolve(), args.plots_root.resolve(), metadata, args.rebuild, args.workers)
 
 
 if __name__ == "__main__":

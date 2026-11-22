@@ -89,10 +89,19 @@ def plot_future_return_summary(
     cumulative_ax = fig.add_subplot(grid[1, :])
     product_ax = fig.add_subplot(grid[2, :])
     _plot_sector_ic(ic_ax, report["sector_ic"]["ic"])
-    _plot_sector_means(mean_ax, report["sector"], unit)
+    _plot_sector_means(mean_ax, report["sector"].assign(net=report["sector"][["long", "short"]].sum(axis=1,min_count=2)), unit)
+    if report.get("holding_returns"):
+        mean_ax.set_title("IC-directed 5-minute tail returns",loc="left",fontweight="bold")
     _plot_cumulative_sectors(cumulative_ax, report["cumulative_sector"], unit)
-    _stack_returns(product_ax, x, report["directed"])
+    if report.get("holding_returns"):
+        means = report["daily_product"].groupby("ts_code").mean().reindex(products.index)
+        product_ax.bar(x, means, color=np.where(means.ge(0),"tab:red","tab:green"))
+        cumulative_ax.set_title("Cumulative 1-minute holding returns",loc="left",fontweight="bold")
+    else:
+        _stack_returns(product_ax, x, report["directed"])
     _finish_axis(product_ax, "IC-directed returns by product", f"Mean return ({unit})")
+    if report.get("holding_returns"):
+        product_ax.set_title("IC-directed 1-minute holding returns by product",loc="left",fontweight="bold")
     _product_ticks(product_ax, x, products.index)
     bar_handles, bar_labels = mean_ax.get_legend_handles_labels()
     line_handles, line_labels = cumulative_ax.get_legend_handles_labels()

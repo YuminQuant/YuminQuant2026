@@ -4,14 +4,19 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow.parquet as pq
+from yq_analysis.report_source import source_path
 
 
 def load_future_backtest_result(root: str | Path, factor_id: str) -> dict:
     """Load one factor's daily summary and its backtest settings."""
-    source = pq.ParquetFile(Path(root) / factor_id / "summary.parquet")
-    metadata = source.metadata.metadata or {}
+    with (source_path(root) / factor_id / "summary.parquet").open("rb") as stream:
+        source = pq.ParquetFile(stream)
+        metadata = source.metadata.metadata or {}
+        summary = source.read().to_pandas()
     return {
-        "summary": source.read().to_pandas(),
+        "summary": summary,
+        "holding_label_id": metadata.get(b"holding_label_id", b"").decode(),
+        "holding_direction": metadata.get(b"holding_direction", b"").decode(),
         "label_id": metadata.get(b"label_id", b"").decode(),
         "quantile_mode": metadata.get(b"quantile_mode", b"daily").decode(),
         "tail_quantile": int(metadata.get(b"tail_quantile", b"90")),

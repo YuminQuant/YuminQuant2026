@@ -110,6 +110,13 @@ def make_future_backtest_report(
     daily_sector = _sector_daily(daily_product.to_frame(), sectors, market.index)["net"]
     market_direction = pd.Series(np.sign(market["ic"].mean()), index=market.index)
     market_net = orient_future_returns(market, market_direction).sum(axis=1, min_count=2)
+    holding = "holding_rtn" in summary.columns
+    if holding:
+        # These returns are already oriented by the engine. Never sign them again.
+        daily_product = products["holding_rtn"].rename("net").sort_index()
+        daily_sector = _sector_daily(daily_product.to_frame(), sectors, market.index)["net"]
+        market_net = market["holding_rtn"]
+        sector_returns["net"] = daily_sector.mean()
     sector_trade_num, product_trade_num = _mean_daily_triggers(products, market, sectors)
     return {
         "market": market,
@@ -125,6 +132,7 @@ def make_future_backtest_report(
         "product_ic": products[["ic", "cosic"]],
         "daily_sector": daily_sector,
         "cumulative_sector": daily_sector.cumsum(),
+        "holding_returns": holding,
     }
 
 

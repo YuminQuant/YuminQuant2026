@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from yq_analysis.report_source import source_path, read_many
 
 
 def _read_optional(path: Path) -> pd.DataFrame | None:
@@ -18,15 +19,12 @@ def load_backtest_result(root: str | Path, factor_id: str) -> dict[str, pd.DataF
     Missing files are returned as None so callers can analyze just returns or IC.
     """
 
-    root = Path(root)
+    root = source_path(root)
     factor_root = root / factor_id
-    return {
-        "returns": _read_optional(factor_root / "returns.parquet"),
-        "ic": _read_optional(factor_root / "ic.parquet"),
-        "factor_stats": _read_optional(factor_root / "factor_stats.parquet"),
-        "barra_exposure": _read_optional(factor_root / "barra_exposure.parquet"),
-        "index_group_returns": _read_optional(factor_root / "index_group_returns.parquet"),
-    }
+    names = ["returns", "ic", "factor_stats", "barra_exposure", "index_group_returns"]
+    paths = [factor_root / f"{name}.parquet" for name in names]
+    frames = read_many(paths)
+    return {name: frames[path] for name, path in zip(names, paths)}
 
 
 def require_frame(result: dict[str, Any], key: str) -> pd.DataFrame:

@@ -1,4 +1,4 @@
-"""Incrementally update the existing stock factor review from local backtests."""
+"""Incrementally update the stock factor review from local or direct HDFS inputs."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / "analysis_tools"))
 from yq_analysis.io import load_backtest_result
 from yq_analysis.metrics import annual_return
 from yq_analysis.report import make_backtest_report, make_ic_report, make_return_report, make_return_report_by_year
+from yq_analysis.report_source import initialize_hdfs, source_path, read_parquet
+from concurrent.futures import ThreadPoolExecutor
 
 START = 20160101
 PER_YEAR = 240
@@ -313,7 +315,7 @@ def correlations(data, root, changed):
         path = root / id / "returns.parquet"
         sha = detail["folded"].get("source_sha256")
         if sha and path.is_file() and digest(path)==sha:
-            rows = pd.read_parquet(path, columns=["trade_date","portfolio","return"],
+            rows = read_parquet(path, columns=["trade_date","portfolio","return"],
                                    filters=[("portfolio","=","long_short"), ("trade_date",">=",START)])
             series[id] = rows.set_index("trade_date")["return"]
     verified = set(series)
@@ -373,11 +375,14 @@ def main():
     parser.add_argument("--backtest-root", type=Path, default=ROOT/"data/backtest/stock/daily")
     parser.add_argument("--plots-root", type=Path, help="Exact directory for the report's original/ and folded/ figures.")
     parser.add_argument("--remove", nargs="+", default=[], metavar="ID", help="Remove from HTML only; remember the exclusion.")
-    parser.add_argument("--refresh", nargs="+", default=[], metavar="ID", help="Replace or restore selected IDs from local results.")
+    parser.add_argument("--refresh", nargs="+", default=[], metavar="ID", help="Replace or restore selected IDs from the current input source.")
     parser.add_argument("--category", action="append", default=[], metavar="ID=LABEL", help="Set a display category.")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--hdfs-config", type=Path, help="Authenticated deployment config; read inputs directly from HDFS")
     args = parser.parse_args()
-    report, root = args.report.resolve(), args.backtest_root.resolve()
+    initialize_hdfs(args.hdfs_config)
+    report = args.report.resolve()
+    root = source_path(args.backtest_root if args.backtest_root != ROOT/"data/backtest/stock/daily" else "data/backtest/stock/daily") if args.hdfs_config else args.backtest_root.resolve()
     plot_root = (args.plots_root or (DEFAULT_PLOTS if report == DEFAULT_REPORT.resolve()
                  else report.parent / f"{report.stem}_plots")).resolve()
     if not root.is_dir():
@@ -389,11 +394,13 @@ def main():
     data = json.loads(match[1])
     old = {f["id"]:f for f in data["factors"]}
     state = data.get("local_refresh", {})
-    if state.get("root", str(root)) != str(root):
+    migrating = bool(args.hdfs_config and state.get("root") != str(root))
+    if not args.hdfs_config and state.get("root", str(root)) != str(root):
         parser.error("Backtest root differs from the root previously registered in this report.")
     prev = state.get("files", {})
     folders = {p.name:p for p in root.iterdir() if p.is_dir() and ID.fullmatch(p.name)}
-    current = {id:fingerprint(p) for id,p in folders.items()}
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        current = dict(executor.map(lambda item: (item[0],fingerprint(item[1])),folders.items()))
     complete = {id for id, files in current.items() if set(files)==set(FILES)}
     remove, refresh = set(args.remove), set(args.refresh)
     if remove & refresh or not refresh <= complete or not all(ID.fullmatch(x) for x in remove|refresh):
@@ -403,6 +410,8 @@ def main():
     added = complete - old.keys() - excluded
     changed = added | refresh | {id for id in old.keys() & complete & prev.keys()
                                  if id not in excluded and current[id]!=prev[id]}
+    if migrating:
+        changed |= old.keys() & complete - excluded
     categories = {}
     for assignment in args.category:
         id, sep, label = assignment.partition("=")
@@ -462,7 +471,7 @@ def main():
             summarize(data)
             correlations(data,root,changed)
             data["generated"] = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
-            data["source"] = data["source"].split(" | 本地增量",1)[0] + " | 本地增量：使用本地回测产物，未重新回测"
+            data["source"] = data["source"].split(" | 本地增量",1)[0].split(" | HDFS增量",1)[0] + (" | HDFS增量：直接读取HDFS回测产物，未重新回测" if args.hdfs_config else " | 本地增量：使用本地回测产物，未重新回测")
         payload = json.dumps(data,ensure_ascii=False,separators=(",",":"),allow_nan=False).replace("<","\\u003c")
         out = text[:match.start(1)]+payload+text[match.end(1):]
         if substantive:
@@ -475,7 +484,7 @@ def main():
                 out = out.replace('<div id="correlation-table">',note+'<div id="correlation-table">',1)
                 js = '''const lc=D.correlation_input;
 if(lc && lc.verified<lc.total) document.getElementById('local-correlation-scope').textContent=
- '本地收益与报告版本一致：'+lc.verified+'/'+lc.total+' 个因子。仅重算可核对的因子对，其余沿用仍有效的历史已知结果；高相关对数是已知下限。';
+ '输入收益与报告版本一致：'+lc.verified+'/'+lc.total+' 个因子。仅重算可核对的因子对，其余沿用仍有效的历史已知结果；高相关对数是已知下限。';
 '''
                 out = out.replace("window.__reportQA=",js+"window.__reportQA=",1)
             out = out.replace("发现${S.corr_count}对因子","报告记录${S.corr_count}对因子")

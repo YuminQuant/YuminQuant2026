@@ -231,6 +231,32 @@ def _zscore_series(values: pd.Series) -> pd.Series:
     return transformed
 
 
+def zscore_observed(values: np.ndarray, *, mad5: bool = False) -> np.ndarray:
+    """Cross-section columns, fitting statistics only on finite observations."""
+    finite = np.isfinite(values)
+    values = np.where(finite, values, np.nan).astype(np.float64, copy=False)
+    if mad5:
+        present = finite.any(axis=0)
+        if present.any():
+            observed = values[:, present]
+            median = np.nanmedian(observed, axis=0)
+            mad = np.nanmedian(np.abs(observed - median), axis=0)
+            values[:, present] = np.clip(observed, median - 5 * mad, median + 5 * mad)
+    count = np.maximum(finite.sum(axis=0), 1)
+    mean = np.where(finite, values, 0).sum(axis=0) / count
+    centered = np.where(finite, values - mean, 0)
+    scale = np.sqrt(np.square(centered).sum(axis=0) / count)
+    return (centered / np.where(scale > 0, scale, 1)).astype(np.float32)
+
+
+def scale_market_window(values: np.ndarray, *, price_columns: int, eps: float) -> None:
+    """Divide prices by each stock's final close and activity by its window mean."""
+    values[:, :, :price_columns] /= values[:, -1:, 3:4].copy()
+    activity = values[:, :, price_columns:]
+    mean = activity.mean(axis=1, keepdims=True, dtype=np.float64)
+    activity /= np.where(mean > eps, mean, 1.0)
+
+
 def _zscore_erfinv_rank_series(values: pd.Series) -> pd.Series:
     values = values.replace([np.inf, -np.inf], np.nan)
     valid = values.notna()

@@ -6,20 +6,13 @@ import numpy as np
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.daily_tensor_sequence import DailyTensorSequence
 from yq_ml_alpha.data.filters import TradeFilters
-from yq_ml_alpha.data.stores import read_daily
+from yq_ml_alpha.data.stores import read_keyed_daily
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
+from yq_ml_alpha.features.transforms import scale_market_window
 
 
 PRICE_COLUMNS = ["open", "high", "low", "close", "vwap"]
-
-
-def _read(root, date, columns):
-    frame = read_daily(root, date, columns, required=columns)
-    if (frame[["trade_date", "ts_code"]].isna().any().any()
-            or frame.ts_code.duplicated().any() or not frame.trade_date.eq(date).all()):
-        raise ValueError(f"invalid daily market/style keys: {root}, {date}")
-    return frame
 
 
 class MarketStyleHistory(DailyTensorSequence):
@@ -55,10 +48,10 @@ class MarketStyleHistory(DailyTensorSequence):
         super().set_calendar_dates([date for date in dates if date >= self.history_start_date])
 
     def _load_day(self, date):
-        market = _read(self.root, date, ["open", "high", "low", "close", "vol", "amount"])
-        basic = _read(self.basic_root, date, [self.turnover_column])
-        adjustment = _read(self.adj_root, date, ["adj_factor"])
-        barra = _read(self.barra_root, date, self.barra_columns)
+        market = read_keyed_daily(self.root, date, ["open", "high", "low", "close", "vol", "amount"])
+        basic = read_keyed_daily(self.basic_root, date, [self.turnover_column])
+        adjustment = read_keyed_daily(self.adj_root, date, ["adj_factor"])
+        barra = read_keyed_daily(self.barra_root, date, self.barra_columns)
         frame = market.merge(basic, on=["trade_date", "ts_code"], how="left", validate="one_to_one")
         frame = frame.merge(adjustment, on=["trade_date", "ts_code"], how="left", validate="one_to_one")
         frame = frame.merge(barra, on=["trade_date", "ts_code"], how="left", validate="one_to_one")
@@ -110,9 +103,7 @@ def normalize_market_style(values, *, mode, eps):
     if not np.isfinite(values[:, :, :7]).all():
         raise ValueError("market inputs must contain complete finite history")
     if mode == "window_mean":
-        values[:, :, :5] /= values[:, -1:, 3:4]
-        denominator = values[:, :, 5:7].mean(axis=1, keepdims=True)
-        values[:, :, 5:7] /= np.where(denominator > eps, denominator, 1.0)
+        scale_market_window(values[:, :, :7], price_columns=5, eps=eps)
     elif mode == "last_value":
         denominator = values[:, -1:, :7].copy()
         if (np.abs(denominator) <= eps).any():

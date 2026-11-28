@@ -13,6 +13,7 @@ from yq_ml_alpha.data.filters import TradeFilters
 from yq_ml_alpha.data.stores import read_daily
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
+from yq_ml_alpha.features.transforms import zscore_observed
 from yq_ml_alpha.output import artifact_io
 
 
@@ -24,6 +25,9 @@ class FundamentalLfqHistory(DailyTensorSequence):
             raise ValueError("fundamental LFQ requires 56 distinct metric columns")
         self.metrics = list(columns)
         self.history_start = int(params["history_start_date"])
+        self.normalization = params.get("normalization", "raw")
+        if self.normalization not in {"raw", "zscore", "mad5_zscore"}:
+            raise ValueError("invalid fundamental LFQ input normalization")
         # Numeric zero and missing source values remain distinguishable.
         inputs = self.metrics + [f"{column}__missing" for column in self.metrics]
         super().__init__(config.features.root, inputs, (len(inputs),),
@@ -51,7 +55,10 @@ class FundamentalLfqHistory(DailyTensorSequence):
         values = frame[self.metrics].to_numpy(dtype=np.float32, copy=False)
         valid = np.isfinite(values)
         output = np.empty((len(frame), len(self.columns)), dtype=np.float32)
-        output[:, :len(self.metrics)] = np.where(valid, values, 0)
+        if self.normalization == "raw":
+            output[:, :len(self.metrics)] = np.where(valid, values, 0)
+        else:
+            output[:, :len(self.metrics)] = zscore_observed(values, mad5=self.normalization == "mad5_zscore")
         output[:, len(self.metrics):] = ~valid
         return pd.DataFrame(output, index=pd.Index(frame.ts_code, name="ts_code"),
                             columns=self.columns, copy=False)
@@ -77,4 +84,6 @@ class FundamentalLfqProvider(DailySequenceProvider):
             if json.loads(artifact_io.read_text(path, encoding="utf-8")) != expected:
                 raise ValueError(f"incompatible fundamental LFQ dataset manifest: {path}")
             self._manifest = {**expected, "missing_input": "zero_with_indicators"}
+            if self.sequence.normalization != "raw":
+                self._manifest["model_input_normalization"] = self.sequence.normalization
         return self._manifest

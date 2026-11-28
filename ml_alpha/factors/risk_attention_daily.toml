@@ -1,0 +1,96 @@
+factor_id = "risk_attention_daily"
+tags = ["DFZQ", "risk_attention", "rawbar", "barra", "citic_industry", "ccc_loss"]
+data_root = "data"
+data_version = "risk_attention_daily_cne6_ci_v1"
+
+[output]
+kind = "factor"
+id = "risk_attention_daily"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+
+[dates]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "risk_attention_sequence"
+root = "data/chn_stock_data/daily/pv"
+columns = ["open", "high", "low", "close", "vol"]
+
+[features.params]
+history_start_date = 20101101
+adjust_prices = true
+barra_columns = ["DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
+industry_codes = [
+    "CI005001.CI", "CI005002.CI", "CI005003.CI", "CI005004.CI", "CI005005.CI", "CI005006.CI",
+    "CI005007.CI", "CI005008.CI", "CI005009.CI", "CI005010.CI", "CI005011.CI", "CI005012.CI",
+    "CI005013.CI", "CI005014.CI", "CI005015.CI", "CI005016.CI", "CI005017.CI", "CI005018.CI",
+    "CI005019.CI", "CI005020.CI", "CI005021.CI", "CI005022.CI", "CI005023.CI", "CI005024.CI",
+    "CI005025.CI", "CI005026.CI", "CI005027.CI", "CI005028.CI", "CI005029.CI", "CI005030.CI",
+]
+
+[materialize]
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "risk_attention"
+class = "yq_ml_alpha.models.risk_attention_model.RiskAttentionAlphaModel"
+artifact_dir = "data/model_workspace/risk_attention_daily/artifacts"
+
+[model.params]
+sequence_length = 30
+market_width = 5
+risk_width = 39
+gru_width = 64
+gru_layers = 1
+attention_width = 64
+head_width = 64
+batch_size = 5000
+query_block_size = 512
+gradient_checkpointing = true
+epochs = 100
+patience = 10
+lr_patience = 5
+lr_factor = 0.5
+lr = 0.01
+grad_clip = 3.0
+eps = 0.00000001
+seed = 42
+device = "auto"

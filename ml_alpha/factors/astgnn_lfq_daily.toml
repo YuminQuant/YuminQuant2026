@@ -65,6 +65,7 @@ columns = [
 
 [features.params]
 history_start_date = 20100104
+normalization = "mad5_zscore"
 
 [materialize]
 predict_batch_size = 20

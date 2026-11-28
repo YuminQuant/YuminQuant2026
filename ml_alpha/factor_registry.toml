@@ -49,6 +49,16 @@ label = "future_vwap_return_10d"
 tags = ["e2e", "HYZQ", "cmm", "week", "momentum", "reversal", "mse_loss"]
 
 [[factors]]
+factor_id = "risk_attention_daily"
+config = "factors/risk_attention_daily.toml"
+status = "active"
+display_name = "Risk-Attention over daily OHLCV, CNE6 and CITIC industry"
+model_class = "yq_ml_alpha.models.risk_attention_model.RiskAttentionAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "risk_attention", "rawbar", "barra", "citic_industry", "ccc_loss"]
+
+[[factors]]
 factor_id = "rawbar_restcn"
 config = "factors/rawbar_restcn.toml"
 status = "active"

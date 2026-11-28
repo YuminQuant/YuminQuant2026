@@ -33,6 +33,15 @@ def read_daily(root: str | Path, trade_date: int, columns: Iterable[str], *, req
     return frame[requested]
 
 
+def read_keyed_daily(root: str | Path, trade_date: int, columns: Iterable[str]) -> pd.DataFrame:
+    columns = list(columns)
+    frame = read_daily(root, trade_date, columns, required=[*KEY_COLUMNS, *columns])
+    if (frame[KEY_COLUMNS].isna().any().any() or frame.ts_code.duplicated().any()
+            or not frame.trade_date.eq(trade_date).all()):
+        raise ValueError(f"invalid daily stock keys: {root}, {trade_date}")
+    return frame
+
+
 def require_hdfs_input(path: Path) -> None:
     if not data_io.remote_enabled() or data_io.backend(data_io.read_path(path)) is None:
         raise RuntimeError(f"HDFS input requires a registered HDFS deployment backend for {path}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from yq_ml_alpha.models.bar_panel_model import _require_bar_bundle_tensor
 from yq_ml_alpha.models.cross_section_bar_model import CrossSectionBarAlphaModel
 from yq_ml_alpha.models.resnet_gru_encoder import normalize_resnet_gru_params, resnet_gru_encoder_type
 
@@ -29,6 +30,14 @@ class ASTGNNAlphaModel(CrossSectionBarAlphaModel):
 
     def _build_regressor(self, nn):
         return _ASTGNNRegressor(nn, self.params)
+
+    def predict_components_bundle(self, bundle, context):
+        self._check_bundle(bundle)
+        return self._predict_tensor(bundle.frame, _require_bar_bundle_tensor(bundle), context, with_components=True)
+
+    def _scores_and_components_encoded(self, encoded):
+        factors = self.model.forward_factors_encoded(encoded)
+        return self.model.combine(factors), factors
 
     def _training_loss_encoded(self, torch, encoded, target):
         valid = torch.isfinite(target)

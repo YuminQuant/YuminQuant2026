@@ -80,6 +80,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
         _release_accelerator_memory()
     written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates, config.key_columns))
     written.extend(_aggregate_diagnostics(config))
+    dataset.close()
     progress.done()
     return written
 
@@ -152,6 +153,7 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
         del model
         _release_accelerator_memory()
     written.extend(_write_missing_coverage(writer, all_predict_dates, covered_dates, config.key_columns))
+    dataset.close()
     progress.done()
     return written
 

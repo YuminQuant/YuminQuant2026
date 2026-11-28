@@ -178,7 +178,7 @@ class CrossSectionBarAlphaModel(DatewiseICBarAlphaModel):
         self._check_bundle(bundle)
         return self._predict_tensor(bundle.frame, _require_bar_bundle_tensor(bundle), context)
 
-    def _predict_tensor(self, data, tensor, context):
+    def _predict_tensor(self, data, tensor, context, *, with_components=False):
         if self.model is None:
             raise RuntimeError("model is not fitted")
         torch, _ = _torch_modules()
@@ -186,11 +186,16 @@ class CrossSectionBarAlphaModel(DatewiseICBarAlphaModel):
         self.model.to(device)
         self.model.eval()
         scores = pd.Series(index=data.index, dtype="float32")
+        components = np.empty((len(data), self.params["base_factors"]), dtype=np.float32) if with_components else None
         try:
             with torch.no_grad():
                 for rows in _date_groups(data).values():
                     encoded = self._encode_rows(torch, data, tensor, rows, context, device)
-                    pred = self.model.forward_encoded(encoded)
+                    if with_components:
+                        pred, factors = self._scores_and_components_encoded(encoded)
+                        components[rows] = factors.cpu().numpy()
+                    else:
+                        pred = self.model.forward_encoded(encoded)
                     if not bool(torch.isfinite(pred).all()):
                         raise ValueError("non-finite graph prediction scores")
                     scores.loc[rows] = pred.cpu().numpy().astype("float32")
@@ -198,4 +203,4 @@ class CrossSectionBarAlphaModel(DatewiseICBarAlphaModel):
             if not getattr(self, "_prediction_active", False):
                 self.model.to("cpu")
                 _release_torch_memory(torch)
-        return scores
+        return (scores, components) if with_components else scores

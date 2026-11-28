@@ -1,0 +1,82 @@
+run_id = "mdl_000041"
+alpha_id = "mdl_000041"
+data_root = "data"
+output_root = "data/models"
+data_version = "astgnn_kd_in_memory_v1"
+
+[dates]
+train = [20160101, 20260331]
+predict = [20210101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "quarterly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "kd_components"
+root = "data/model_workspace"
+
+[features.params]
+sources = ["astgnn_week", "astgnn_msnew", "astgnn_lfq_daily"]
+
+[materialize]
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "kd_ensemble"
+class = "yq_ml_alpha.models.kd_ensemble_model.KDEnsembleAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000041/artifacts"
+
+[model.params]
+hidden_layers = [256, 128]
+dropout = 0.1
+lr = 0.001
+epochs = 100
+patience = 10
+batch_size = 5000
+seed = 42
+device = "auto"
+distill_weight = 0.5
+smooth_l1_beta = 1.0
+
+[model.params.teacher]
+objective = "reg:squarederror"
+tree_method = "hist"
+device = "cuda"
+random_state = 42
+n_jobs = -1
+n_estimators = 600
+max_depth = 4
+learning_rate = 0.03
+subsample = 0.8
+colsample_bytree = 0.8

@@ -40,20 +40,30 @@ class DailySequenceAlphaModel(TorchAlphaModel):
         return self._source(bundle).get(int(date), frame.ts_code.tolist())
 
     def predict_bundle(self, bundle, context):
+        return self._predict_bundle(bundle)
+
+    def _predict_bundle(self, bundle, *, with_components=False):
         if self.model is None:
             raise RuntimeError(f"{type(self).__name__} has not been fitted")
         torch, _ = _torch_modules()
         device = _device(torch, self.params["device"])
         self.model.to(device).eval()
         output = np.empty(len(bundle.frame), dtype="float32")
+        components = np.empty((len(bundle.frame), self.params["base_factors"]), dtype=np.float32) if with_components else None
         try:
             with torch.no_grad():
                 for date, indices in bundle.frame.groupby("trade_date", sort=True).indices.items():
-                    scores = self._scores(torch, bundle, date, bundle.frame.iloc[indices], device, training=False)
+                    frame = bundle.frame.iloc[indices]
+                    if with_components:
+                        scores, factors = self._scores_and_components(torch, bundle, date, frame, device)
+                        components[indices] = factors.cpu().numpy()
+                    else:
+                        scores = self._scores(torch, bundle, date, frame, device, training=False)
                     if not torch.isfinite(scores).all():
                         raise ValueError(f"nonfinite daily sequence prediction on {date}")
                     output[indices] = scores.cpu().numpy()
-            return pd.Series(output, index=bundle.frame.index, dtype="float32")
+            scores = pd.Series(output, index=bundle.frame.index, dtype="float32")
+            return (scores, components) if with_components else scores
         finally:
             if not getattr(self, "_prediction_active", False):
                 self.model.to("cpu")

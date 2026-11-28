@@ -21,6 +21,7 @@ from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
 from yq_ml_alpha.features.market_style_sequence import MarketStyleSequenceProvider
+from yq_ml_alpha.features.kd_components import KDComponentsProvider
 from yq_ml_alpha.features.rawbar_sequence import RawBarSequenceProvider
 from yq_ml_alpha.features.derived_logsigrnn import DerivedLogsigRnnProvider
 from yq_ml_alpha.features.bar_panel import BarPanelProvider, MultiBarPanelProvider
@@ -109,6 +110,9 @@ class DatasetBuilder:
             for _, child in getattr(provider, "panels", []):
                 clear(child)
         clear(self.feature_provider)
+        close = getattr(self.feature_provider, "close", None)
+        if callable(close):
+            close()
         self._source_st_symbol_cache.clear()
         if clear_read_cache:
             data_io.invalidate_parquet()
@@ -129,7 +133,14 @@ class DatasetBuilder:
         split_name = split_name or ("labeled" if include_label else "predict")
         started = perf_counter()
         preloaded = None
-        if type(self.feature_provider) in (FactorFrameProvider, MinuteFactorFrameProvider, RawPanelProvider):
+        batch_load = getattr(self.feature_provider, "load_many", None)
+        if callable(batch_load):
+            def load_batches():
+                with closing(batch_load(dates)) as frames:
+                    for frame in frames:
+                        yield frame, None
+            preloaded = load_batches()
+        elif type(self.feature_provider) in (FactorFrameProvider, MinuteFactorFrameProvider, RawPanelProvider):
             root = self.feature_provider.root
             if data_io.backend(root) is not None:
                 def load_input(date):
@@ -142,7 +153,8 @@ class DatasetBuilder:
             prefetch_targets = getattr(getattr(self.feature_provider, "sequence", None), "prefetch_targets", None)
             sequence_labels = (
                 self._prefetch_sequence_labels(dates)
-                if prefetch_targets is not None and include_label and data_io.backend(self.config.label.root) is not None
+                if (prefetch_targets is not None or callable(batch_load)) and include_label
+                and data_io.backend(self.config.label.root) is not None
                 else {}
             )
             with prefetch_targets(dates) if prefetch_targets is not None else nullcontext():
@@ -635,6 +647,8 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         provider = factory(config)
         if provider is not None:
             return provider
+    if config.features.type == "kd_components":
+        return KDComponentsProvider(config)
     if config.features.type == "minute_factor_frame":
         if set(config.label.columns).intersection([*config.key_columns, *config.features.columns]):
             raise ValueError("minute label columns must be separate from keys and feature columns")

@@ -15,10 +15,10 @@ from yq_ml_alpha.output import artifact_io
 def _params(raw):
     params = dict(raw)
     for key in ("input_size", "sequence_length", "hidden_size", "risk_size", "num_layers",
-                "batch_size", "graph_chunk_size", "epochs", "patience"):
+                "batch_size", "graph_chunk_size", "epochs", "patience", "base_factors"):
         if type(params[key]) is not int or params[key] < 1:
             raise ValueError(f"ASTGNN LFQ {key} must be a positive integer")
-    for key in ("lr", "ridge", "grad_clip", "risk_weight", "orthogonal_weight"):
+    for key in ("lr", "ridge", "grad_clip", "risk_weight", "orthogonal_weight", "alpha_orthogonal_weight"):
         if not np.isfinite(params[key]) or params[key] <= 0:
             raise ValueError(f"ASTGNN LFQ {key} must be positive and finite")
     if not 0 <= params["dropout"] < 1 or not 0 < params["horizon_decay"] <= 1:
@@ -40,7 +40,8 @@ def _network(torch, nn, params):
             self.risk_encoder = nn.GRU(**gru)
             self.risk_head = nn.Linear(width, params["risk_size"])
             self.value_head = nn.Linear(width, width, bias=False)
-            self.score_head = nn.Linear(width, 1)
+            self.factor_head = nn.Linear(width, params["base_factors"])
+            self.factor_norm = nn.BatchNorm1d(params["base_factors"])
 
         def encode(self, host, token):
             values = host.to(token.device)
@@ -48,7 +49,7 @@ def _network(torch, nn, params):
             _, risk = self.risk_encoder(values)
             return alpha[-1] + token * 0, self.risk_head(risk[-1])
 
-        def score(self, alpha, risk):
+        def factors(self, alpha, risk):
             def aggregate(query, keys, values):
                 weights = (query @ keys.T).relu().softmax(dim=1)
                 return weights @ values
@@ -61,7 +62,7 @@ def _network(torch, nn, params):
                 else:
                     message = aggregate(query, risk, values)
                 messages.append(message)
-            return self.score_head(values - torch.cat(messages)).squeeze(1)
+            return self.factor_norm(self.factor_head(values - torch.cat(messages)))
 
     return Network()
 
@@ -86,16 +87,28 @@ class AstgnnLfqAlphaModel(DailySequenceAlphaModel):
             else:
                 encoded.append(encode(values, token))
         alpha, risk = (torch.cat(parts) for parts in zip(*encoded))
-        return self.model.score(alpha, risk), risk
+        return self.model.factors(alpha, risk), risk
 
     def _scores(self, torch, bundle, date, frame, device, *, training):
-        return self._forward(torch, bundle, date, frame, device, training=training)[0]
+        factors, _ = self._forward(torch, bundle, date, frame, device, training=training)
+        return factors.mean(dim=1)
 
-    def _risk_loss(self, torch, risk, targets):
-        centered = risk - risk.mean(0)
+    def predict_components_bundle(self, bundle, context):
+        return self._predict_bundle(bundle, with_components=True)
+
+    def _scores_and_components(self, torch, bundle, date, frame, device):
+        factors, _ = self._forward(torch, bundle, date, frame, device, training=False)
+        return factors.mean(dim=1), factors
+
+    @staticmethod
+    def _orthogonal_penalty(values):
+        centered = values - values.mean(0)
         unit = centered / centered.norm(dim=0).clamp_min(1e-6)
         corr = unit.T @ unit
-        orthogonal = (corr - corr.diag().diag()).square().mean()
+        return (corr - corr.diag().diag()).square().mean()
+
+    def _risk_loss(self, torch, risk, targets):
+        orthogonal = self._orthogonal_penalty(risk)
         losses, weights = [], []
         # Primary target is last here, giving horizons 1/5/10 in that order.
         for index, target in enumerate(targets):
@@ -124,14 +137,15 @@ class AstgnnLfqAlphaModel(DailySequenceAlphaModel):
             for date, frame, targets, observed in sections:
                 if training:
                     optimizer.zero_grad(set_to_none=True)
-                score, risk = self._forward(torch, bundle, date, frame, device, training=training)
+                factors, risk = self._forward(torch, bundle, date, frame, device, training=training)
                 mask = torch.from_numpy(observed).to(device)
                 primary = torch.from_numpy(targets[0, observed]).to(device)
-                alpha_loss = (score[mask] - primary).square().mean()
+                alpha_loss = (factors[mask].mean(dim=1) - primary).square().mean()
                 loss = alpha_loss
                 if training:
                     risk_targets = torch.from_numpy(targets[[1, 2, 0]]).to(device)
-                    loss = loss + self._risk_loss(torch, risk, risk_targets)
+                    loss = (loss + self._risk_loss(torch, risk, risk_targets)
+                            + self.params["alpha_orthogonal_weight"] * self._orthogonal_penalty(factors))
                 if not bool(torch.isfinite(loss)):
                     raise ValueError(f"nonfinite ASTGNN LFQ loss on {date}")
                 if training:
@@ -204,12 +218,13 @@ class AstgnnLfqAlphaModel(DailySequenceAlphaModel):
         self.model.to("cpu").eval()
         self.model_info = dict(best_epoch=best_epoch, best_valid_mse=best, epochs_run=len(self.loss_history),
                                params=self.params, features=self.feature_columns, labels=labels,
-                               graph="full_date_subtractive", selection="mean_datewise_alpha_mse")
+                               graph="full_date_subtractive", selection="mean_datewise_alpha_mse",
+                               aggregation="equal_weight_component_mean")
 
     def save(self, path):
         path = Path(path)
         artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
-        artifact_io.torch_save(dict(model_kind="astgnn_lfq", version=1, params=self.params,
+        artifact_io.torch_save(dict(model_kind="astgnn_lfq", version=2, params=self.params,
             feature_columns=self.feature_columns, state_dict=_cpu_state_dict(self.model),
             loss_history=self.loss_history, model_info=self.model_info), path)
 
@@ -217,8 +232,8 @@ class AstgnnLfqAlphaModel(DailySequenceAlphaModel):
     def load(cls, path):
         torch, nn = _torch_modules()
         saved = artifact_io.torch_load(Path(path), map_location="cpu")
-        if saved.get("model_kind") != "astgnn_lfq" or saved.get("version") != 1:
-            raise ValueError("unsupported ASTGNN LFQ checkpoint")
+        if saved.get("model_kind") != "astgnn_lfq" or saved.get("version") != 2:
+            raise ValueError("ASTGNN LFQ requires a 64-component checkpoint; train it with the current config")
         model = cls()
         model.params = _params(saved["params"])
         model.feature_columns = list(saved["feature_columns"])

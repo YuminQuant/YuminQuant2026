@@ -647,6 +647,22 @@ features = "factor_frame: metadata fundamental tag, excluding price_volume/analy
 tags = ["optuna", "gpu", "rolling", "factor_frame", "fundamental"]
 
 [[models]]
+model_id = "mdl_000041"
+alpha_id = "mdl_000041"
+run_id = "mdl_000041"
+config = "models/mdl_000041.toml"
+status = "active"
+display_name = "KD-Ensemble ASTGNN weak-factor combination"
+description = "Offline XGBoost-to-MLP regression distillation over three point-in-time 64-component ASTGNN branches."
+model_class = "yq_ml_alpha.models.kd_ensemble_model.KDEnsembleAlphaModel"
+model_family = "knowledge_distillation"
+label = "future_vwap_return_10d"
+preprocess = "none"
+train_scheme = "rolling_60m_quarterly_57m_train_3m_valid_5d_sample"
+features = "kd_components: 192 aligned week, msnew and LFQ weak factor components"
+tags = ["DFZQ", "knowledge_distillation", "factor_combination", "xgboost", "mlp"]
+
+[[models]]
 model_id = "mdl_100000"
 alpha_id = "mdl_100000"
 run_id = "mdl_100000"

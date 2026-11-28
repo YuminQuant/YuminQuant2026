@@ -31,6 +31,7 @@ class TrainingWindow:
     predict_dates: list[int]
     training_cutoff_date: int | None = None
     activation_date: int | None = None
+    training_start_date: int | None = None
 
 
 def _predict_write_window(
@@ -85,6 +86,7 @@ def _predict_write_window_active(
 
 def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[TrainingWindow]:
     windows = _build_windows(config, calendar)
+    adjust = getattr(_model_class(config.model.class_path), "adjust_training_window", None)
     horizon = _label_horizon(config)
     positions = {date: idx for idx, date in enumerate(calendar.dates)}
 
@@ -117,7 +119,8 @@ def build_windows(config: MlAlphaConfig, calendar: TradingCalendar) -> list[Trai
         train = before(train_pool, valid[0] if valid else prediction_start)
         if not train:
             raise ValueError(f"{window.window_id}: no training labels settle before the next split")
-        output.append(replace(window, train_dates=train, valid_dates=valid, training_cutoff_date=cutoff))
+        window = replace(window, train_dates=train, valid_dates=valid, training_cutoff_date=cutoff)
+        output.append(adjust(config, calendar, window) if adjust is not None else window)
     return output
 
 
@@ -256,6 +259,7 @@ def _calendar_windows(config, calendar, predict_dates, train_frequency):
             predict_dates=[date for date in predict_dates if first <= date <= last],
             training_cutoff_date=cutoff,
             activation_date=period_dates[0],
+            training_start_date=lower,
         ))
     return windows
 
@@ -307,7 +311,7 @@ def _fit_model(model: AlphaModel, train_bundle, valid_bundle, context: ModelCont
 def _load_train_valid(config, dataset, calendar, window, progress):
     """Shared row/date split for both model and factor training entry points."""
     prepare = getattr(dataset.feature_provider, "training_window", None)
-    with prepare([*window.train_dates, *window.valid_dates]) if prepare is not None else nullcontext():
+    with prepare(window) if prepare is not None else nullcontext():
         return _load_window_splits(config, dataset, calendar, window, progress)
 
 

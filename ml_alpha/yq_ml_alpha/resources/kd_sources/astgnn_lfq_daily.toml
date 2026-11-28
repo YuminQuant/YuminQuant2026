@@ -22,7 +22,7 @@ predict_frequency = "daily"
 [train_scheme]
 type = "rolling"
 refit_frequency = "yearly_end"
-train_lookback = "60m"
+train_lookback = "36m"
 validation_lookback = "3m"
 min_train_days = 500
 

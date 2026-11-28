@@ -66,7 +66,7 @@ class DatasetBundle:
 
 
 class DatasetBuilder:
-    def __init__(self, config: MlAlphaConfig) -> None:
+    def __init__(self, config: MlAlphaConfig, *, calendar: TradingCalendar | None = None) -> None:
         self.config = config
         self.feature_provider = make_feature_provider(config)
         self.minute_frame = isinstance(self.feature_provider, MinuteFactorFrameProvider)
@@ -85,7 +85,7 @@ class DatasetBuilder:
                     require_hdfs=self.feature_provider.require_hdfs,
                 )
         if hasattr(self.feature_provider, "set_calendar_dates"):
-            self.feature_provider.set_calendar_dates(TradingCalendar.for_config(config).dates)
+            self.feature_provider.set_calendar_dates((calendar or TradingCalendar.for_config(config)).dates)
         self.universe = Universe(config.universe.id, config.data_root)
         self.filters = TradeFilters(config.filters, config.data_root)
         self._source_st_symbol_cache: dict[int, set[str]] = {}

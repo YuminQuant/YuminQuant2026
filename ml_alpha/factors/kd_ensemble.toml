@@ -1,7 +1,7 @@
 factor_id = "kd_ensemble"
 tags = ["DFZQ", "knowledge_distillation", "astgnn", "fundamental", "price_volume"]
 data_root = "data"
-data_version = "astgnn_kd_train_in_memory_v2"
+data_version = "astgnn_kd_staged60m_v3"
 
 [output]
 kind = "factor"
@@ -12,8 +12,8 @@ frequency = "daily"
 base_root = "data/chn_stock_data/daily/pv"
 
 [dates]
-train = [20160101, 20251231]
-predict = [20210101, 20260424]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
 
 [sample]
 train_frequency = "5"
@@ -48,6 +48,8 @@ root = "data"
 
 [features.params]
 sources = ["astgnn_week", "astgnn_msnew", "astgnn_lfq_daily"]
+component_months = 36
+component_validation_months = 3
 
 [materialize]
 predict_batch_size = 20

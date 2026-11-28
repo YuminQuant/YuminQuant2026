@@ -63,8 +63,13 @@ class KDEnsembleAlphaModel(TorchAlphaModel):
     prediction_replay_safe = True
     prediction_inputs_readonly = True
 
+    @staticmethod
+    def adjust_training_window(config, calendar, window):
+        from yq_ml_alpha.features.kd_components import adjust_student_window
+        return adjust_student_window(config, calendar, window)
+
     def capture_prediction_weights(self, provider, dates):
-        self.component_weights = provider.checkpoint(dates)
+        self.component_weights = provider.checkpoint()
 
     @contextmanager
     def prediction_session(self):
@@ -175,7 +180,7 @@ class KDEnsembleAlphaModel(TorchAlphaModel):
     def save(self, path):
         path = Path(path)
         artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
-        artifact_io.torch_save(dict(kind="kd_ensemble", version=2, params=self.params,
+        artifact_io.torch_save(dict(kind="kd_ensemble", version=3, params=self.params,
             feature_columns=self.feature_columns, state_dict=_cpu_state_dict(self.model),
             components=self.component_weights, model_info=self.model_info, loss_history=self.loss_history), path)
 
@@ -183,7 +188,7 @@ class KDEnsembleAlphaModel(TorchAlphaModel):
     def load(cls, path):
         _, nn = _torch_modules()
         saved = artifact_io.torch_load(Path(path), map_location="cpu")
-        if saved.get("kind") != "kd_ensemble" or saved.get("version") != 2:
+        if saved.get("kind") != "kd_ensemble" or saved.get("version") != 3:
             raise ValueError("unsupported KD-Ensemble checkpoint")
         instance = cls()
         instance.params = _params(saved["params"])

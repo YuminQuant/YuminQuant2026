@@ -1,5 +1,6 @@
 """Train KD's three component encoders and compute point-in-time features."""
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -12,7 +13,46 @@ from yq_ml_alpha.data.sampler import sample_dates
 from yq_ml_alpha.data.stores import KEY_COLUMNS
 from yq_ml_alpha.features.base import FeatureProvider
 from yq_ml_alpha.models.base import load_model_class
+from yq_ml_alpha.output import artifact_io
 from yq_ml_alpha.output.parquet_reader import transient_parquet_tables
+
+_branch_run = ContextVar("kd_branch_run", default=None)
+
+
+def branch_path(config, window_id, stage):
+    if stage not in config.features.params["sources"]:
+        raise ValueError(f"Unknown KD branch: {stage}")
+    return config.model.artifact_dir / window_id / f"{stage}.pkl"
+
+
+def train_stage(config, window_id, stage, run_id, *, resume=False):
+    from yq_ml_alpha.pipelines import factor
+    from yq_ml_alpha.pipelines.training_tasks import training_windows
+
+    if stage == "distill":
+        token = _branch_run.set(run_id)
+        try:
+            # A new staged run must package the models from this run.
+            return factor.train_config(config, window_ids=[window_id])
+        finally:
+            _branch_run.reset(token)
+    path = branch_path(config, window_id, stage)
+    provider = KDComponentsProvider(config)
+    try:
+        student, = training_windows(config, provider.calendar, [window_id])
+        source = next(source for source in provider.sources if source.config.factor_id == stage)
+        window = component_window(config, source.config, provider.calendar, student)
+        identity = provider.branch_identity(source, window, run_id)
+        if resume and artifact_io.exists(path):
+            prior = artifact_io.torch_load(path, map_location="cpu")
+            if prior["identity"] == identity:
+                return [path]
+        source.train(window, provider.window_calendar(student))
+        artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
+        artifact_io.torch_save(dict(identity=identity, checkpoint=source.model.checkpoint(include_diagnostics=False)), path)
+        return [path]
+    finally:
+        provider.close()
 
 
 def _split_boundaries(config, window):
@@ -185,14 +225,34 @@ class KDComponentsProvider(FeatureProvider):
                 "sources": [source.identity() for source in self.sources],
                 "join": "complete_three_branches"}
 
+    def window_calendar(self, student):
+        return TradingCalendar(self.calendar.between(student.training_start_date, student.training_cutoff_date))
+
+    @staticmethod
+    def branch_identity(source, window, run_id):
+        return {"run_id": run_id, "branch": source.config.factor_id,
+                "window": asdict(window),
+                "config": artifact_io.identity_values(source.identity())}
+
     @contextmanager
     def training_window(self, student):
-        calendar = TradingCalendar(self.calendar.between(student.training_start_date, student.training_cutoff_date))
+        calendar = self.window_calendar(student)
+        run_id = _branch_run.get()
         self._training_window = True
         try:
             for source in self.sources:
                 window = component_window(self.config, source.config, self.calendar, student)
-                source.train(window, calendar)
+                if run_id is None:
+                    source.train(window, calendar)
+                else:
+                    source.close()
+                    source.training_calendar = calendar
+                    path = branch_path(self.config, student.window_id, source.config.factor_id)
+                    saved = artifact_io.torch_load(path, map_location="cpu")
+                    if saved["identity"] != self.branch_identity(source, window, run_id):
+                        raise ValueError(f"KD branch checkpoint does not match this training run: {path}")
+                    model = source.model_class.from_checkpoint(saved["checkpoint"])
+                    source.model = source.sessions.enter_context(model.prediction_session())
             yield
         except BaseException:
             self.close()

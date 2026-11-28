@@ -9,7 +9,7 @@ import pandas as pd
 from yq_ml_alpha.models.torch_support import (
     TorchAlphaModel, _cpu_state_dict, _device, _diagnostics, _set_seed, _torch_modules,
 )
-from yq_ml_alpha.models.xgb_training import fit_matrix, make_matrix
+from yq_ml_alpha.models.xgb_training import make_matrix
 from yq_ml_alpha.output import artifact_io
 
 
@@ -54,9 +54,14 @@ def _labeled(frame, context):
 def _teacher_scores(features, labels, params):
     import xgboost as xgb
 
-    matrix = make_matrix(xgb, features, labels, n_jobs=params.get("n_jobs", -1))
-    teacher = fit_matrix(xgb, params, matrix)
-    return teacher.get_booster().predict(matrix).astype("float32", copy=False)
+    native = dict(params)
+    rounds = native.pop("n_estimators")
+    threads = native.pop("n_jobs", -1)
+    native["nthread"] = threads
+    native["seed"] = native.pop("random_state", 0)
+    matrix = make_matrix(xgb, features, labels, n_jobs=threads)
+    teacher = xgb.train(native, matrix, num_boost_round=rounds, verbose_eval=False)
+    return teacher.predict(matrix).astype("float32", copy=False)
 
 
 class KDEnsembleAlphaModel(TorchAlphaModel):
@@ -67,6 +72,18 @@ class KDEnsembleAlphaModel(TorchAlphaModel):
     def adjust_training_window(config, calendar, window):
         from yq_ml_alpha.features.kd_components import adjust_student_window
         return adjust_student_window(config, calendar, window)
+
+    @staticmethod
+    def training_stage_path(config, window_id, stage):
+        from yq_ml_alpha.features.kd_components import branch_path
+        if stage == "distill":
+            return config.model.artifact_dir / window_id
+        return branch_path(config, window_id, stage)
+
+    @staticmethod
+    def execute_training_stage(config, window_id, stage, run_id, *, resume=False):
+        from yq_ml_alpha.features.kd_components import train_stage
+        return train_stage(config, window_id, stage, run_id, resume=resume)
 
     def capture_prediction_weights(self, provider, dates):
         self.component_weights = provider.checkpoint()

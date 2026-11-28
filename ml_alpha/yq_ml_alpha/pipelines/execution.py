@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -14,16 +15,24 @@ class ExecutionOptions:
     threads: int = 1
     predict_task_days: int = 120
     predict_task_years: bool = False
+    training_stage: str = ""
+    training_run_id: str = ""
 
     def __post_init__(self):
         for field in fields(self):
             value = getattr(self, field.name)
+            if field.name in {'training_stage', 'training_run_id'}:
+                if not isinstance(value, str) or (value and not re.fullmatch(r'[a-zA-Z0-9_-]+', value)):
+                    raise ValueError(f'invalid {field.name}')
+                continue
             if field.name == 'predict_task_years':
                 if type(value) is not bool:
                     raise ValueError('predict_task_years must be boolean')
                 continue
             if type(value) is not int or value < 1:
                 raise ValueError(f'{field.name} must be an integer >= 1')
+        if bool(self.training_stage) != bool(self.training_run_id):
+            raise ValueError('training_stage and training_run_id must be set together')
 
     def environment(self):
         inner = str(max(1, self.threads // self.model_predict_workers))

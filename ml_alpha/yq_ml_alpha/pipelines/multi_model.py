@@ -19,6 +19,11 @@ def execute_task(configs, action, task, options, *, resume=False):
     from yq_ml_alpha.pipelines import factor, model
     with execution_scope(options):
         check_memory(options, 'before training')
+        if options.training_stage:
+            from yq_ml_alpha.models.base import load_model_class
+            return load_model_class(config.model.class_path).execute_training_stage(
+                config, task["window_id"], options.training_stage, options.training_run_id, resume=resume,
+            )
         function = factor.train_config if config.output.kind == 'factor' else model.train_config
         extra = {'resume': resume} if config.output.kind == 'factor' else {}
         result = function(config, window_ids=[task['window_id']] if task['window_id'] else None, **extra)

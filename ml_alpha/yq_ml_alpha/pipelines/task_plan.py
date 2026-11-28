@@ -38,6 +38,8 @@ def prediction_units(config, calendar):
 def plan_tasks(configs, action, options, *, include_column_catalog=True):
     if not configs:
         raise ValueError('At least one model config is required')
+    if options.training_stage and (action != 'train' or len(configs) != 1):
+        raise ValueError('A training stage requires exactly one training config')
     artifacts = set()
     outputs = set()
     layouts = {}
@@ -52,8 +54,15 @@ def plan_tasks(configs, action, options, *, include_column_catalog=True):
             from yq_ml_alpha.pipelines.training_tasks import training_plan
             plan = training_plan(config, include_column_catalog=False)
             sequential = plan["group_windows"]
+            stage_path = None
+            if options.training_stage:
+                stage_path = getattr(load_model_class(config.model.class_path), "training_stage_path", None)
+                if stage_path is None or sequential:
+                    raise ValueError(f'{config.output.id} cannot run independent training stages')
             for wi, window in enumerate(plan['windows']):
                 path = str(Path(plan['artifact_dir']) / window['window_id'])
+                if stage_path is not None:
+                    path = str(stage_path(config, window['window_id'], options.training_stage))
                 if path in artifacts:
                     raise ValueError(f'Training artifact collision: {path}')
                 artifacts.add(path)
@@ -97,6 +106,8 @@ def plan_tasks(configs, action, options, *, include_column_catalog=True):
     diagnostics = [str(Path(config.model.artifact_dir).parent / 'diagnostics') for config in configs
                    if config.diagnostics.enabled and
                    (config.diagnostics.write_loss_history or config.diagnostics.write_window_summary)]
+    if options.training_stage and options.training_stage != 'distill':
+        diagnostics = []
     result = dict(action=action, execution=asdict(options), tasks=tasks, diagnostics=diagnostics)
     if action == 'train' and include_column_catalog:
         from yq_ml_alpha.data.column_catalog import training_column_catalog

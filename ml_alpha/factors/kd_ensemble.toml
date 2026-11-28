@@ -12,7 +12,7 @@ frequency = "daily"
 base_root = "data/chn_stock_data/daily/pv"
 
 [dates]
-train = [20160101, 20260331]
+train = [20160101, 20251231]
 predict = [20210101, 20260424]
 
 [sample]
@@ -21,7 +21,7 @@ predict_frequency = "daily"
 
 [train_scheme]
 type = "rolling"
-refit_frequency = "quarterly_end"
+refit_frequency = "yearly_end"
 train_lookback = "60m"
 validation_lookback = "3m"
 min_train_days = 500

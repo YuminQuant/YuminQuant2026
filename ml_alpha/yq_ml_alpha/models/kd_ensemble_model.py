@@ -62,7 +62,6 @@ def _teacher_scores(features, labels, params):
 class KDEnsembleAlphaModel(TorchAlphaModel):
     prediction_replay_safe = True
     prediction_inputs_readonly = True
-    training_share_windows = True
 
     def capture_prediction_weights(self, provider, dates):
         self.component_weights = provider.checkpoint(dates)

@@ -101,3 +101,18 @@ $env:PATH = 'D:\Users\Devin\anaconda383;D:\Users\Devin\anaconda383\Library\bin;D
 # 或一次完成训练和预测；不要在上面两条之后重复执行。
 & $py -B -u -m yq_ml_alpha model-run --config ml_alpha\models\mdl_000026.toml
 ```
+
+## FactorVAE-pro / mdl_000042
+
+东方证券第 111 篇研报的 FactorVAE 扩展独立注册为 `mdl_000042`。沿用基础版的 30 个交易日因子序列、股票池、10 日 VWAP 标签和到期隔离。季度滚动窗口为 57 个月训练加 3 个月验证，每 5 个交易日取一次截面。每轮使用全部有效训练截面，以主分支的验证日均 Pearson IC 选权重。
+
+- 掩码 GRU 给每只股票的每个历史时间步和每项因子生成保留／置零决策。预测和训练前向均用硬掩码，训练反向用直通估计。重构器从筛选后的输入重建完整因子序列。
+- 两路 VAE 共享 Alpha/Beta 收益解码器，各自拥有特征提取器、后验因子编码器和先验预测器。EnvVAE 在训练时额外接收样本日的年份、月份独热编码，样本日编码在该样本的所有历史时间步使用同一值。日期直接从样本取得。
+- 联合优化两路收益重构及后验到先验 KL、输入特征重构 MSE、`KL(EnvVAE 先验 || 主 VAE 先验)`。先验对齐向两路反传，新增两项的权重由 TOML 提供。与基础版一样，仅对有效收益标签做监督。
+- 股票编码按 `batch_size` 分块，同一分块的因子张量供掩码、重构及两路编码复用。隐因子注意力与虚拟组合按完整日期截面计算。日度预处理和 HDFS 预读复用公共因子序列数据源。
+- 窗口权重含完整训练模型，验证和预测调用特征掩码、主分支先验和共享解码器，写出一列确定性收益均值。权重位于 `data/model_workspace/mdl_000042/rolling60m_5d_vwap10d/artifacts/<window_id>/model.pkl`，预测列为 `data/models/<year>/<YYYYMMDD>.parquet` 中的 `mdl_000042`。
+
+```powershell
+& $py -B -u -m yq_ml_alpha model-train --config ml_alpha\models\mdl_000042.toml
+& $py -B -u -m yq_ml_alpha model-predict --config ml_alpha\models\mdl_000042.toml
+```

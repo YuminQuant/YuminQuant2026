@@ -647,6 +647,22 @@ features = "factor_frame: metadata fundamental tag, excluding price_volume/analy
 tags = ["optuna", "gpu", "rolling", "factor_frame", "fundamental"]
 
 [[models]]
+model_id = "mdl_000042"
+alpha_id = "mdl_000042"
+run_id = "mdl_000042"
+config = "models/mdl_000042.toml"
+status = "active"
+display_name = "DFZQ FactorVAE-pro local factor sequence alpha"
+description = "Dynamic hard feature mask with input reconstruction, a date-conditioned training branch, a shared return decoder and KL alignment of the two factor priors."
+model_class = "yq_ml_alpha.models.factor_vae_pro_model.FactorVAEProAlphaModel"
+model_family = "factor_vae_pro"
+label = "future_vwap_return_10d"
+preprocess = "provider_mad5_zscore_label_mad5_zscore"
+train_scheme = "rolling_60m_quarterly_57m_train_3m_valid_5d_sample"
+features = "factor_sequence: data/factors/stock/daily, columns=__all__, length=30"
+tags = ["DFZQ", "vae", "gru", "feature_selection", "probabilistic_factor_model", "factor_combination"]
+
+[[models]]
 model_id = "mdl_100000"
 alpha_id = "mdl_100000"
 run_id = "mdl_100000"

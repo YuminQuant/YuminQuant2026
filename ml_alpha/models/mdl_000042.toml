@@ -1,0 +1,84 @@
+run_id = "mdl_000042"
+alpha_id = "mdl_000042"
+data_root = "data"
+output_root = "data/models"
+data_version = "factorvae_pro_local_factors_v1"
+
+[dates]
+train = [20160101, 20260331]
+predict = [20210101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "quarterly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "factor_sequence"
+root = "data/factors/stock/daily"
+columns = "__all__"
+
+[features.params]
+include_model_generated = true
+sequence_length = 30
+# Per-window RAM cache; normalized days survive train/valid and epoch changes.
+
+[materialize]
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "dfq_factor_vae_pro"
+class = "yq_ml_alpha.models.factor_vae_pro_model.FactorVAEProAlphaModel"
+artifact_dir = "data/model_workspace/mdl_000042/rolling60m_5d_vwap10d/artifacts"
+
+[model.params]
+sequence_length = 30
+hidden_size = 32
+num_layers = 1
+num_portfolio = 100
+num_factor = 48
+epochs = 100
+patience = 10
+average_epochs = 5
+# Encoder stock chunks only; portfolio/attention always use the full date.
+batch_size = 5000
+grad_clip = 5.0
+gradient_checkpointing = true
+lr = 0.0003
+weight_decay = 0.0
+kl_weight = 1.0
+feature_reconstruction_weight = 1.0
+prior_alignment_weight = 1.0
+min_delta = 0.00000001
+min_std = 0.000001
+seed = 42
+device = "auto"

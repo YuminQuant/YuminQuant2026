@@ -1,18 +1,26 @@
 //! Announcement-date stock/group memberships. Pairwise adjacency is never materialized.
-use crate::artifact_io::StoragePathExt;
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
+
+use arrow_array::{builder::StringBuilder, Array, ArrayRef, Int32Array, RecordBatch};
+use arrow_schema::{DataType, Field, Schema};
 
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
-use crate::data::parquet_io::read_parquet;
+use crate::data::parquet_io::{read_parquet, PreparedProjection};
+use crate::data::read_ahead::{configure_threads, visit_tables, write_files};
 use crate::data::{ColumnData, Table};
-use crate::derive::storage::write_derived_parquet;
+use crate::derive::storage::{check_derived_manifest, write_derived_daily_batch, yearly_files};
 use crate::error::{err, Result};
 use crate::factor::common::cross_section::{ClassificationLevel, ClassificationMap};
 use crate::factor::common::financial::add_months;
+use crate::progress::ProgressBar;
 
 pub const VERSION: &str = "stock_relations_v1";
+const FUND_COLUMNS: [&str; 5] = ["ts_code", "ann_date", "end_date", "symbol", "mkv"];
+const ANALYST_COLUMNS: [&str; 4] = ["ts_code", "report_date", "org_name", "author_name"];
 
 #[derive(Clone, Debug)]
 pub struct StockRelationsRequest {
@@ -34,50 +42,17 @@ type FundState = BTreeMap<String, FundEvent>;
 pub(super) type Memberships = BTreeSet<(String, String, String)>;
 
 fn projected(path: &Path, columns: &[&str]) -> Result<Table> {
-    if !path.storage_exists() {
-        return Err(err(format!("missing relation source: {}", path.display())));
-    }
     read_parquet(
         path,
         Some(&columns.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
     )
 }
 
-pub(super) fn yearly_files(root: &Path) -> Result<BTreeMap<i32, PathBuf>> {
-    if !root.storage_exists() {
-        return Err(err(format!(
-            "missing relation source directory: {}",
-            root.display()
-        )));
-    }
-    let mut files = BTreeMap::new();
-    for entry in crate::artifact_io::read_dir(root)? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|s| s == "parquet") {
-            if let Some(year) = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.parse::<i32>().ok())
-            {
-                files.insert(year, path);
-            }
-        }
-    }
-    if files.is_empty() {
-        return Err(err(format!(
-            "no annual relation sources under {}; restore raw data first",
-            root.display()
-        )));
-    }
-    Ok(files)
-}
-
-fn text(values: &[Option<String>], row: usize) -> Result<String> {
+fn text(values: &[Option<String>], row: usize) -> Result<&str> {
     values[row]
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
         .ok_or_else(|| err(format!("missing relation key at row {row}")))
 }
 
@@ -96,26 +71,30 @@ fn stock_code(raw: &str) -> String {
     }
 }
 
-fn fund_events(path: &Path) -> Result<Vec<FundEvent>> {
-    let table = projected(path, &["ts_code", "ann_date", "end_date", "symbol", "mkv"])?;
+fn fund_events(table: Table, year: i32) -> Result<Vec<FundEvent>> {
     let funds = table.required_utf8("ts_code")?;
     let symbols = table.required_utf8("symbol")?;
     let announced = table.required_i32_date_cast("ann_date")?;
     let periods = table.required_i32_date_cast("end_date")?;
     let values = table.required_f64_cast("mkv")?;
-    let mut groups: BTreeMap<(i32, String, i32), BTreeMap<String, f64>> = BTreeMap::new();
+    let mut groups: BTreeMap<(i32, &str, i32), HashMap<String, f64>> = BTreeMap::new();
     for i in 0..table.len {
         let ann = announced[i].ok_or_else(|| err("fund announcement date is missing"))?;
         let period = periods[i].ok_or_else(|| err("fund report period is missing"))?;
         if ann < period {
             return Err(err("fund announcement precedes report period"));
         }
+        if ann / 10000 != year {
+            return Err(err(format!(
+                "fund announcement {ann} is outside partition {year}"
+            )));
+        }
         let fund = text(funds, i)?;
         let group = groups.entry((ann, fund, period)).or_default();
         let Some(value) = values[i].filter(|v| v.is_finite() && *v > 0.0) else {
             continue;
         };
-        let stock = stock_code(&text(symbols, i)?);
+        let stock = stock_code(text(symbols, i)?);
         if let Some(previous) = group.insert(stock, value) {
             if previous != value {
                 return Err(err("conflicting duplicate fund holding"));
@@ -126,23 +105,30 @@ fn fund_events(path: &Path) -> Result<Vec<FundEvent>> {
         .into_iter()
         .map(|((announced, fund, period), holdings)| {
             let mut holdings = holdings.into_iter().collect::<Vec<_>>();
-            holdings.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            if holdings.len() > 10 {
+                holdings.select_nth_unstable_by(10, |a, b| {
+                    b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+                });
+                holdings.truncate(10);
+            }
+            let mut stocks: Vec<_> = holdings.into_iter().map(|(stock, _)| stock).collect();
+            stocks.sort_unstable();
             FundEvent {
-                fund,
+                fund: fund.to_owned(),
                 announced,
                 period,
-                stocks: holdings.into_iter().take(10).map(|(s, _)| s).collect(),
+                stocks,
             }
         })
         .collect())
 }
 
-fn apply_fund(state: &mut FundState, event: &FundEvent) {
+fn apply_fund(state: &mut FundState, event: FundEvent) {
     if state
         .get(&event.fund)
         .is_none_or(|old| (event.period, event.announced) >= (old.period, old.announced))
     {
-        state.insert(event.fund.clone(), event.clone());
+        state.insert(event.fund.clone(), event);
     }
 }
 
@@ -154,7 +140,10 @@ pub(super) struct AnalystEvent {
 }
 
 pub(super) fn analyst_events(path: &Path) -> Result<Vec<AnalystEvent>> {
-    let table = projected(path, &["ts_code", "report_date", "org_name", "author_name"])?;
+    parse_analyst_events(projected(path, &ANALYST_COLUMNS)?)
+}
+
+fn parse_analyst_events(table: Table) -> Result<Vec<AnalystEvent>> {
     let stocks = table.required_utf8("ts_code")?;
     let dates = table.required_i32_date_cast("report_date")?;
     let orgs = table.required_utf8("org_name")?;
@@ -175,12 +164,16 @@ pub(super) fn analyst_events(path: &Path) -> Result<Vec<AnalystEvent>> {
                 continue;
             }
             // Length prefix avoids collisions between institution and analyst names.
-            unique.insert((date, format!("{}:{org}{name}", org.len()), stock.clone()));
+            unique.insert((date, format!("{}:{org}{name}", org.len()), stock));
         }
     }
     Ok(unique
         .into_iter()
-        .map(|(date, group, stock)| AnalystEvent { date, group, stock })
+        .map(|(date, group, stock)| AnalystEvent {
+            date,
+            group,
+            stock: stock.to_owned(),
+        })
         .collect())
 }
 
@@ -202,6 +195,113 @@ pub(super) fn membership_table(date: i32, rows: Memberships) -> Result<Table> {
         ("group_id".into(), ColumnData::Utf8(groups)),
         ("ts_code".into(), ColumnData::Utf8(stocks)),
     ]))
+}
+
+#[derive(Default)]
+struct AnalystWindow {
+    pending: VecDeque<AnalystEvent>,
+    active: VecDeque<AnalystEvent>,
+    memberships: BTreeMap<String, BTreeMap<String, usize>>,
+}
+
+impl AnalystWindow {
+    fn advance(&mut self, date: i32) {
+        let cutoff = add_months(date, -6);
+        while self
+            .active
+            .front()
+            .is_some_and(|event| event.date <= cutoff)
+        {
+            let event = self.active.pop_front().unwrap();
+            let stocks = self.memberships.get_mut(&event.group).unwrap();
+            let count = stocks.get_mut(&event.stock).unwrap();
+            *count -= 1;
+            if *count == 0 {
+                stocks.remove(&event.stock);
+            }
+            if stocks.is_empty() {
+                self.memberships.remove(&event.group);
+            }
+        }
+        while self.pending.front().is_some_and(|event| event.date <= date) {
+            let event = self.pending.pop_front().unwrap();
+            if event.date > cutoff {
+                *self
+                    .memberships
+                    .entry(event.group.clone())
+                    .or_default()
+                    .entry(event.stock.clone())
+                    .or_default() += 1;
+                self.active.push_back(event);
+            }
+        }
+    }
+}
+
+fn daily_memberships(
+    date: i32,
+    analysts: &AnalystWindow,
+    funds: &FundState,
+    industry: &ClassificationMap,
+    industry_stocks: &BTreeSet<String>,
+) -> Result<RecordBatch> {
+    let (mut relations, mut groups, mut stocks) = (
+        StringBuilder::new(),
+        StringBuilder::new(),
+        StringBuilder::new(),
+    );
+    {
+        let mut push = |relation, group, stock| {
+            relations.append_value(relation);
+            groups.append_value(group);
+            stocks.append_value(stock);
+        };
+        for (group, covered) in &analysts.memberships {
+            for stock in covered.keys() {
+                push("analyst", group.as_str(), stock.as_str());
+            }
+        }
+        let mut has_funds = false;
+        for (fund, event) in funds {
+            for stock in &event.stocks {
+                push("fund", fund.as_str(), stock.as_str());
+                has_funds = true;
+            }
+        }
+        if !has_funds {
+            return Err(err(format!(
+                "no visible fund disclosures on {date}; restore earlier portfolio history"
+            )));
+        }
+        let mut members = industry_stocks
+            .iter()
+            .filter_map(|stock| industry.group_for(date, stock).map(|group| (group, stock)))
+            .collect::<Vec<_>>();
+        members.sort_unstable();
+        for (group, stock) in members {
+            push("industry", group, stock.as_str());
+        }
+    }
+    let stocks = stocks.finish();
+    let fields = [
+        ("trade_date", DataType::Int32),
+        ("ts_code", DataType::Utf8),
+        ("group_id", DataType::Utf8),
+        ("relation", DataType::Utf8),
+    ];
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int32Array::from_value(date, stocks.len())),
+        Arc::new(stocks),
+        Arc::new(groups.finish()),
+        Arc::new(relations.finish()),
+    ];
+    let schema = Schema::new(fields.map(|(name, ty)| Field::new(name, ty, true)).to_vec());
+    Ok(RecordBatch::try_new(Arc::new(schema), columns)?)
+}
+
+enum AnnualEvents {
+    Funds(Vec<FundEvent>),
+    Analysts(Vec<AnalystEvent>),
 }
 
 pub fn derive_stock_relations(
@@ -245,75 +345,108 @@ pub fn derive_stock_relations(
             return Err(err(format!("missing analyst report year {year}")));
         }
     }
-    let mut state = FundState::new();
-    for (_, path) in fund_files.range(..first_year) {
-        for event in fund_events(path)? {
-            apply_fund(&mut state, &event);
+    let root = config.data_root.join("derived/stock/relations");
+    let manifest = root.join("manifest.json");
+    let expected = format!(
+        "{{\"version\":\"{VERSION}\",\"relations\":[\"industry\",\"fund\",\"analyst\"],\"industry\":\"CI_L1\",\"fund_top_n\":10,\"fund_period\":\"latest_visible_per_fund\",\"analyst_window_months\":6,\"visibility\":\"announcement_or_report_date\",\"share_classes\":\"fund_code\"}}\n"
+    );
+    let has_manifest = check_derived_manifest(&manifest, &expected)?;
+    configure_threads(crate::resources::compute_threads(request.threads)?);
+    let progress = ProgressBar::new("derive-stock-relations", dates.len(), true);
+    let started = Instant::now();
+    let (mut sources, mut paths) = (Vec::new(), Vec::new());
+    for (&year, path) in fund_files.range(..first_year) {
+        sources.push((year, true));
+        paths.push(path.clone());
+    }
+    for year in analyst_first_year..=last_year {
+        sources.push((year, false));
+        paths.push(analyst_files[&year].clone());
+        if year >= first_year {
+            sources.push((year, true));
+            paths.push(fund_files[&year].clone());
         }
     }
-    let root = config.data_root.join("derived/stock/relations");
-    crate::resources::compute_threads(request.threads)?;
-    let mut processed = 0;
-    for year in first_year..=last_year {
-        let events = fund_events(&fund_files[&year])?;
-        let mut cursor = 0;
-        let mut reports = Vec::new();
-        for y in (year - 1).max(analyst_first_year)..=year {
-            reports.extend(analyst_events(&analyst_files[&y])?);
-        }
-        let year_dates = dates
-            .iter()
-            .copied()
-            .filter(|d| d / 10000 == year)
-            .collect::<Vec<_>>();
-        for batch in year_dates.chunks(request.date_batch_size) {
-            let mut outputs = Vec::new();
-            for &date in batch {
-                while cursor < events.len() && events[cursor].announced <= date {
-                    apply_fund(&mut state, &events[cursor]);
-                    cursor += 1;
-                }
-                let mut rows = Memberships::new();
-                for stock in &industry_stocks {
-                    if let Some(group) = industry_map.group_for(date, stock) {
-                        rows.insert(("industry".into(), group.to_string(), stock.clone()));
-                    }
-                }
-                // Carry the latest announced period until a newer disclosure supersedes it.
-                for event in state.values() {
-                    for stock in &event.stocks {
-                        rows.insert(("fund".into(), event.fund.clone(), stock.clone()));
-                    }
-                }
-                let cutoff = add_months(date, -6);
-                for event in reports.iter().filter(|r| r.date > cutoff && r.date <= date) {
-                    rows.insert(("analyst".into(), event.group.clone(), event.stock.clone()));
-                }
-                if !rows.iter().any(|r| r.0 == "fund") {
+    let mut funds = FundState::new();
+    let mut analysts = AnalystWindow::default();
+    let mut date_cursor = 0;
+    let fund_columns = FUND_COLUMNS.map(str::to_owned);
+    let analyst_columns = ANALYST_COLUMNS.map(str::to_owned);
+    visit_tables(
+        &paths,
+        |index, input| {
+            let columns: &[String] = if sources[index].1 {
+                &fund_columns
+            } else {
+                &analyst_columns
+            };
+            PreparedProjection::new(input, &paths[index], columns, &BTreeSet::new())
+        },
+        |index, table| {
+            let (year, is_fund) = sources[index];
+            if is_fund {
+                Ok(AnnualEvents::Funds(fund_events(table, year)?))
+            } else {
+                let events = parse_analyst_events(table)?;
+                if events.iter().any(|event| event.date / 10000 != year) {
                     return Err(err(format!(
-                        "no visible fund disclosures on {date}; restore earlier portfolio history"
+                        "analyst report date is outside partition {year}"
                     )));
                 }
-                outputs.push((date, membership_table(date, rows)?));
+                Ok(AnnualEvents::Analysts(events))
             }
-            let outcomes = crate::data::read_ahead::write_files(&root, outputs, |(date, table)| {
-                let path = root.join(year.to_string()).join(format!("{date}.parquet"));
-                write_derived_parquet(&path, &table)?;
-                Ok((date, table.len))
-            })?;
-            for outcome in outcomes {
-                let (date, rows) = outcome;
-                processed += 1;
-                println!(
-                    "derive-stock-relations [{processed}/{}] date={date} membership_rows={rows}",
-                    dates.len()
-                );
+        },
+        |index, events| {
+            let year = sources[index].0;
+            let mut events = match events {
+                AnnualEvents::Analysts(events) => {
+                    analysts.pending.extend(events);
+                    return Ok(());
+                }
+                AnnualEvents::Funds(events) => events.into_iter().peekable(),
+            };
+            let year_end =
+                date_cursor + dates[date_cursor..].partition_point(|date| date / 10000 <= year);
+            for batch in dates[date_cursor..year_end].chunks(request.date_batch_size) {
+                let mut outputs = Vec::with_capacity(batch.len());
+                for &date in batch {
+                    while events.peek().is_some_and(|event| event.announced <= date) {
+                        apply_fund(&mut funds, events.next().unwrap());
+                    }
+                    analysts.advance(date);
+                    outputs.push((
+                        date,
+                        daily_memberships(
+                            date,
+                            &analysts,
+                            &funds,
+                            &industry_map,
+                            &industry_stocks,
+                        )?,
+                    ));
+                }
+                let outcomes = write_files(&root, outputs, |(date, batch)| {
+                    write_derived_daily_batch(&root, date, &batch)?;
+                    Ok((date, batch.num_rows()))
+                })?;
+                for (date, rows) in outcomes {
+                    progress.tick(format!(
+                        "date={date} membership_rows={rows} elapsed_s={:.1}",
+                        started.elapsed().as_secs_f64()
+                    ));
+                }
             }
-        }
+            // Announcements on non-trading days at year-end still take effect next year.
+            for event in events {
+                apply_fund(&mut funds, event);
+            }
+            date_cursor = year_end;
+            Ok(())
+        },
+    )?;
+    if !has_manifest {
+        crate::artifact_io::write(manifest, expected)?;
     }
-    crate::artifact_io::create_dir_all(&root)?;
-    crate::artifact_io::write(root.join("manifest.json"), format!(
-        "{{\"version\":\"{VERSION}\",\"relations\":[\"industry\",\"fund\",\"analyst\"],\"industry\":\"CI_L1\",\"fund_top_n\":10,\"fund_period\":\"latest_visible_per_fund\",\"analyst_window_months\":6,\"visibility\":\"announcement_or_report_date\",\"share_classes\":\"fund_code\"}}\n"
-    ))?;
+    progress.finish();
     Ok(())
 }

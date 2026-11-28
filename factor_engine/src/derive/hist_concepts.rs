@@ -1,15 +1,19 @@
 //! DFQ-HIST main-business industry concepts with report-prescribed availability.
-use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
+
+use arrow_array::{Int32Array, RecordBatch};
 
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
-use crate::data::parquet_io::read_parquet;
+use crate::data::parquet_io::{table_record_batch, PreparedProjection};
+use crate::data::read_ahead::{configure_threads, visit_tables, write_files};
 use crate::data::{ColumnData, Table};
-use crate::derive::storage::write_derived_parquet;
+use crate::derive::storage::{check_derived_manifest, write_derived_daily_batch, yearly_files};
 use crate::error::{err, Result};
+use crate::progress::ProgressBar;
 
 pub const VERSION: &str = "hist_mainbz_i_v1";
 const EXCLUDED: &[&str] = &[
@@ -62,11 +66,7 @@ struct Disclosure {
     concepts: BTreeSet<String>,
 }
 
-fn events(path: &Path, end: i32) -> Result<Vec<Disclosure>> {
-    let columns = ["ts_code", "end_date", "bz_type", "bz_item"]
-        .map(str::to_string)
-        .to_vec();
-    let table = read_parquet(path, Some(&columns))?;
+fn events(table: Table, partition_year: i32, end: i32) -> Result<Vec<Disclosure>> {
     let stocks = table.required_utf8("ts_code")?;
     let periods = table.required_i32_date_cast("end_date")?;
     let kinds = table.required_utf8("bz_type")?;
@@ -78,6 +78,11 @@ fn events(path: &Path, end: i32) -> Result<Vec<Disclosure>> {
         }
         let period = periods[i].ok_or_else(|| err("mainbz industry row has no end_date"))?;
         let year = period / 10000;
+        if year != partition_year {
+            return Err(err(format!(
+                "mainbz report period {period} is outside partition {partition_year}"
+            )));
+        }
         let available = match period % 10000 {
             1231 => (year + 1) * 10000 + 501,
             630 => year * 10000 + 901,
@@ -149,88 +154,103 @@ pub fn derive_hist_concepts(config: &EngineConfig, request: &HistConceptRequest)
         return Err(err("no trading dates for HIST concepts"));
     }
     let source = config.data_root.join("chn_stock_data/mainbz");
-    let mut files = BTreeMap::new();
-    for entry in crate::artifact_io::read_dir(&source)? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|v| v == "parquet") {
-            if let Some(year) = path
-                .file_stem()
-                .and_then(|v| v.to_str())
-                .and_then(|v| v.parse::<i32>().ok())
-            {
-                files.insert(year, path);
-            }
-        }
-    }
-    let first_year = *files
-        .keys()
-        .next()
-        .ok_or_else(|| err("no mainbz source files"))?;
+    let files = yearly_files(&source)?;
+    let first_year = *files.keys().next().unwrap();
     // Before September, this year's interim results cannot be visible.
     let end = *dates.last().unwrap();
     let last_year = end / 10000 - if end % 10000 < 901 { 1 } else { 0 };
-    let mut disclosures = Vec::new();
-    let started = Instant::now();
-    for year in first_year..=last_year {
-        let path = files
-            .get(&year)
-            .ok_or_else(|| err(format!("missing mainbz year {year}")))?;
-        disclosures.extend(events(path, end)?);
-        println!(
-            "derive-hist-concepts load_year={year} disclosures={} elapsed_s={:.1}",
-            disclosures.len(),
-            started.elapsed().as_secs_f64()
-        );
+    let years = (first_year..=last_year).collect::<Vec<_>>();
+    let paths = years
+        .iter()
+        .map(|year| {
+            files
+                .get(year)
+                .cloned()
+                .ok_or_else(|| err(format!("missing mainbz year {year}")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if paths.is_empty() {
+        return Err(err(format!(
+            "no visible HIST concepts on {}; restore earlier mainbz history",
+            dates[0]
+        )));
     }
-    disclosures
-        .sort_by(|a, b| (a.available, &a.stock, a.period).cmp(&(b.available, &b.stock, b.period)));
     let root = config.data_root.join("derived/stock/hist_concepts");
     let manifest = root.join("manifest.json");
-    if manifest.storage_exists() {
-        if crate::artifact_io::read_to_string(&manifest)?.trim() != manifest_text().trim() {
-            return Err(err(
-                "HIST concept version changed; use a clean derived directory",
-            ));
-        }
-    }
-    crate::resources::compute_threads(request.threads)?;
+    let expected = manifest_text();
+    let has_manifest = check_derived_manifest(&manifest, &expected)?;
+    configure_threads(crate::resources::compute_threads(request.threads)?);
+    let progress = ProgressBar::new("derive-hist-concepts", dates.len(), true);
+    let started = Instant::now();
+    let columns = ["ts_code", "end_date", "bz_type", "bz_item"].map(str::to_owned);
     let mut state = BTreeMap::new();
-    let mut cursor = 0;
-    let mut processed = 0;
-    for batch in dates.chunks(request.date_batch_size) {
-        let mut outputs = Vec::new();
-        for &date in batch {
-            while cursor < disclosures.len() && disclosures[cursor].available <= date {
-                let event = &disclosures[cursor];
-                state.insert(event.stock.clone(), event.clone());
-                cursor += 1;
-            }
-            let table = snapshot(date, &state)?;
-            if table.len == 0 {
-                return Err(err(format!(
-                    "no visible HIST concepts on {date}; restore earlier mainbz history"
-                )));
-            }
-            outputs.push((date, table));
-        }
-        let results = crate::data::read_ahead::write_files(&root, outputs, |(date, table)| {
-            let path = root
-                .join((date / 10000).to_string())
-                .join(format!("{date}.parquet"));
-            write_derived_parquet(&path, &table)?;
-            Ok((date, table.len))
-        })?;
-        for (date, rows) in results {
-            processed += 1;
-            println!(
-                "derive-hist-concepts [{processed}/{}] date={date} rows={rows} elapsed_s={:.1}",
-                dates.len(),
+    let mut date_cursor = 0;
+    let mut template = None;
+    visit_tables(
+        &paths,
+        |index, input| PreparedProjection::new(input, &paths[index], &columns, &BTreeSet::new()),
+        |index, table| events(table, years[index], end),
+        |index, events| {
+            let year = years[index];
+            progress.update(format!(
+                "load_year={year} disclosures={} elapsed_s={:.1}",
+                events.len(),
                 started.elapsed().as_secs_f64()
-            );
-        }
+            ));
+            let mut events = events.into_iter().peekable();
+            // Annual Y is visible in May Y+1, before any period in the next file.
+            let next_file_available = (year + 1) * 10000 + 901;
+            let year_end = date_cursor
+                + dates[date_cursor..].partition_point(|date| *date < next_file_available);
+            for batch in dates[date_cursor..year_end].chunks(request.date_batch_size) {
+                let mut outputs = Vec::with_capacity(batch.len());
+                for &date in batch {
+                    while events.peek().is_some_and(|event| event.available <= date) {
+                        let event = events.next().unwrap();
+                        state.insert(event.stock.clone(), event);
+                        template = None;
+                    }
+                    if template.is_none() {
+                        let table = snapshot(date, &state)?;
+                        if table.len == 0 {
+                            return Err(err(format!("no visible HIST concepts on {date}; restore earlier mainbz history")));
+                        }
+                        template = Some(table_record_batch(&table)?);
+                    }
+                    // Cloning a batch shares the immutable concept columns.
+                    outputs.push((date, template.as_ref().unwrap().clone()));
+                }
+                let outcomes = write_files(&root, outputs, |(date, batch)| {
+                    write_snapshot(&root, date, batch)
+                })?;
+                for (date, rows) in outcomes {
+                    progress.tick(format!(
+                        "date={date} rows={rows} elapsed_s={:.1}",
+                        started.elapsed().as_secs_f64()
+                    ));
+                }
+            }
+            for event in events {
+                state.insert(event.stock.clone(), event);
+                template = None;
+            }
+            date_cursor = year_end;
+            Ok(())
+        },
+    )?;
+    if !has_manifest {
+        crate::artifact_io::write(manifest, expected)?;
     }
-    let temporary = manifest.with_extension(format!("{}.tmp", std::process::id()));
-    crate::artifact_io::write(&temporary, manifest_text())?;
-    crate::artifact_io::rename(temporary, manifest)?;
+    progress.finish();
     Ok(())
+}
+
+fn write_snapshot(root: &Path, date: i32, template: RecordBatch) -> Result<(i32, usize)> {
+    let rows = template.num_rows();
+    let date_pos = template.schema().index_of("trade_date")?;
+    let mut columns = template.columns().to_vec();
+    columns[date_pos] = Arc::new(Int32Array::from_value(date, rows));
+    let batch = RecordBatch::try_new(template.schema(), columns)?;
+    write_derived_daily_batch(root, date, &batch)?;
+    Ok((date, rows))
 }

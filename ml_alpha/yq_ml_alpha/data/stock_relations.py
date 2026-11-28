@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.data.stores import daily_path
+from yq_ml_alpha.output.parquet_reader import transient_parquet_tables
 
 
 RELATIONS = ("industry", "fund", "analyst")
@@ -17,6 +18,7 @@ class StockRelations:
     def __init__(self, root):
         self.root = Path(root)
         self.manifest = None
+        self._memberships = {}
 
     def identity(self):
         if self.manifest is None:
@@ -31,20 +33,29 @@ class StockRelations:
 
     def load(self, date, symbols, device):
         self.identity()
-        path = daily_path(self.root, date)
-        if not data_io.exists(path):
-            raise FileNotFoundError(f"Missing stock relations for {date}: {path}")
-        frame = data_io.read_parquet(path, columns=["trade_date", "relation", "group_id", "ts_code"])
-        if (frame.isna().any().any() or not frame.trade_date.eq(date).all()
-                or frame.duplicated(["relation", "group_id", "ts_code"]).any()
-                or not set(frame.relation).issubset(RELATIONS)):
-            raise ValueError(f"invalid stock relation memberships: {path}")
-        return build_relations(frame, symbols, device)
+        keys = tuple(symbols)
+        cached = self._memberships.get(date)
+        if cached is None or cached[0] != keys:
+            path = daily_path(self.root, date)
+            try:
+                with transient_parquet_tables():
+                    frame = data_io.read_parquet(path, columns=["trade_date", "relation", "group_id", "ts_code"])
+            except FileNotFoundError as error:
+                raise FileNotFoundError(f"Missing stock relations for {date}: {path}") from error
+            if (frame.isna().any().any() or not frame.trade_date.eq(date).all()
+                    or frame.duplicated(["relation", "group_id", "ts_code"]).any()
+                    or not set(frame.relation).issubset(RELATIONS)):
+                raise ValueError(f"invalid stock relation memberships: {path}")
+            cached = keys, _relation_indices(frame, symbols)
+            self._memberships[date] = cached
+        return _graphs(cached[1], len(symbols), device)
 
 
 def build_relations(frame, symbols, device):
-    import torch
+    return _graphs(_relation_indices(frame, symbols), len(symbols), device)
 
+
+def _relation_indices(frame, symbols):
     if len(set(symbols)) != len(symbols):
         raise ValueError("duplicate graph nodes")
     positions = {symbol: i for i, symbol in enumerate(symbols)}
@@ -56,9 +67,18 @@ def build_relations(frame, symbols, device):
             raise ValueError("duplicate stock/group membership")
         group_codes, groups = pd.factorize(rows.group_id, sort=True)
         node_codes = rows.ts_code.map(positions).to_numpy(dtype="int64")
-        indices = torch.as_tensor(np.array([node_codes, group_codes]), dtype=torch.long, device=device)
+        result.append((np.array([node_codes, group_codes], dtype=np.int32), len(groups)))
+    return result
+
+
+def _graphs(memberships, count, device):
+    import torch
+
+    result = []
+    for rows, groups in memberships:
+        indices = torch.as_tensor(rows, dtype=torch.long, device=device)
         incidence = torch.sparse_coo_tensor(
-            indices, torch.ones(len(rows), device=device), (len(symbols), len(groups)), device=device,
+            indices, torch.ones(rows.shape[1], device=device), (count, groups), device=device,
         ).coalesce()
         result.append(IncidenceGraph(incidence))
     return result

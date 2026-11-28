@@ -130,11 +130,11 @@ pub(crate) fn visit_projected_files(
 
 /// IO workers fetch selected compressed chunks. The compute pool decodes them;
 /// each worker hands off results in file order before preparing its next file.
-pub(crate) fn visit_tables(
+pub(crate) fn visit_tables<T: Send>(
     paths: &[PathBuf],
     prepare: impl Fn(usize, StorageReader) -> Result<PreparedProjection> + Sync,
-    finish: impl Fn(usize, Table) -> Result<Table> + Sync,
-    mut consume: impl FnMut(usize, Table) -> Result<()>,
+    finish: impl Fn(usize, Table) -> Result<T> + Sync,
+    mut consume: impl FnMut(usize, T) -> Result<()>,
 ) -> Result<()> {
     if paths.is_empty() { return Ok(()); }
     let Some(reader) = remote(&paths[0])? else {

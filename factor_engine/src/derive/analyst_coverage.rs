@@ -6,9 +6,9 @@ use crate::artifact_io::StoragePathExt;
 use crate::calendar::TradingCalendar;
 use crate::config::EngineConfig;
 use crate::derive::stock_relations::{
-    analyst_events, membership_table, yearly_files, AnalystEvent, Memberships,
+    analyst_events, membership_table, AnalystEvent, Memberships,
 };
-use crate::derive::storage::write_derived_parquet;
+use crate::derive::storage::{write_derived_parquet, yearly_files};
 use crate::error::{err, Result};
 use crate::factor::common::financial::add_months;
 

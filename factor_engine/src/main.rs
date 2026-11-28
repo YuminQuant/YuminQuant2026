@@ -346,7 +346,7 @@ fn run_cli() -> Result<()> {
             yq_factor_engine::derive::hist_concepts::derive_hist_concepts(
                 &config, &yq_factor_engine::derive::hist_concepts::HistConceptRequest {
                     start_date: date("start-date")?, end_date: date("end-date")?,
-                    date_batch_size: flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(20),
+                    date_batch_size: flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(DEFAULT_DERIVE_DATE_BATCH_SIZE),
                     threads: flags.get("threads").map(|value| value.parse()).transpose()?,
                 },
             )?;
@@ -435,7 +435,7 @@ fn run_cli() -> Result<()> {
             yq_factor_engine::derive::stock_relations::derive_stock_relations(
                 &config, &yq_factor_engine::derive::stock_relations::StockRelationsRequest {
                     start_date: date("start-date")?, end_date: date("end-date")?,
-                    date_batch_size: flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(20),
+                    date_batch_size: flags.get("date-batch-size").map(|v| v.parse::<usize>()).transpose()?.unwrap_or(DEFAULT_DERIVE_DATE_BATCH_SIZE),
                     threads: flags.get("threads").map(|value| value.parse()).transpose()?,
                 },
             )?;
@@ -1686,11 +1686,11 @@ fn print_help() {
     println!("  migrate-factor-files --start-date YYYYMMDD --end-date YYYYMMDD [--factor-root PATH] [--dry-run]");
     println!("  remove-factor-columns --start-date YYYYMMDD --end-date YYYYMMDD --columns IDS [--factor-root PATH]");
     println!("  derive-chip-age --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
-    println!("  derive-stock-relations --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
+    println!("  derive-stock-relations --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--threads N] [--config path]");
     println!("  derive-analyst-coverage --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--window-months 6] [--date-batch-size 20] [--threads N] [--config path]");
     println!("  derive-analyst-gat-inputs --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--threads N] [--config path]");
     println!("  derive-stock-events --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--threads N] [--config path]");
-    println!("  derive-hist-concepts --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--config path]");
+    println!("  derive-hist-concepts --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 20] [--threads N] [--config path]");
     println!("  derive-logsigrnn --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--date-batch-size 120] [--threads 2] [--overwrite true|false]");
     println!("    5m seven-channel/order4 daily Lyndon features and moments -> derived/stock/logsigrnn_week; 21-session assembly in Python");
     println!("  derive-logsig --asset stock --start-date YYYYMMDD --end-date YYYYMMDD [--threads 2] [--overwrite true|false]");

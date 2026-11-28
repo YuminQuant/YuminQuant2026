@@ -2,9 +2,11 @@ use crate::artifact_io::StoragePathExt;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use arrow_array::RecordBatch;
 use parquet::basic::Compression;
+use parquet::file::properties::WriterProperties;
 
-use crate::data::parquet_io::{read_parquet, write_parquet_with_compression};
+use crate::data::parquet_io::{read_parquet, write_parquet_batch, write_parquet_with_compression};
 use crate::data::{ColumnData, Table};
 use crate::derive::bar::{selected_bar_columns, DerivedBarRow, BAR_KEY_COLUMNS};
 use crate::error::{err, Result};
@@ -36,6 +38,43 @@ pub fn write_bar_rows_selected(
 /// Shared production default for derived datasets, including bars and consensus.
 pub fn write_derived_parquet(path: &Path, table: &Table) -> Result<()> {
     write_parquet_with_compression(path, table, Compression::SNAPPY)
+}
+
+pub(super) fn write_derived_daily_batch(root: &Path, date: i32, batch: &RecordBatch) -> Result<()> {
+    let path = root.join((date / 10000).to_string()).join(format!("{date}.parquet"));
+    let properties = WriterProperties::builder().set_compression(Compression::SNAPPY).build();
+    write_parquet_batch(&path, batch, properties)
+}
+
+pub(super) fn check_derived_manifest(path: &Path, expected: &str) -> Result<bool> {
+    if !path.storage_exists() {
+        return Ok(false);
+    }
+    let actual: serde_json::Value = serde_json::from_str(&crate::artifact_io::read_to_string(path)?)?;
+    let expected: serde_json::Value = serde_json::from_str(expected)?;
+    if actual != expected {
+        return Err(err(format!("derived dataset identity changed at {}", path.display())));
+    }
+    Ok(true)
+}
+
+pub(super) fn yearly_files(root: &Path) -> Result<BTreeMap<i32, PathBuf>> {
+    let entries = crate::artifact_io::read_dir(root)
+        .map_err(|error| err(format!("cannot list annual source {}: {error}", root.display())))?;
+    let mut files = BTreeMap::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().is_some_and(|suffix| suffix == "parquet") {
+            if let Some(year) = path.file_stem().and_then(|stem| stem.to_str())
+                .and_then(|stem| stem.parse::<i32>().ok()) {
+                files.insert(year, path);
+            }
+        }
+    }
+    if files.is_empty() {
+        return Err(err(format!("no annual Parquet sources under {}", root.display())));
+    }
+    Ok(files)
 }
 
 /// Replace requested columns for one date, retaining other columns and stock rows.

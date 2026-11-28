@@ -99,10 +99,9 @@ def fit_bar_panel(
                     x_tensor = torch.from_numpy(x_np).to(device)
                     y_tensor = torch.from_numpy(y_np).to(device)
                     optimizer.zero_grad()
-                    loss = alpha._training_loss(torch, x_tensor, y_tensor)
+                    loss = alpha._backward_batch(torch, x_tensor, y_tensor)
                     if loss is None:
                         continue
-                    loss.backward()
                     optimizer.step()
                     batch_count = int(len(batch_rows))
                     train_loss_sum += float(loss.detach().cpu().item()) * batch_count

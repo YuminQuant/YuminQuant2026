@@ -109,6 +109,26 @@ label = "future_vwap_return_10d"
 tags = ["e2e", "resnet_gru", "msnew", "orthogonal", "mse_loss", "DFZQ"]
 
 [[factors]]
+factor_id = "resnet_gru_week_adv"
+config = "factors/resnet_gru_week_adv.toml"
+status = "active"
+display_name = "ResNet-GRU weekly-image alpha with adversarial input training"
+model_class = "yq_ml_alpha.models.resnet_gru_model.ResNetGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "resnet_gru", "week", "adversarial", "orthogonal", "mse_loss"]
+
+[[factors]]
+factor_id = "resnet_gru_msnew_adv"
+config = "factors/resnet_gru_msnew_adv.toml"
+status = "active"
+display_name = "ResNet-GRU half-hour-image alpha with adversarial input training"
+model_class = "yq_ml_alpha.models.resnet_gru_model.ResNetGRUAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "resnet_gru", "msnew", "adversarial", "orthogonal", "mse_loss"]
+
+[[factors]]
 factor_id = "rawbar_multi_gru"
 config = "factors/rawbar_multi_gru.toml"
 status = "active"

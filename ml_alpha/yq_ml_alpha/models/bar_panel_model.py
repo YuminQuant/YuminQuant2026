@@ -28,6 +28,12 @@ class BarPanelAlphaModel(AlphaModel):
     def fit(self, train_data: pd.DataFrame, valid_data: pd.DataFrame, context: ModelContext) -> None:
         self._fit(train_data, valid_data, context, train_tensor=None, valid_tensor=None)
 
+    def _backward_batch(self, torch, inputs, target):
+        loss = self._training_loss(torch, inputs, target)
+        if loss is not None:
+            loss.backward()
+        return loss
+
     def fit_bundle(self, train_bundle, valid_bundle, context: ModelContext) -> None:
         self._fit(
             train_bundle.frame,

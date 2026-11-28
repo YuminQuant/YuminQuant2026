@@ -1,5 +1,34 @@
-"""Sample-independent WGAN-GP losses and isolated generator updates."""
+"""Training-time input perturbations and WGAN-GP helpers."""
 from contextlib import contextmanager
+
+
+def linf_adversarial_inputs(torch, inputs, predict, target, *, steps, epsilon, step_size):
+    """Projected gradient ascent in channel-standard-deviation units."""
+    inputs = inputs.detach()
+    scale = inputs.std(dim=(0, 1), unbiased=False, keepdim=True)
+    budget, step = epsilon * scale, step_size * scale
+    perturbed = inputs
+    for _ in range(steps):
+        perturbed = perturbed.detach().requires_grad_(True)
+        mse = (predict(perturbed) - target).square().mean()
+        (gradient,) = torch.autograd.grad(mse, perturbed)
+        with torch.no_grad():
+            delta = (perturbed - inputs + step * gradient.sign()).clamp(min=-budget, max=budget)
+            perturbed = inputs + delta
+    return perturbed
+
+
+@contextmanager
+def batchnorm_without_running_updates(*layers):
+    """Use training batch statistics while leaving the running buffers untouched."""
+    tracking = [layer.track_running_stats for layer in layers]
+    try:
+        for layer in layers:
+            layer.track_running_stats = False
+        yield
+    finally:
+        for layer, enabled in zip(layers, tracking):
+            layer.track_running_stats = enabled
 
 
 def noisy_samples(torch, values, std):

@@ -144,7 +144,7 @@ fn snapshot(
 }
 
 // Newest first. The current YoY difference must not estimate its own expectation.
-fn surprise(levels: &[Option<f64>; QUARTERS]) -> Option<f64> {
+pub(crate) fn surprise(levels: &[Option<f64>; QUARTERS]) -> Option<f64> {
     let levels = levels.map(|v| v.filter(|v| v.is_finite()));
     if levels.iter().flatten().count() < MIN_QUARTERS {
         return None;

@@ -3,6 +3,7 @@ pub mod analyst_coverage;
 pub mod analyst_gat_inputs;
 pub mod bar;
 pub mod chip_age;
+pub mod fundamental_lfq;
 pub mod engine;
 pub mod future_main_oi;
 pub mod future_main_pool;

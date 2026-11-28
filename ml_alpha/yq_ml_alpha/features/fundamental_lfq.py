@@ -1,0 +1,80 @@
+"""Point-in-time fundamental inputs for the daily ASTGNN factor."""
+from __future__ import annotations
+
+from contextlib import nullcontext
+from dataclasses import replace
+import json
+
+import numpy as np
+import pandas as pd
+
+from yq_ml_alpha.data.daily_tensor_sequence import DailyTensorSequence
+from yq_ml_alpha.data.filters import TradeFilters
+from yq_ml_alpha.data.stores import read_daily
+from yq_ml_alpha.data.universe import Universe
+from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
+from yq_ml_alpha.output import artifact_io
+
+
+class FundamentalLfqHistory(DailyTensorSequence):
+    def __init__(self, config):
+        params = config.features.params
+        columns = config.features.columns
+        if len(columns) != 56 or len(set(columns)) != 56:
+            raise ValueError("fundamental LFQ requires 56 distinct metric columns")
+        self.metrics = list(columns)
+        self.history_start = int(params["history_start_date"])
+        # Numeric zero and missing source values remain distinguishable.
+        inputs = self.metrics + [f"{column}__missing" for column in self.metrics]
+        super().__init__(config.features.root, inputs, (len(inputs),),
+                         length=int(config.model.params["sequence_length"]))
+        self.filters = TradeFilters(config.filters, config.data_root)
+        self.early_filters = TradeFilters(replace(config.filters, exclude_st=False), config.data_root)
+        self.universe = Universe(config.universe.id, config.data_root)
+
+    def window_dates(self, date):
+        window = super().window_dates(date)
+        return window if window and window[0] >= self.history_start else []
+
+    def prefetch_targets(self, dates):
+        if artifact_io.backend(self.root) is None or list(dates) != sorted(dates):
+            return nullcontext()
+        return self.prefetch_sources(sorted({day for date in dates for day in self.window_dates(date)}))
+
+    def _load_day(self, date):
+        frame = read_daily(self.root, date, self.metrics, required=self.metrics)
+        if (frame.empty or frame.ts_code.isna().any() or frame.ts_code.duplicated().any()
+                or not frame.trade_date.eq(date).all()):
+            raise ValueError(f"invalid, missing or duplicate fundamental LFQ inputs for {date}: {self.root}")
+        filters = self.filters if date >= 20160101 else self.early_filters
+        frame = filters.apply(self.universe.filter(frame, date), date)
+        values = frame[self.metrics].to_numpy(dtype=np.float32, copy=False)
+        valid = np.isfinite(values)
+        output = np.empty((len(frame), len(self.columns)), dtype=np.float32)
+        output[:, :len(self.metrics)] = np.where(valid, values, 0)
+        output[:, len(self.metrics):] = ~valid
+        return pd.DataFrame(output, index=pd.Index(frame.ts_code, name="ts_code"),
+                            columns=self.columns, copy=False)
+
+
+class FundamentalLfqProvider(DailySequenceProvider):
+    def __init__(self, config):
+        super().__init__(FundamentalLfqHistory(config))
+        self._manifest = None
+
+    def set_calendar_dates(self, dates):
+        self.dataset_identity()
+        super().set_calendar_dates(dates)
+
+    def dataset_identity(self):
+        if self._manifest is None:
+            path = self.sequence.root / "manifest.json"
+            expected = {"version": "astgnn_lfq_daily_v1", "columns": self.sequence.metrics,
+                        "profit_proxy": "n_income_attr_p", "frequency": "daily",
+                        "preprocess": "raw_fundamental_metrics"}
+            if not artifact_io.exists(path):
+                raise FileNotFoundError(f"missing fundamental LFQ manifest: {path}; run derive-fundamental-lfq")
+            if json.loads(artifact_io.read_text(path, encoding="utf-8")) != expected:
+                raise ValueError(f"incompatible fundamental LFQ dataset manifest: {path}")
+            self._manifest = {**expected, "missing_input": "zero_with_indicators"}
+        return self._manifest

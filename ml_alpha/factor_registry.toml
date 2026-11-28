@@ -19,6 +19,16 @@ label = "future_vwap_return_10d"
 tags = ["e2e", "DFZQ", "astgnn", "adaptive_graph", "week", "orthogonal", "mse_loss"]
 
 [[factors]]
+factor_id = "astgnn_lfq_daily"
+config = "factors/astgnn_lfq_daily.toml"
+status = "active"
+display_name = "ASTGNN point-in-time fundamental daily alpha"
+model_class = "yq_ml_alpha.models.astgnn_lfq_model.AstgnnLfqAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "fundamental", "astgnn", "adaptive_graph", "mse_loss"]
+
+[[factors]]
 factor_id = "astgnn_msnew"
 config = "factors/astgnn_msnew.toml"
 status = "active"

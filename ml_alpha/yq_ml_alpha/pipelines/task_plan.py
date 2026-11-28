@@ -1,6 +1,7 @@
 """Plan task ownership without editing scientific configs or refit windows."""
 from collections import defaultdict
 from dataclasses import asdict
+from itertools import groupby
 from pathlib import Path
 
 from yq_ml_alpha.calendar import TradingCalendar
@@ -82,7 +83,10 @@ def plan_tasks(configs, action, options, *, include_column_catalog=True):
         # Arbitrary model extensions may carry state across prediction batches.
         # Only declared replay-safe models can be independently date-sharded.
         safe = all(getattr(load_model_class(configs[i].model.class_path), 'prediction_replay_safe', False) for i in indices)
-        chunks = _chunks(dates, options.predict_task_days) if safe else [dates]
+        if safe and options.predict_task_years:
+            chunks = [list(days) for _, days in groupby(dates, key=lambda date: date // 10000)]
+        else:
+            chunks = _chunks(dates, options.predict_task_days) if safe else [dates]
         for ti, target in enumerate(chunks):
             if target:
                 tasks.append(dict(id=f'predict-{gi:03d}-{ti:04d}', config_indices=indices,

@@ -13,10 +13,15 @@ class ExecutionOptions:
     model_predict_workers: int = 1
     threads: int = 1
     predict_task_days: int = 120
+    predict_task_years: bool = False
 
     def __post_init__(self):
         for field in fields(self):
             value = getattr(self, field.name)
+            if field.name == 'predict_task_years':
+                if type(value) is not bool:
+                    raise ValueError('predict_task_years must be boolean')
+                continue
             if type(value) is not int or value < 1:
                 raise ValueError(f'{field.name} must be an integer >= 1')
 

@@ -30,3 +30,6 @@ yq-ml-alpha = "yq_ml_alpha.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["yq_ml_alpha*"]
+
+[tool.setuptools.package-data]
+yq_ml_alpha = ["resources/kd_sources/*.toml"]

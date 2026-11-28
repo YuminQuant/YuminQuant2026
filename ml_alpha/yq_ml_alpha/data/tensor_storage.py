@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import tempfile
-import threading
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +9,9 @@ import numpy as np
 
 class TensorSpool:
     def __init__(self, root: Path) -> None:
+        root = root.resolve()
+        if root.drive.lower() == "c:":
+            raise ValueError("tensor scratch must not be placed on C:")
         root.mkdir(parents=True, exist_ok=True)
         self.directory = tempfile.TemporaryDirectory(prefix="tensor-", dir=root)
         self.shapes: dict[str, tuple[int, ...]] = {}
@@ -52,58 +54,73 @@ class TensorSpool:
             self.close()
 
 
+class ChunkedTensor:
+    """Read an arbitrary batch from per-date arrays without a full-window copy."""
+
+    def __init__(self, chunks):
+        self.chunks = tuple(chunks)
+        self.ends = np.cumsum([len(chunk) for chunk in chunks], dtype=np.int64)
+        self.starts = np.concatenate(([0], self.ends[:-1]))
+        self.shape = (int(self.ends[-1]), *chunks[0].shape[1:])
+        self.ndim = len(self.shape)
+        self.dtype = chunks[0].dtype
+
+    def __len__(self):
+        return self.shape[0]
+
+    @property
+    def nbytes(self):
+        return sum(chunk.nbytes for chunk in self.chunks)
+
+    def __getitem__(self, rows):
+        scalar = np.isscalar(rows)
+        if isinstance(rows, slice):
+            rows = np.arange(*rows.indices(len(self)))
+        rows = np.atleast_1d(rows)
+        if rows.dtype == bool:
+            if len(rows) != len(self):
+                raise IndexError("invalid tensor mask length")
+            rows = np.flatnonzero(rows)
+        rows = np.where(rows < 0, rows + len(self), rows).astype(np.int64, copy=False)
+        if not len(rows):
+            return np.empty((0, *self.shape[1:]), dtype=self.dtype)
+        if rows.min() < 0 or rows.max() >= len(self):
+            raise IndexError("tensor row index out of bounds")
+        day_ids = np.searchsorted(self.ends, rows, side="right")
+        if day_ids.min() == day_ids.max():
+            index = day_ids[0]
+            result = self.chunks[index][rows - self.starts[index]]
+            return result[0] if scalar else result
+        result = np.empty((len(rows), *self.shape[1:]), dtype=self.dtype)
+        for index in np.unique(day_ids):
+            selected = np.flatnonzero(day_ids == index)
+            result[selected] = self.chunks[index][rows[selected] - self.starts[index]]
+        return result
+
+
 class MemoryTensorSpool:
-    """Remote training retains one window in RAM and never spills to disk."""
-    _guard = threading.Lock()
-    _reserved = 0
+    """Retain prepared date tensors in RAM for all epochs in the window."""
+
     def __init__(self):
         self.chunks = {}
         self.maps = {}
-        self.bytes = 0
-
-    def _reserve(self, cost):
-        with self._guard:
-            type(self)._reserved += cost
-
-    def _release(self, cost):
-        with self._guard:
-            type(self)._reserved -= cost
 
     def append(self, tensors):
         if self.chunks and set(tensors) != set(self.chunks):
-            raise ValueError('tensor branches changed within a bundle')
-        cost = sum(np.asarray(v).size * 4 for v in tensors.values())
+            raise ValueError("tensor branches changed within a bundle")
         for key, values in tensors.items():
-            previous=self.chunks.get(key,[])
-            if previous and previous[0].shape[1:] != values.shape[1:]:
-                raise ValueError('tensor shape changed within a bundle')
-        self._reserve(cost)
-        self.bytes += cost
-        for key, values in tensors.items():
-            array = np.asarray(values, dtype='float32')
-            previous = self.chunks.setdefault(key, [])
-            previous.append(array)
+            array = np.asarray(values, dtype="float32")
+            chunks = self.chunks.setdefault(key, [])
+            if chunks and chunks[0].shape[1:] != array.shape[1:]:
+                raise ValueError(f"tensor shape changed for {key}")
+            chunks.append(array)
 
     def finish(self):
-        for key in list(self.chunks):
-            chunks = self.chunks[key]
-            cost = sum(v.nbytes for v in chunks)
-            extra=cost if len(chunks)>1 else 0
-            self._reserve(extra)
-            try:
-                self.maps[key] = chunks[0] if len(chunks) == 1 else np.concatenate(chunks, axis=0)
-                chunks.clear()
-            finally:
-                self._release(extra)
-            del self.chunks[key]
+        for key, chunks in self.chunks.items():
+            self.maps[key] = chunks[0] if len(chunks) == 1 else ChunkedTensor(chunks)
+        self.chunks.clear()
         return self.maps
 
     def close(self):
         self.chunks.clear()
         self.maps.clear()
-        self._release(self.bytes)
-        self.bytes = 0
-
-    def __del__(self):
-        if hasattr(self, 'bytes'):
-            self.close()

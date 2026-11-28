@@ -231,7 +231,7 @@ def _zscore_series(values: pd.Series) -> pd.Series:
     return transformed
 
 
-def zscore_observed(values: np.ndarray, *, mad5: bool = False) -> np.ndarray:
+def zscore_observed(values: np.ndarray, *, mad5: bool = False, fill_value: float = 0.0) -> np.ndarray:
     """Cross-section columns, fitting statistics only on finite observations."""
     finite = np.isfinite(values)
     values = np.where(finite, values, np.nan).astype(np.float64, copy=False)
@@ -246,7 +246,10 @@ def zscore_observed(values: np.ndarray, *, mad5: bool = False) -> np.ndarray:
     mean = np.where(finite, values, 0).sum(axis=0) / count
     centered = np.where(finite, values - mean, 0)
     scale = np.sqrt(np.square(centered).sum(axis=0) / count)
-    return (centered / np.where(scale > 0, scale, 1)).astype(np.float32)
+    normalized = centered / np.where((scale > 0) & np.isfinite(scale), scale, np.inf)
+    if fill_value != 0.0:
+        normalized[~finite] = fill_value
+    return normalized.astype(np.float32)
 
 
 def scale_market_window(values: np.ndarray, *, price_columns: int, eps: float) -> None:

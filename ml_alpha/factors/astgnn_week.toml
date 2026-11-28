@@ -52,7 +52,7 @@ dataset = "week"
 daily_root = "data/chn_stock_data/daily"
 
 [materialize]
-tensor_storage = "indexed"
+tensor_storage = "memory"
 cache_dir = "data/model_workspace/astgnn_week/cache"
 predict_batch_size = 20
 

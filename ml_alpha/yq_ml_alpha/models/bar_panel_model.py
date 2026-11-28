@@ -99,15 +99,15 @@ class BarPanelAlphaModel(AlphaModel):
         artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
         self.model.to("cpu")
         _release_torch_memory(torch)
-        artifact_io.torch_save(
-            {
-                "params": self.params,
-                "state_dict": self.model.state_dict(),
-                "loss_history": self.loss_history,
-                "model_info": self.model_info,
-            },
-            path,
-        )
+        artifact_io.torch_save(self.checkpoint(), path)
+
+    def checkpoint(self, *, include_diagnostics=True):
+        return {
+            "params": self.params,
+            "state_dict": self.model.state_dict(),
+            "loss_history": self.loss_history if include_diagnostics else [],
+            "model_info": self.model_info if include_diagnostics else {},
+        }
 
     def write_diagnostics(self, context: ModelContext) -> list[Path]:
         diagnostics = _diagnostics(context)
@@ -128,8 +128,11 @@ class BarPanelAlphaModel(AlphaModel):
 
     @classmethod
     def load(cls, path: str | Path) -> "BarPanelAlphaModel":
-        torch, nn = _torch_modules()
-        checkpoint = artifact_io.torch_load(Path(path), map_location="cpu")
+        return cls.from_checkpoint(artifact_io.torch_load(Path(path), map_location="cpu"))
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint):
+        _, nn = _torch_modules()
         model = cls()
         model.params = model._normalize_params(checkpoint["params"])
         model.model = model._build_regressor(nn)

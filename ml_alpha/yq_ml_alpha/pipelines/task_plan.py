@@ -4,6 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from yq_ml_alpha.calendar import TradingCalendar
+from yq_ml_alpha.data.column_catalog import column_discovery_scope
 from yq_ml_alpha.models.base import load_model_class
 from yq_ml_alpha.pipelines.runtime import build_windows, _predict_dates, _chunks
 
@@ -32,7 +33,8 @@ def prediction_units(config, calendar):
             for dates in _chunks(window.predict_dates, config.materialize.predict_batch_size)]
 
 
-def plan_tasks(configs, action, options):
+@column_discovery_scope()
+def plan_tasks(configs, action, options, *, include_column_catalog=True):
     if not configs:
         raise ValueError('At least one model config is required')
     artifacts = set()
@@ -48,7 +50,7 @@ def plan_tasks(configs, action, options):
         if action == 'train':
             from yq_ml_alpha.pipelines.training_tasks import training_plan
             plan = training_plan(config, include_column_catalog=False)
-            sequential = getattr(load_model_class(config.model.class_path), 'training_requires_previous_window', False)
+            sequential = plan["group_windows"]
             for wi, window in enumerate(plan['windows']):
                 path = str(Path(plan['artifact_dir']) / window['window_id'])
                 if path in artifacts:
@@ -92,7 +94,7 @@ def plan_tasks(configs, action, options):
                    if config.diagnostics.enabled and
                    (config.diagnostics.write_loss_history or config.diagnostics.write_window_summary)]
     result = dict(action=action, execution=asdict(options), tasks=tasks, diagnostics=diagnostics)
-    if action == 'train':
+    if action == 'train' and include_column_catalog:
         from yq_ml_alpha.data.column_catalog import training_column_catalog
         result["feature_column_catalog"] = training_column_catalog(configs)
     return result

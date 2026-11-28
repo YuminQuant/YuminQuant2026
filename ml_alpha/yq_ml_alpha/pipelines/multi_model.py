@@ -28,7 +28,7 @@ def execute_task(configs, action, task, options, *, resume=False):
 
 def execute_plan(configs, action, options, *, task_id=None, config_paths=None,
                  execution_path=None, command=None, resume=False):
-    plan = plan_tasks(configs, action, options)
+    plan = plan_tasks(configs, action, options, include_column_catalog=task_id is None)
     tasks = plan['tasks']
     if task_id is not None:
         selected = [task for task in tasks if task['id'] == task_id]
@@ -43,6 +43,9 @@ def execute_plan(configs, action, options, *, task_id=None, config_paths=None,
         if os.environ.get('YQ_METADATA_MANAGED') != '1':
             write_factor_metadata_many(configs)
     env = dict(os.environ, **options.environment(), YQ_METADATA_MANAGED='1')
+    if plan.get('feature_column_catalog'):
+        from yq_ml_alpha.data.column_catalog import SUBMISSION_CATALOG_ENV
+        env[SUBMISSION_CATALOG_ENV] = json.dumps(plan['feature_column_catalog'])
     if parallel == 1:
         old = os.environ.get('YQ_METADATA_MANAGED')
         os.environ['YQ_METADATA_MANAGED'] = '1'

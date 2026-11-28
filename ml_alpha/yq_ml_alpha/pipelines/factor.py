@@ -8,12 +8,14 @@ from pathlib import Path
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig, PROJECT_ROOT, load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
+from yq_ml_alpha.data.column_catalog import column_discovery_scope
 from yq_ml_alpha.output.artifacts import window_artifact_path, save_manifest, validate_manifest
 from yq_ml_alpha.output.daily_wide_writer import DailyWideWriter
 from yq_ml_alpha.output.factor_metadata import write_factor_metadata
 from yq_ml_alpha.pipelines.runtime import (
     _Progress,
     _aggregate_diagnostics,
+    _capture_prediction_weights,
     _context,
     _fit_model,
     _load_train_valid,
@@ -59,6 +61,7 @@ def all_metadata(
     return metadata_only(config_paths, config_dir)
 
 
+@column_discovery_scope()
 def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     _ensure_factor_config(config)
     workflow = getattr(_model_class(config.model.class_path), "run_factor_workflow", None)
@@ -116,6 +119,7 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         _fit_model(model, train_bundle, valid_bundle, context)
+        _capture_prediction_weights(model, dataset, window, progress)
         if config.diagnostics.enabled:
             progress.step("diagnostics")
             written.extend(model.write_diagnostics(context))
@@ -142,10 +146,12 @@ def run_config(config: MlAlphaConfig, *, resume: bool = False) -> list[Path]:
     progress.step("ensure_output_column")
     written.extend(writer.ensure_output_column(all_predict_dates))
     written.extend(_aggregate_diagnostics(config))
+    dataset.close()
     progress.done()
     return written
 
 
+@column_discovery_scope()
 def train_config(config: MlAlphaConfig, *, resume: bool = False, window_ids=None) -> list[Path]:
     _ensure_factor_config(config)
     from yq_ml_alpha.pipelines.training_tasks import training_windows, training_config_for_windows
@@ -170,6 +176,7 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False, window_ids=None
         context = _context(config, window.window_id, train_bundle.feature_columns)
         progress.step("fit")
         _fit_model(model, train_bundle, valid_bundle, context)
+        _capture_prediction_weights(model, dataset, window, progress)
         if config.diagnostics.enabled:
             progress.step("diagnostics")
             paths.extend(model.write_diagnostics(context))
@@ -186,6 +193,7 @@ def train_config(config: MlAlphaConfig, *, resume: bool = False, window_ids=None
     return paths
 
 
+@column_discovery_scope()
 def predict_config(config: MlAlphaConfig) -> list[Path]:
     _ensure_factor_config(config)
     workflow = getattr(_model_class(config.model.class_path), "run_factor_workflow", None)
@@ -227,6 +235,7 @@ def predict_config(config: MlAlphaConfig) -> list[Path]:
         _release_accelerator_memory()
     progress.step("ensure_output_column")
     written.extend(writer.ensure_output_column(all_predict_dates))
+    dataset.close()
     progress.done()
     return written
 

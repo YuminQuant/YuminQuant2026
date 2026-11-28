@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from yq_ml_alpha.output import artifact_io as io
+from yq_ml_alpha.data.column_catalog import discovery_resource
 
 KEYS = ["trade_date", "ts_code"]
 PARTITIONS = {"manual", "ml"}
@@ -21,10 +22,36 @@ def factor_path(root, date, partition="manual"):
     return Path(root) / str(date // 10000) / f"{date}{suffix}.parquet"
 
 
+def _index_paths(root):
+    index = {}
+    remote = io.backend(root) is not None
+    patterns = ("*.parquet",) if remote else ("*/*.parquet", "*.parquet")
+    for pattern in patterns:
+        for path in io.glob(root, pattern):
+            path = Path(path)
+            date = factor_file_date(path)
+            if date is None or path.parent not in {root, root / str(date // 10000)}:
+                continue
+            partition = "ml" if path.stem.endswith("_ml") else "manual"
+            paths = index.setdefault(date, {})
+            if partition not in paths or path.parent != root:
+                paths[partition] = path
+    return index
+
+
+def _file_index(root):
+    return discovery_resource(("factor_paths", root), lambda: _index_paths(root))
+
+
 def factor_dates(root):
-    paths = list(io.glob(Path(root), "*/*.parquet")) + list(io.glob(Path(root), "*.parquet"))
-    return sorted({date for path in paths
-                   if (date := factor_file_date(path)) is not None})
+    return sorted(_file_index(Path(root)))
+
+
+def year_partition_paths(root, end_date):
+    root = Path(root)
+    return sorted(path for date, paths in _file_index(root).items()
+                  if end_date is None or date <= end_date
+                  for path in paths.values() if path.parent != root)
 
 
 def metadata_path(root):
@@ -68,8 +95,11 @@ class FactorFiles:
     """
     def __init__(self, root):
         self.root = Path(root)
-        path = metadata_path(root)
-        metadata = normalize_metadata(io.read_parquet(path)) if path is not None else None
+        self.index = _file_index(self.root) if io.backend(self.root) is not None else None
+        path = discovery_resource(("factor_metadata_path", self.root), lambda: metadata_path(self.root))
+        raw = (discovery_resource(("factor_metadata", path), lambda: io.read_parquet(path))
+               if path is not None else None)
+        metadata = normalize_metadata(raw) if raw is not None else None
         if metadata is not None:
             asset, frequency = self.root.parent.name, self.root.name
             if ("asset_class" in metadata and "frequency" in metadata
@@ -83,6 +113,8 @@ class FactorFiles:
         return bool(self._paths(date))
 
     def _paths(self, date):
+        if self.index is not None:
+            return self.index.get(date, {})
         # Direct daily roots remain supported alongside the standard year layout.
         paths = {}
         for part in ("manual", "ml"):

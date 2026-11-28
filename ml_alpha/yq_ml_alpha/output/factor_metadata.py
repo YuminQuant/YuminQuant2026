@@ -120,6 +120,8 @@ def _metadata_row(config: MlAlphaConfig, factor_id: str) -> dict[str, str]:
         "features_type": config.features.type,
         "model_class": config.model.class_path,
     }
+    if config.features.type == "kd_components":
+        dependencies["component_factors"] = config.features.params["sources"]
     description = (
         f"End-to-end ML factor {factor_id}; model={config.model.name}; "
         f"features={config.features.type}; label={config.label.id}."

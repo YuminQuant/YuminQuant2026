@@ -247,3 +247,13 @@ model_class = "yq_ml_alpha.models.report_sentiment_model.ReportTermFrequencyAlph
 output = "data/factors/stock/daily"
 label = "report_np_revision_current_fy"
 tags = ["e2e", "DFZQ", "analyst", "text", "rptf", "title_only", "monthly_update"]
+
+[[factors]]
+factor_id = "kd_ensemble"
+config = "factors/kd_ensemble.toml"
+status = "active"
+display_name = "KD-Ensemble distilled ASTGNN end-to-end alpha"
+model_class = "yq_ml_alpha.models.kd_ensemble_model.KDEnsembleAlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "knowledge_distillation", "astgnn", "fundamental", "price_volume"]

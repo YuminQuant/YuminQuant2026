@@ -111,17 +111,13 @@ def discover_value_columns(root: str | Path, end_date: int | None = None, exclud
 
 
 def _scan_value_columns(root, end_date):
+    from yq_ml_alpha.data.factor_files import year_partition_paths
+
     started = perf_counter()
     print(f"ml-alpha columns step=scan root={root} end_date={end_date}", flush=True)
     output = []
     seen = set(NON_FEATURE_COLUMNS)
-    paths = []
-    for path in sorted(data_io.glob(Path(root), "*/*.parquet")):
-        from yq_ml_alpha.data.factor_files import factor_file_date
-        date = factor_file_date(path)
-        if date is None or (end_date is not None and date > end_date):
-            continue
-        paths.append(path)
+    paths = year_partition_paths(root, end_date)
     for columns in data_io.ordered_io_map(parquet_columns, paths, root=Path(root)):
         for column in columns:
             if column not in seen:

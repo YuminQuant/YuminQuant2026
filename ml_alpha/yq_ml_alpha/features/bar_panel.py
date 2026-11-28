@@ -71,6 +71,7 @@ class BarPanelProvider(FeatureProvider):
         self.feature_columns = _feature_columns(self.output_features, self.total_steps)
         self._session_cache: OrderedDict[Any, pd.DataFrame] = OrderedDict()
         self._tensor_blocks = OrderedDict()
+        self._tensor_symbols = {}
 
     def load(self, trade_date: int) -> pd.DataFrame:
         raise NotImplementedError("BarPanelProvider requires load_window(..., history_dates=...)")
@@ -276,48 +277,58 @@ class BarPanelProvider(FeatureProvider):
     ) -> BarTensorWindow:
         if not sessions:
             return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
-        symbol_sets = [set(session["ts_code"].astype(str)) for session in sessions if not session.empty]
-        if not symbol_sets:
+        blocks = [(step, self._tensor_block(session))
+                  for step, session in enumerate(sessions) if not session.empty]
+        if not blocks:
             return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
-        union_symbols = set.union(*symbol_sets)
-        skipped_by_intersection = 0
-        if self.strict:
-            symbols = sorted(set.intersection(*symbol_sets))
-            skipped_by_intersection = len(union_symbols) - len(symbols)
-        else:
-            symbols = sorted(union_symbols)
-        if not symbols:
+        width = max(len(rows) for _, (rows, _) in blocks)
+        present = np.zeros(width, dtype=bool)
+        common = np.ones(width, dtype=bool)
+        for _, (rows, _) in blocks:
+            available = rows >= 0
+            present[:len(rows)] |= available
+            common[:len(rows)] &= available
+            common[len(rows):] = False
+        ids = np.flatnonzero(common if self.strict else present)
+        if not len(ids):
             return self.empty_tensor_window(trade_date, tensor_key=tensor_key)
-
+        symbols = np.asarray(tuple(self._tensor_symbols), dtype=object)[ids]
+        order = symbols.argsort()
+        symbols, ids = symbols[order].tolist(), ids[order]
         tensor = np.full((len(symbols), self.total_steps, len(self.output_features)), np.nan, dtype="float64")
-        for day_idx, session in enumerate(sessions):
-            if session.empty:
-                continue
-            block_columns = [
-                _session_column(feature, bar_idx)
-                for bar_idx in range(self.steps_per_session)
-                for feature in self.output_features
-            ]
-            entry = self._tensor_blocks.get(id(session))
-            prepared = entry[1] if entry is not None and entry[0]() is session else None
-            if prepared is None:
-                prepared = (pd.Index(session.ts_code), session[block_columns].to_numpy(dtype="float64", copy=False))
-                self._tensor_blocks[id(session)] = (weakref.ref(session), prepared)
-                self._tensor_blocks.move_to_end(id(session))
-            index, values = prepared
-            positions = index.get_indexer(symbols)
-            block = np.full((len(symbols), len(block_columns)), np.nan, dtype="float64")
-            found = positions >= 0
-            block[found] = values[positions[found]]
+        for day_idx, (rows, values) in blocks:
             start = day_idx * self.steps_per_session
-            tensor[:, start : start + self.steps_per_session, :] = block.reshape(
-                len(symbols),
-                self.steps_per_session,
-                len(self.output_features),
-            )
+            target = tensor[:, start : start + self.steps_per_session]
+            if self.strict:
+                target[:] = values[rows[ids]]
+            else:
+                selected = np.flatnonzero(ids < len(rows))
+                positions = rows[ids[selected]]
+                found = positions >= 0
+                target[selected[found]] = values[positions[found]]
         output = self._finalize_tensor_window(trade_date, symbols, tensor, tensor_key)
-        output.skipped_incomplete += skipped_by_intersection
+        if self.strict:
+            output.skipped_incomplete += int(present.sum()) - len(symbols)
         return output
+
+    def _tensor_block(self, session):
+        key = id(session)
+        entry = self._tensor_blocks.get(key)
+        if entry is not None and entry[0]() is session:
+            return entry[1]
+        symbols = pd.Index(session.ts_code.astype(str))
+        if symbols.has_duplicates:
+            raise ValueError("daily bar session contains duplicate stocks")
+        ids = np.fromiter((self._tensor_symbols.setdefault(symbol, len(self._tensor_symbols))
+                           for symbol in symbols), count=len(symbols), dtype=np.intp)
+        rows = np.full(len(self._tensor_symbols), -1, dtype=np.int32)
+        rows[ids] = np.arange(len(symbols), dtype=np.int32)
+        columns = [_session_column(feature, step) for step in range(self.steps_per_session)
+                   for feature in self.output_features]
+        values = np.ascontiguousarray(session[columns].to_numpy(dtype="float64", copy=False))
+        prepared = rows, values.reshape(len(symbols), self.steps_per_session, len(self.output_features))
+        self._tensor_blocks[key] = weakref.ref(session), prepared
+        return prepared
 
     def _wide_to_tensor_window(
         self,

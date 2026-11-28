@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from yq_ml_alpha.calendar import TradingCalendar
+from yq_ml_alpha.data.column_catalog import column_discovery_scope
 from yq_ml_alpha.models.base import load_model_class
 from yq_ml_alpha.pipelines.runtime import build_windows
 
@@ -36,13 +37,17 @@ def training_config_for_windows(config, window_ids):
     return config
 
 
+@column_discovery_scope()
 def training_plan(config, window_ids=None, *, include_column_catalog=True):
     windows = training_windows(config, TradingCalendar.for_config(config), window_ids)
+    model_class = load_model_class(config.model.class_path)
     if not windows:
         raise ValueError("No training windows; check calendar and configured date ranges")
     def span(dates):
         return [dates[0], dates[-1]] if dates else None
     result = {
+        "group_windows": (getattr(model_class, "training_requires_previous_window", False)
+                          or getattr(model_class, "training_share_windows", False)),
         "artifact_dir": str(config.model.artifact_dir),
         "cache_dir": str(config.materialize.cache_dir),
         "diagnostics_dir": str(Path(config.model.artifact_dir).parent / 'diagnostics'),

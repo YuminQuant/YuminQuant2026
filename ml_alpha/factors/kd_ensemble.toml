@@ -1,8 +1,15 @@
-run_id = "mdl_000041"
-alpha_id = "mdl_000041"
+factor_id = "kd_ensemble"
+tags = ["DFZQ", "knowledge_distillation", "astgnn", "fundamental", "price_volume"]
 data_root = "data"
-output_root = "data/models"
-data_version = "astgnn_kd_in_memory_v1"
+data_version = "astgnn_kd_train_in_memory_v2"
+
+[output]
+kind = "factor"
+id = "kd_ensemble"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
 
 [dates]
 train = [20160101, 20260331]
@@ -37,7 +44,7 @@ feature_fill_value = 0.0
 
 [features]
 type = "kd_components"
-root = "data/model_workspace"
+root = "data"
 
 [features.params]
 sources = ["astgnn_week", "astgnn_msnew", "astgnn_lfq_daily"]
@@ -55,7 +62,7 @@ write_window_summary = true
 [model]
 name = "kd_ensemble"
 class = "yq_ml_alpha.models.kd_ensemble_model.KDEnsembleAlphaModel"
-artifact_dir = "data/model_workspace/mdl_000041/artifacts"
+artifact_dir = "data/model_workspace/kd_ensemble/artifacts"
 
 [model.params]
 hidden_layers = [256, 128]

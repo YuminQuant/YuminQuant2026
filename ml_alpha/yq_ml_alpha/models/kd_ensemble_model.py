@@ -1,4 +1,5 @@
 """Offline regression distillation from boosted trees to a tabular MLP."""
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from time import perf_counter
 
@@ -61,6 +62,25 @@ def _teacher_scores(features, labels, params):
 class KDEnsembleAlphaModel(TorchAlphaModel):
     prediction_replay_safe = True
     prediction_inputs_readonly = True
+    training_share_windows = True
+
+    def capture_prediction_weights(self, provider, dates):
+        self.component_weights = provider.checkpoint(dates)
+
+    @contextmanager
+    def prediction_session(self):
+        with super().prediction_session(), ExitStack() as sessions:
+            self._component_sessions = sessions
+            self._component_models = None
+            try:
+                yield self
+            finally:
+                self._component_models = self._component_sessions = None
+
+    def prediction_input_scope(self, provider):
+        if self._component_models is None:
+            self._component_models = provider.restore_components(self.component_weights, self._component_sessions)
+        return provider.prediction_components(self._component_models)
 
     def fit(self, train_data, valid_data, context):
         torch, nn = _torch_modules()
@@ -156,15 +176,15 @@ class KDEnsembleAlphaModel(TorchAlphaModel):
     def save(self, path):
         path = Path(path)
         artifact_io.mkdir(path.parent, parents=True, exist_ok=True)
-        artifact_io.torch_save(dict(kind="kd_ensemble", version=1, params=self.params,
+        artifact_io.torch_save(dict(kind="kd_ensemble", version=2, params=self.params,
             feature_columns=self.feature_columns, state_dict=_cpu_state_dict(self.model),
-            model_info=self.model_info, loss_history=self.loss_history), path)
+            components=self.component_weights, model_info=self.model_info, loss_history=self.loss_history), path)
 
     @classmethod
     def load(cls, path):
         _, nn = _torch_modules()
         saved = artifact_io.torch_load(Path(path), map_location="cpu")
-        if saved.get("kind") != "kd_ensemble" or saved.get("version") != 1:
+        if saved.get("kind") != "kd_ensemble" or saved.get("version") != 2:
             raise ValueError("unsupported KD-Ensemble checkpoint")
         instance = cls()
         instance.params = _params(saved["params"])
@@ -175,5 +195,6 @@ class KDEnsembleAlphaModel(TorchAlphaModel):
         instance.model = _student(nn, instance.input_dim, instance.params)
         instance.model.load_state_dict(saved["state_dict"])
         instance.model.eval()
+        instance.component_weights = saved["components"]
         instance.model_info, instance.loss_history = saved["model_info"], saved["loss_history"]
         return instance

@@ -65,6 +65,8 @@ def split_training_tasks(command, arguments, plan):
     ids = [window['window_id'] for window in windows]
     if not ids or len(set(ids)) != len(ids):
         raise ValueError('Training plan must contain unique nonempty windows')
+    if plan.get('group_windows'):
+        raise ValueError('This model uses one process for its selected windows; omit --split-training-windows')
     return [dict(id=f'train-{index:04d}', command=command,
                  arguments=base+['--window-id',window['window_id']], window=window)
             for index,window in enumerate(windows)]

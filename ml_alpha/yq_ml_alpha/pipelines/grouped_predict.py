@@ -18,11 +18,11 @@ from yq_ml_alpha.data.column_catalog import column_discovery_scope
 from yq_ml_alpha.output import artifact_io
 from yq_ml_alpha.output.artifacts import validate_manifest, window_artifact_path
 from yq_ml_alpha.output.factor_metadata import write_factor_metadata_many
-from yq_ml_alpha.output.parquet_reader import projected_inputs
+from yq_ml_alpha.output.parquet_reader import parquet_input_snapshot, projected_inputs
 from yq_ml_alpha.pipelines.execution import ExecutionOptions, check_memory, execution_scope
 from yq_ml_alpha.pipelines.task_plan import load_configs, output_group, prediction_units
 from yq_ml_alpha.pipelines.runtime import (
-    _context, _load_bundle, _model_class, _predict_model, _prediction_frame,
+    _context, _load_prediction_bundle, _model_class, _predict_model, _prediction_frame,
     _empty_prediction_frame, _predict_dates,
 )
 
@@ -55,7 +55,8 @@ def _bytes(value, seen=None):
 
 def _input_key(config, dates, index):
     cls = _model_class(config.model.class_path)
-    if config.preprocess.future_sector_ic_align or not getattr(cls, 'prediction_inputs_readonly', False):
+    if (config.preprocess.future_sector_ic_align or not getattr(cls, 'prediction_inputs_readonly', False)
+            or callable(getattr(cls, 'prediction_input_scope', None))):
         return ('isolated', index, tuple(dates))
     from yq_ml_alpha.pipelines.runtime import _uses_sequence_dataset
     identity = dict(features=asdict(config.features), preprocess=asdict(config.preprocess),
@@ -252,7 +253,7 @@ def _predict_group(configs, options, target_dates):
             by_input = defaultdict(list)
             for unit in wave:
                 by_input[_input_key(configs[unit[0]], unit[2], unit[0])].append(unit)
-            with projected_inputs(requests):
+            with parquet_input_snapshot(), projected_inputs(requests):
                 for compatible in by_input.values():
                     index, window, dates = compatible[0]
                     dataset = datasets.get(index)
@@ -265,7 +266,9 @@ def _predict_group(configs, options, target_dates):
                         if config.preprocess.future_sector_ic_align:
                             path = window_artifact_path(config.model.artifact_dir, window.window_id)
                             validate_manifest(path, config, window, dataset)
-                        bundle = _load_bundle(config, dataset, calendar, dates, include_label=False)
+                        owns_inputs = callable(getattr(_model_class(config.model.class_path), 'prediction_input_scope', None))
+                        input_model = models.get(index, window, dataset) if owns_inputs else None
+                        bundle = _load_prediction_bundle(config, dataset, calendar, dates, input_model)
                         print(f'grouped-predict input model={configs[index].output.id} dates={len(dates)} '
                               f'first={dates[0]} last={dates[-1]} rows={len(bundle.frame)} '
                               f'elapsed_s={perf_counter() - started:.2f}', flush=True)

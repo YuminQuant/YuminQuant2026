@@ -462,9 +462,9 @@ English handoff checklist:
 ### 数据与预测资源生命周期
 
 单模型性能通路见 [PERFORMANCE_WORKFLOW.md](PERFORMANCE_WORKFLOW.md)：序列位置索引复用、
-避免超预算窗口循环淘汰、窗口级预测会话、多因子一次写出、临时单日快照与窗口索引。
-BarPanel 默认 `tensor_storage="indexed"`；原 `mmap` / `memory` 可显式选择。
-临时数据只进入显式模型 workspace，禁止写 C 盘。公共 fit/predict 结束或异常时关闭
+避免重复读取 HDFS、窗口级预测会话、多因子一次写出和按日复用组装结果。
+BarPanel 默认 `tensor_storage="memory"`。旧的 `indexed` 和 `mmap` 仍可本地显式选择。
+显式启用的旧模式只在模型 workspace 下创建临时数据，禁止写 C 盘。公共 fit/predict 结束或异常时关闭
 bundle；新增模型应配合 `prediction_session()`，不要恢复逐日期显存缓存清理。
 
 ### ASTGNN 完整截面图训练

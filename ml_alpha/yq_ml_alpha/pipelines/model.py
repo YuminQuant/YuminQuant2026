@@ -5,6 +5,7 @@ from pathlib import Path
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig, load_config
 from yq_ml_alpha.data.dataset import DatasetBuilder
+from yq_ml_alpha.data.column_catalog import column_discovery_scope
 from yq_ml_alpha.output.alpha_writer import AlphaWriter
 from yq_ml_alpha.output.artifacts import window_artifact_path, save_manifest, validate_manifest
 from yq_ml_alpha.pipelines.runtime import (
@@ -36,6 +37,7 @@ def predict_only(config_path: str | Path) -> list[Path]:
     return predict_config(_load_model_config(config_path))
 
 
+@column_discovery_scope()
 def run_config(config: MlAlphaConfig) -> list[Path]:
     _ensure_model_config(config)
     calendar = TradingCalendar.for_config(config)
@@ -85,6 +87,7 @@ def run_config(config: MlAlphaConfig) -> list[Path]:
     return written
 
 
+@column_discovery_scope()
 def train_config(config: MlAlphaConfig, *, window_ids=None) -> list[Path]:
     _ensure_model_config(config)
     from yq_ml_alpha.pipelines.training_tasks import training_windows, training_config_for_windows
@@ -118,6 +121,7 @@ def train_config(config: MlAlphaConfig, *, window_ids=None) -> list[Path]:
     return paths
 
 
+@column_discovery_scope()
 def predict_config(config: MlAlphaConfig) -> list[Path]:
     _ensure_model_config(config)
     if config.dates.predict is None:

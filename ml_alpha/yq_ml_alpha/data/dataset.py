@@ -5,7 +5,6 @@ from bisect import bisect_right
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-import json
 import warnings
 from time import perf_counter
 
@@ -15,6 +14,7 @@ import pandas as pd
 from yq_ml_alpha.calendar import TradingCalendar
 from yq_ml_alpha.config import MlAlphaConfig
 from yq_ml_alpha.data.filters import TradeFilters
+from yq_ml_alpha.data.column_catalog import FACTOR_FRAME_TYPES, factor_columns
 from yq_ml_alpha.data.future_pool import FutureLiquidityPool, future_products
 from yq_ml_alpha.data.stores import daily_path, read_daily, read_minute, require_hdfs_input
 from yq_ml_alpha.data.universe import Universe
@@ -38,10 +38,11 @@ from yq_ml_alpha.features.resnet_panel import ResNetPanelProvider
 from yq_ml_alpha.features.derived_logsig import DerivedLogsigProvider
 from yq_ml_alpha.features.derived_chip_age import DerivedChipAgeProvider
 from yq_ml_alpha.data.sampler import sample_dates
-from yq_ml_alpha.data.tensor_storage import TensorSpool, MemoryTensorSpool
+from yq_ml_alpha.data.tensor_storage import ChunkedTensor, TensorSpool, MemoryTensorSpool
 from yq_ml_alpha.data.indexed_panel import IndexedPanelStore, IndexedPanelTensor
 from yq_ml_alpha.features.transforms import apply_cross_section_transform
 from yq_ml_alpha.models.base import load_model_class
+from yq_ml_alpha.output.parquet_reader import parquet_input_snapshot
 
 
 @dataclass
@@ -49,7 +50,7 @@ class DatasetBundle:
     frame: pd.DataFrame
     feature_columns: list[str]
     label_column: str
-    tensors: dict[str, np.ndarray | IndexedPanelTensor] | None = None
+    tensors: dict[str, np.ndarray | IndexedPanelTensor | ChunkedTensor] | None = None
     tensor_columns: dict[str, list[str]] | None = None
     storage: TensorSpool | MemoryTensorSpool | IndexedPanelStore | None = None
     tensor_source: object | None = None
@@ -103,7 +104,7 @@ class DatasetBuilder:
                       f"uncached_reads={sequence.uncached_reads} "
                       f"resident_mib={sequence.cache_bytes / 2**20:.1f}", flush=True)
                 sequence.close()
-            for name in ("_session_cache", "_sessions", "_bar_cache", "_tensor_blocks"):
+            for name in ("_session_cache", "_sessions", "_bar_cache", "_tensor_blocks", "_tensor_symbols"):
                 cache = getattr(provider, name, None)
                 if cache is not None:
                     cache.clear()
@@ -117,6 +118,7 @@ class DatasetBuilder:
         if clear_read_cache:
             data_io.invalidate_parquet()
 
+    @parquet_input_snapshot()
     def load(self, dates: list[int], include_label: bool, split_name: str | None = None) -> DatasetBundle:
         if self.future_pool is not None:
             self.future_pool.prepare(dates)
@@ -260,6 +262,7 @@ class DatasetBuilder:
         return DatasetBundle(output, self.feature_provider.feature_columns, self.config.label.id,
                              tensor_source=self.feature_provider.sequence if lazy_tensor else None)
 
+    @parquet_input_snapshot()
     def load_sequence(
         self,
         dates: list[int],
@@ -295,7 +298,7 @@ class DatasetBuilder:
             )
 
             progress("target step=read")
-            target = self.feature_provider.load(trade_date)
+            target = self._sequence_feature_frame(trade_date, feature_cache).reset_index()
             progress(f"target step=done rows={len(target)}")
             if target.empty:
                 progress("target_done feature_rows=0")
@@ -303,7 +306,8 @@ class DatasetBuilder:
             target = self.universe.filter(target[["trade_date", "ts_code"]].copy(), trade_date)
             target = self.filters.apply(target, trade_date)
             progress(f"target step=filter rows={len(target)}")
-            frame = target[["trade_date", "ts_code"]].copy()
+            frame = target[["trade_date", "ts_code"]].reset_index(drop=True)
+            input_blocks = []
 
             for step, sequence_date in enumerate(sequence_dates):
                 source_progress = (
@@ -312,18 +316,15 @@ class DatasetBuilder:
                     )
                 )
                 features = self._sequence_feature_frame(sequence_date, feature_cache, source_progress)
-                renamed = features.rename(
-                    columns={column: _sequence_feature_column(column, step) for column in base_columns}
-                )
-                frame = frame.merge(
-                    renamed[["ts_code", *[_sequence_feature_column(column, step) for column in base_columns]]],
-                    on="ts_code",
-                    how="left",
-                )
+                values = features[base_columns].reindex(frame.ts_code)
+                input_blocks.append(values.set_axis(
+                    [_sequence_feature_column(column, step) for column in base_columns], axis=1
+                ).reset_index(drop=True))
 
-            frame[sequence_columns] = frame[sequence_columns].replace([np.inf, -np.inf], np.nan).fillna(
+            values = pd.concat(input_blocks, axis=1).replace([np.inf, -np.inf], np.nan).fillna(
                 self.config.preprocess.feature_fill_value
             )
+            frame = pd.concat([frame, values], axis=1)
             if include_label:
                 labels = self._read_labels(trade_date)
                 labels = self._preprocess_labels(labels)
@@ -346,13 +347,16 @@ class DatasetBuilder:
             output = pd.DataFrame(columns=columns)
         return DatasetBundle(output, sequence_columns, self.config.label.id)
 
+    @parquet_input_snapshot()
     def load_bar_panel(
         self, dates, include_label, calendar,
     ) -> DatasetBundle:
         self._building_storage = None
         try:
+            labels = (self._prefetch_sequence_labels(dates) if include_label
+                      and data_io.backend(self.config.label.root) is not None else {})
             with self._prefetch_bar_panel(dates, include_label, calendar):
-                return self._load_bar_panel(dates, include_label, calendar)
+                return self._load_bar_panel(dates, include_label, calendar, labels)
         except BaseException:
             if self._building_storage is not None:
                 self._building_storage.close()
@@ -363,16 +367,17 @@ class DatasetBuilder:
     @contextmanager
     def _prefetch_bar_panel(self, dates, include_label, calendar):
         provider = self.feature_provider
-        if (not dates or include_label or not isinstance(provider, ResNetPanelProvider)
+        if (not dates or not isinstance(provider, ResNetPanelProvider)
                 or not data_io.remote_enabled() or dates != sorted(dates)):
             yield
             return
-        histories = {date: _resnet_history(calendar, date, provider.lookback_sessions) for date in dates}
+        histories = {date: _bar_history(calendar, date, provider.lookback_sessions) for date in dates}
         started = perf_counter()
         if self.config.filters.exclude_st:
             st_dates = sorted({source for history in histories.values() for source in history if source >= 20160101})
             missing = self._load_source_st_symbols(st_dates)
-            print(f"bar-panel predict st_preload sessions={len(st_dates)} reads={missing} "
+            split = "labeled" if include_label else "predict"
+            print(f"bar-panel {split} st_preload sessions={len(st_dates)} reads={missing} "
                   f"elapsed_s={perf_counter() - started:.3f}", flush=True)
         source_dates = sorted({
             source for date, history in histories.items()
@@ -387,6 +392,7 @@ class DatasetBuilder:
         dates: list[int],
         include_label: bool,
         calendar: TradingCalendar,
+        preloaded_labels,
     ) -> DatasetBundle:
         if not isinstance(self.feature_provider, (BarPanelProvider, MultiBarPanelProvider, ResNetPanelProvider)):
             raise TypeError("load_bar_panel requires a bar tensor feature provider")
@@ -399,7 +405,7 @@ class DatasetBuilder:
         if storage_mode not in {"indexed", "mmap", "memory"}:
             raise ValueError("materialize.tensor_storage must be indexed, mmap or memory")
         spool = TensorSpool(Path(self.config.materialize.cache_dir) / "scratch") if storage_mode == "mmap" and include_label else None
-        if remote_memory:
+        if storage_mode == "memory":
             spool = MemoryTensorSpool()
         self._building_storage = spool
         tensor_columns: dict[str, list[str]] | None = None
@@ -419,12 +425,14 @@ class DatasetBuilder:
         self._building_storage = indexed if indexed is not None else spool
         provider = indexed.provider if indexed is not None else self.feature_provider
         resnet_panel = isinstance(provider, ResNetPanelProvider)
+        lookback = (max(panel.lookback_sessions for _, panel in provider.panels)
+                    if isinstance(provider, MultiBarPanelProvider) else provider.lookback_sessions)
         shapes = {}
         for date_idx, trade_date in enumerate(dates, start=1):
+            history_dates = _bar_history(calendar, trade_date, lookback)
             if resnet_panel:
-                history_dates = source_dates = _resnet_history(calendar, trade_date, provider.lookback_sessions)
+                source_dates = history_dates
             else:
-                history_dates = calendar.between(calendar.dates[0], trade_date)
                 source_dates = self.feature_provider.required_history_dates(history_dates)
             progress = _bar_panel_progress(split_name, date_idx, total_dates, trade_date)
             started = perf_counter()
@@ -452,7 +460,11 @@ class DatasetBuilder:
                 frame["ts_code"].astype(str).tolist(),
             )
             if include_label:
-                labels = self._read_labels(trade_date)
+                labels = preloaded_labels.get(trade_date)
+                if isinstance(labels, Exception):
+                    raise labels
+                if labels is None:
+                    labels = self._read_labels(trade_date)
                 frame = frame.merge(
                     labels,
                     on=["trade_date", "ts_code"],
@@ -638,8 +650,8 @@ class DatasetBuilder:
             frame = frame[["trade_date", "ts_code", *self.feature_provider.feature_columns]]
         if progress is not None:
             progress(f"step=done rows={len(frame)}")
-        cache[trade_date] = frame
-        return frame
+        cache[trade_date] = frame.set_index("ts_code")
+        return cache[trade_date]
 
 def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
     factory = getattr(load_model_class(config.model.class_path), "make_feature_provider", None)
@@ -675,44 +687,8 @@ def make_feature_provider(config: MlAlphaConfig) -> FeatureProvider:
         return DerivedChipAgeProvider(config.features.root, config.features.params)
     if config.features.type == "derived_logsig":
         return DerivedLogsigProvider(config.features.root)
-    if config.features.type in {"factor_frame", "factor_sequence", "graph_factor_frame", "hist_factor_frame", "concept_factor_sequence", "analyst_factor_sequence"}:
-        excluded = {config.output.id}
-        include_model_generated = config.features.params.get("include_model_generated", False)
-        if not isinstance(include_model_generated, bool):
-            raise ValueError("features.params.include_model_generated must be boolean")
-        tag_filters = {}
-        for name in ("include_tags_any", "exclude_tags_any"):
-            values = config.features.params.get(name, [])
-            if not isinstance(values, list) or any(not isinstance(value, str) or not value for value in values):
-                raise ValueError(f"features.params.{name} must be a list of nonempty tags")
-            tag_filters[name] = set(values)
-        allowed = set() if tag_filters["include_tags_any"] else None
-        metadata = Path(config.data_root) / "factors" / "factor_metadata.parquet"
-        if data_io.exists(metadata):
-            metadata_frame = data_io.read_parquet(metadata)
-            for field, value in (("asset_class", config.output.asset), ("frequency", config.output.frequency)):
-                if field in metadata_frame.columns:
-                    metadata_frame = metadata_frame.loc[metadata_frame[field].eq(value)]
-            for row in metadata_frame[["output_column", "tags_json"]].itertuples(index=False):
-                tags = set(json.loads(row.tags_json or "[]"))
-                if ("deprecated" in tags or ("model_generated" in tags and not include_model_generated)
-                        or tags & tag_filters["exclude_tags_any"]):
-                    excluded.add(row.output_column)
-                elif allowed is not None and tags & tag_filters["include_tags_any"]:
-                    allowed.add(row.output_column)
-        elif allowed is not None or tag_filters["exclude_tags_any"]:
-            raise FileNotFoundError(f"factor tag selection requires metadata: {metadata}")
-        columns = config.features.columns
-        if allowed is not None:
-            from yq_ml_alpha.data.stores import is_all_column_request
-            columns = sorted(allowed - excluded) if is_all_column_request(columns) else [
-                column for column in columns if column in allowed and column not in excluded]
-            if not columns:
-                raise ValueError("factor tag selection has no eligible feature columns")
-        provider = FactorFrameProvider(config.features.root, columns, config.dates.train[1], excluded)
-        provider.feature_columns = [column for column in provider.feature_columns if column not in excluded]
-        if not provider.feature_columns:
-            raise ValueError("no eligible feature columns after metadata exclusions")
+    if config.features.type in FACTOR_FRAME_TYPES:
+        provider = FactorFrameProvider(config.features.root, factor_columns(config))
         if config.features.type == "factor_sequence":
             return FactorSequenceProvider(config, provider)
         if config.features.type == "graph_factor_frame":
@@ -743,7 +719,7 @@ def _bar_panel_progress(split_name: str, current: int, total: int, trade_date: i
     return emit
 
 
-def _resnet_history(calendar: TradingCalendar, date: int, lookback: int) -> list[int]:
+def _bar_history(calendar: TradingCalendar, date: int, lookback: int) -> list[int]:
     end = bisect_right(calendar.dates, date)
     return calendar.dates[max(0, end - lookback):end]
 

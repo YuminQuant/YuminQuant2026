@@ -8,6 +8,7 @@ import json
 import math
 import re
 import datetime as dt
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -57,7 +58,7 @@ def _predict_write_window_active(
     batches = _chunks(window.predict_dates, config.materialize.predict_batch_size)
     for batch_idx, dates in enumerate(batches, start=1):
         progress.step(f"load_predict {batch_idx}/{len(batches)} dates={_date_span(dates)}")
-        predict_bundle = _load_bundle(config, dataset, calendar, dates, include_label=False)
+        predict_bundle = _load_prediction_bundle(config, dataset, calendar, dates, model)
         if predict_bundle.frame.empty:
             progress.step(f"write {batch_idx}/{len(batches)}")
             empty_prediction = _empty_prediction_frame(config.key_columns)
@@ -278,6 +279,19 @@ def _load_bundle(
     return dataset.load(dates, include_label)
 
 
+def _load_prediction_bundle(config, dataset, calendar, dates, model=None):
+    inputs = getattr(model, "prediction_input_scope", None)
+    with inputs(dataset.feature_provider) if inputs is not None else nullcontext():
+        return _load_bundle(config, dataset, calendar, dates, include_label=False)
+
+
+def _capture_prediction_weights(model, dataset, window, progress):
+    capture = getattr(model, "capture_prediction_weights", None)
+    if capture is not None:
+        progress.step("capture_prediction_weights")
+        capture(dataset.feature_provider, window.predict_dates)
+
+
 def _fit_model(model: AlphaModel, train_bundle, valid_bundle, context: ModelContext) -> None:
     try:
         fit_bundle = getattr(model, "fit_bundle", None)
@@ -292,6 +306,12 @@ def _fit_model(model: AlphaModel, train_bundle, valid_bundle, context: ModelCont
 
 def _load_train_valid(config, dataset, calendar, window, progress):
     """Shared row/date split for both model and factor training entry points."""
+    prepare = getattr(dataset.feature_provider, "training_window", None)
+    with prepare([*window.train_dates, *window.valid_dates]) if prepare is not None else nullcontext():
+        return _load_window_splits(config, dataset, calendar, window, progress)
+
+
+def _load_window_splits(config, dataset, calendar, window, progress):
     if config.preprocess.future_sector_ic_align:
         dataset.fit_window_preprocess(window.train_dates)
     if config.train_scheme.validation_unit != "rows":

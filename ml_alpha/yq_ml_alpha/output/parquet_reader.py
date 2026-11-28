@@ -11,6 +11,20 @@ from threading import RLock
 
 _projection_hints = ContextVar('ml_projection_hints', default={})
 _retain_tables = ContextVar("ml_retain_parquet_tables", default=True)
+_input_versions = ContextVar("ml_parquet_input_versions", default=None)
+
+
+@contextmanager
+def parquet_input_snapshot():
+    """Reuse successful HDFS stats for immutable inputs within one load."""
+    if _input_versions.get() is not None:
+        yield
+        return
+    token = _input_versions.set({})
+    try:
+        yield
+    finally:
+        _input_versions.reset(token)
 
 
 @contextmanager
@@ -38,6 +52,8 @@ class ParquetReadCache:
     def __init__(self):
         self.tables = OrderedDict()
         self.metadata = OrderedDict()
+        self.table_keys = {}
+        self.versions_by_path = {}
         self.table_bytes = self.metadata_bytes = 0
         self.hits = self.misses = self.evictions = self.opens = self.footer_reads = 0
         self.lock = RLock()
@@ -46,23 +62,44 @@ class ParquetReadCache:
     def identity(self, path):
         from . import artifact_io as io
         path = io.read_path(path).absolute()
+        backend = io.backend(path)
+        versions = _input_versions.get() if backend is not None else None
+        key = str(path), id(backend)
+        if versions is not None and key in versions:
+            return versions[key]
         try:
             info = io.stat(path)
         except FileNotFoundError:
             self.invalidate(path)
             raise
-        # A stat on each access also detects rewrites made outside this process.
-        return (str(path), id(io.backend(path)), info.st_size, info.st_mtime_ns)
+        version = (*key, info.st_size, info.st_mtime_ns)
+        if versions is not None:
+            versions[key] = version
+        return version
 
     def invalidate(self, path=None):
         with self.lock:
-            for entries, kind in ((self.tables, "table"), (self.metadata, "metadata")):
-                for key in list(entries):
-                    version = key[0] if kind == "table" else key
-                    if path is None or version[0] == str(path):
-                        _, size = entries.pop(key)
-                        attr = kind + "_bytes"
-                        setattr(self, attr, getattr(self, attr) - size)
+            versions = _input_versions.get()
+            if versions is not None:
+                if path is None:
+                    versions.clear()
+                else:
+                    from . import artifact_io as io
+                    versions.pop((str(path), id(io.backend(path))), None)
+            if path is None:
+                self.tables.clear()
+                self.metadata.clear()
+                self.table_keys.clear()
+                self.versions_by_path.clear()
+                self.table_bytes = self.metadata_bytes = 0
+                return
+            for version in self.versions_by_path.pop(str(path), ()):
+                metadata = self.metadata.pop(version, None)
+                if metadata is not None:
+                    self.metadata_bytes -= metadata[1]
+                for key in self.table_keys.pop(version, ()):
+                    _, size = self.tables.pop(key)
+                    self.table_bytes -= size
 
     def get(self, entries, key):
         with self.lock:
@@ -79,6 +116,10 @@ class ParquetReadCache:
                 _, old_size = entries.pop(key)
                 setattr(self, attr, getattr(self, attr) - old_size)
             entries[key] = (value, size)
+            version = key[0] if kind == "table" else key
+            if kind == "table":
+                self.table_keys.setdefault(version, set()).add(key)
+            self.versions_by_path.setdefault(version[0], set()).add(version)
             setattr(self, attr, getattr(self, attr) + size)
 
     @contextmanager
@@ -142,8 +183,9 @@ class ParquetReadCache:
                     if isinstance(index, str) and index not in selected:
                         selected.append(index)
             with self.lock:
-                for candidate, (value, _) in reversed(self.tables.items()):
-                    if candidate[0] == version and candidate[-1] == pandas_metadata and set(selected) <= set(value.column_names):
+                for candidate in self.table_keys.get(version, ()):
+                    value, _ = self.tables[candidate]
+                    if candidate[-1] == pandas_metadata and set(selected) <= set(value.column_names):
                         table = value.select(selected)
                         self.tables.move_to_end(candidate)
                         self.hits += 1

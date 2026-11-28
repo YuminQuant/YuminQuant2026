@@ -12,28 +12,32 @@ from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.stock_relations import StockRelations
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
-from yq_ml_alpha.features.transforms import _zscore_series, apply_cross_section_transform
+from yq_ml_alpha.features.transforms import zscore_observed
 from yq_ml_alpha.output.parquet_reader import transient_parquet_tables
 
 
 class FactorHistory(DailyTensorSequence):
-    def __init__(self, config, provider, sequence_length=None):
+    time_major_batch = True
+
+    def __init__(self, config, provider, sequence_length=None, *, daily_source=None):
         params = config.features.params
         super().__init__(config.features.root, provider.feature_columns, (len(provider.feature_columns),),
                          int(params.get("sequence_length", 40) if sequence_length is None else sequence_length))
         self.read_workers = data_io.io_options(self.root)["workers"]
         self.config = config
         self.provider = provider
-        self.universe = Universe(config.universe.id, config.data_root)
-        self.filters = TradeFilters(config.filters, config.data_root)
+        self.universe = daily_source.universe if daily_source is not None else Universe(config.universe.id, config.data_root)
+        self.filters = daily_source.filters if daily_source is not None else TradeFilters(config.filters, config.data_root)
         self.fill_value = config.preprocess.feature_fill_value
         self.history_transform = str(params.get("history_transform", "mad5_zscore_rank_label"))
         if self.history_transform not in {"mad5_zscore_rank_label", "zscore_clip3"}:
             raise ValueError("unsupported factor history_transform")
-        self.available_dates = factor_dates(self.root)
+        self.available_dates = daily_source.available_dates if daily_source is not None else factor_dates(self.root)
         if not self.available_dates:
             raise ValueError(f"no factor history under {self.root}")
         self.first_date = self.available_dates[0]
+        if daily_source is not None:
+            self.share_days(daily_source)
 
     def _load_day(self, date):
         with transient_parquet_tables():
@@ -43,19 +47,16 @@ class FactorHistory(DailyTensorSequence):
         frame = self.filters.apply(self.universe.filter(frame, date), date)
         frame = self._filter_frame(frame, date)
         # Normalize before label joining. Missing future labels never change graph inputs.
-        if self.history_transform == "zscore_clip3":
-            # The reader already validated one trade date. Keep the same
-            # per-column statistic while skipping groupby on each factor.
-            values = np.empty((len(frame), len(self.columns)), dtype="float32")
-            for index, column in enumerate(self.columns):
-                numeric = pd.to_numeric(frame[column], errors="coerce").astype("float64")
-                values[:, index] = _zscore_series(numeric).clip(-3.0, 3.0).fillna(self.fill_value)
-            return pd.DataFrame(values, columns=self.columns, index=pd.Index(frame.ts_code), copy=False)
-        frame[self.columns] = frame[self.columns].apply(pd.to_numeric, errors="coerce").astype("float64")
-        frame = apply_cross_section_transform(
-            frame, self.history_transform, self.columns, [], self.fill_value,
-        ).set_index("ts_code")[self.columns].astype("float32")
-        return frame
+        numeric = frame[self.columns]
+        if not all(pd.api.types.is_numeric_dtype(dtype) for dtype in numeric.dtypes):
+            numeric = numeric.apply(pd.to_numeric, errors="coerce")
+        raw = numeric.to_numpy(dtype="float64", na_value=np.nan)
+        clip = self.history_transform == "zscore_clip3"
+        values = zscore_observed(raw, mad5=not clip, fill_value=self.fill_value)
+        if clip:
+            np.clip(values, -3.0, 3.0, out=values)
+            values[~np.isfinite(raw)] = self.fill_value
+        return pd.DataFrame(values, columns=self.columns, index=pd.Index(frame.ts_code), copy=False)
 
     def _filter_frame(self, frame, date):
         """Optional universe refinement before any cross-sectional normalization."""
@@ -77,8 +78,8 @@ class FactorHistory(DailyTensorSequence):
         return self.prefetch_sources(sorted(source_dates))
 
     def forward_view(self, length):
-        """Independent reader for supervised future slices; caller must close it."""
-        view = FactorHistory(self.config, self.provider, sequence_length=length)
+        """Future slices share observed days and keep their own alignment."""
+        view = FactorHistory(self.config, self.provider, sequence_length=length, daily_source=self)
         view.set_calendar_dates(self.dates)
         return view
 

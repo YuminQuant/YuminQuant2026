@@ -80,7 +80,7 @@ def ccc_loss(predicted, target, eps):
 
 
 def _rank_unit(values):
-    ranks = pd.Series(values).rank(method="average").to_numpy(dtype=np.float64)
+    ranks = pd.Series(values).rank(method="average").to_numpy(dtype=np.float64, copy=True)
     ranks -= ranks.mean()
     norm = np.linalg.norm(ranks)
     return ranks / norm if norm else ranks

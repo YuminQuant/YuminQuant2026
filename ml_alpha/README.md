@@ -59,6 +59,8 @@ Formal factor filenames, IDs and output columns use matching semantic names. Mod
 双层LSTM输出单个分数。需先用Rust `derive-logsigrnn` 派生日特征，详见 [Logsig-RNN](docs/LOGSIGRNN_WEEK.md)。
 
 
+`adwm_model3_daily` 是东方证券 ADWM Model3 端到端因子，以基本面和 CNE6 构造弱 alpha 与风险暴露，再按个股状态动态加权。详见 [ADWM Model3](docs/ADWM_MODEL3.md)。
+
 编号模型 mdl_000001–mdl_000038 统一采用近60个月滚动窗口（前57个月训练、后3个月验证）、每季度重训、5日截面采样和10日VWAP主标签。2016年起训练，2021年起预测；神经网络股票编码块为5000。mdl_000033/034/038保留20日辅助任务。因子输入默认包含有效手工和ML因子，排除deprecated及自身输出；公共读取按股票键outer合并，既有股票池筛选和完整历史要求继续生效。权重存入各模型的 rolling60m_5d_vwap10d/artifacts，避免混用旧方案。
 mdl_000039 是量价专用 XGBoost＋Optuna：手工量价及量价端到端因子，5日采样、5日VWAP标签；mdl_000040 是基本面专用版本：排除分析师、事件及模型生成输入，20日采样、20日VWAP标签。两者均采用季度更新和近60个月57/3划分，其他搜索参数沿用 mdl_000021。
 mdl_000042 是 [FactorVAE-pro](docs/FACTOR_VAE.md#factorvae-pro--mdl_000042)，在 mdl_000026 的输入和训练口径下加入动态特征筛选、输入重构和日期环境协同训练。

@@ -7,6 +7,23 @@ import numpy as np
 import pandas as pd
 
 
+def industry_size_residual(target, size, industry):
+    """OLS residual with industry intercepts and one common size coefficient."""
+    target, size = np.asarray(target, dtype=np.float64), np.asarray(size, dtype=np.float64)
+    observed = np.isfinite(target) & np.isfinite(size) & (industry >= 0)
+    result = np.full(len(target), np.nan, dtype=np.float32)
+    if not observed.any():
+        return result
+    groups = industry[observed]
+    counts = np.bincount(groups)
+    y, x = target[observed], size[observed]
+    y = y - np.bincount(groups, weights=y)[groups] / counts[groups]
+    x = x - np.bincount(groups, weights=x)[groups] / counts[groups]
+    variance = x @ x
+    result[observed] = y - x * ((x @ y) / variance) if variance > 0 else y
+    return result
+
+
 def apply_rust_neutralization(data: pd.DataFrame, score: pd.Series, spec: str) -> pd.Series:
     spec = str(spec or "none").strip()
     if not spec or spec.lower() == "none" or data.empty:

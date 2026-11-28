@@ -330,8 +330,9 @@ def _load_window_splits(config, dataset, calendar, window, progress):
         for bundle in (train, valid):
             bundle.information_cutoff = window.training_cutoff_date
             bundle.supervision_lookahead_days = config.features.params.get("supervision_lookahead_days", 0)
+            bundle.training_start_date = window.training_start_date
         return train, valid
-    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel", "rawbar", "rawbar_sequence", "resnet_panel", "derived_chip_age", "derived_logsigrnn", "factor_sequence", "graph_factor_frame", "hist_factor_frame", "concept_factor_sequence", "market_style_sequence", "fundamental_lfq"}:
+    if _uses_sequence_dataset(config) or config.features.type in {"bar_panel", "multi_bar_panel", "rawbar", "rawbar_sequence", "resnet_panel", "derived_chip_age", "derived_logsigrnn", "factor_sequence", "graph_factor_frame", "hist_factor_frame", "concept_factor_sequence", "market_style_sequence", "fundamental_lfq", "fundamental_style_sequence"}:
         raise ValueError("validation_unit=rows supports tabular datasets only")
     progress.step("load_train_valid_pool")
     pool = _load_bundle(config, dataset, calendar, window.train_dates, True, split_name="train_valid_pool")

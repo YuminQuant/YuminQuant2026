@@ -1,7 +1,6 @@
 """Thirty daily bars and point-in-time target-date risk exposures."""
 from __future__ import annotations
 
-from bisect import bisect_right
 from contextlib import closing, contextmanager
 from dataclasses import replace
 
@@ -13,46 +12,12 @@ from yq_ml_alpha.data.filters import TradeFilters
 from yq_ml_alpha.data.stores import read_keyed_daily
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
+from yq_ml_alpha.features.industry_membership import IndustryMembership
 from yq_ml_alpha.features.transforms import scale_market_window, zscore_observed
 from yq_ml_alpha.output import artifact_io
 
 
 MARKET_COLUMNS = ["open", "high", "low", "close", "vol"]
-
-
-class IndustryMembership:
-    """Same inclusive interval and latest-effective-row convention as the Rust reader."""
-
-    def __init__(self, frame, codes):
-        self.groups = {}
-        positions = {code: i for i, code in enumerate(codes)}
-        columns = ["ts_code", "l1_code", "in_date", "out_date"]
-        for symbol, code, start, stop in frame[columns].itertuples(index=False, name=None):
-            if pd.isna(symbol) or pd.isna(code) or pd.isna(start) or not str(code).strip():
-                continue
-            if code not in positions:
-                raise ValueError(f"unknown CITIC level-one code {code}; check the configured industry schema")
-            start = int(start)
-            stop = 99991231 if pd.isna(stop) or not str(stop).strip() else int(stop)
-            if stop < start:
-                raise ValueError(f"invalid CITIC industry interval: {symbol}/{start}/{stop}")
-            self.groups.setdefault(symbol, []).append((start, stop, positions[code]))
-        for stock, rows in self.groups.items():
-            rows.sort(key=lambda row: row[0])
-            self.groups[stock] = tuple(zip(*rows))
-
-    def indices(self, symbols, date):
-        result = np.full(len(symbols), -1, dtype=np.intp)
-        for i, stock in enumerate(symbols):
-            history = self.groups.get(stock)
-            if history is None:
-                continue
-            starts, ends, codes = history
-            for j in range(bisect_right(starts, date) - 1, -1, -1):
-                if date <= ends[j]:
-                    result[i] = codes[j]
-                    break
-        return result
 
 
 class RiskAttentionHistory(DailyTensorSequence):

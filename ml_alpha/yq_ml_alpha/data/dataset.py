@@ -57,6 +57,7 @@ class DatasetBundle:
     full_cross_section: bool = False
     information_cutoff: int | None = None
     supervision_lookahead_days: int = 0
+    training_start_date: int | None = None
 
     def close(self) -> None:
         if self.storage is not None:

@@ -1,0 +1,110 @@
+factor_id = "adwm_model3_daily"
+tags = ["DFZQ", "adwm", "fundamental", "barra", "adaptive_graph", "mse_loss"]
+data_root = "data"
+data_version = "adwm_model3_daily_v1"
+
+[output]
+kind = "factor"
+id = "adwm_model3_daily"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+
+[dates]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[[label.auxiliary]]
+id = "future_vwap_return_20d"
+lookahead_days = 21
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "fundamental_style_sequence"
+root = "data/derived/stock/astgnn_lfq"
+columns = [
+    "earnings_yield", "earnings_yield_z252", "dividend_yield", "book_to_market", "sales_yield", "operating_cash_yield", "free_cash_yield", "ebit_ev",
+    "roe", "roa", "roic", "gross_profit_to_assets", "gross_margin", "operating_margin", "net_margin", "deducted_net_margin",
+    "deducted_profit_yoy", "revenue_yoy", "operating_profit_yoy", "parent_profit_yoy", "operating_cash_yoy", "assets_yoy", "gross_margin_yoy_delta", "roe_yoy_delta",
+    "operating_cash_margin", "free_cash_margin", "operating_cash_to_profit", "accruals_to_assets", "cash_collection_ratio", "capex_to_sales", "rd_to_sales", "deducted_profit_share",
+    "liabilities_to_assets", "interest_debt_to_assets", "net_debt_to_equity", "current_ratio", "quick_ratio", "interest_coverage", "cash_to_assets", "short_debt_share",
+    "assets_turnover", "fixed_assets_turnover", "receivable_days", "inventory_days", "payable_days", "cash_conversion_days", "receivables_to_sales", "inventory_to_assets",
+    "sue", "fund_holding_ratio", "analyst_coverage", "analyst_dispersion", "analyst_growth", "analyst_revision_60d", "analyst_upgrade_share_60d", "fund_holding_qoq",
+]
+
+[features.params]
+history_start_date = 20110104
+barra_model = "CNE6"
+barra_columns = ["DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
+normalization = "mad5_zscore"
+
+[materialize]
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "adwm_model3"
+class = "yq_ml_alpha.models.adwm_model.ADWMAlphaModel"
+artifact_dir = "data/model_workspace/adwm_model3_daily/artifacts"
+
+[model.params]
+input_size = 121
+sequence_length = 120
+hidden_size = 64
+gru_layers = 1
+base_factors = 64
+risk_size = 12
+top_k = 8
+abcm_months = 36
+gate_months = 21
+batch_size = 5000
+graph_block_size = 512
+rank_block_size = 512
+gradient_checkpointing = true
+epochs = 100
+patience = 10
+lr = 0.001
+gate_lr = 0.001
+grad_clip = 3.0
+ridge = 0.001
+eps = 0.00000001
+risk_weight = 1.0
+orthogonal_weight = 0.1
+rank_weight = 0.001
+router_z_weight = 0.001
+label_neutralize = "citic_l1+barra:SIZE"
+seed = 42
+device = "auto"

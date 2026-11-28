@@ -36,13 +36,13 @@ def training_config_for_windows(config, window_ids):
     return config
 
 
-def training_plan(config, window_ids=None):
+def training_plan(config, window_ids=None, *, include_column_catalog=True):
     windows = training_windows(config, TradingCalendar.for_config(config), window_ids)
     if not windows:
         raise ValueError("No training windows; check calendar and configured date ranges")
     def span(dates):
         return [dates[0], dates[-1]] if dates else None
-    return {
+    result = {
         "artifact_dir": str(config.model.artifact_dir),
         "cache_dir": str(config.materialize.cache_dir),
         "diagnostics_dir": str(Path(config.model.artifact_dir).parent / 'diagnostics'),
@@ -55,3 +55,7 @@ def training_plan(config, window_ids=None):
                                      (config.diagnostics.write_loss_history or
                                       config.diagnostics.write_window_summary)),
     }
+    if include_column_catalog:
+        from yq_ml_alpha.data.column_catalog import training_column_catalog
+        result["feature_column_catalog"] = training_column_catalog([config])
+    return result

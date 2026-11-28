@@ -2,7 +2,7 @@ from __future__ import annotations
 from yq_ml_alpha.output import artifact_io as data_io
 
 from bisect import bisect_right
-from contextlib import contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 import json
@@ -139,13 +139,34 @@ class DatasetBuilder:
                     return features, labels
                 preloaded = data_io.ordered_io_map(load_input, dates, root=root)
         try:
-            return self._load_dates(dates, include_label, split_name, graph_tensor, lazy_tensor,
-                                    frames, total_dates, started, preloaded)
+            prefetch_targets = getattr(getattr(self.feature_provider, "sequence", None), "prefetch_targets", None)
+            sequence_labels = (
+                self._prefetch_sequence_labels(dates)
+                if prefetch_targets is not None and include_label and data_io.backend(self.config.label.root) is not None
+                else {}
+            )
+            with prefetch_targets(dates) if prefetch_targets is not None else nullcontext():
+                return self._load_dates(dates, include_label, split_name, graph_tensor, lazy_tensor,
+                                        frames, total_dates, started, preloaded, sequence_labels)
         finally:
             if preloaded is not None: preloaded.close()
 
+    def _prefetch_sequence_labels(self, dates):
+        def load(date):
+            try:
+                return date, self._read_labels(date)
+            except Exception as error:
+                # A date with no eligible stocks did not require a label file.
+                return date, error
+
+        started = perf_counter()
+        with closing(data_io.ordered_io_map(load, dict.fromkeys(dates), root=self.config.label.root)) as reads:
+            labels = dict(reads)
+        print(f"sequence-labels dates={len(labels)} load_s={perf_counter() - started:.2f}", flush=True)
+        return labels
+
     def _load_dates(self, dates, include_label, split_name, graph_tensor, lazy_tensor,
-                    frames, total_dates, started, preloaded):
+                    frames, total_dates, started, preloaded, sequence_labels):
         total_rows = 0
         pool_rows_before = pool_rows_after = 0
         pool_contracts_before: set[str] = set()
@@ -179,7 +200,12 @@ class DatasetBuilder:
             frame = features if graph_tensor else self.filters.apply(self.universe.filter(features, trade_date), trade_date)
             if include_label:
                 if labels is None:
-                    labels = self._read_labels(trade_date)
+                    if trade_date in sequence_labels:
+                        labels = sequence_labels[trade_date]
+                        if isinstance(labels, Exception):
+                            raise labels
+                    else:
+                        labels = self._read_labels(trade_date)
                 if self.minute_frame:
                     feature_rows = len(frame)
                     frame = frame.merge(labels, on=self.config.key_columns, how="inner", validate="one_to_one")

@@ -18,8 +18,8 @@ class FactorFrameProvider(FeatureProvider):
         self.files = FactorFiles(root)
         self.feature_columns = discover_value_columns(self.root, end_date, excluded) if is_all_column_request(columns) else list(columns)
 
-    def load(self, trade_date: int) -> pd.DataFrame:
-        frame = self.files.read(trade_date, self.feature_columns)
+    def load(self, trade_date: int, *, require_file=False) -> pd.DataFrame:
+        frame = self.files.read(trade_date, self.feature_columns, require_file=require_file)
         for column in self.feature_columns:
             if column not in frame.columns:
                 frame[column] = pd.NA

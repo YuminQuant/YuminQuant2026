@@ -1,7 +1,7 @@
 """Daily normalized factor snapshots shared by graph and temporal encoders."""
 from yq_ml_alpha.output import artifact_io as data_io
-from pathlib import Path
-
+from contextlib import nullcontext
+import numpy as np
 import pandas as pd
 
 from yq_ml_alpha.data.daily_tensor_sequence import DailyTensorSequence
@@ -12,7 +12,8 @@ from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.config import _project_path
 from yq_ml_alpha.data.stock_relations import StockRelations
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
-from yq_ml_alpha.features.transforms import apply_cross_section_transform
+from yq_ml_alpha.features.transforms import _zscore_series, apply_cross_section_transform
+from yq_ml_alpha.output.parquet_reader import transient_parquet_tables
 
 
 class FactorHistory(DailyTensorSequence):
@@ -34,30 +35,27 @@ class FactorHistory(DailyTensorSequence):
             raise ValueError(f"no factor history under {self.root}")
         self.first_date = self.available_dates[0]
 
-    def day(self, date):
-        cached = self._cached(date)
-        if cached is not None:
-            return cached
-        return self._remember(date, self._load_day(date))
-
     def _load_day(self, date):
-        files = getattr(self.provider, "files", None)
-        if not (files.exists(date) if files is not None else data_io.exists(daily_path(self.root, date))):
-            raise FileNotFoundError(f"missing factor history for {date}")
-        frame = self.provider.load(date)
+        with transient_parquet_tables():
+            frame = self.provider.load(date, require_file=True)
         if frame.ts_code.isna().any() or frame.ts_code.duplicated().any() or not frame.trade_date.eq(date).all():
             raise ValueError(f"invalid factor snapshot keys on {date}")
         frame = self.filters.apply(self.universe.filter(frame, date), date)
         frame = self._filter_frame(frame, date)
         # Normalize before label joining. Missing future labels never change graph inputs.
+        if self.history_transform == "zscore_clip3":
+            # The reader already validated one trade date. Keep the same
+            # per-column statistic while skipping groupby on each factor.
+            values = np.empty((len(frame), len(self.columns)), dtype="float32")
+            for index, column in enumerate(self.columns):
+                numeric = pd.to_numeric(frame[column], errors="coerce").astype("float64")
+                values[:, index] = _zscore_series(numeric).clip(-3.0, 3.0).fillna(self.fill_value)
+            return pd.DataFrame(values, columns=self.columns, index=pd.Index(frame.ts_code), copy=False)
         frame[self.columns] = frame[self.columns].apply(pd.to_numeric, errors="coerce").astype("float64")
         frame = apply_cross_section_transform(
             frame, self.history_transform, self.columns, [], self.fill_value,
         ).set_index("ts_code")[self.columns].astype("float32")
         return frame
-
-    def close(self):
-        super().close()
 
     def _filter_frame(self, frame, date):
         """Optional universe refinement before any cross-sectional normalization."""
@@ -68,6 +66,15 @@ class FactorHistory(DailyTensorSequence):
         if not dates or dates[0] < self.first_date:
             return []
         return super().symbols(date)
+
+    def prefetch_targets(self, dates):
+        if not data_io.backend(self.root) or list(dates) != sorted(dates):
+            return nullcontext()
+        source_dates = {
+            day for date in dates if (window := self.window_dates(date)) and window[0] >= self.first_date
+            for day in window
+        }
+        return self.prefetch_sources(sorted(source_dates))
 
     def forward_view(self, length):
         """Independent reader for supervised future slices; caller must close it."""

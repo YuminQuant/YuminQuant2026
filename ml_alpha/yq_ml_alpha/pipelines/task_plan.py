@@ -47,7 +47,7 @@ def plan_tasks(configs, action, options):
         outputs.add(key)
         if action == 'train':
             from yq_ml_alpha.pipelines.training_tasks import training_plan
-            plan = training_plan(config)
+            plan = training_plan(config, include_column_catalog=False)
             sequential = getattr(load_model_class(config.model.class_path), 'training_requires_previous_window', False)
             for wi, window in enumerate(plan['windows']):
                 path = str(Path(plan['artifact_dir']) / window['window_id'])
@@ -91,4 +91,8 @@ def plan_tasks(configs, action, options):
     diagnostics = [str(Path(config.model.artifact_dir).parent / 'diagnostics') for config in configs
                    if config.diagnostics.enabled and
                    (config.diagnostics.write_loss_history or config.diagnostics.write_window_summary)]
-    return dict(action=action, execution=asdict(options), tasks=tasks, diagnostics=diagnostics)
+    result = dict(action=action, execution=asdict(options), tasks=tasks, diagnostics=diagnostics)
+    if action == 'train':
+        from yq_ml_alpha.data.column_catalog import training_column_catalog
+        result["feature_column_catalog"] = training_column_catalog(configs)
+    return result

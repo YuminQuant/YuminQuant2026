@@ -1,6 +1,7 @@
 """Read-only daily tensor sequences; no temporary files or disk cache."""
 from yq_ml_alpha.output import artifact_io as data_io
 from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -22,25 +23,25 @@ class DailyTensorSequence:
         self.cache = OrderedDict()
         self.cache_bytes = 0
         self._active_date = None
-        self._protected = set()
         self._symbols = None
         self._positions_by_day = {}
+        self._symbol_ids = {}
+        self._daily_rows = {}
+        self._arrays = {}
+        self._window_symbols = {}
+        self._prefetched = None
         self.cache_hits = 0
         self.cache_misses = 0
         self.uncached_reads = 0
         self.loaded_days = 0
         self.cache_evictions = 0
-        self._day_sizes = {}
 
     def _activate(self, date):
         if self._active_date == date:
             return
         self._active_date = date
-        self._protected = set(self.window_dates(date))
         self._symbols = None
         self._positions_by_day = {}
-        # Retain older normalized days across validation and epoch boundaries.
-        # Only memory pressure evicts them; the current window remains pinned.
 
     def _cached(self, date):
         if date in self.cache:
@@ -55,8 +56,20 @@ class DailyTensorSequence:
         if positions is not None and len(positions):
             if positions.max() >= len(frame) or not frame.index.take(positions).equals(self._symbols):
                 raise ValueError(f"source stock order changed while reading sequence date {date}")
-        size = int(frame.memory_usage(index=True, deep=True).sum())
-        self._day_sizes[date] = size
+        if list(frame.columns) == self.columns and frame.dtypes.eq(np.dtype("float32")).all():
+            values = np.ascontiguousarray(frame.to_numpy(copy=False))
+            frame = pd.DataFrame(values, index=frame.index, columns=frame.columns, copy=False)
+            self._arrays[date] = values
+        else:
+            self._arrays.pop(date, None)
+        ids = np.fromiter((self._symbol_ids.setdefault(code, len(self._symbol_ids)) for code in frame.index),
+                          dtype=np.intp, count=len(frame))
+        rows = np.full(len(self._symbol_ids), -1, dtype=np.int32)
+        rows[ids] = np.arange(len(frame), dtype=np.int32)
+        self._daily_rows[date] = rows
+        size = int(frame.memory_usage(index=True, deep=True).sum()) + rows.nbytes
+        if date in self.cache:
+            self._window_symbols.clear()
         self.loaded_days += 1
         previous = self.cache.pop(date, None)
         if previous is not None:
@@ -81,6 +94,18 @@ class DailyTensorSequence:
             return cached
         return self._remember(date, self._load_day(date))
 
+    @contextmanager
+    def prefetch_sources(self, dates):
+        """Read ahead across target windows on the shared HDFS read pool."""
+        missing = (date for date in dates if date not in self.cache)
+        reads = data_io.ordered_io_map(lambda date: (date, self._load_day(date)), missing, root=self.root)
+        self._prefetched = reads
+        try:
+            yield
+        finally:
+            self._prefetched = None
+            reads.close()
+
     def _load_day(self, date):
         path = daily_path(self.root, date)
         if not data_io.exists(path):
@@ -98,6 +123,16 @@ class DailyTensorSequence:
         if not missing:
             for date in dates:
                 yield date, resident[date]
+            return
+        if self._prefetched is not None:
+            for date in dates:
+                frame = resident[date]
+                if frame is None:
+                    loaded_date, frame = next(self._prefetched)
+                    if loaded_date != date:
+                        raise RuntimeError(f"out-of-order sequence prefetch: expected {date}, got {loaded_date}")
+                    frame = self._remember(date, frame)
+                yield date, frame
             return
         # Resident days never enter the IO queue or trigger remote stat calls.
         frames = data_io.ordered_io_map(
@@ -138,16 +173,21 @@ class DailyTensorSequence:
         dates = self.window_dates(date)
         if not dates:
             return []
-        symbols = None
-        indexes = {}
-        working_bytes = 0
-        for day, frame in self._days(dates):
-            index = frame.index
-            indexes[day] = index
-            working_bytes += self._day_sizes[day]
-            symbols = index if symbols is None else symbols.intersection(index, sort=False)
-        self._symbols = symbols.sort_values()
-        self._positions_by_day = {day: index.get_indexer(self._symbols) for day, index in indexes.items()}
+        if date not in self._window_symbols:
+            for _ in self._days(dates):
+                pass
+            rows = [self._daily_rows[day] for day in dates]
+            limit = min(map(len, rows))
+            common = np.ones(limit, dtype=bool)
+            for positions in rows:
+                common &= positions[:limit] >= 0
+            ids = np.flatnonzero(common)
+            first = self.cache[dates[0]][0].index
+            symbols = first.take(rows[0][ids])
+            order = symbols.argsort()
+            self._window_symbols[date] = symbols.take(order), ids[order]
+        self._symbols, ids = self._window_symbols[date]
+        self._positions_by_day = {day: self._daily_rows[day][ids] for day in dates}
         return self._symbols.tolist()
 
     def get(self, date, symbols):
@@ -161,14 +201,19 @@ class DailyTensorSequence:
             raise ValueError(f"requested stocks lack complete sequence history: {date}")
         for i, (day, frame) in enumerate(self._days(dates)):
             positions = self._positions_by_day[day][selected]
-            result[:, i] = frame.to_numpy(copy=False)[positions].reshape(len(symbols), *self.shape)
+            values = self._arrays.get(day)
+            if values is None:
+                values = frame.to_numpy(copy=False)
+            result[:, i] = values[positions].reshape(len(symbols), *self.shape)
         return result
 
     def close(self):
         self.cache.clear()
         self.cache_bytes = 0
         self._active_date = None
-        self._protected.clear()
         self._symbols = None
         self._positions_by_day.clear()
-        self._day_sizes.clear()
+        self._symbol_ids.clear()
+        self._daily_rows.clear()
+        self._arrays.clear()
+        self._window_symbols.clear()

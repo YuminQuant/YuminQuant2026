@@ -215,10 +215,10 @@ def open_parquet(path):
     return cache().open(read_path(path))
 
 
-def read_projected_frame(path, columns, *, required=()):
+def read_projected_frame(path, columns, *, required=(), pre_buffer=False):
     from .parquet_reader import cache, to_frame
     return to_frame(cache().read(read_path(path), columns, allow_missing=True,
-                                 required=required, pandas_metadata=True))
+                                 required=required, pandas_metadata=True, pre_buffer=pre_buffer))
 
 
 def invalidate_parquet(path=None):

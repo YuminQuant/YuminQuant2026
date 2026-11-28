@@ -87,27 +87,29 @@ class FactorFiles:
         paths = {}
         for part in ("manual", "ml"):
             path = factor_path(self.root, date, part)
-            if not io.exists(path):
-                path = self.root / path.name
             if io.exists(path):
                 paths[part] = path
+            else:
+                flat = self.root / path.name
+                if io.exists(flat):
+                    paths[part] = flat
         return paths
 
-    def read(self, date, columns=None):
+    def read(self, date, columns=None, *, require_file=False):
         requested = None if columns is None else list(dict.fromkeys(c for c in columns if c not in KEYS))
         paths = self._paths(date)
         if not paths:
+            if require_file:
+                raise FileNotFoundError(f"missing factor history for {date} under {self.root}")
             import pandas as pd
 
             return pd.DataFrame(columns=[*KEYS, *(requested or [])])
-        # Known manual-only projections never open the ML payload or its footer.
-        parts = ("manual",) if requested and all(self.owners.get(c) == "manual" for c in requested) else ("manual", "ml")
+        if requested:
+            return self._read_requested(date, paths, requested)
         schemas = {}
-        if "ml" in parts and "ml" in paths:
+        if "ml" in paths:
             schemas["ml"] = set(io.parquet_columns(paths["ml"]))
-        manual_needed = requested is None or not requested or any(
-            self.owners.get(name) == "manual" or name not in schemas.get("ml", set()) for name in requested)
-        if "manual" in paths and manual_needed:
+        if "manual" in paths:
             schemas["manual"] = set(io.parquet_columns(paths["manual"]))
         names = requested if requested is not None else sorted(set.union(set(), *schemas.values()) - set(KEYS))
         groups = {part: [] for part in schemas}
@@ -128,13 +130,41 @@ class FactorFiles:
             path = paths.get("manual", paths.get("ml"))
             frames = [io.read_parquet(path, columns=KEYS)]
             _validate_keys(frames[0], date, path)
-        result = frames[0]
-        if len(frames) == 1:
-            return result
-        for frame in frames[1:]:
-            result = result.merge(frame, on=KEYS, how="outer", validate="one_to_one", sort=False)
-        # Keep absent columns absent: callers can distinguish missing output from null output.
-        return result.sort_values(KEYS).reset_index(drop=True)
+        return _merge_frames(frames)
+
+    def _read_requested(self, date, paths, requested):
+        # Project existing columns while opening each partition once. The ML
+        # projection determines which legacy mixed-file columns can fall back.
+        frames = {}
+        ml_columns = [name for name in requested if self.owners.get(name) != "manual"]
+        ml_names = set()
+        if ml_columns and "ml" in paths:
+            frames["ml"] = io.read_projected_frame(paths["ml"], [*KEYS, *ml_columns],
+                                                   required=KEYS, pre_buffer=True)
+            ml_names = set(frames["ml"].columns)
+        manual_columns = [name for name in requested if name not in ml_names]
+        if manual_columns and "manual" in paths:
+            frames["manual"] = io.read_projected_frame(paths["manual"], [*KEYS, *manual_columns],
+                                                       required=KEYS, pre_buffer=True)
+        selected = [part for part, frame in frames.items() if len(frame.columns) > len(KEYS)]
+        if not selected:
+            part = "manual" if "manual" in paths else "ml"
+            if part not in frames:
+                frames[part] = io.read_parquet(paths[part], columns=KEYS)
+            selected = [part]
+        for part in selected:
+            _validate_keys(frames[part], date, paths[part])
+        return _merge_frames([frames[part] for part in selected])
+
+
+def _merge_frames(frames):
+    result = frames[0]
+    if len(frames) == 1:
+        return result
+    for frame in frames[1:]:
+        result = result.merge(frame, on=KEYS, how="outer", validate="one_to_one", sort=False)
+    # Keep absent columns absent: callers can distinguish missing output from null output.
+    return result.sort_values(KEYS).reset_index(drop=True)
 
 
 def _validate_keys(frame, date, path):

@@ -10,6 +10,17 @@ import json
 from threading import RLock
 
 _projection_hints = ContextVar('ml_projection_hints', default={})
+_retain_tables = ContextVar("ml_retain_parquet_tables", default=True)
+
+
+@contextmanager
+def transient_parquet_tables():
+    """Keep metadata but avoid a second resident copy of normalized snapshots."""
+    token = _retain_tables.set(False)
+    try:
+        yield
+    finally:
+        _retain_tables.reset(token)
 
 
 @contextmanager
@@ -71,7 +82,7 @@ class ParquetReadCache:
             setattr(self, attr, getattr(self, attr) + size)
 
     @contextmanager
-    def open(self, path, version=None):
+    def open(self, path, version=None, *, pre_buffer=False):
         import pyarrow.parquet as pq
         from . import artifact_io as io
         version = version or self.identity(path)
@@ -79,7 +90,8 @@ class ParquetReadCache:
         # Keep the stream alive for the parser; the adapter limits native calls.
         with io.open_file(path, "rb") as stream:
             self.opens += 1
-            with pq.ParquetFile(stream, metadata=metadata, pre_buffer=False) as reader:
+            with pq.ParquetFile(stream, metadata=metadata,
+                                pre_buffer=pre_buffer and io.backend(path) is not None) as reader:
                 if metadata is None:
                     self.footer_reads += 1
                     self.put(self.metadata, version, reader.metadata,
@@ -96,20 +108,20 @@ class ParquetReadCache:
                 return reader.schema_arrow
 
     def read(self, path, columns=None, *, allow_missing=False, required=(),
-             use_threads=True, pandas_metadata=False):
+             use_threads=True, pandas_metadata=False, pre_buffer=False):
         # Shared-input workers must not all miss and reopen the same file.
         with self.read_locks[hash(str(path)) % len(self.read_locks)]:
             return self._read(path, columns, allow_missing=allow_missing, required=required,
-                              use_threads=use_threads, pandas_metadata=pandas_metadata)
+                              use_threads=use_threads, pandas_metadata=pandas_metadata, pre_buffer=pre_buffer)
 
     def _read(self, path, columns=None, *, allow_missing=False, required=(),
-              use_threads=True, pandas_metadata=False):
+              use_threads=True, pandas_metadata=False, pre_buffer=False):
         from . import artifact_io as io
         hint = _projection_hints.get().get(str(io.read_path(path).absolute()))
         if hint and columns is not None and allow_missing and not set(hint) <= set(columns):
             union = tuple(dict.fromkeys([*columns, *hint]))
             table = self.read(path, union, allow_missing=True, required=required,
-                              use_threads=use_threads, pandas_metadata=pandas_metadata)
+                              use_threads=use_threads, pandas_metadata=pandas_metadata, pre_buffer=pre_buffer)
             return table.select([name for name in columns if name in table.column_names])
         version = self.identity(path)
         requested = None if columns is None else tuple(dict.fromkeys(columns))
@@ -137,7 +149,7 @@ class ParquetReadCache:
                         self.hits += 1
                         return table
         self.misses += 1
-        with self.open(path, version) as reader:
+        with self.open(path, version, pre_buffer=pre_buffer) as reader:
             available = set(reader.schema_arrow.names)
             missing_required = set(required) - available
             if missing_required:
@@ -148,7 +160,8 @@ class ParquetReadCache:
             table = reader.read(columns=selected, use_threads=use_threads,
                                 use_pandas_metadata=pandas_metadata)
         # Account for referenced buffers, including dictionary/zero-copy parents.
-        self.put(self.tables, key, table, max(table.get_total_buffer_size(), 1), "table")
+        if _retain_tables.get():
+            self.put(self.tables, key, table, max(table.get_total_buffer_size(), 1), "table")
         return table
 
     def info(self):

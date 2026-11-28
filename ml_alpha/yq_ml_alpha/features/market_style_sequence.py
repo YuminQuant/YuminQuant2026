@@ -1,6 +1,8 @@
 """Observed daily market data and Barra exposures, joined without disk staging."""
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import numpy as np
 
 from yq_ml_alpha.config import _project_path
@@ -10,6 +12,7 @@ from yq_ml_alpha.data.stores import read_keyed_daily
 from yq_ml_alpha.data.universe import Universe
 from yq_ml_alpha.features.daily_sequence import DailySequenceProvider
 from yq_ml_alpha.features.transforms import scale_market_window
+from yq_ml_alpha.output import artifact_io
 
 
 PRICE_COLUMNS = ["open", "high", "low", "close", "vwap"]
@@ -21,7 +24,10 @@ class MarketStyleHistory(DailyTensorSequence):
         columns = config.features.columns
         self.barra_columns = list(params["barra_columns"])
         self.turnover_column = str(params["turnover_column"])
-        self.market_columns = [*PRICE_COLUMNS, "volume", self.turnover_column]
+        self.include_volume = params.get("include_volume", True)
+        if type(self.include_volume) is not bool:
+            raise ValueError("market/style include_volume must be boolean")
+        self.market_columns = [*PRICE_COLUMNS, *(["volume"] if self.include_volume else []), self.turnover_column]
         if self.turnover_column not in {"turnover_rate", "turnover_rate_f"}:
             raise ValueError("unsupported daily turnover field")
         if (not self.barra_columns or len(set(self.barra_columns)) != len(self.barra_columns)
@@ -38,7 +44,6 @@ class MarketStyleHistory(DailyTensorSequence):
             raise ValueError("minimum_history_sessions must cover the input sequence")
         self.filters = TradeFilters(config.filters, config.data_root)
         self.universe = Universe(config.universe.id, config.data_root)
-        from yq_ml_alpha.output import artifact_io
         self.read_workers = artifact_io.io_options(self.root)["workers"]
         self.normalization = str(params["normalization"])
         if self.normalization not in {"window_mean", "last_value"}:
@@ -46,6 +51,14 @@ class MarketStyleHistory(DailyTensorSequence):
 
     def set_calendar_dates(self, dates):
         super().set_calendar_dates([date for date in dates if date >= self.history_start_date])
+
+    def prefetch_targets(self, dates):
+        if artifact_io.backend(self.root) is None or dates != sorted(dates):
+            return nullcontext()
+        sources = {day for date in dates
+                   if self.positions.get(date, -1) + 1 >= self.minimum_history_sessions
+                   for day in self.window_dates(date)}
+        return self.prefetch_sources(sorted(sources))
 
     def _load_day(self, date):
         market = read_keyed_daily(self.root, date, ["open", "high", "low", "close", "vol", "amount"])
@@ -66,7 +79,8 @@ class MarketStyleHistory(DailyTensorSequence):
         # observed sessions retain VWAP=0, as in the other bar providers.
         frame["vwap"] = np.divide(frame.amount.to_numpy() * 10, frame.vol.to_numpy(),
                                   out=np.zeros(len(frame)), where=frame.vol.to_numpy() > 0)
-        frame["volume"] = frame.vol * 100
+        if self.include_volume:
+            frame["volume"] = frame.vol * 100
         frame[PRICE_COLUMNS] = frame[PRICE_COLUMNS].mul(frame.adj_factor, axis=0)
         return frame.set_index("ts_code")[self.columns].replace([np.inf, -np.inf], np.nan).astype("float32")
 

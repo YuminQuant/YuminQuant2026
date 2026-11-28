@@ -1,4 +1,14 @@
 [[factors]]
+factor_id = "abcm1_daily"
+config = "factors/abcm1_daily.toml"
+status = "active"
+display_name = "ABCM1 daily co-mined alpha and latent beta"
+model_class = "yq_ml_alpha.models.abcm_model.ABCM1AlphaModel"
+output = "data/factors/stock/daily"
+label = "future_vwap_return_10d"
+tags = ["e2e", "DFZQ", "abcm1", "rawbar", "barra", "adaptive_graph", "mse_loss"]
+
+[[factors]]
 factor_id = "analyst_coverage_gat_40d"
 config = "factors/analyst_coverage_gat_40d.toml"
 status = "active"

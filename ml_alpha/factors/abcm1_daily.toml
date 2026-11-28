@@ -1,0 +1,98 @@
+factor_id = "abcm1_daily"
+tags = ["DFZQ", "abcm1", "rawbar", "barra", "adaptive_graph", "mse_loss"]
+data_root = "data"
+data_version = "abcm1_daily_cne6_v1"
+
+[output]
+kind = "factor"
+id = "abcm1_daily"
+root = "data/factors"
+asset = "stock"
+frequency = "daily"
+base_root = "data/chn_stock_data/daily/pv"
+
+[dates]
+train = [20110101, 20251231]
+predict = [20160101, 20260424]
+
+[sample]
+train_frequency = "5"
+predict_frequency = "daily"
+
+[train_scheme]
+type = "rolling"
+refit_frequency = "yearly_end"
+train_lookback = "60m"
+validation_lookback = "3m"
+min_train_days = 500
+
+[label]
+id = "future_vwap_return_10d"
+lookahead_days = 11
+
+[[label.auxiliary]]
+id = "future_vwap_return_20d"
+lookahead_days = 21
+
+[universe]
+id = "mkt_all"
+
+[filters]
+exclude_limit = false
+exclude_st = true
+exclude_bj = true
+
+[preprocess]
+cross_section_transform = "none"
+feature_fill_value = 0.0
+
+[features]
+type = "market_style_sequence"
+root = "data/chn_stock_data/daily/pv"
+columns = ["open", "high", "low", "close", "vwap", "turnover_rate_f", "DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
+
+[features.params]
+history_start_date = 20110104
+barra_model = "CNE6"
+barra_columns = ["DIVIDEND_YIELD", "GROWTH", "LIQUIDITY", "MOMENTUM", "QUALITY", "SENTIMENT", "SIZE", "VALUE", "VOLATILITY"]
+turnover_column = "turnover_rate_f"
+include_volume = false
+sequence_length = 30
+normalization = "window_mean"
+
+[materialize]
+predict_batch_size = 20
+
+[diagnostics]
+enabled = true
+print_epoch = true
+write_loss_history = true
+write_model_info = true
+write_window_summary = true
+
+[model]
+name = "abcm1"
+class = "yq_ml_alpha.models.abcm_model.ABCM1AlphaModel"
+artifact_dir = "data/model_workspace/abcm1_daily/artifacts"
+
+[model.params]
+input_size = 15
+sequence_length = 30
+hidden_size = 64
+gru_layers = 1
+beta_size = 12
+batch_size = 5000
+query_block_size = 512
+gradient_checkpointing = true
+turnover_lag = 5
+epochs = 100
+patience = 10
+lr = 0.001
+grad_clip = 3.0
+ridge = 0.001
+eps = 0.00000001
+risk_weight = 1.0
+orthogonal_weight = 0.1
+turnover_weight = 0.1
+seed = 42
+device = "auto"
